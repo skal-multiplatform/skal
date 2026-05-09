@@ -49,6 +49,35 @@ APK assets to filesDir on every launch (~1–10 ms for 250 KB). Compare APK
 last-modified time vs `filesDir/skal-app.cjs.mtime` and skip the copy when
 up to date. Easy win; not currently a bottleneck.
 
+### Research bulk removal in `removeSubtree`
+Today `removeSubtree` calls `parent.children.removeAt(idx)` and
+`SparseArray.remove(id)` once per removed node — for a 5000-tweet shrink,
+that's 5000 individual SnapshotStateList mutations (each with snapshot
+bookkeeping) and 5000 SparseArray binary searches. Estimated ~5–20 ms
+inside pumpOps for the SnapshotStateList work, ~1–3 ms for the
+SparseArray work. Both are dwarfed by Compose's downstream
+`applyObservers` + slot-table eviction (~50–200 ms for 5000 entries),
+so this isn't the bottleneck today.
+
+If profiling later shows `removeAt` is hot, two paths to evaluate:
+  • Bulk SnapshotStateList mutation: collect all dead ids first, then
+    do one `removeAll(deadSet)` or `subList(...).clear()` so snapshot
+    bookkeeping fires once instead of N times. Biggest realistic win.
+  • Migrate `nodes: SparseArray<NodeState>` →
+    `androidx.collection.IntObjectMap` (hash-table, O(1) avg remove
+    vs SparseArray's O(log n) binary search + lazy GC). Smaller win,
+    bounded scope.
+
+See the discussion captured in the conversation that landed
+`removeSubtree`'s iterative version — this is the next ring of
+optimization, deliberately deferred until profiling justifies it.
+
+### Cleanup: `NodeState.parent` doesn't need to be a MutableState
+`val parent = mutableStateOf(0)` adds Snapshot tracking on a field
+no composable ever reads. Switch to a plain `var parent: Int = 0`.
+Trivial change, nanosecond-level savings, won't move any benchmark
+but cleaner.
+
 ### LazyColumn / virtualization for long lists
 `<For each={tweetsToShow()}>` with 5000 items renders **all** 5000 in a
 non-virtualized scroll Column. Compose has to measure all 5000 every

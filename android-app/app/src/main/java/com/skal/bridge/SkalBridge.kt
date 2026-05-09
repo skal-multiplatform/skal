@@ -125,6 +125,24 @@ class SkalBridge(private val skal: Skal) {
                 OP_INSERT_BEFORE -> {
                     val parent = ns.get(a)
                     if (parent != null) {
+                        // Auto-detach: Solid's keyed-list reordering relies on
+                        // DOM-style insertNode semantics — moving a node by
+                        // re-inserting without first calling removeNode. Our
+                        // bridge has to enforce the "node id appears in at most
+                        // one parent's children list at a time" invariant
+                        // ourselves; the DOM does it implicitly. Without this,
+                        // any reorder would leave the moving id duplicated in
+                        // both old and new parents.
+                        val movingNode = ns.get(b)
+                        if (movingNode != null) {
+                            val oldParentId = movingNode.parent.value
+                            if (oldParentId != 0) {
+                                ns.get(oldParentId)?.children?.let { oldChildren ->
+                                    val oldIdx = oldChildren.lastIndexOf(b)
+                                    if (oldIdx >= 0) oldChildren.removeAt(oldIdx)
+                                }
+                            }
+                        }
                         val children = parent.children
                         val anchor = c
                         if (anchor == 0) {
@@ -133,7 +151,7 @@ class SkalBridge(private val skal: Skal) {
                             val idx = children.indexOf(anchor)
                             if (idx >= 0) children.add(idx, b) else children.add(b)
                         }
-                        ns.get(b)?.parent?.value = a
+                        movingNode?.parent?.value = a
                     }
                 }
                 OP_SET_PROP_U32 -> ns.get(a)?.props?.put(b, c)
@@ -223,25 +241,38 @@ class SkalBridge(private val skal: Skal) {
     }
 
     /**
-     * Recursively remove a node and all its descendants. Detaches the node
-     * from its parent's children list, then walks the subtree depth-first,
-     * removing each entry from the [nodes] map.
+     * Worklist-DFS scratch — owned by [removeSubtree], reused across calls.
+     * IntArray (not Deque) so push/pop are no-allocation and cache-friendly.
+     * Grows on demand (doubles when full); never shrinks. UI thread only,
+     * no synchronization needed.
+     */
+    private var removeStack: IntArray = IntArray(64)
+
+    /**
+     * Remove a node and all its descendants from the [nodes] map, and detach
+     * the subtree root from its parent's children list.
      *
-     * This is the correct semantics for OP_REMOVE_NODE: just deleting the
-     * map entry would leak (a) the descendants' map entries and (b) the
-     * dead id sitting in the parent's children list.
+     * Why both: keeping the dead id in the parent's children would grow that
+     * list forever (Compose recompose work degrades; SkalNode early-returns
+     * on null); keeping the [NodeState] entries in [nodes] would leak memory.
+     * The two representations have to agree.
      *
-     * Recursive depth equals tree depth, which for our UI is typically
-     * < 5; deep enough trees would warrant an iterative stack-based walk.
+     * Iterative (worklist-based) rather than recursive — bounded by JVM heap
+     * via the [removeStack] IntArray, not by thread stack. Today's UI trees
+     * are <5 deep so it's purely defensive against future deep nests.
+     *
+     * Order across the subtree doesn't matter — these are flat-map deletes
+     * from [nodes], no parent-cleanup-after-children dependency.
      */
     private fun removeSubtree(id: Int, ns: SparseArray<NodeState>) {
-        val node = ns.get(id) ?: return
-        // Detach from parent (if attached). Use lastIndexOf because JS
-        // shrink-loops walk in reverse, so the id we're looking for is at
-        // the tail of the parent's children list — lastIndexOf finds it in
-        // one step, and removeAt(last) is O(1) on PersistentList. Together
-        // that turns N reverse-order removals from O(N²) into O(N).
-        val parentId = node.parent.value
+        val rootNode = ns.get(id) ?: return
+
+        // Detach the subtree root from its parent's children list — the only
+        // "outward" mutation. Use lastIndexOf because JS shrink-loops walk in
+        // reverse, putting the target id at the tail; lastIndexOf finds it
+        // in one step, and removeAt(last) is O(1) on PersistentList. Reverse
+        // removals become O(N) total instead of O(N²).
+        val parentId = rootNode.parent.value
         if (parentId != 0) {
             val parent = ns.get(parentId)
             if (parent != null) {
@@ -249,27 +280,31 @@ class SkalBridge(private val skal: Skal) {
                 if (idx >= 0) parent.children.removeAt(idx)
             }
         }
-        // Walk descendants first (post-order: children gone before parent).
-        // Snapshot to avoid mutation-during-iteration: removeSubtree on a
-        // child also tries to remove that child from THIS node's children
-        // list, which would shift indices.
-        val descendants = node.children.toIntArray()
-        node.children.clear()
-        for (childId in descendants) {
-            removeSubtreeNoDetach(childId, ns)
-        }
-        ns.remove(id)
-    }
 
-    /** Inner recursion: parent is being removed too, so skip the detach step. */
-    private fun removeSubtreeNoDetach(id: Int, ns: SparseArray<NodeState>) {
-        val node = ns.get(id) ?: return
-        val descendants = node.children.toIntArray()
-        node.children.clear()
-        for (childId in descendants) {
-            removeSubtreeNoDetach(childId, ns)
+        // Worklist DFS. Push the root; loop popping nodes, pushing their
+        // children, dropping each from the map.
+        var stack = removeStack
+        var top = 0
+        stack[top++] = id
+
+        while (top > 0) {
+            val cur = stack[--top]
+            val curNode = ns.get(cur) ?: continue
+            val children = curNode.children
+            val n = children.size
+
+            // Ensure capacity before bulk-pushing children. Double-and-retry
+            // until the new size accommodates them — amortized O(1) per push.
+            if (top + n > stack.size) {
+                var newSize = stack.size * 2
+                while (top + n > newSize) newSize *= 2
+                stack = stack.copyOf(newSize)
+                removeStack = stack
+            }
+            for (i in 0 until n) stack[top++] = children[i]
+            children.clear()
+            ns.remove(cur)
         }
-        ns.remove(id)
     }
 
     private fun readSeq(buf: ByteBuffer, offset: Int): Long {

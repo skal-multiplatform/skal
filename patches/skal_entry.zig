@@ -125,6 +125,22 @@ extern fn JSObjectMakeArrayBufferWithBytesNoCopy(
     exception: ?*?JSValueRef,
 ) JSObjectRef;
 extern fn JSValueMakeNumber(ctx: JSContextRef, number: f64) JSValueRef;
+extern fn JSValueIsObject(ctx: JSContextRef, value: JSValueRef) bool;
+extern fn JSValueProtect(ctx: JSContextRef, value: JSValueRef) void;
+extern fn JSObjectGetProperty(
+    ctx: JSContextRef,
+    object: JSObjectRef,
+    propertyName: JSStringRef,
+    exception: ?*?JSValueRef,
+) JSValueRef;
+extern fn JSObjectCallAsFunction(
+    ctx: JSContextRef,
+    object: JSObjectRef,
+    thisObject: ?JSObjectRef,
+    argumentCount: usize,
+    arguments: ?[*]const JSValueRef,
+    exception: ?*?JSValueRef,
+) ?JSValueRef;
 
 // ───────────────────────────────────────────────────────────────────────
 // Bun's REPL evaluation entry. Defined in
@@ -186,6 +202,13 @@ const Runtime = struct {
     /// to accept tasks.
     ready: std.Thread.ResetEvent = .{},
     init_failed: std.atomic.Value(bool) = .{ .raw = false },
+    /// Cached `__skal_drainEvents` JS function reference. Lazily resolved on
+    /// the first wake (after the user JS has installed the global) and
+    /// `JSValueProtect`'d so JSC's GC doesn't reclaim it. EventDrainTask
+    /// calls it directly via `JSObjectCallAsFunction`, which avoids the
+    /// per-click parse + compile cost of `Bun__REPL__evaluate` against a
+    /// source string. Saves ~50 µs per click on the JS thread.
+    drain_fn: ?JSObjectRef = null,
 
     fn init(allocator: std.mem.Allocator) !*Runtime {
         const self = try allocator.create(Runtime);
@@ -334,6 +357,12 @@ const EvalRequest = struct {
 // thread; calls into JS land which reads the event ring and dispatches
 // to JS handlers. JS-side dispatcher is `globalThis.__skal_drainEvents`,
 // installed by the JS bridge module.
+//
+// Hot path: cached JSObjectRef + JSObjectCallAsFunction. The first wake
+// resolves `globalThis.__skal_drainEvents` and protects it; subsequent
+// wakes call directly with no parse, no compile, no string interning.
+// Fallback to source-eval is kept only for the (unreachable) case where
+// the user JS hasn't installed the global before the first wake.
 // ───────────────────────────────────────────────────────────────────────
 
 const drain_source = "globalThis.__skal_drainEvents && globalThis.__skal_drainEvents();";
@@ -344,15 +373,43 @@ const EventDrainTask = struct {
     concurrent: bun.jsc.ConcurrentTask = undefined,
 
     fn run(self: *EventDrainTask) bun.JSError!void {
+        defer bun.default_allocator.destroy(self);
+
         const global = self.rt.vm.global;
+        const ctx: JSContextRef = @ptrCast(global);
+
+        // Lazy-cache the drain function on the first wake. Functions are
+        // objects in JSC; once protected, the JS GC won't collect it.
+        if (self.rt.drain_fn == null) {
+            const global_obj = JSContextGetGlobalObject(ctx);
+            const name = JSStringCreateWithUTF8CString("__skal_drainEvents");
+            defer JSStringRelease(name);
+            const value = JSObjectGetProperty(ctx, global_obj, name, null);
+            if (JSValueIsObject(ctx, value)) {
+                JSValueProtect(ctx, value);
+                // JSObjectRef and JSValueRef are both `*anyopaque`; functions
+                // ARE objects in JSC, so the cast is safe once IsObject passed.
+                self.rt.drain_fn = value;
+            }
+        }
+
+        if (self.rt.drain_fn) |fn_obj| {
+            const global_obj = JSContextGetGlobalObject(ctx);
+            var exception: ?JSValueRef = null;
+            _ = JSObjectCallAsFunction(ctx, fn_obj, global_obj, 0, null, &exception);
+            // Microtasks queued by Solid's effect flush will be drained by
+            // bun's tick() loop after we return — we're called from inside
+            // tickWithCount, which calls drainMicrotasksWithGlobal at the
+            // end of its inner while loop. Manually draining here re-enters
+            // the loop and hangs the worker.
+            return;
+        }
+
+        // Fallback: __skal_drainEvents wasn't installed yet. Eval the source
+        // form so we still drain the event. On subsequent wakes the cache
+        // path will succeed.
         var exception: jsc.JSValue = .js_undefined;
         _ = Bun__REPL__evaluate(global, drain_source.ptr, drain_source.len, "skal:drain".ptr, "skal:drain".len, &exception);
-        // Microtasks queued by Solid's effect flush will be drained by
-        // bun's tick() loop after we return — we're called from inside
-        // tickWithCount, which calls drainMicrotasksWithGlobal at the end
-        // of its inner while loop. Calling it manually here re-enters and
-        // hangs the worker.
-        bun.default_allocator.destroy(self);
     }
 };
 

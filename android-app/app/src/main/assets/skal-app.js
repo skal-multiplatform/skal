@@ -99,18 +99,17 @@ const seqArr = new BigInt64Array(buffer);
 const TEXT_ENCODER = new TextEncoder();
 
 // Op ring constants pre-shifted to u32 indices so writeOp doesn't shift
-// every call.
+// every call. We track ONLY the u32 index — the byte offset is derived
+// in commit() so we don't pay two stores per writeOp.
 const OP_RING_OFFSET32 = OP_RING_OFFSET >> 2;
 const OP_RING_END32 = (OP_RING_OFFSET + OP_RING_SIZE) >> 2;
+const STRING_HEAP_END = STRING_HEAP_OFFSET + STRING_HEAP_SIZE;
 
 let opSeq = 0n;        // local mirror of u64 op_seq we'll publish
-// Maintain both byte and u32 indices to skip the `>> 2` per writeOp.
-let opWritePos = OP_RING_OFFSET;
 let opWritePos32 = OP_RING_OFFSET32;
 let strWritePos = STRING_HEAP_OFFSET;
 
 function resetFrame() {
-  opWritePos = OP_RING_OFFSET;
   opWritePos32 = OP_RING_OFFSET32;
   strWritePos = STRING_HEAP_OFFSET;
 }
@@ -123,38 +122,53 @@ function writeOp(opcode, a, b, c) {
   // Pack opcode as a full u32 (high 24 bits left zero); the Kotlin reader
   // only consumes byte 0 (`buf.get(p) and 0xff`). Writing one u32 instead
   // of u8+u32 saves a memory access per op vs. the previous code, and
-  // avoids the read-modify-write bytes 1..3 used to leave undefined.
+  // avoids leaving bytes 1..3 with stale data.
   u32[w]     = opcode >>> 0;
   u32[w + 1] = a >>> 0;
   u32[w + 2] = b >>> 0;
   u32[w + 3] = c >>> 0;
   opWritePos32 = w + 4;
-  opWritePos += 16;
 }
 
 function writeString(s) {
   // Write UTF-8 of s into the string heap, return packed (offset|len) u32.
   const start = strWritePos - STRING_HEAP_OFFSET;
-  // encodeInto writes directly into the existing buffer slice — no
-  // intermediate Uint8Array of UTF-8 bytes is allocated.
-  const view = u8.subarray(strWritePos, strWritePos + 4096);
-  const { written } = TEXT_ENCODER.encodeInto(s, view);
-  strWritePos += written;
-  if (start > 0xFFFF || written > 0xFFFF) {
-    throw new Error('Skal: string ref overflow');
+  // Pass the full remaining heap as the encode target so encodeInto can
+  // fit any string up to the heap budget. Validate `read === s.length`
+  // afterwards; encodeInto silently truncates if the target is too small.
+  const slot = u8.subarray(strWritePos, STRING_HEAP_END);
+  const { read, written } = TEXT_ENCODER.encodeInto(s, slot);
+  if (read !== s.length) {
+    throw new Error(`Skal: string heap full (need ${s.length} code units, fit ${read})`);
   }
+  if (start > 0xFFFF || written > 0xFFFF) {
+    // Wire format packs (offset|length) as u16|u16. A frame can hold at
+    // most 64 KiB of strings (well above any UI-realistic usage); a
+    // single string is also capped at 64 KiB.
+    throw new Error('Skal: string ref overflow (offset or length > 64 KiB)');
+  }
+  strWritePos += written;
   return (start << 16) | written;
 }
 
 function commit() {
-  // Update header positions, then bump seq with release ordering.
-  u32[H_OP_WRITE_POS] = opWritePos - OP_RING_OFFSET;
+  // Derive byte offset from the u32 index — saves one store per writeOp.
+  u32[H_OP_WRITE_POS]  = (opWritePos32 - OP_RING_OFFSET32) << 2;
   u32[H_STR_WRITE_POS] = strWritePos - STRING_HEAP_OFFSET;
   opSeq += 1n;
+  // Atomics.store gives release semantics: every write above this point
+  // becomes visible to any thread that observes the new opSeq via an
+  // acquire load (Kotlin's plain getLong on naturally-aligned u64 is
+  // acquire-equivalent on ARM64).
   Atomics.store(seqArr, B_OP_SEQ, opSeq);
-  // Reset for next frame after commit (Compose drains synchronously
-  // before the next commit; we're effectively double-buffering by
-  // restarting at the beginning of each frame).
+  // Lossy single-buffer model: each commit overwrites the ring from the
+  // start. If Compose hasn't drained the previous commit by the time we
+  // arrive here, those ops are dropped. That's acceptable because the
+  // renderer emits incremental state changes — the next signal flip will
+  // re-emit a SET_TEXT (etc.) and Compose converges to the latest state.
+  // It would NOT be acceptable for an event-log model where each op must
+  // be observed; we'd need double-buffering or a true ring with reader
+  // ack for that.
   resetFrame();
 }
 

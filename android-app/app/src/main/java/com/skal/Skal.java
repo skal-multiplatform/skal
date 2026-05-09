@@ -40,7 +40,23 @@ public final class Skal implements AutoCloseable {
         }
     }
 
+    /** Returns a DirectByteBuffer over the shared bridge memory (no copy). */
+    public java.nio.ByteBuffer acquireBridge() {
+        if (handle == 0L) throw new IllegalStateException("Skal: runtime is closed");
+        return nativeAcquireBridge(handle);
+    }
+
+    /** Wakes the JS thread so it drains the event ring. */
+    public void wakeJs() {
+        if (handle == 0L) throw new IllegalStateException("Skal: runtime is closed");
+        nativeWakeJs(handle);
+    }
+
+    long handle() { return handle; }
+
     private static native long nativeCreateRuntime();
     private static native void nativeDisposeRuntime(long handle);
     private static native String nativeEvaluate(long handle, String source, String url);
+    private static native java.nio.ByteBuffer nativeAcquireBridge(long handle);
+    private static native void nativeWakeJs(long handle);
 }

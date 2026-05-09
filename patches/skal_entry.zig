@@ -8,17 +8,19 @@
 //!   │             │ ◄───────  ResetEvent ────── │  tickPossiblyForever│
 //!   └─────────────┘                             └─────────────────────┘
 //!
-//! The worker thread initializes a bun VirtualMachine and then runs bun's
-//! standard "tick possibly forever" loop — the same loop that powers
-//! `bun ./script.js`. JS execution, microtask draining, timers, fetch I/O
-//! completions, all happen there.
+//! Plus: an ultra-low-latency UI bridge built on a single 1 MiB shared
+//! memory region. JS sees it as a `Uint8Array` (no copy via JSC's
+//! `JSObjectMakeArrayBufferWithBytesNoCopy`); Kotlin sees it as a
+//! `DirectByteBuffer` (no copy via JNI's `NewDirectByteBuffer`). Both
+//! sides write/read through their own views of the same memory.
 //!
-//! Java's `nativeEvaluate` posts an EvalRequest to bun's `concurrent_tasks`
-//! queue via `enqueueTaskConcurrent` (same path bun uses for cross-thread
-//! work). The worker thread wakes via uws's eventfd, runs the eval, and if
-//! the result is a Promise calls `eventLoop.waitForPromise` (the same
-//! mechanism that powers top-level `await` in standalone bun). The Java
-//! thread blocks on a ResetEvent until the result is ready.
+//! Layout (see patches/SKAL_WIRE.md for the full spec):
+//!
+//!   [ Header 64B ][ Op ring 1 MiB ][ String heap 512 KiB ][ Event ring 64 KiB ]
+//!
+//! Sync is a single atomic seq counter per direction. JS bumps op_seq
+//! after writing a frame's worth of ops; Compose bumps event_seq after
+//! writing a touch event.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -26,7 +28,7 @@ const bun = @import("bun");
 const jsc = bun.jsc;
 
 // ───────────────────────────────────────────────────────────────────────
-// JNI ABI — minimal slot-indexed access to JNINativeInterface.
+// JNI ABI — slot-indexed access to JNINativeInterface.
 // ───────────────────────────────────────────────────────────────────────
 
 const jint = i32;
@@ -34,6 +36,7 @@ const jlong = i64;
 const jboolean = u8;
 const jclass = ?*anyopaque;
 const jstring = ?*anyopaque;
+const jobject = ?*anyopaque;
 const JNIEnv = ?*const ?*const anyopaque;
 const JavaVM = ?*const ?*const anyopaque;
 
@@ -43,6 +46,7 @@ const JniSlot = struct {
     pub const NewStringUTF: usize = 167;
     pub const GetStringUTFChars: usize = 169;
     pub const ReleaseStringUTFChars: usize = 170;
+    pub const NewDirectByteBuffer: usize = 229;
 };
 
 inline fn jniFn(env: JNIEnv, comptime index: usize, comptime FnType: type) FnType {
@@ -67,6 +71,61 @@ fn newStringUTF(env: JNIEnv, bytes: [*:0]const u8) jstring {
     return jniFn(env, JniSlot.NewStringUTF, F)(env, bytes);
 }
 
+fn newDirectByteBuffer(env: JNIEnv, addr: *anyopaque, capacity: jlong) jobject {
+    const F = *const fn (JNIEnv, *anyopaque, jlong) callconv(.c) jobject;
+    return jniFn(env, JniSlot.NewDirectByteBuffer, F)(env, addr, capacity);
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// JSC C API — minimal subset for registering a native global function and
+// for creating no-copy ArrayBuffers wrapping our shared region.
+// All these symbols are exported by libJavaScriptCore.a; they're stable
+// public ABI.
+// ───────────────────────────────────────────────────────────────────────
+
+const JSContextRef = *anyopaque;
+const JSObjectRef = *anyopaque;
+const JSValueRef = *anyopaque;
+const JSStringRef = *anyopaque;
+
+const JSObjectCallAsFunctionCallback = *const fn (
+    ctx: JSContextRef,
+    function: JSObjectRef,
+    thisObject: JSObjectRef,
+    argumentCount: usize,
+    arguments: [*]const JSValueRef,
+    exception: ?*?JSValueRef,
+) callconv(.c) ?JSValueRef;
+
+const JSTypedArrayBytesDeallocator = ?*const fn (bytes: ?*anyopaque, deallocator_ctx: ?*anyopaque) callconv(.c) void;
+
+extern fn JSStringCreateWithUTF8CString(string: [*:0]const u8) JSStringRef;
+extern fn JSStringRelease(string: JSStringRef) void;
+
+extern fn JSContextGetGlobalObject(ctx: JSContextRef) JSObjectRef;
+extern fn JSObjectMakeFunctionWithCallback(
+    ctx: JSContextRef,
+    name: ?JSStringRef,
+    callAsFunction: JSObjectCallAsFunctionCallback,
+) JSObjectRef;
+extern fn JSObjectSetProperty(
+    ctx: JSContextRef,
+    object: JSObjectRef,
+    propertyName: JSStringRef,
+    value: JSValueRef,
+    attributes: u32,
+    exception: ?*?JSValueRef,
+) void;
+extern fn JSObjectMakeArrayBufferWithBytesNoCopy(
+    ctx: JSContextRef,
+    bytes: ?*anyopaque,
+    byteLength: usize,
+    bytesDeallocator: JSTypedArrayBytesDeallocator,
+    deallocatorContext: ?*anyopaque,
+    exception: ?*?JSValueRef,
+) JSObjectRef;
+extern fn JSValueMakeNumber(ctx: JSContextRef, number: f64) JSValueRef;
+
 // ───────────────────────────────────────────────────────────────────────
 // Bun's REPL evaluation entry. Defined in
 // vendor/bun/src/jsc/bindings/bindings.cpp:6370.
@@ -82,25 +141,59 @@ extern fn Bun__REPL__evaluate(
 ) jsc.JSValue;
 
 // ───────────────────────────────────────────────────────────────────────
-// Skal Runtime — owns one bun VirtualMachine pinned to one worker thread.
-// JS execution must happen on that thread (JSC VMs are thread-affined).
+// Shared bridge buffer.
+//
+// One contiguous 1.5 MiB region pinned for the life of the runtime. JS
+// gets a no-copy ArrayBuffer; Kotlin gets a no-copy DirectByteBuffer.
+//
+// Both sides agree on this layout, also documented in patches/SKAL_WIRE.md.
+// ───────────────────────────────────────────────────────────────────────
+
+const BRIDGE_SIZE: usize = 1024 * 1024 * 2; // 2 MiB total
+const HEADER_SIZE: usize = 64;
+const OP_RING_OFFSET: usize = HEADER_SIZE; // bytes 64..1MB+64
+const OP_RING_SIZE: usize = 1024 * 1024;
+const STRING_HEAP_OFFSET: usize = OP_RING_OFFSET + OP_RING_SIZE;
+const STRING_HEAP_SIZE: usize = 512 * 1024;
+const EVENT_RING_OFFSET: usize = STRING_HEAP_OFFSET + STRING_HEAP_SIZE;
+const EVENT_RING_SIZE: usize = BRIDGE_SIZE - EVENT_RING_OFFSET;
+
+const Bridge = struct {
+    buffer: []align(64) u8,
+    allocator: std.mem.Allocator,
+
+    fn init(allocator: std.mem.Allocator) !*Bridge {
+        const self = try allocator.create(Bridge);
+        // Page-aligned alloc keeps the header on its own cache line.
+        const buf = try allocator.alignedAlloc(u8, .@"64", BRIDGE_SIZE);
+        @memset(buf, 0);
+        self.* = .{ .buffer = buf, .allocator = allocator };
+        return self;
+    }
+};
+
+// ───────────────────────────────────────────────────────────────────────
+// Skal Runtime — owns one bun VirtualMachine pinned to one worker thread,
+// plus the bridge buffer.
 // ───────────────────────────────────────────────────────────────────────
 
 const Runtime = struct {
     allocator: std.mem.Allocator,
     vm: *jsc.VirtualMachine = undefined,
+    bridge: *Bridge = undefined,
     worker_thread: std.Thread = undefined,
     /// Signaled when the worker thread has initialized the VM and is ready
-    /// to accept tasks. Java's nativeCreateRuntime blocks on this.
+    /// to accept tasks.
     ready: std.Thread.ResetEvent = .{},
-    /// Set if VM init failed; nativeCreateRuntime returns 0 in that case.
     init_failed: std.atomic.Value(bool) = .{ .raw = false },
 
     fn init(allocator: std.mem.Allocator) !*Runtime {
         const self = try allocator.create(Runtime);
         errdefer allocator.destroy(self);
-
-        self.* = .{ .allocator = allocator };
+        self.* = .{
+            .allocator = allocator,
+            .bridge = try Bridge.init(allocator),
+        };
         self.worker_thread = try std.Thread.spawn(.{}, workerMain, .{self});
         self.ready.wait();
         if (self.init_failed.load(.acquire)) {
@@ -112,7 +205,6 @@ const Runtime = struct {
     /// Worker thread main. Owns the VM for its lifetime. Runs bun's
     /// standard event loop until process exit.
     fn workerMain(self: *Runtime) void {
-        // One-time JSC setup. Idempotent on subsequent calls (process-global).
         bun.jsc.initialize(false);
 
         const args = std.mem.zeroes(bun.schema.api.TransformOptions);
@@ -128,22 +220,61 @@ const Runtime = struct {
         };
 
         self.vm = vm;
+
+        // Install the bridge globals before any user JS runs. Stores a
+        // pointer to *this* Runtime in a thread-local so the JSC host fn
+        // can find us back. There's only one VM per Runtime per thread.
+        active_runtime = self;
+        installBridgeGlobals(vm);
+
         self.ready.set();
 
-        // bun's standard tick-forever loop. uws's loop blocks on epoll
-        // between events; enqueueTaskConcurrent + wakeup() (called from
-        // any thread) breaks us out to process the new work.
+        // bun's standard tick-forever loop.
         while (true) {
             vm.eventLoop().tickPossiblyForever();
         }
     }
 };
 
+/// Set in workerMain before any host fn can be called. Used by
+/// `acquireBridgeBuffer_jsCallback` to find the live Runtime.
+threadlocal var active_runtime: ?*Runtime = null;
+
+/// JSC host function — called from JS as `globalThis.__skal_acquireBridge()`.
+/// Returns the bridge buffer as a no-copy `ArrayBuffer`.
+fn acquireBridgeBuffer_jsCallback(
+    ctx: JSContextRef,
+    _: JSObjectRef,
+    _: JSObjectRef,
+    _: usize,
+    _: [*]const JSValueRef,
+    _: ?*?JSValueRef,
+) callconv(.c) ?JSValueRef {
+    const rt = active_runtime orelse return null;
+    const ab = JSObjectMakeArrayBufferWithBytesNoCopy(
+        ctx,
+        rt.bridge.buffer.ptr,
+        rt.bridge.buffer.len,
+        null, // we own the deallocation; never freed for runtime lifetime
+        null,
+        null,
+    );
+    return @ptrCast(ab);
+}
+
+fn installBridgeGlobals(vm: *jsc.VirtualMachine) void {
+    const ctx: JSContextRef = @ptrCast(vm.global);
+    const global_obj = JSContextGetGlobalObject(ctx);
+
+    // __skal_acquireBridge() -> ArrayBuffer (no-copy view of bridge buffer)
+    const name = JSStringCreateWithUTF8CString("__skal_acquireBridge");
+    defer JSStringRelease(name);
+    const fn_obj = JSObjectMakeFunctionWithCallback(ctx, name, acquireBridgeBuffer_jsCallback);
+    JSObjectSetProperty(ctx, global_obj, name, @ptrCast(fn_obj), 0, null);
+}
+
 // ───────────────────────────────────────────────────────────────────────
-// EvalRequest — posted from Java thread to bun's concurrent queue.
-// The Java thread blocks on `done` until the worker thread fills the
-// result and signals. Lives on the Java thread's stack frame; the worker
-// thread holds a pointer to it for the duration of run().
+// EvalRequest — same as before, posted from Java thread to bun's queue.
 // ───────────────────────────────────────────────────────────────────────
 
 const EvalRequest = struct {
@@ -151,22 +282,13 @@ const EvalRequest = struct {
     source: []const u8,
     url: []const u8,
 
-    /// Output. `result_buf` is allocated by the worker via rt.allocator;
-    /// the Java thread frees it after copying into a jstring.
     result_buf: []u8 = "",
-    /// Set if the JS threw (in which case result_buf holds the formatted
-    /// exception message instead of the success value).
     is_error: bool = false,
-    /// Synchronization. Worker calls `done.set()` when run() finishes.
     done: std.Thread.ResetEvent = .{},
 
-    /// Task wrapper machinery — kept inline so we don't heap-allocate.
     any: bun.jsc.AnyTask = undefined,
     concurrent: bun.jsc.ConcurrentTask = undefined,
 
-    /// Post to bun's concurrent task queue. Blocks the caller until the
-    /// worker thread runs the eval and signals `done`. Safe to call from
-    /// any thread.
     fn runOnWorker(self: *EvalRequest) void {
         self.any = bun.jsc.AnyTask.New(EvalRequest, runOnVmThread).init(self);
         self.concurrent = .{ .task = self.any.task(), .next = .none };
@@ -174,7 +296,6 @@ const EvalRequest = struct {
         self.done.wait();
     }
 
-    /// Runs on the worker (VM) thread, dispatched by bun's event loop.
     fn runOnVmThread(self: *EvalRequest) bun.JSError!void {
         defer self.done.set();
 
@@ -189,7 +310,6 @@ const EvalRequest = struct {
             &exception,
         );
 
-        // If the eval threw synchronously, exception is set.
         if (exception != .js_undefined) {
             self.is_error = true;
             self.result_buf = exception.toUTF8Bytes(global, self.rt.allocator) catch
@@ -197,23 +317,42 @@ const EvalRequest = struct {
             return;
         }
 
-        // If the result is a pending Promise (top-level await, async IIFE,
-        // direct fetch().then(...) etc.), pump the event loop until it
-        // resolves. This is exactly what bun does for top-level await in
-        // standalone mode.
         var final = result;
         if (result.asAnyPromise()) |promise| {
             self.rt.vm.eventLoop().waitForPromise(promise);
             final = promise.result(global.vm());
-            // A rejection is also a "settled" promise; surface the reason
-            // as the result for now (matches bun REPL behavior).
-            if (promise.status() == .rejected) {
-                self.is_error = true;
-            }
+            if (promise.status() == .rejected) self.is_error = true;
         }
 
         self.result_buf = final.toUTF8Bytes(global, self.rt.allocator) catch
             self.rt.allocator.dupe(u8, "<toString failed>") catch return;
+    }
+};
+
+// ───────────────────────────────────────────────────────────────────────
+// EventDrainTask — scheduled by Compose's nativeWakeJs. Runs on the JS
+// thread; calls into JS land which reads the event ring and dispatches
+// to JS handlers. JS-side dispatcher is `globalThis.__skal_drainEvents`,
+// installed by the JS bridge module.
+// ───────────────────────────────────────────────────────────────────────
+
+const drain_source = "globalThis.__skal_drainEvents && globalThis.__skal_drainEvents();";
+
+const EventDrainTask = struct {
+    rt: *Runtime,
+    any: bun.jsc.AnyTask = undefined,
+    concurrent: bun.jsc.ConcurrentTask = undefined,
+
+    fn run(self: *EventDrainTask) bun.JSError!void {
+        const global = self.rt.vm.global;
+        var exception: jsc.JSValue = .js_undefined;
+        _ = Bun__REPL__evaluate(global, drain_source.ptr, drain_source.len, "skal:drain".ptr, "skal:drain".len, &exception);
+        // Microtasks queued by Solid's effect flush will be drained by
+        // bun's tick() loop after we return — we're called from inside
+        // tickWithCount, which calls drainMicrotasksWithGlobal at the end
+        // of its inner while loop. Calling it manually here re-enters and
+        // hangs the worker.
+        bun.default_allocator.destroy(self);
     }
 };
 
@@ -236,9 +375,7 @@ fn nativeCreateRuntime(_: JNIEnv, _: jclass) callconv(.c) jlong {
 
 fn nativeDisposeRuntime(_: JNIEnv, _: jclass, handle: jlong) callconv(.c) void {
     _ = handle;
-    // Intentional leak: bun's VM teardown is wired for process-exit cleanup,
-    // and the worker thread is non-cancelable while inside uws::Loop. The
-    // process dying will reclaim everything.
+    // Intentional leak; bun's VM teardown is process-exit-only.
 }
 
 fn nativeEvaluate(env: JNIEnv, _: jclass, handle: jlong, j_source: jstring, j_url: jstring) callconv(.c) jstring {
@@ -255,11 +392,33 @@ fn nativeEvaluate(env: JNIEnv, _: jclass, handle: jlong, j_source: jstring, j_ur
     var req: EvalRequest = .{ .rt = rt, .source = source, .url = url };
     req.runOnWorker();
 
-    // result_buf is owned by rt.allocator (worker thread allocated it).
     defer if (req.result_buf.len > 0) rt.allocator.free(req.result_buf);
 
     const utf8z = a.dupeZ(u8, req.result_buf) catch return null;
     return newStringUTF(env, utf8z.ptr);
+}
+
+/// Returns a DirectByteBuffer over the shared bridge memory (no copy).
+/// Called once at startup by the Kotlin side.
+fn nativeAcquireBridge(env: JNIEnv, _: jclass, handle: jlong) callconv(.c) jobject {
+    if (handle == 0) return null;
+    const rt: *Runtime = @ptrFromInt(@as(usize, @intCast(handle)));
+    return newDirectByteBuffer(env, rt.bridge.buffer.ptr, @intCast(rt.bridge.buffer.len));
+}
+
+/// Compose has written one or more events into the event ring and
+/// incremented event_seq. Wake the JS thread so it drains the ring.
+/// Called from the Compose thread.
+fn nativeWakeJs(_: JNIEnv, _: jclass, handle: jlong) callconv(.c) void {
+    if (handle == 0) return;
+    const rt: *Runtime = @ptrFromInt(@as(usize, @intCast(handle)));
+
+    // Heap-alloc a one-shot drain task. Must outlive enqueue → run.
+    const task = bun.default_allocator.create(EventDrainTask) catch return;
+    task.* = .{ .rt = rt };
+    task.any = bun.jsc.AnyTask.New(EventDrainTask, EventDrainTask.run).init(task);
+    task.concurrent = .{ .task = task.any.task(), .next = .none };
+    rt.vm.eventLoop().enqueueTaskConcurrent(&task.concurrent);
 }
 
 comptime {
@@ -267,4 +426,6 @@ comptime {
     @export(&nativeCreateRuntime, .{ .name = "Java_com_skal_Skal_nativeCreateRuntime", .linkage = .strong });
     @export(&nativeDisposeRuntime, .{ .name = "Java_com_skal_Skal_nativeDisposeRuntime", .linkage = .strong });
     @export(&nativeEvaluate, .{ .name = "Java_com_skal_Skal_nativeEvaluate", .linkage = .strong });
+    @export(&nativeAcquireBridge, .{ .name = "Java_com_skal_Skal_nativeAcquireBridge", .linkage = .strong });
+    @export(&nativeWakeJs, .{ .name = "Java_com_skal_Skal_nativeWakeJs", .linkage = .strong });
 }

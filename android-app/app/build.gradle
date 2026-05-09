@@ -1,6 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
 }
 
 android {
@@ -17,6 +18,10 @@ android {
             // Match the single ABI we built libskal.so for.
             abiFilters 'arm64-v8a'
         }
+    }
+
+    buildFeatures {
+        compose true
     }
 
     signingConfigs {
@@ -58,4 +63,11 @@ android {
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'androidx.appcompat:appcompat:1.7.0'
+
+    // Compose BOM pins all compose versions consistently.
+    implementation platform('androidx.compose:compose-bom:2024.09.03')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.activity:activity-compose:1.9.2'
 }

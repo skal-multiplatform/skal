@@ -7,15 +7,23 @@
 //   4. The counter app.
 //
 // Performance choices:
-//   • Pre-resolved Uint32Array / DataView views over the shared ArrayBuffer.
-//     No allocations in the op-write hot path.
+//   • Single pre-resolved Uint32Array view over the shared ArrayBuffer.
+//     No allocations in the op-write hot path. The opcode is packed into
+//     a full u32 (high 24 bits left zero, reader only consumes byte 0)
+//     so writeOp is exactly four u32 stores plus an index bump.
 //   • Each op is exactly 16 bytes. Strings live in a separate "string heap"
 //     and are referenced by (offset, length) packed into a u32. JS appends
 //     ops + strings independently, both reset to 0 on each commit (frames
 //     are full-replay; ring-management deferred).
+//   • TextEncoder is a module-level singleton; encodeInto writes UTF-8
+//     directly into the heap slice, no intermediate Uint8Array.
 //   • Effects emit ops directly. No diffing, no VDOM. Solid's fine-grained
 //     reactivity → 1 signal flip → 1 effect re-run → 1 op → 1 Compose state
 //     mutation → 1 leaf composable recomposes.
+//   • Effect flush uses two pre-allocated Sets ping-ponged across cycles —
+//     no `[...set]` spread, no per-flush Set construction; re-entrant
+//     setSignal calls during effect execution land in the swapped-out Set
+//     and run on the next microtask.
 //   • Commit = single Atomics.store on the seq counter. Compose reader
 //     (running on the Choreographer/withFrameNanos callback) checks once
 //     per frame.
@@ -85,35 +93,52 @@ const u32 = new Uint32Array(buffer);
 // BigInt64Array view for atomic seq counters
 const seqArr = new BigInt64Array(buffer);
 
+// Singleton encoder — `new TextEncoder()` is cheap but still an allocation.
+// One encoder is reusable across all writeString calls (TextEncoder is
+// stateless modulo the encodeInto target).
+const TEXT_ENCODER = new TextEncoder();
+
+// Op ring constants pre-shifted to u32 indices so writeOp doesn't shift
+// every call.
+const OP_RING_OFFSET32 = OP_RING_OFFSET >> 2;
+const OP_RING_END32 = (OP_RING_OFFSET + OP_RING_SIZE) >> 2;
+
 let opSeq = 0n;        // local mirror of u64 op_seq we'll publish
+// Maintain both byte and u32 indices to skip the `>> 2` per writeOp.
 let opWritePos = OP_RING_OFFSET;
+let opWritePos32 = OP_RING_OFFSET32;
 let strWritePos = STRING_HEAP_OFFSET;
 
 function resetFrame() {
   opWritePos = OP_RING_OFFSET;
+  opWritePos32 = OP_RING_OFFSET32;
   strWritePos = STRING_HEAP_OFFSET;
 }
 
 function writeOp(opcode, a, b, c) {
-  if (opWritePos + 16 > OP_RING_OFFSET + OP_RING_SIZE) {
+  const w = opWritePos32;
+  if (w + 4 > OP_RING_END32) {
     throw new Error('Skal: op ring overflow');
   }
-  u8[opWritePos] = opcode;
-  // bytes 1..3 unused; left zero from frame reset
-  // u32 fields are at offset+4, +8, +12
-  u32[(opWritePos >> 2) + 1] = a >>> 0;
-  u32[(opWritePos >> 2) + 2] = b >>> 0;
-  u32[(opWritePos >> 2) + 3] = c >>> 0;
+  // Pack opcode as a full u32 (high 24 bits left zero); the Kotlin reader
+  // only consumes byte 0 (`buf.get(p) and 0xff`). Writing one u32 instead
+  // of u8+u32 saves a memory access per op vs. the previous code, and
+  // avoids the read-modify-write bytes 1..3 used to leave undefined.
+  u32[w]     = opcode >>> 0;
+  u32[w + 1] = a >>> 0;
+  u32[w + 2] = b >>> 0;
+  u32[w + 3] = c >>> 0;
+  opWritePos32 = w + 4;
   opWritePos += 16;
 }
 
 function writeString(s) {
   // Write UTF-8 of s into the string heap, return packed (offset|len) u32.
   const start = strWritePos - STRING_HEAP_OFFSET;
-  // Use TextEncoder.encodeInto into the slice.
+  // encodeInto writes directly into the existing buffer slice — no
+  // intermediate Uint8Array of UTF-8 bytes is allocated.
   const view = u8.subarray(strWritePos, strWritePos + 4096);
-  const enc = new TextEncoder();
-  const { written } = enc.encodeInto(s, view);
+  const { written } = TEXT_ENCODER.encodeInto(s, view);
   strWritePos += written;
   if (start > 0xFFFF || written > 0xFFFF) {
     throw new Error('Skal: string ref overflow');
@@ -134,18 +159,32 @@ function commit() {
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// 2. Reactive runtime — Solid-style signals + effects, ~30 lines.
+// 2. Reactive runtime — Solid-style signals + effects, ~40 lines.
+//
+// Performance notes:
+//   • Two pre-allocated Sets ping-ponged across flushes — no `[...set]`
+//     spread, no per-flush Set construction. Effects scheduled DURING a
+//     flush land in the OTHER set and run next microtask cycle.
+//   • Signal subscribers are a Set so duplicate reads from the same effect
+//     are O(1) deduped.
+//   • setSignal short-circuits with `Object.is` semantics (NaN-safe).
 // ───────────────────────────────────────────────────────────────────────
 
 let currentEffect = null;
-const effectsToRun = new Set();
+let pendingEffects = new Set();
+let runningEffects = new Set();
 let scheduling = false;
 
 function flushEffects() {
   scheduling = false;
-  const pending = [...effectsToRun];
-  effectsToRun.clear();
-  for (const e of pending) e();
+  // Swap so re-entrant setSignal calls during effect execution land in the
+  // other (empty) Set and get scheduled for the next microtask cycle —
+  // rather than mutating the Set we're currently iterating.
+  const toRun = pendingEffects;
+  pendingEffects = runningEffects;
+  runningEffects = toRun;
+  for (const e of toRun) e();
+  toRun.clear();
   // After all effects, commit the frame.
   commit();
 }
@@ -163,13 +202,13 @@ function createSignal(initial) {
   const subs = new Set();
   return [
     () => {
-      if (currentEffect) subs.add(currentEffect);
+      if (currentEffect !== null) subs.add(currentEffect);
       return v;
     },
     (next) => {
       if (Object.is(v, next)) return;
       v = next;
-      for (const e of subs) effectsToRun.add(e);
+      for (const e of subs) pendingEffects.add(e);
       scheduleFlush();
     },
   ];
@@ -291,28 +330,34 @@ commit();
 let lastEventSeq = 0n;
 
 const EVENT_RING_BYTES = 2 * 1024 * 1024 - EVENT_RING_OFFSET;
+// Ring boundaries pre-shifted to u32 indices so the inner drain loop
+// advances u32-index, no per-iteration `>> 2`, no modulo (replaced by an
+// inline wrap check).
+const EVENT_RING_BASE32 = EVENT_RING_OFFSET >> 2;
+const EVENT_RING_END32  = (EVENT_RING_OFFSET + EVENT_RING_BYTES) >> 2;
+const EVENT_SAFETY      = (EVENT_RING_BYTES / 16) | 0;
 
 globalThis.__skal_drainEvents = function () {
   const seq = Atomics.load(seqArr, B_EVENT_SEQ);
   if (seq === lastEventSeq) return;
 
-  // Drain everything between the last position we read and the current
-  // write head. Ring wraps via modulo EVENT_RING_BYTES.
-  const writePos = u32[H_EVENT_WRITE_POS];
-  let readPos = u32[H_EVENT_READ_POS];
+  const writePos32 = EVENT_RING_BASE32 + (u32[H_EVENT_WRITE_POS] >> 2);
+  let readPos32    = EVENT_RING_BASE32 + (u32[H_EVENT_READ_POS]  >> 2);
+  const end32      = EVENT_RING_END32;
+  const base32     = EVENT_RING_BASE32;
 
-  // Cap iterations — one full wrap is the absolute max.
-  let safety = (EVENT_RING_BYTES / 16) | 0;
-  while (readPos !== writePos && safety-- > 0) {
-    const evBase = EVENT_RING_OFFSET + readPos;
-    const handlerId = u32[(evBase >> 2) + 1];
+  let safety = EVENT_SAFETY;
+  while (readPos32 !== writePos32 && safety-- > 0) {
+    // Event record: [u8 kind | 3B pad | u32 handler_id | 8B reserved]
+    const handlerId = u32[readPos32 + 1];
     const fn = handlers.get(handlerId);
     if (fn) {
       try { fn(); } catch (_) {}
     }
-    readPos = (readPos + 16) % EVENT_RING_BYTES;
+    readPos32 += 4;          // 16 bytes = 4 u32 slots
+    if (readPos32 >= end32) readPos32 = base32; // wrap
   }
-  u32[H_EVENT_READ_POS] = readPos;
+  u32[H_EVENT_READ_POS] = (readPos32 - base32) << 2;
   lastEventSeq = seq;
 };
 

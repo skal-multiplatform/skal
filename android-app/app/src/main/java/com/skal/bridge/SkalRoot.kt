@@ -1,10 +1,8 @@
 package com.skal.bridge
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -12,8 +10,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 
@@ -46,7 +44,12 @@ fun SkalRoot(bridge: SkalBridge) {
 
 @Composable
 private fun SkalNode(id: Int, bridge: SkalBridge) {
-    val node = bridge.nodes[id] ?: return
+    // SparseArray.get is a non-tracked read — that's fine, because the parent
+    // composable subscribes to its `children` list (a SnapshotStateList), so
+    // any new id inserted into a parent's children triggers the parent to
+    // recompose, which calls SkalNode(newId) where the SparseArray entry has
+    // already been populated by pumpOps before the snapshot was applied.
+    val node = bridge.nodes.get(id) ?: return
     when (node.type) {
         SkalBridge.WT_BOX -> SkalBox(node, bridge)
         SkalBridge.WT_COLUMN -> SkalColumn(node, bridge)
@@ -56,13 +59,38 @@ private fun SkalNode(id: Int, bridge: SkalBridge) {
     }
 }
 
+/**
+ * Iterate `node.children` and emit one [SkalNode] per child, keyed by child
+ * id. Two performance details:
+ *
+ *  • `key(childId)` is load-bearing. Compose memoizes by call site, so
+ *    without an explicit key, inserting/removing a child shifts every
+ *    subsequent slot and Compose tears down all later children to rebuild
+ *    them. With `key(childId)`, Compose moves slots around instead.
+ *
+ *  • Indexed access (`children[i]`) avoids the per-recompose Iterator
+ *    allocation that `forEach`/`for-each` desugars to. Reading `.size` and
+ *    each index both subscribe via Snapshot the same way, so observability
+ *    is preserved.
+ */
+@Composable
+private fun SkalChildren(node: NodeState, bridge: SkalBridge) {
+    val children = node.children
+    val n = children.size
+    var i = 0
+    while (i < n) {
+        val childId = children[i]
+        key(childId) {
+            SkalNode(childId, bridge)
+        }
+        i++
+    }
+}
+
 @Composable
 private fun SkalBox(node: NodeState, bridge: SkalBridge) {
     Box(modifier = Modifier.padding(4.dp)) {
-        // Reading node.children here subscribes us; on add/remove we recompose.
-        node.children.forEach { childId ->
-            SkalNode(childId, bridge)
-        }
+        SkalChildren(node, bridge)
     }
 }
 
@@ -74,9 +102,7 @@ private fun SkalColumn(node: NodeState, bridge: SkalBridge) {
             .fillMaxWidth()
             .padding(16.dp),
     ) {
-        node.children.forEach { childId ->
-            SkalNode(childId, bridge)
-        }
+        SkalChildren(node, bridge)
     }
 }
 
@@ -85,9 +111,7 @@ private fun SkalRow(node: NodeState, bridge: SkalBridge) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        node.children.forEach { childId ->
-            SkalNode(childId, bridge)
-        }
+        SkalChildren(node, bridge)
     }
 }
 

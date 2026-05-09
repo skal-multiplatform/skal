@@ -1,10 +1,10 @@
 package com.skal.bridge
 
+import android.util.SparseArray
+import android.util.SparseIntArray
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshots.SnapshotStateList
-import androidx.compose.runtime.snapshots.SnapshotStateMap
 import com.skal.Skal
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -23,20 +23,36 @@ class SkalBridge(private val skal: Skal) {
     private var lastOpSeq: Long = 0L
 
     /**
-     * One state per JS-created node. JS emits ops; we mutate the matching
-     * NodeState's MutableStates. Compose's recomposer observes only the
-     * specific MutableState a composable read, so a SET_TEXT only re-renders
-     * that one Text composable — no tree walking.
+     * One state per JS-created node. Keyed by JS node id (dense small ints,
+     * so SparseArray's binary search beats a HashMap on cache pressure).
+     *
+     * NOT a SnapshotStateMap: nothing recomposes purely because a node was
+     * added or removed from this container. The composable tree is driven by
+     * each parent's `children` SnapshotStateList — when a parent's children
+     * mutate, the parent recomposes and invokes SkalNode(newId), at which
+     * point the SparseArray entry for `newId` has already been populated by
+     * pumpOps (CREATE_NODE always precedes INSERT_BEFORE in the op stream).
+     *
+     * Removing the SnapshotStateMap eliminates per-`get` Snapshot read
+     * tracking — measurable savings on every op decode and every
+     * SkalNode composition.
      */
-    val nodes: SnapshotStateMap<Int, NodeState> = mutableStateMapOf()
+    val nodes: SparseArray<NodeState> = SparseArray()
+
+    /**
+     * Reusable scratch for UTF-8 string decoding in [readStringRef]. Grows
+     * on demand. Only touched on the UI thread (pumpOps is called from
+     * withFrameNanos), so no synchronization needed.
+     */
+    private var stringScratch: ByteArray = ByteArray(256)
 
     /**
      * Defensive root fallback: if the JS app forgot to create node 1, treat
      * it as an empty Column so SkalRoot at least mounts.
      */
     fun ensureRoot() {
-        if (!nodes.containsKey(ROOT_NODE_ID)) {
-            nodes[ROOT_NODE_ID] = NodeState(WT_COLUMN)
+        if (nodes.get(ROOT_NODE_ID) == null) {
+            nodes.put(ROOT_NODE_ID, NodeState(WT_COLUMN))
         }
     }
 
@@ -49,41 +65,46 @@ class SkalBridge(private val skal: Skal) {
         if (seq == lastOpSeq) return
         val writePos = buffer.getInt(H_OP_WRITE_POS_OFFSET)
 
+        // Hoist into locals so the JIT doesn't re-fetch fields each iter.
+        val buf = buffer
+        val ns = nodes
         val opEnd = OP_RING_OFFSET + writePos
         val strBase = STRING_HEAP_OFFSET
         var p = OP_RING_OFFSET
         while (p < opEnd) {
-            val opcode = buffer.get(p).toInt() and 0xff
-            val a = buffer.getInt(p + 4)
-            val b = buffer.getInt(p + 8)
-            val c = buffer.getInt(p + 12)
+            // Reader only consumes byte 0 of the opcode field; the writer
+            // packs the high 24 bits as zero.
+            val opcode = buf.get(p).toInt() and 0xff
+            val a = buf.getInt(p + 4)
+            val b = buf.getInt(p + 8)
+            val c = buf.getInt(p + 12)
             when (opcode) {
-                OP_CREATE_NODE -> {
-                    val widgetType = b
-                    nodes[a] = NodeState(widgetType)
-                }
-                OP_REMOVE_NODE -> nodes.remove(a)
+                OP_CREATE_NODE -> ns.put(a, NodeState(b))
+                OP_REMOVE_NODE -> ns.remove(a)
                 OP_INSERT_BEFORE -> {
-                    val parent = nodes[a]
+                    val parent = ns.get(a)
                     if (parent != null) {
+                        val children = parent.children
                         val anchor = c
-                        if (anchor == 0) parent.children.add(b)
-                        else {
-                            val idx = parent.children.indexOf(anchor)
-                            if (idx >= 0) parent.children.add(idx, b)
-                            else parent.children.add(b)
+                        if (anchor == 0) {
+                            children.add(b)
+                        } else {
+                            val idx = children.indexOf(anchor)
+                            if (idx >= 0) children.add(idx, b) else children.add(b)
                         }
-                        nodes[b]?.parent?.value = a
+                        ns.get(b)?.parent?.value = a
                     }
                 }
-                OP_SET_PROP_U32 -> nodes[a]?.props?.put(b, c)
-                OP_SET_PROP_F32 -> nodes[a]?.propsF?.put(b, java.lang.Float.intBitsToFloat(c))
-                OP_SET_TEXT -> nodes[a]?.text?.value = readStringRef(buffer, strBase, c)
+                OP_SET_PROP_U32 -> ns.get(a)?.props?.put(b, c)
+                OP_SET_PROP_F32 -> ns.get(a)?.propsF?.put(b, java.lang.Float.intBitsToFloat(c))
+                OP_SET_TEXT -> ns.get(a)?.text?.value = readStringRef(buf, strBase, c)
                 OP_BIND_HANDLER -> {
-                    val node = nodes[a] ?: continue.also {}
-                    when (b) {
-                        EV_CLICK -> node.onClickHandlerId.value = c
-                        EV_CHANGE -> node.onChangeHandlerId.value = c
+                    val node = ns.get(a)
+                    if (node != null) {
+                        when (b) {
+                            EV_CLICK -> node.onClickHandlerId.value = c
+                            EV_CHANGE -> node.onChangeHandlerId.value = c
+                        }
                     }
                 }
             }
@@ -113,13 +134,22 @@ class SkalBridge(private val skal: Skal) {
         val offset = (packed ushr 16) and 0xFFFF
         val length = packed and 0xFFFF
         if (length == 0) return ""
-        val bytes = ByteArray(length)
-        // Slice into a temp ByteArray; encoding is UTF-8 from JS TextEncoder.
-        val savedPos = buf.position()
+        // Reuse the per-bridge scratch — pumpOps is the only consumer and runs
+        // exclusively on the UI thread (withFrameNanos), so no synchronization.
+        var scratch = stringScratch
+        if (scratch.size < length) {
+            scratch = ByteArray(maxOf(length, scratch.size * 2))
+            stringScratch = scratch
+        }
+        // Bulk relative read is the fastest path for DirectByteBuffer (no
+        // backing array). No save/restore of position: nothing else in
+        // pumpOps reads relatively, and the next pumpOps call will set its
+        // own absolute reads.
         buf.position(base + offset)
-        buf.get(bytes)
-        buf.position(savedPos)
-        return String(bytes, Charsets.UTF_8)
+        buf.get(scratch, 0, length)
+        // String constructor copies into its own char[]; scratch is free for
+        // immediate reuse on the next op.
+        return String(scratch, 0, length, Charsets.UTF_8)
     }
 
     private fun readSeq(buf: ByteBuffer, offset: Int): Long {
@@ -173,10 +203,19 @@ class SkalBridge(private val skal: Skal) {
 }
 
 /**
- * Per-node observable state. Each MutableState here is a Compose Snapshot
- * state, so reading it inside a composable subscribes that composable for
- * recomposition when the value changes — and only when *that* state changes,
- * not the whole tree.
+ * Per-node state.
+ *
+ * The fields actually read by composables ([text], [children],
+ * [onClickHandlerId], [onChangeHandlerId]) are Compose snapshot states, so
+ * reading them inside a composable subscribes that composable to *that
+ * specific* MutableState — a SET_TEXT op recomposes only the matching Text
+ * leaf.
+ *
+ * [props] / [propsF] are write-only from Compose's perspective today: they
+ * exist for the wire format but no composable reads them. They're stored in
+ * non-reactive containers ([SparseIntArray] / [HashMap]) so OP_SET_PROP_*
+ * writes don't pay Snapshot bookkeeping. If a future composable starts
+ * reading them, switch back to a reactive container at that point.
  */
 class NodeState(val type: Int) {
     val parent = mutableStateOf(0)
@@ -184,6 +223,6 @@ class NodeState(val type: Int) {
     val children: SnapshotStateList<Int> = mutableStateListOf()
     val onClickHandlerId = mutableStateOf(0)
     val onChangeHandlerId = mutableStateOf(0)
-    val props: SnapshotStateMap<Int, Int> = mutableStateMapOf()
-    val propsF: SnapshotStateMap<Int, Float> = mutableStateMapOf()
+    val props: SparseIntArray = SparseIntArray()
+    val propsF: HashMap<Int, Float> = HashMap()
 }

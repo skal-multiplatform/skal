@@ -1,0 +1,27 @@
+diff --git a/scripts/build/tools.ts b/scripts/build/tools.ts
+index 12f2f05..028586a 100644
+--- a/scripts/build/tools.ts
++++ b/scripts/build/tools.ts
+@@ -415,14 +415,20 @@ export function resolveLlvmToolchain(
+   }
+ 
+   // ld: ld.lld on Linux (passed as --ld-path=), lld-link on Windows.
+-  // On Darwin clang drives the system linker directly.
++  // On Darwin clang drives the system linker directly for darwin targets,
++  // but cross-compiles (e.g. darwin → android) still pass --ld-path=, so
++  // we must find ld.lld on darwin too. findLlvmTool gracefully fails if
++  // not installed; the default install via `brew install lld@21`.
+   let ld: string;
+   if (os === "windows") {
+     ld = findLlvmTool("lld-link", paths, os, { checkVersion: false, required: true })?.path ?? "";
+   } else if (os === "linux") {
+     ld = findLlvmTool("ld.lld", paths, os, { checkVersion: true, required: true })?.path ?? "";
+   } else {
+-    ld = ""; // darwin: unused
++    // darwin host: only required when cross-compiling to a target that
++    // needs lld. Best-effort lookup; the flags.ts gate is `when: c.linux`,
++    // so a darwin-only build keeps `c.ld = ""` and never emits the flag.
++    ld = findLlvmTool("ld.lld", paths, os, { checkVersion: false, required: false })?.path ?? "";
+   }
+ 
+   // strip: GNU strip on Linux (more features), llvm-strip elsewhere

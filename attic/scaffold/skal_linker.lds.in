@@ -1,0 +1,17 @@
+/* Skal linker version script.
+ *
+ * Reuses the structure of bun's vendor/bun/src/linker.lds (which the bun-zig
+ * objects are built against) and additionally exports the JNI symbols Skal
+ * needs visible from Java.
+ *
+ * The build script appends this to a copy of bun's linker.lds, so the result
+ * is bun's full BUN_1.2 version with our JNI symbols inserted into `global`.
+ */
+
+SKAL_1.0 {
+    global:
+        JNI_OnLoad;
+        Java_com_skal_Skal_*;
+    local:
+        *;
+};

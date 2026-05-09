@@ -1,0 +1,37 @@
+# Vendored sources are huge git clones — re-created by scripts/setup.sh
+# from the pinned commits in patches/{bun,webkit}-base-commit.txt.
+vendor/
+
+# Build artifacts. All outputs of scripts/build-*.sh and scripts/link-skal-so.sh.
+build/
+zig-out/
+.zig-cache/
+
+# Editor / OS / agent noise
+.DS_Store
+.idea/
+.vscode/
+.claude/
+
+# Node deps (only in vendor/bun anyway, but defensive)
+node_modules/
+
+# Build leftovers (defensive — most live under build/ already)
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.aar
+*.apk
+*.aab
+
+# Rust target dirs (defensive — bun's lolhtml lands in build/)
+target/
+
+# Local Android SDK/NDK config someone might drop here
+android/local.properties
+android/.gradle/
+android/build/
+android/jniLibs/

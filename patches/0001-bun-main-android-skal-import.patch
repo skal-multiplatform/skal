@@ -1,0 +1,20 @@
+diff --git a/src/main.zig b/src/main.zig
+index 6698634..f48ca20 100644
+--- a/src/main.zig
++++ b/src/main.zig
+@@ -13,6 +13,15 @@ comptime {
+     _bun.assert(builtin.target.cpu.arch.endian() == .little);
+ }
+ 
++// Skal: pull in the JNI bridge so its @export'd symbols land in the bun-zig
++// build outputs. On non-Android targets it's a no-op (bun's main() drives
++// the program normally).
++comptime {
++    if (builtin.target.abi.isAndroid()) {
++        _ = @import("./skal_entry.zig");
++    }
++}
++
+ extern fn bun_warn_avx_missing(url: [*:0]const u8) void;
+ 
+ pub extern "c" var _environ: ?*anyopaque;

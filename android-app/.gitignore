@@ -1,0 +1,17 @@
+# Gradle
+.gradle/
+build/
+local.properties
+
+# Generated APKs / native libs (built by scripts/build-app.sh)
+**/jniLibs/*/libskal.so
+**/jniLibs/*/libc++_shared.so
+*.apk
+*.aab
+
+# Editor
+.idea/
+*.iml
+
+# Mac
+.DS_Store

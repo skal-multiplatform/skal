@@ -36,12 +36,12 @@ fi
 # and dynamic-list flags, which we're not using.
 INPUTS_FILE="${SKAL_BUILD}/skal-link-inputs.rsp"
 
-# Combined version script: bun's linker.lds (which the bun-zig objects'
-# implicit symbol versions reference) PLUS our SKAL_1.0 entries that
-# expose JNI symbols. Without bun's portion, lld errors with "undefined
-# version" on every Zig generic instantiation.
-COMBINED_LDS="${SKAL_BUILD}/skal-linker.lds"
-cat "${BUN_DIR}/src/linker.lds" "${SKAL_ROOT}/src/skal_linker.lds.in" > "${COMBINED_LDS}"
+# Note on symbol-version handling: we used to combine bun's linker.lds with
+# a SKAL_1.0 script. Switching to -pie + --no-dynamic-linker (below) made
+# the version-script unnecessary — JSC bun-zig generic mangling embeds `@`
+# chars that lld misparses as `symbol@version` only under -shared, and
+# -pie bypasses that path. We rely on --export-dynamic-symbol to pin JNI
+# exports.
 
 # Ninja stmt format:
 #   build bun-profile: link a.o b.o $\n    c.o d.o $\n    e.o\n  ldflags = ...\n

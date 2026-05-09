@@ -1,0 +1,61 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.skal.bench'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.skal.bench"
+        minSdk 28
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+        ndk {
+            // Match the single ABI we built libskal.so for.
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    signingConfigs {
+        // Self-signed throwaway keystore for the release build (created
+        // by build-apk.sh on first run).
+        release {
+            storeFile file("../skal-bench-release.keystore")
+            storePassword 'skalbench'
+            keyAlias 'skal'
+            keyPassword 'skalbench'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false   // we're the only thing in this APK; nothing to shrink usefully
+            shrinkResources false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    // Don't ask Android Studio's NDK packager to do anything; jniLibs/* is
+    // packaged as-is.
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+}

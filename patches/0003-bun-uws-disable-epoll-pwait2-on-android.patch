@@ -1,0 +1,19 @@
+diff --git a/packages/bun-usockets/src/eventing/epoll_kqueue.c b/packages/bun-usockets/src/eventing/epoll_kqueue.c
+index 15e153c..86a5204 100644
+--- a/packages/bun-usockets/src/eventing/epoll_kqueue.c
++++ b/packages/bun-usockets/src/eventing/epoll_kqueue.c
+@@ -119,7 +119,14 @@ struct us_loop_t *us_timer_loop(struct us_timer_t *t) {
+ #include <signal.h>
+ #include <errno.h>
+ 
++// Android's seccomp filter for app processes blocks epoll_pwait2 (syscall 441)
++// with SIGSYS, which kills the process before the ENOSYS/EPERM fallback below
++// can run. Disable the syscall entirely on Android.
++#ifdef __ANDROID__
++static int has_epoll_pwait2 = 0;
++#else
+ static int has_epoll_pwait2 = -1;
++#endif
+ 
+ #ifndef SYS_epoll_pwait2
+ // It's consistent on multiple architectures

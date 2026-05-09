@@ -49,6 +49,13 @@ for p in "${PATCHES}"/0*-bun-*.patch; do
   apply_patch "${p}"
 done
 
+# Order of patches:
+#   0001  src/main.zig          android-only comptime import of skal_entry.zig
+#   0002  scripts/build/tools.ts find ld.lld on darwin (cross-compile bug)
+#   0003  packages/bun-usockets/src/eventing/epoll_kqueue.c
+#                                disable epoll_pwait2 on Android
+#                                (seccomp blocks syscall 441 with SIGSYS)
+
 # ── Copy skal_entry.zig into bun's source tree ─────────────────────────
 SKAL_ENTRY_DST="${VENDOR}/bun/src/skal_entry.zig"
 if [[ ! -f "${SKAL_ENTRY_DST}" ]] || ! cmp -s "${PATCHES}/skal_entry.zig" "${SKAL_ENTRY_DST}"; then

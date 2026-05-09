@@ -1,13 +1,24 @@
-//! Skal JNI bridge — exports JNI symbols that wire Java to bun's actual
-//! VirtualMachine + JSGlobalObject + JSValue. This file is compiled as part
-//! of bun's normal Zig build (via comptime import in main.zig); the
-//! resulting symbols land in one of the bun-zig.*.o objects.
+//! Skal JNI bridge — exposes bun's runtime to Android Java/Kotlin via JNI.
 //!
-//! Symbols (as resolved by Java's System.loadLibrary):
-//!   JNI_OnLoad
-//!   Java_com_skal_Skal_nativeCreateRuntime() -> jlong
-//!   Java_com_skal_Skal_nativeDisposeRuntime(jlong)
-//!   Java_com_skal_Skal_nativeEvaluate(jlong, jstring, jstring) -> jstring
+//! Architecture (mirrors standalone bun):
+//!
+//!   ┌─────────────┐    enqueueTaskConcurrent    ┌─────────────────────┐
+//!   │ Java thread │ ─────────────────────────► │  Skal worker thread │
+//!   │   (UI/bg)   │                             │  owns VM, runs      │
+//!   │             │ ◄───────  ResetEvent ────── │  tickPossiblyForever│
+//!   └─────────────┘                             └─────────────────────┘
+//!
+//! The worker thread initializes a bun VirtualMachine and then runs bun's
+//! standard "tick possibly forever" loop — the same loop that powers
+//! `bun ./script.js`. JS execution, microtask draining, timers, fetch I/O
+//! completions, all happen there.
+//!
+//! Java's `nativeEvaluate` posts an EvalRequest to bun's `concurrent_tasks`
+//! queue via `enqueueTaskConcurrent` (same path bun uses for cross-thread
+//! work). The worker thread wakes via uws's eventfd, runs the eval, and if
+//! the result is a Promise calls `eventLoop.waitForPromise` (the same
+//! mechanism that powers top-level `await` in standalone bun). The Java
+//! thread blocks on a ResetEvent until the result is ready.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -58,9 +69,7 @@ fn newStringUTF(env: JNIEnv, bytes: [*:0]const u8) jstring {
 
 // ───────────────────────────────────────────────────────────────────────
 // Bun's REPL evaluation entry. Defined in
-// vendor/bun/src/jsc/bindings/bindings.cpp:6370. Returns the result
-// JSValue, or undefined when an exception was thrown (the exception is
-// stored in *exception_out).
+// vendor/bun/src/jsc/bindings/bindings.cpp:6370.
 // ───────────────────────────────────────────────────────────────────────
 
 extern fn Bun__REPL__evaluate(
@@ -73,60 +82,138 @@ extern fn Bun__REPL__evaluate(
 ) jsc.JSValue;
 
 // ───────────────────────────────────────────────────────────────────────
-// Skal Runtime — owns one bun VirtualMachine.
+// Skal Runtime — owns one bun VirtualMachine pinned to one worker thread.
+// JS execution must happen on that thread (JSC VMs are thread-affined).
 // ───────────────────────────────────────────────────────────────────────
 
 const Runtime = struct {
     allocator: std.mem.Allocator,
-    vm: *jsc.VirtualMachine,
+    vm: *jsc.VirtualMachine = undefined,
+    worker_thread: std.Thread = undefined,
+    /// Signaled when the worker thread has initialized the VM and is ready
+    /// to accept tasks. Java's nativeCreateRuntime blocks on this.
+    ready: std.Thread.ResetEvent = .{},
+    /// Set if VM init failed; nativeCreateRuntime returns 0 in that case.
+    init_failed: std.atomic.Value(bool) = .{ .raw = false },
 
     fn init(allocator: std.mem.Allocator) !*Runtime {
-        // One-time JSC setup. Idempotent on subsequent calls.
+        const self = try allocator.create(Runtime);
+        errdefer allocator.destroy(self);
+
+        self.* = .{ .allocator = allocator };
+        self.worker_thread = try std.Thread.spawn(.{}, workerMain, .{self});
+        self.ready.wait();
+        if (self.init_failed.load(.acquire)) {
+            return error.RuntimeInitFailed;
+        }
+        return self;
+    }
+
+    /// Worker thread main. Owns the VM for its lifetime. Runs bun's
+    /// standard event loop until process exit.
+    fn workerMain(self: *Runtime) void {
+        // One-time JSC setup. Idempotent on subsequent calls (process-global).
         bun.jsc.initialize(false);
 
-        // TransformOptions has many required fields; zero-init mirrors what
-        // bun's JSTranspiler does for `default_transform_options`.
-        const args: bun.schema.api.TransformOptions = std.mem.zeroes(bun.schema.api.TransformOptions);
-        const vm = try jsc.VirtualMachine.init(.{
-            .allocator = allocator,
+        const args = std.mem.zeroes(bun.schema.api.TransformOptions);
+        const vm = jsc.VirtualMachine.init(.{
+            .allocator = self.allocator,
             .args = args,
             .smol = true,
             .is_main_thread = true,
-        });
+        }) catch {
+            self.init_failed.store(true, .release);
+            self.ready.set();
+            return;
+        };
 
-        const rt = try allocator.create(Runtime);
-        rt.* = .{ .allocator = allocator, .vm = vm };
-        return rt;
+        self.vm = vm;
+        self.ready.set();
+
+        // bun's standard tick-forever loop. uws's loop blocks on epoll
+        // between events; enqueueTaskConcurrent + wakeup() (called from
+        // any thread) breaks us out to process the new work.
+        while (true) {
+            vm.eventLoop().tickPossiblyForever();
+        }
+    }
+};
+
+// ───────────────────────────────────────────────────────────────────────
+// EvalRequest — posted from Java thread to bun's concurrent queue.
+// The Java thread blocks on `done` until the worker thread fills the
+// result and signals. Lives on the Java thread's stack frame; the worker
+// thread holds a pointer to it for the duration of run().
+// ───────────────────────────────────────────────────────────────────────
+
+const EvalRequest = struct {
+    rt: *Runtime,
+    source: []const u8,
+    url: []const u8,
+
+    /// Output. `result_buf` is allocated by the worker via rt.allocator;
+    /// the Java thread frees it after copying into a jstring.
+    result_buf: []u8 = "",
+    /// Set if the JS threw (in which case result_buf holds the formatted
+    /// exception message instead of the success value).
+    is_error: bool = false,
+    /// Synchronization. Worker calls `done.set()` when run() finishes.
+    done: std.Thread.ResetEvent = .{},
+
+    /// Task wrapper machinery — kept inline so we don't heap-allocate.
+    any: bun.jsc.AnyTask = undefined,
+    concurrent: bun.jsc.ConcurrentTask = undefined,
+
+    /// Post to bun's concurrent task queue. Blocks the caller until the
+    /// worker thread runs the eval and signals `done`. Safe to call from
+    /// any thread.
+    fn runOnWorker(self: *EvalRequest) void {
+        self.any = bun.jsc.AnyTask.New(EvalRequest, runOnVmThread).init(self);
+        self.concurrent = .{ .task = self.any.task(), .next = .none };
+        self.rt.vm.eventLoop().enqueueTaskConcurrent(&self.concurrent);
+        self.done.wait();
     }
 
-    fn deinit(self: *Runtime) void {
-        // bun's VM tear-down is non-trivial and hardcoded for process
-        // shutdown; for an embedded Java consumer it's safer to leak the
-        // VM until the process exits. Just free the holder.
-        self.allocator.destroy(self);
-    }
+    /// Runs on the worker (VM) thread, dispatched by bun's event loop.
+    fn runOnVmThread(self: *EvalRequest) bun.JSError!void {
+        defer self.done.set();
 
-    fn evaluate(self: *Runtime, source: []const u8, filename: []const u8) ![]u8 {
-        const global = self.vm.global;
+        const global = self.rt.vm.global;
         var exception: jsc.JSValue = .js_undefined;
         const result = Bun__REPL__evaluate(
             global,
-            source.ptr,
-            source.len,
-            filename.ptr,
-            filename.len,
+            self.source.ptr,
+            self.source.len,
+            self.url.ptr,
+            self.url.len,
             &exception,
         );
 
+        // If the eval threw synchronously, exception is set.
         if (exception != .js_undefined) {
-            const exc_str = exception.toUTF8Bytes(global, self.allocator) catch
-                return self.allocator.dupe(u8, "<exception (toString failed)>");
-            defer self.allocator.free(exc_str);
-            return std.fmt.allocPrint(self.allocator, "Error: {s}", .{exc_str});
+            self.is_error = true;
+            self.result_buf = exception.toUTF8Bytes(global, self.rt.allocator) catch
+                self.rt.allocator.dupe(u8, "<exception (toString failed)>") catch return;
+            return;
         }
 
-        return result.toUTF8Bytes(global, self.allocator) catch
-            self.allocator.dupe(u8, "<toString failed>");
+        // If the result is a pending Promise (top-level await, async IIFE,
+        // direct fetch().then(...) etc.), pump the event loop until it
+        // resolves. This is exactly what bun does for top-level await in
+        // standalone mode.
+        var final = result;
+        if (result.asAnyPromise()) |promise| {
+            self.rt.vm.eventLoop().waitForPromise(promise);
+            final = promise.result(global.vm());
+            // A rejection is also a "settled" promise; surface the reason
+            // as the result for now (matches bun REPL behavior).
+            if (promise.status() == .rejected) {
+                self.is_error = true;
+            }
+        }
+
+        self.result_buf = final.toUTF8Bytes(global, self.rt.allocator) catch
+            self.rt.allocator.dupe(u8, "<toString failed>") catch return;
     }
 };
 
@@ -148,9 +235,10 @@ fn nativeCreateRuntime(_: JNIEnv, _: jclass) callconv(.c) jlong {
 }
 
 fn nativeDisposeRuntime(_: JNIEnv, _: jclass, handle: jlong) callconv(.c) void {
-    if (handle == 0) return;
-    const rt: *Runtime = @ptrFromInt(@as(usize, @intCast(handle)));
-    rt.deinit();
+    _ = handle;
+    // Intentional leak: bun's VM teardown is wired for process-exit cleanup,
+    // and the worker thread is non-cancelable while inside uws::Loop. The
+    // process dying will reclaim everything.
 }
 
 fn nativeEvaluate(env: JNIEnv, _: jclass, handle: jlong, j_source: jstring, j_url: jstring) callconv(.c) jstring {
@@ -164,14 +252,13 @@ fn nativeEvaluate(env: JNIEnv, _: jclass, handle: jlong, j_source: jstring, j_ur
     const source = (getStringUTFOwned(env, a, j_source) catch return null) orelse return null;
     const url = (getStringUTFOwned(env, a, j_url) catch null) orelse "skal:eval";
 
-    const utf8 = rt.evaluate(source, url) catch |e| {
-        var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrintZ(&buf, "skal: evaluate failed: {s}", .{@errorName(e)}) catch return null;
-        return newStringUTF(env, msg.ptr);
-    };
-    defer rt.allocator.free(utf8);
+    var req: EvalRequest = .{ .rt = rt, .source = source, .url = url };
+    req.runOnWorker();
 
-    const utf8z = a.dupeZ(u8, utf8) catch return null;
+    // result_buf is owned by rt.allocator (worker thread allocated it).
+    defer if (req.result_buf.len > 0) rt.allocator.free(req.result_buf);
+
+    const utf8z = a.dupeZ(u8, req.result_buf) catch return null;
     return newStringUTF(env, utf8z.ptr);
 }
 

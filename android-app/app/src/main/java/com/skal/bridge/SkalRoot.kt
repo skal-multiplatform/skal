@@ -4,8 +4,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -53,6 +57,7 @@ private fun SkalNode(id: Int, bridge: SkalBridge) {
     when (node.type) {
         SkalBridge.WT_BOX -> SkalBox(node, bridge)
         SkalBridge.WT_COLUMN -> SkalColumn(node, bridge)
+        SkalBridge.WT_SCROLL_COLUMN -> SkalScrollColumn(node, bridge)
         SkalBridge.WT_ROW -> SkalRow(node, bridge)
         SkalBridge.WT_TEXT -> SkalText(node)
         SkalBridge.WT_BUTTON -> SkalButton(node, bridge)
@@ -106,10 +111,37 @@ private fun SkalColumn(node: NodeState, bridge: SkalBridge) {
     }
 }
 
+/**
+ * A vertically scrollable Column. Use for the root container when content
+ * may exceed the viewport (e.g. long lists). Wraps a regular Column in
+ * [verticalScroll] with a remembered ScrollState so position survives
+ * recompositions.
+ *
+ * Important: don't nest a SkalScrollColumn inside another scrollable layout
+ * — Compose throws on nested verticalScroll. For now we use this only at
+ * the root.
+ */
+@Composable
+private fun SkalScrollColumn(node: NodeState, bridge: SkalBridge) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+    ) {
+        SkalChildren(node, bridge)
+    }
+}
+
 @Composable
 private fun SkalRow(node: NodeState, bridge: SkalBridge) {
+    // Horizontally scrollable so a wide row of buttons doesn't get clipped.
+    // Scroll axis is orthogonal to the parent SkalScrollColumn's vertical
+    // scroll, so Compose handles the nesting cleanly.
     Row(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
     ) {
         SkalChildren(node, bridge)
     }

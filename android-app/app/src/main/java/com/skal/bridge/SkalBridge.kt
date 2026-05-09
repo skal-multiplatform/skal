@@ -47,6 +47,41 @@ class SkalBridge(private val skal: Skal) {
     private var stringScratch: ByteArray = ByteArray(256)
 
     /**
+     * Exponential moving average of the time spent draining ops, in
+     * nanoseconds. Updated only on frames where pumpOps actually drained
+     * (not the early-return idle case), so this measures "drain cost when
+     * there's work to do" rather than "average cost across all frames" —
+     * which is what's interesting for tuning.
+     *
+     * Read by [com.skal.bench.PerfHud]; not Compose state because the HUD
+     * already has a withFrameNanos coroutine that polls it once per frame.
+     */
+    @Volatile
+    var pumpAvgNs: Long = 0L
+        private set
+
+    /**
+     * Worst single drain time across the last [PUMP_PEAK_WINDOW] drains, in
+     * nanoseconds. The EMA above smooths spikes into invisibility — useful
+     * for steady-state, but it hides hitches. This is the complement: a
+     * spike of e.g. 5 ms appears immediately and persists until 60 newer
+     * drains push it out of the ring.
+     */
+    @Volatile
+    var pumpPeakNs: Long = 0L
+        private set
+
+    /**
+     * Sliding window of recent drain times. Each drain writes to the next
+     * slot; we recompute the max across the live entries on every drain.
+     * 60 entries × O(1) write + O(60) max scan = ~600 ns per drain — well
+     * under the cost of the drain itself.
+     */
+    private val pumpWindow = LongArray(PUMP_PEAK_WINDOW)
+    private var pumpWindowIdx = 0
+    private var pumpWindowFill = 0
+
+    /**
      * Defensive root fallback: if the JS app forgot to create node 1, treat
      * it as an empty Column so SkalRoot at least mounts.
      */
@@ -63,6 +98,12 @@ class SkalBridge(private val skal: Skal) {
     fun pumpOps() {
         val seq = readSeq(buffer, H_OP_SEQ_OFFSET)
         if (seq == lastOpSeq) return
+
+        // Time only the actually-draining frames. The seq-equal early return
+        // above is a single 64-bit load + compare; tracking that case in the
+        // EMA would just dilute the meaningful "drain cost" signal.
+        val tStart = System.nanoTime()
+
         val writePos = buffer.getInt(H_OP_WRITE_POS_OFFSET)
 
         // Hoist into locals so the JIT doesn't re-fetch fields each iter.
@@ -80,7 +121,7 @@ class SkalBridge(private val skal: Skal) {
             val c = buf.getInt(p + 12)
             when (opcode) {
                 OP_CREATE_NODE -> ns.put(a, NodeState(b))
-                OP_REMOVE_NODE -> ns.remove(a)
+                OP_REMOVE_NODE -> removeSubtree(a, ns)
                 OP_INSERT_BEFORE -> {
                     val parent = ns.get(a)
                     if (parent != null) {
@@ -97,7 +138,7 @@ class SkalBridge(private val skal: Skal) {
                 }
                 OP_SET_PROP_U32 -> ns.get(a)?.props?.put(b, c)
                 OP_SET_PROP_F32 -> ns.get(a)?.propsF?.put(b, java.lang.Float.intBitsToFloat(c))
-                OP_SET_TEXT -> ns.get(a)?.text?.value = readStringRef(buf, strBase, c)
+                OP_SET_TEXT -> ns.get(a)?.text?.value = readString(buf, strBase, b, c)
                 OP_BIND_HANDLER -> {
                     val node = ns.get(a)
                     if (node != null) {
@@ -111,6 +152,31 @@ class SkalBridge(private val skal: Skal) {
             p += 16
         }
         lastOpSeq = seq
+
+        val dt = System.nanoTime() - tStart
+
+        // EMA with α=1/8 — smooths jitter while staying responsive enough
+        // that a sudden +1000-batch frame visibly bumps the displayed value.
+        // Single-write to a @Volatile Long is atomic on ARM64.
+        val prev = pumpAvgNs
+        pumpAvgNs = if (prev == 0L) dt else (prev * 7 + dt) / 8
+
+        // Peak: write to the next ring slot, then recompute max across the
+        // live entries. Spikes appear in the displayed peak immediately and
+        // age out after PUMP_PEAK_WINDOW newer drains.
+        val win = pumpWindow
+        win[pumpWindowIdx] = dt
+        pumpWindowIdx = (pumpWindowIdx + 1) % win.size
+        if (pumpWindowFill < win.size) pumpWindowFill++
+        var max = 0L
+        var i = 0
+        val n = pumpWindowFill
+        while (i < n) {
+            val v = win[i]
+            if (v > max) max = v
+            i++
+        }
+        pumpPeakNs = max
     }
 
     /**
@@ -130,9 +196,13 @@ class SkalBridge(private val skal: Skal) {
         skal.wakeJs()
     }
 
-    private fun readStringRef(buf: ByteBuffer, base: Int, packed: Int): String {
-        val offset = (packed ushr 16) and 0xFFFF
-        val length = packed and 0xFFFF
+    /**
+     * Read a UTF-8 string from the string heap at [offset], length [length].
+     * Wire format: SET_TEXT op carries `b = offset` and `c = length` directly
+     * — no u16|u16 packing, so a single frame can address the full string
+     * heap (used to be capped at 64 KiB per frame).
+     */
+    private fun readString(buf: ByteBuffer, base: Int, offset: Int, length: Int): String {
         if (length == 0) return ""
         // Reuse the per-bridge scratch — pumpOps is the only consumer and runs
         // exclusively on the UI thread (withFrameNanos), so no synchronization.
@@ -152,6 +222,56 @@ class SkalBridge(private val skal: Skal) {
         return String(scratch, 0, length, Charsets.UTF_8)
     }
 
+    /**
+     * Recursively remove a node and all its descendants. Detaches the node
+     * from its parent's children list, then walks the subtree depth-first,
+     * removing each entry from the [nodes] map.
+     *
+     * This is the correct semantics for OP_REMOVE_NODE: just deleting the
+     * map entry would leak (a) the descendants' map entries and (b) the
+     * dead id sitting in the parent's children list.
+     *
+     * Recursive depth equals tree depth, which for our UI is typically
+     * < 5; deep enough trees would warrant an iterative stack-based walk.
+     */
+    private fun removeSubtree(id: Int, ns: SparseArray<NodeState>) {
+        val node = ns.get(id) ?: return
+        // Detach from parent (if attached). Use lastIndexOf because JS
+        // shrink-loops walk in reverse, so the id we're looking for is at
+        // the tail of the parent's children list — lastIndexOf finds it in
+        // one step, and removeAt(last) is O(1) on PersistentList. Together
+        // that turns N reverse-order removals from O(N²) into O(N).
+        val parentId = node.parent.value
+        if (parentId != 0) {
+            val parent = ns.get(parentId)
+            if (parent != null) {
+                val idx = parent.children.lastIndexOf(id)
+                if (idx >= 0) parent.children.removeAt(idx)
+            }
+        }
+        // Walk descendants first (post-order: children gone before parent).
+        // Snapshot to avoid mutation-during-iteration: removeSubtree on a
+        // child also tries to remove that child from THIS node's children
+        // list, which would shift indices.
+        val descendants = node.children.toIntArray()
+        node.children.clear()
+        for (childId in descendants) {
+            removeSubtreeNoDetach(childId, ns)
+        }
+        ns.remove(id)
+    }
+
+    /** Inner recursion: parent is being removed too, so skip the detach step. */
+    private fun removeSubtreeNoDetach(id: Int, ns: SparseArray<NodeState>) {
+        val node = ns.get(id) ?: return
+        val descendants = node.children.toIntArray()
+        node.children.clear()
+        for (childId in descendants) {
+            removeSubtreeNoDetach(childId, ns)
+        }
+        ns.remove(id)
+    }
+
     private fun readSeq(buf: ByteBuffer, offset: Int): Long {
         // VarHandle would be more correct for atomic load; for our writer-
         // bumps-once-per-frame model, plain getLong is fine — the cache-line
@@ -162,6 +282,9 @@ class SkalBridge(private val skal: Skal) {
 
     companion object {
         const val ROOT_NODE_ID = 1
+
+        /** Window size for [pumpPeakNs] — 60 drains ≈ a few seconds of clicks. */
+        const val PUMP_PEAK_WINDOW = 60
 
         // Header layout
         const val H_OP_SEQ_OFFSET = 0
@@ -194,6 +317,7 @@ class SkalBridge(private val skal: Skal) {
         const val WT_ROW = 2
         const val WT_TEXT = 3
         const val WT_BUTTON = 4
+        const val WT_SCROLL_COLUMN = 5
 
         // Event kinds (u32 in JS, byte here)
         const val EV_CLICK = 0x01

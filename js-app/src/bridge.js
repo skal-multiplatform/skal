@@ -169,6 +169,7 @@ export function bindHandler(nodeId, eventKind, handlerId) {
 }
 
 let lastEventSeq = 0n;
+let lastHandlerError = null;
 const EVENT_RING_BYTES = 2 * 1024 * 1024 - EVENT_RING_OFFSET;
 const EVENT_RING_BASE32 = EVENT_RING_OFFSET >> 2;
 const EVENT_RING_END32  = (EVENT_RING_OFFSET + EVENT_RING_BYTES) >> 2;
@@ -188,7 +189,12 @@ globalThis.__skal_drainEvents = function () {
     const handlerId = u32[readPos32 + 1];
     const fn = handlers.get(handlerId);
     if (fn) {
-      try { fn(); } catch (_) {}
+      try { fn(); } catch (e) {
+        // Capture into a module global so we can read it via skalStatus()
+        // — calling console.error here crashes Bun's ConsoleObject in the
+        // embedded environment (no stdio wired up yet).
+        lastHandlerError = e && (e.stack || e.message || String(e)) || 'unknown';
+      }
     }
     readPos32 += 4;
     if (readPos32 >= end32) readPos32 = base32;
@@ -202,6 +208,7 @@ globalThis.skalStatus = () => JSON.stringify({
   handlerCount: handlers.size,
   opSeq: Number(opSeq),
   lastEventSeq: Number(lastEventSeq),
+  lastHandlerError,
 });
 
 // ───────────────────────────────────────────────────────────────────────

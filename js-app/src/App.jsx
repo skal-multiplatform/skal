@@ -36,18 +36,46 @@ export default function App() {
   // emit only the minimum add/remove ops to the bridge.
   const tweetsToShow = createMemo(() => TWEETS.slice(0, visibleTweets()));
 
+  // IMPORTANT: return a single container element, NOT a fragment.
+  //
+  // If you return `<>...</>`, Solid's universal renderer treats the whole
+  // array as reactive: any signal change re-runs the array-level effect,
+  // which calls each function child to "unwrap" it, which CREATES NEW text
+  // nodes for every string-returning child (the tweet list, the bench
+  // texts, etc.). On a fragment with 50 tweets, every setCount allocates
+  // 50+ fresh text nodes — the string heap fills in ~126 iterations.
+  //
+  // With a single root element, children are inserted individually and
+  // each function child gets its own isolated effect. setCount only
+  // re-runs the count-text effect, nothing else.
   return (
-    <>
+    <column>
       {() => `Count: ${count()}`}
       <button label="Increment" onClick={() => setCount(count() + 1)} />
       <button label="Decrement" onClick={() => setCount(count() - 1)} />
       <button
         label="+1000 (benchmark)"
         onClick={() => {
+          const startCount = count();
           const t1 = performance.now();
-          for (let i = 0; i < 1000; i++) setCount(count() + 1);
+          let iter = 0;
+          let crashAt = -1;
+          let crashMsg = '';
+          try {
+            for (; iter < 1000; iter++) {
+              setCount(count() + 1);
+            }
+          } catch (e) {
+            crashAt = iter;
+            crashMsg = (e && (e.message || String(e))) || 'unknown';
+          }
           const ms = (performance.now() - t1).toFixed(3);
-          setBigBenchMs(`+1000 in ${ms} ms (handler) — UI commits next microtask`);
+          const delta = count() - startCount;
+          if (crashAt >= 0) {
+            setBigBenchMs(`crashed @${crashAt}: ${crashMsg} · delta=${delta}`);
+          } else {
+            setBigBenchMs(`+1000 ${ms}ms · iter=${iter} delta=${delta}`);
+          }
         }}
       />
       {bigBenchMs}
@@ -72,6 +100,6 @@ export default function App() {
       <For each={tweetsToShow()}>
         {(tweet) => tweet}
       </For>
-    </>
+    </column>
   );
 }

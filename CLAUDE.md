@@ -1,0 +1,1 @@
+Never commit unless explicitly told

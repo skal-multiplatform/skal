@@ -33,40 +33,82 @@ public final class Skal implements AutoCloseable {
     }
 
     /**
-     * Evaluate {@code source} with on-disk JSC bytecode caching at
-     * {@code cachePath}.
+     * Load + evaluate a CJS-formatted JS bundle that ships with adjacent
+     * bytecode (a {@code .cjs} file with a {@code .cjs.jsc} sibling). Used
+     * by release builds for fast cold start.
      *
-     * On the first call (cache miss), this should parse the source, compile
-     * it to bytecode, save the bytecode to {@code cachePath}, and execute.
-     * On subsequent calls (cache hit), it should load the bytecode from
-     * {@code cachePath} and execute without re-parsing — saving the parse
-     * + initial bytecode-generation cost (~30–50 ms for a typical 18 KB
-     * bundle).
+     * <p>Build pipeline produces these via:
+     * <pre>
+     *   bun build skal-app.js --bytecode --format=cjs
+     * </pre>
+     * which emits {@code skal-app.cjs} (with the {@code @bun @bytecode @bun-cjs}
+     * marker in its header) and {@code skal-app.cjs.jsc} (the JSC unlinked
+     * code-block bytes for the wrapped source).
      *
-     * <p><strong>Current implementation:</strong> identical to
-     * {@link #evaluate(String, String)} — the cache path is reserved for the
-     * future C++ shim that integrates with JSC's CachedBytecode API. The
-     * bytecode-generation extern functions exposed by bun
-     * ({@code generateCachedCommonJSProgramByteCodeFromSourceCode} etc.)
-     * give us the bytes; the missing piece is a custom
-     * {@code JSC::SourceProvider} subclass that feeds those bytes into
-     * {@code JSC::evaluate}'s parse fast-path. ~100 lines of WebKit C++
-     * + a libskal.so rebuild.
+     * <p>At runtime this method evaluates a tiny bootstrap that does
+     * {@code await import(jsPath)}. Bun's module loader sees the marker,
+     * appends {@code .jsc} to the path, reads the bytecode, attaches it to
+     * the SourceProvider, and JSC's parser short-circuits — no parse cost.
      *
-     * <p>Until that's done, callers can use this method anyway — the API
-     * is stable and the implementation will get faster transparently.
+     * <p>Caller is responsible for ensuring {@code jsPath} (and
+     * {@code jsPath + ".jsc"}) exist on the device's filesystem (typically
+     * after extracting from APK assets).
      *
-     * @param source    the JS source text
-     * @param url       source URL for stack traces
-     * @param cachePath absolute path on the device's filesystem where the
-     *                  bytecode cache should be read from / written to
-     * @return result of evaluation as a string (same as {@link #evaluate})
+     * @param jsPath absolute path on the device's filesystem to the
+     *               {@code .cjs} file. The matching {@code .jsc} must
+     *               sit next to it.
+     * @return result of the dynamic import (a module namespace object,
+     *         stringified)
      */
-    public String evaluateCached(String source, String url, String cachePath) {
+    public String evaluateModuleAtPath(String jsPath) {
         if (handle == 0L) throw new IllegalStateException("Skal: runtime is closed");
-        // TODO: wire to nativeEvaluateCached once the C++ shim is added.
-        // For now, the cache path is unused; we still re-parse on every launch.
-        return nativeEvaluate(handle, source, url);
+        // Async IIFE — Bun__REPL__evaluate runs as Program (no top-level
+        // await), but dynamic import() works in script context. The Zig
+        // worker's waitForPromise hook unwraps the returned promise before
+        // returning to Java, so this is synchronous from the caller's POV.
+        // The IIFE bundle's side effects (mounting the renderer, registering
+        // bridge globals) execute during the import — the returned namespace
+        // is irrelevant for us.
+        final String loader =
+            "(async()=>{" +
+                "await import(" + jsStringLiteral("file://" + jsPath) + ");" +
+                "return 'skal-app loaded';" +
+            "})();";
+        return nativeEvaluate(handle, loader, "skal:loader");
+    }
+
+    /**
+     * Encode a string as a JS string literal (a la JSON.stringify). Used for
+     * embedding the source + cache path into the {@link #evaluateCached}
+     * loader script. Handles all control chars and the U+2028/U+2029 line
+     * separators that are valid in JSON but illegal raw inside JS string
+     * literals.
+     */
+    private static String jsStringLiteral(String s) {
+        StringBuilder sb = new StringBuilder(s.length() + 16);
+        sb.append('"');
+        for (int i = 0, n = s.length(); i < n; i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case 0x5C /* \ */: sb.append("\\\\"); break;
+                case 0x22 /* " */: sb.append("\\\""); break;
+                case 0x0A /* \n */: sb.append("\\n"); break;
+                case 0x0D /* \r */: sb.append("\\r"); break;
+                case 0x09 /* \t */: sb.append("\\t"); break;
+                case 0x08 /* \b */: sb.append("\\b"); break;
+                case 0x0C /* \f */: sb.append("\\f"); break;
+                case 0x2028: sb.append("\\u2028"); break;
+                case 0x2029: sb.append("\\u2029"); break;
+                default:
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        sb.append('"');
+        return sb.toString();
     }
 
     @Override

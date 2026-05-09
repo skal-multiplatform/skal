@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && bun run build:bytecode",
+    "build:js-only": "vite build",
+    "build:bytecode": "bun build ../android-app/app/src/main/assets/skal-app.js --bytecode --format=cjs --outdir=../android-app/app/src/main/assets/ --entry-naming=skal-app.cjs --root=../android-app/app/src/main/assets && mv ../android-app/app/src/main/assets/skal-app.cjs.jsc ../android-app/app/src/main/assets/skal-app.cjs.jsc",
     "dev": "vite build --watch"
   },
   "dependencies": {

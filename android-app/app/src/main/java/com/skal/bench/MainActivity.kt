@@ -41,25 +41,27 @@ class MainActivity : ComponentActivity() {
         val skal = Skal()
         val initMs = (System.nanoTime() - initStart) / 1_000_000.0
 
-        val source = assets.open("skal-app.js").bufferedReader().use { it.readText() }
         val evalStart = System.nanoTime()
-        // Two paths:
-        //   debug   — re-parse on every launch. Sets us up for hot-reload
-        //             later (the running runtime can re-evaluate updated
-        //             source pushed in over a debug channel).
-        //   release — use the cached-bytecode path. Cache file lives in
-        //             filesDir so it persists across launches but is wiped
-        //             on app uninstall. The cache is keyed implicitly by
-        //             the JSC version baked into libskal.so; when we ship
-        //             a new libskal.so the bun build's hash changes and
-        //             the bytecode would mismatch, but currently the cache
-        //             implementation is a stub that just re-parses, so this
-        //             isn't yet a concern.
         val initResult = if (BuildConfig.DEBUG) {
+            // Debug: load the Vite IIFE bundle and evaluate as a Program.
+            // Re-parses every launch. Sets us up for hot-reload later — a
+            // debug channel can push updated source for re-evaluation.
+            val source = assets.open("skal-app.js").bufferedReader().use { it.readText() }
             skal.evaluate(source, "skal-app.js")
         } else {
-            val cachePath = filesDir.resolve("skal-app.bcache").absolutePath
-            skal.evaluateCached(source, "skal-app.js", cachePath)
+            // Release: extract the bun-built CJS bundle + its .jsc bytecode
+            // sibling from APK assets to filesDir, then dynamic-import the
+            // .cjs path. Bun's module loader sees the @bun @bytecode @bun-cjs
+            // marker in the source header, looks for a sibling .jsc, attaches
+            // its bytes as a CachedBytecode on the SourceProvider, and JSC's
+            // parser short-circuits — no per-launch parse cost.
+            //
+            // Files are extracted on every launch (cheap — ~250 KB write)
+            // because we don't yet track APK install timestamps to skip the
+            // copy when unchanged. Could be optimized later.
+            val cjsPath = extractAsset("skal-app.cjs")
+            extractAsset("skal-app.cjs.jsc")
+            skal.evaluateModuleAtPath(cjsPath)
         }
         val evalMs = (System.nanoTime() - evalStart) / 1_000_000.0
         Log.i(TAG, "skal init=${"%.1f".format(initMs)}ms eval=${"%.1f".format(evalMs)}ms result=$initResult")
@@ -77,6 +79,26 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * Copy [name] from the APK's assets/ directory into the app's filesDir,
+     * overwriting any prior copy. Returns the absolute filesystem path of
+     * the extracted file.
+     *
+     * Called per-launch in release mode. Cost is one ~25-250 KB read+write
+     * for the JS source / bytecode pair. We don't currently skip the copy
+     * when the file is unchanged — would need to compare against APK's last
+     * modified time, which is doable but not yet wired up.
+     */
+    private fun extractAsset(name: String): String {
+        val outFile = filesDir.resolve(name)
+        assets.open(name).use { input ->
+            outFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        return outFile.absolutePath
     }
 }
 

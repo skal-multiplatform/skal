@@ -32,6 +32,43 @@ public final class Skal implements AutoCloseable {
         return nativeEvaluate(handle, source, url);
     }
 
+    /**
+     * Evaluate {@code source} with on-disk JSC bytecode caching at
+     * {@code cachePath}.
+     *
+     * On the first call (cache miss), this should parse the source, compile
+     * it to bytecode, save the bytecode to {@code cachePath}, and execute.
+     * On subsequent calls (cache hit), it should load the bytecode from
+     * {@code cachePath} and execute without re-parsing — saving the parse
+     * + initial bytecode-generation cost (~30–50 ms for a typical 18 KB
+     * bundle).
+     *
+     * <p><strong>Current implementation:</strong> identical to
+     * {@link #evaluate(String, String)} — the cache path is reserved for the
+     * future C++ shim that integrates with JSC's CachedBytecode API. The
+     * bytecode-generation extern functions exposed by bun
+     * ({@code generateCachedCommonJSProgramByteCodeFromSourceCode} etc.)
+     * give us the bytes; the missing piece is a custom
+     * {@code JSC::SourceProvider} subclass that feeds those bytes into
+     * {@code JSC::evaluate}'s parse fast-path. ~100 lines of WebKit C++
+     * + a libskal.so rebuild.
+     *
+     * <p>Until that's done, callers can use this method anyway — the API
+     * is stable and the implementation will get faster transparently.
+     *
+     * @param source    the JS source text
+     * @param url       source URL for stack traces
+     * @param cachePath absolute path on the device's filesystem where the
+     *                  bytecode cache should be read from / written to
+     * @return result of evaluation as a string (same as {@link #evaluate})
+     */
+    public String evaluateCached(String source, String url, String cachePath) {
+        if (handle == 0L) throw new IllegalStateException("Skal: runtime is closed");
+        // TODO: wire to nativeEvaluateCached once the C++ shim is added.
+        // For now, the cache path is unused; we still re-parse on every launch.
+        return nativeEvaluate(handle, source, url);
+    }
+
     @Override
     public void close() {
         if (handle != 0L) {

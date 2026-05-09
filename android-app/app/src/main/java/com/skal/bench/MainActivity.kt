@@ -43,7 +43,24 @@ class MainActivity : ComponentActivity() {
 
         val source = assets.open("skal-app.js").bufferedReader().use { it.readText() }
         val evalStart = System.nanoTime()
-        val initResult = skal.evaluate(source, "skal-app.js")
+        // Two paths:
+        //   debug   — re-parse on every launch. Sets us up for hot-reload
+        //             later (the running runtime can re-evaluate updated
+        //             source pushed in over a debug channel).
+        //   release — use the cached-bytecode path. Cache file lives in
+        //             filesDir so it persists across launches but is wiped
+        //             on app uninstall. The cache is keyed implicitly by
+        //             the JSC version baked into libskal.so; when we ship
+        //             a new libskal.so the bun build's hash changes and
+        //             the bytecode would mismatch, but currently the cache
+        //             implementation is a stub that just re-parses, so this
+        //             isn't yet a concern.
+        val initResult = if (BuildConfig.DEBUG) {
+            skal.evaluate(source, "skal-app.js")
+        } else {
+            val cachePath = filesDir.resolve("skal-app.bcache").absolutePath
+            skal.evaluateCached(source, "skal-app.js", cachePath)
+        }
         val evalMs = (System.nanoTime() - evalStart) / 1_000_000.0
         Log.i(TAG, "skal init=${"%.1f".format(initMs)}ms eval=${"%.1f".format(evalMs)}ms result=$initResult")
 

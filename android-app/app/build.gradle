@@ -22,6 +22,10 @@ android {
 
     buildFeatures {
         compose true
+        // Generates BuildConfig.java with DEBUG flag, so MainActivity can pick
+        // the source-eval (debug, hot-reload-friendly) vs cached-bytecode
+        // (release, fast cold start) eval path.
+        buildConfig true
     }
 
     signingConfigs {

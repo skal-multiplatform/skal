@@ -400,6 +400,22 @@ index 3a03ee0..d4401e7 100644
        PORT: "JSCOnly",
        ENABLE_STATIC_JSC: "ON",
        USE_THIN_ARCHIVES: "OFF",
+diff --git a/scripts/build/flags.ts b/scripts/build/flags.ts
+index df55580..74229dc 100644
+--- a/scripts/build/flags.ts
++++ b/scripts/build/flags.ts
+@@ -469,9 +469,9 @@ export const bunOnlyFlags: Flag[] = [
+   },
+   {
+     flag: "-std=c++23",
+-    when: c => c.darwin,
++    when: c => c.apple,
+     lang: "cxx",
+-    desc: "C++23 standard",
++    desc: "C++23 standard (macOS + iOS — both Apple libc++)",
+   },
+   {
+     flag: "/std:c++23preview",
 diff --git a/scripts/build/profiles.ts b/scripts/build/profiles.ts
 index c1e724e..ceb7acb 100644
 --- a/scripts/build/profiles.ts

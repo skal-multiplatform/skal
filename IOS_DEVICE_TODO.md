@@ -254,40 +254,58 @@ Skal.framework/
 
 ### F. Code signing + provisioning
 
-**Effort**: 0.5 day initial setup; ongoing maintenance per release.
+**Two distinct paths depending on goal**:
 
-**Prerequisites (external, NOT engineering work)**:
-- Apple Developer Program enrollment ($99/yr). ~24 hr enrollment
-  delay if you don't already have one.
-- A real iOS device with its UDID registered to the developer
-  account (required for development builds before TestFlight).
+#### F.1 Free Apple ID (personal sideload — sufficient for testing)
 
-**Engineering work**:
+**Goal**: install on YOUR iPhone for development + dogfooding.
+**Cost**: $0. Free Apple ID is enough.
 
-- Wire `DEVELOPMENT_TEAM` in `ios-app/iosApp/project.yml` (currently
-  empty string).
-- Flip `CODE_SIGN_STYLE: Automatic` for development builds; OR keep
-  `Manual` + explicit `PROVISIONING_PROFILE_SPECIFIER`.
-- Flip `CODE_SIGNING_REQUIRED: YES` + `CODE_SIGNING_ALLOWED: YES`
-  for device builds. Per-config: Sim keeps `NO`, device flips to
-  `YES`.
-- For CI: store `.p12` cert + `.mobileprovision` as repo secrets.
-  Use `fastlane match` or rolled-our-own keychain import.
-- Distribution cert separate from development cert. Needed for
-  TestFlight / App Store.
+**Limits**:
+- App expires every 7 days; re-run via Xcode to refresh.
+- Max 3 sideloaded apps installed at once per device.
+- Devices: up to 10 per year per Apple ID.
+- No TestFlight, no App Store, no push/IAP/CloudKit.
 
-**Risks**:
+**Engineering work** (~30 min):
+- Sign into Xcode with Apple ID (Xcode → Settings → Accounts → "+").
+- Plug in iPhone, accept "Trust this computer" prompt; Xcode
+  auto-registers the device.
+- In `ios-app/iosApp/project.yml`:
+  - Set `DEVELOPMENT_TEAM` to the personal team ID (visible in Xcode
+    after sign-in — looks like `ABC1234DEF`).
+  - Set `CODE_SIGN_STYLE: Automatic` so Xcode wrangles the profile.
+  - Flip `CODE_SIGNING_REQUIRED: YES` + `CODE_SIGNING_ALLOWED: YES`
+    for device builds (Sim keeps NO).
+- `xcodegen generate` to refresh the .xcodeproj.
+- Build + run from Xcode against the iPhone target. Xcode signs
+  the `.app` + everything in `Frameworks/` (including our
+  `libskal.dylib`) with the personal team's auto-generated cert.
+- First launch on phone: Settings → General → VPN & Device
+  Management → trust the dev cert.
 
-- **Apple's auto-signing** via `xcodebuild` is flaky for CI.
-  *Mitigation*: explicit manual signing with managed `.mobileprovision`
-  + `.p12` secrets.
-- **App Store review**: Apple's guideline 2.5.2 says "apps may
-  contain or run interpreted code, as long as such code is not
-  downloaded." Skal ships bytecode in the bundle (not downloaded) —
-  should pass, but expect a back-and-forth on first submission.
-  *Mitigation*: have a clear answer ready: "the JavaScript is
-  embedded as bytecode at build time; JSC's JIT is statically
-  disabled via `-DENABLE_JIT=0`."
+**Sufficient for: shipping the Solid demo on your own iPhone.**
+
+#### F.2 Apple Developer Program (production distribution)
+
+**Goal**: TestFlight beta + App Store submission.
+**Cost**: $99/yr + ~24-72 hr enrollment delay.
+
+Same engineering work as F.1 plus:
+- Distribution certificate (separate from development cert).
+- Provisioning profile for App Store / Ad Hoc distribution.
+- For CI: `fastlane match` or manually managed `.p12` + `.mobileprovision`
+  stored as repo secrets.
+- App Store Connect record + Apple-side review (guideline 2.5.2 for
+  interpreters — Skal should pass since bytecode is bundled not
+  downloaded; expect Q&A on first submission).
+
+#### Engineering shared between F.1 and F.2
+
+- `scripts/link-skal-ios.sh` produces `libskal.dylib` UNSIGNED. Xcode's
+  "Embed Frameworks" build phase signs it with whatever identity the
+  Skal app uses (personal team / dev cert / distribution cert).
+  This lets one link script work for all signing paths.
 
 ---
 

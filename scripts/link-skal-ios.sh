@@ -15,8 +15,13 @@
 #   * `-isysroot $(xcrun --sdk iphoneos --show-sdk-path)` and
 #     `-target arm64-apple-ios16.0` so the link sees iOS-targeted
 #     libsystem stubs.
-#   * Code-signing pass at the end (development cert) — iOS device
-#     dyld refuses to load unsigned dylibs.
+#   * NO explicit codesign here — Xcode's "Embed Frameworks" build
+#     phase signs the dylib automatically when it's copied into the
+#     .app/Frameworks/ directory. Doing it twice would just duplicate
+#     work (the embed step replaces the signature anyway). This lets
+#     the same script work with both free-Apple-ID personal-team
+#     signing AND paid Developer Program distribution certs — Xcode
+#     handles the identity selection.
 #
 # Prerequisites:
 #   1. bun-ios-release configured + built:
@@ -29,8 +34,6 @@
 #       arm64. See patches/0004-bun-ios-target-plumbing.patch.)
 #   2. WebKit iOS build complete (output at build/skal-jsc-ios/lib/
 #      or vendor/bun/build/ios-release/deps/WebKit/lib/).
-#   3. Apple Developer cert installed in the keychain for codesign.
-#      Set SKAL_IOS_SIGN_IDENTITY (default: "Apple Development").
 
 set -euo pipefail
 
@@ -52,7 +55,6 @@ if [[ ! -x "${LLVM_BIN}/clang++" ]]; then
 fi
 CXX="${LLVM_BIN}/clang++"
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-SIGN_IDENTITY="${SKAL_IOS_SIGN_IDENTITY:-Apple Development}"
 
 mkdir -p "${SKAL_BUILD}"
 
@@ -162,14 +164,14 @@ cd "${BUN_BUILD}"
 
 xcrun strip -x -S -o "${OUT}" "${UNSTRIPPED}"
 
-# Codesign — iOS device dyld refuses unsigned dylibs at load time.
-# Development cert is sufficient for sideload/TestFlight builds; App
-# Store builds need a Distribution cert (separate identity).
-echo "codesigning with: ${SIGN_IDENTITY}"
-xcrun codesign --force --sign "${SIGN_IDENTITY}" --timestamp=none "${OUT}"
+# NOTE: libskal.dylib is left UNSIGNED here. Xcode's "Embed Frameworks"
+# build phase signs it during the .app build, using whatever identity
+# the Skal Xcode project is configured for (personal team / free
+# Apple ID for sideload, paid Developer Program for TestFlight or App
+# Store). Doing codesign here would just be replaced by Xcode anyway.
 
 echo
-echo "✓ libskal.dylib (iOS device) produced (stripped + unstripped):"
+echo "✓ libskal.dylib (iOS device, unsigned) produced (stripped + unstripped):"
 ls -la "${OUT}" "${UNSTRIPPED}"
 file "${OUT}"
 echo
@@ -182,5 +184,6 @@ echo
 echo "JNI symbols (must NOT be present per § 0.5/V3):"
 "${LLVM_BIN}/llvm-nm" -gU "${OUT}" 2>/dev/null | grep -E "JNI_OnLoad|Java_com_skal" && echo "  ✗ JNI symbols leaked into iOS device binary" || echo "  ✓ none"
 echo
-echo "Codesign verification:"
-codesign -dv "${OUT}" 2>&1 | head -6
+echo "Next: Xcode's Embed Frameworks phase will sign this dylib"
+echo "with the Skal app's signing identity. For free-Apple-ID sideload"
+echo "use a personal team in ios-app/iosApp/project.yml's DEVELOPMENT_TEAM."

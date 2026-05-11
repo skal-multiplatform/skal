@@ -475,7 +475,58 @@ JIT/Wasm at runtime just go through their interpreter fallbacks
 3. `Source/JavaScriptCore/bytecode/InlineCacheCompiler.h` — CCallHelpers include
 4. `Source/WTF/wtf/PlatformHave.h` — HAVE_READLINE gates (2 sites)
 
-### Spike day 3 — Bun C++ side fully compiles for iOS
+### Spike day 4 — bun-zig.o + libJSC.a + bun C++ all compile; link script ready; final link iterating
+
+**Status**: all build artifacts produced for iOS arm64 EXCEPT a final
+linkable libskal.dylib. The `link-skal-ios.sh` script is in place; the
+last few issues are iOS-specific symbol stubs needed for the final
+link. ~5 small issues remaining, none unknown — all match the pattern
+of "macOS-only API used by bun, needs iOS stub."
+
+**Working artifacts on disk**:
+- `vendor/bun/build/ios-release/obj/*.o` — 1124 bun C++ objects for
+  iOS arm64 (down from 1134 — tinycc is correctly excluded on iOS).
+- `vendor/bun/build/ios-release/deps/WebKit/lib/libJavaScriptCore.a`
+  — 900 MB (RelWithDebInfo, includes full debug info).
+- `vendor/bun/build/ios-release/deps/WebKit/lib/libWTF.a` — 35 MB.
+- `vendor/bun/build/ios-release/deps/WebKit/lib/libbmalloc.a` — 574 KB.
+- `vendor/bun/build/ios-release/deps/lolhtml/aarch64-apple-ios/release/liblolhtml.a` — 17 MB.
+- bun-zig.o iOS rebuild pending (with `main.zig` ios gate fix).
+
+**Build sequence that works**:
+```sh
+cd vendor/bun
+ln -sfn $PWD/../WebKit vendor/WebKit
+PATH="$HOME/.cargo/bin:$PATH" bun scripts/build.ts \
+    --profile=ios-release --build-dir=build/ios-release --configure-only
+PATH="$HOME/.cargo/bin:$PATH" ninja -C build/ios-release -k 0
+# Expected: bun-profile final link fails (it's an executable, we want
+# a dylib). All .o files are produced before the failed link.
+```
+
+Then from Skal root:
+```sh
+PATH="$HOME/.cargo/bin:$PATH" bash scripts/link-skal-ios.sh
+```
+
+**Open iOS-specific stubs needed** (working through them in this
+session):
+
+| File | Issue | Status |
+|---|---|---|
+| `src/main.zig` | comptime gate excluded `.ios` for `skal_entry.zig` import | ✅ fixed |
+| `src/jsc/bindings/BunProcess.cpp:2549` | `#error "Unsupported OS"` for iOS | ✅ fixed (extended to `OS(IOS)`) |
+| `src/jsc/bindings/NoOrphansTracker.cpp` | `<libproc.h>` unsupported on iOS | ✅ fixed (gate on PLATFORM(MAC), iOS uses no-op stubs) |
+| `src/jsc/bindings/SecretsDarwin.cpp` | `SecAccessRef` __API_UNAVAILABLE(ios) | ⏳ in progress (PLATFORM(MAC) gate + iOS stub fns returning PlatformError, mirroring NoOrphansTracker pattern) |
+| `scripts/build/config.ts` | tinycc enabled on iOS (W^X violates) | ✅ fixed (disabled on iOS like Android) |
+| Final dylib link | bun's default link targets exe at macOS; we need iOS dylib | scripts/link-skal-ios.sh handles this |
+
+**Where it stands**: SecretsDarwin.cpp iOS stub commit-pending. Then
+need to rebuild bun-zig.o for iOS 16 (`./vendor/zig/zig build obj
+-Dtarget=aarch64-ios.16.0`), then run `link-skal-ios.sh`. Expected
+remaining work: ~30-60 min of iteration.
+
+### Spike day 3 — Bun C++ side compiles for iOS (now subsumed by spike day 4)
 
 **Status**: bun's TypeScript build system fully configures for iOS,
 all 22 deps build, only the final link remains. ~1277 LOC of bun

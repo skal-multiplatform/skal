@@ -191,7 +191,7 @@ index 15e153c..86a5204 100644
  #ifndef SYS_epoll_pwait2
  // It's consistent on multiple architectures
 diff --git a/scripts/build/config.ts b/scripts/build/config.ts
-index fd527a2..577d666 100644
+index fd527a2..fbea823 100644
 --- a/scripts/build/config.ts
 +++ b/scripts/build/config.ts
 @@ -17,7 +17,12 @@ import { clangTargetArch } from "./tools.ts";
@@ -258,7 +258,19 @@ index fd527a2..577d666 100644
    const x64 = arch === "x64";
    const arm64 = arch === "aarch64";
  
-@@ -726,6 +748,29 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
+@@ -619,7 +641,10 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
+   // TinyCC: off on Windows ARM64 (not supported), Android (no upstream
+   // bionic support; FFI cc() falls back to dlopen-only), and FreeBSD
+   // (oven-sh/tinycc has no FreeBSD target).
+-  const tinycc = partial.tinycc ?? !((windows && arm64) || abi === "android" || freebsd);
++  // Skal: tinycc disabled on iOS — third-party iOS apps can't allocate
++  // executable memory (W^X), and tinycc's whole purpose is runtime code
++  // generation. Mirrors the Android exclusion.
++  const tinycc = partial.tinycc ?? !((windows && arm64) || abi === "android" || freebsd || ios);
+ 
+   const valgrind = partial.valgrind ?? false;
+   const fuzzilli = partial.fuzzilli ?? false;
+@@ -726,6 +751,29 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
      }
    }
  
@@ -288,7 +300,7 @@ index fd527a2..577d666 100644
    // ─── Versioning ───
    const pkgJsonPath = resolve(cwd, "package.json");
    const pkgJson = JSON.parse(readFileSync(pkgJsonPath, "utf8")) as { version: string };
-@@ -758,6 +803,8 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
+@@ -758,6 +806,8 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
      darwin,
      windows,
      freebsd,
@@ -767,25 +779,65 @@ index db887d2..92843b9 100644
  #include <libproc.h>
  #include <signal.h>
 diff --git a/src/jsc/bindings/SecretsDarwin.cpp b/src/jsc/bindings/SecretsDarwin.cpp
-index c25ff88..26eb39f 100644
+index c25ff88..84fe10d 100644
 --- a/src/jsc/bindings/SecretsDarwin.cpp
 +++ b/src/jsc/bindings/SecretsDarwin.cpp
 @@ -1,6 +1,12 @@
  #include "root.h"
  
 -#if OS(DARWIN)
-+// Skal: gate on PLATFORM(MAC) — iOS Security framework lacks SecAccessRef
-+// and several keychain APIs marked __API_UNAVAILABLE(ios). Skal apps
-+// shouldn't use Bun's keychain bindings on iOS anyway; iOS keychain
-+// access goes through different APIs. On iOS this file compiles to no
-+// symbols (the Secrets.h consumers will see a linker error if they try
-+// to use this; Bun's runtime guards process.platform checks elsewhere).
++// Skal: macOS-only — iOS uses far too many __API_UNAVAILABLE(ios) APIs
++// from this file (SecAccessRef, mach-style keychain ACLs, etc.) to be
++// reasonably surgically patched. The iOS stubs at the bottom of this
++// file (under #elif PLATFORM(IOS_FAMILY)) return ErrorType::PlatformError
++// for all three Secrets functions. Mirror of the NoOrphansTracker
++// pattern in the same dir.
 +#if PLATFORM(MAC)
  
  #include "Secrets.h"
  #include <dlfcn.h>
+@@ -463,4 +469,39 @@ bool deletePassword(const CString& service, const CString& name, Error& err)
+ } // namespace Secrets
+ } // namespace Bun
+ 
++#elif PLATFORM(IOS_FAMILY)
++
++// Skal: iOS stubs — keychain access on iOS uses a different API surface
++// (kSecAttrAccessible* + per-app keychain), and Bun's macOS-style ACL
++// helpers aren't a meaningful fit. These return Error::Unsupported so
++// JSSecrets.cpp's exception path fires cleanly. A future iOS-native
++// implementation can replace these with a small wrapper over
++// SecItemAdd/Copy/Update/Delete with kSecAttrAccessibleWhenUnlocked.
++#include "Secrets.h"
++
++namespace Bun {
++namespace Secrets {
++
++Error setPassword(const WTF::CString&, const WTF::CString&, WTF::CString&&, bool)
++{
++    return Error { ErrorType::PlatformError, "Secrets API not implemented on iOS yet"_s };
++}
++
++std::optional<WTF::Vector<uint8_t>> getPassword(const WTF::CString&, const WTF::CString&, Error& error)
++{
++    error.type = ErrorType::PlatformError;
++    error.message = "Secrets API not implemented on iOS yet"_s;
++    return std::nullopt;
++}
++
++bool deletePassword(const WTF::CString&, const WTF::CString&, Error& error)
++{
++    error.type = ErrorType::PlatformError;
++    error.message = "Secrets API not implemented on iOS yet"_s;
++    return false;
++}
++
++} // namespace Secrets
++} // namespace Bun
++
+ #endif // OS(DARWIN)
 diff --git a/src/main.zig b/src/main.zig
-index 6698634..675002c 100644
+index 6698634..78172b4 100644
 --- a/src/main.zig
 +++ b/src/main.zig
 @@ -13,6 +13,17 @@ comptime {
@@ -798,7 +850,7 @@ index 6698634..675002c 100644
 +// linker anyway. We include the import on darwin too so the host-side
 +// libskal.dylib (used by desktop-app/) gets the same JNI surface.
 +comptime {
-+    if (builtin.target.abi.isAndroid() or builtin.target.os.tag == .macos) {
++    if (builtin.target.abi.isAndroid() or builtin.target.os.tag == .macos or builtin.target.os.tag == .ios) {
 +        _ = @import("./skal_entry.zig");
 +    }
 +}

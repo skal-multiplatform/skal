@@ -49,10 +49,18 @@ export default function App() {
   // each function child gets its own isolated effect. setCount only
   // re-runs the count-text effect, nothing else.
   return (
-    <column>
-      {() => `Count: ${count()}`}
-      <button label="Increment" onClick={() => setCount(count() + 1)} />
-      <button label="Decrement" onClick={() => setCount(count() - 1)} />
+    <column background="#FFFAFAFA" padding={16} gap={12}>
+      <box
+        background="#FF1DA1F2"
+        padding={12}
+        cornerRadius={8}
+      >
+        {() => `Count: ${count()}`}
+      </box>
+      <row gap={8}>
+        <button label="Increment" onClick={() => setCount(count() + 1)} />
+        <button label="Decrement" onClick={() => setCount(count() - 1)} />
+      </row>
       <button
         label="+1000 (benchmark)"
         onClick={() => {

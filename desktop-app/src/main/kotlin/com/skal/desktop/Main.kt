@@ -198,7 +198,11 @@ private fun PerfHud(bridge: SkalBridge) {
                         val fps = (1_000_000_000.0 / avgFrameNs).toInt()
                         val pumpMs = bridge.pumpAvgNs / 1_000_000.0
                         val peakMs = bridge.pumpPeakNs / 1_000_000.0
-                        displayText = "$fps FPS (${"%.2f".format(avgFrameMs)} ms) · pump ${"%.3f".format(pumpMs)} ms (peak ${"%.2f".format(peakMs)} ms)"
+                        val propWrites = bridge.propWritesLastDrain
+                        val propTouched = bridge.coldPropsTouchedLastDrain
+                        displayText = "$fps FPS (${"%.2f".format(avgFrameMs)} ms) · " +
+                            "pump ${"%.3f".format(pumpMs)} ms (peak ${"%.2f".format(peakMs)} ms) · " +
+                            "props ${propWrites}/${propTouched}"
                         // Mirror to stdout so headless / log-captured runs can
                         // see steady-state FPS without a screen recorder.
                         // Once per ~1 sec at 60Hz (HUD refresh = 10 frames,

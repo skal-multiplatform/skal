@@ -27,6 +27,148 @@ const TAG_TO_WIDGET = {
   button:       B.WT_BUTTON,
 };
 
+// ───────────────────────────────────────────────────────────────────────
+// JSX attribute → bridge prop mapping
+//
+// Two flavors:
+//   • Cold props (set rarely; map to the typed setPropU32 / F32 / Str
+//     helpers, which diff against the last-seen value and skip equal
+//     writes). Each entry: [propKey, valueKind].
+//   • Hot props (set every frame; map to a dedicated setter that
+//     bypasses the cold prop machinery entirely).
+//
+// valueKind: 'u32' | 'f32' | 'str' | 'color' | 'dim'
+//   - color: accepts CSS hex string "#RRGGBB" or "#AARRGGBB", or u32
+//   - dim: accepts number (literal dp) or "fill" / "wrap" sentinel
+//
+// Adding a new prop is one entry here + a matching read in the Kotlin
+// composable. ~10 lines total.
+// ───────────────────────────────────────────────────────────────────────
+
+const COLD_PROPS = {
+  // Layout
+  padding:        [B.PROP_PADDING,          'u32'],
+  paddingTop:     [B.PROP_PADDING_TOP,      'u32'],
+  paddingRight:   [B.PROP_PADDING_RIGHT,    'u32'],
+  paddingBottom:  [B.PROP_PADDING_BOTTOM,   'u32'],
+  paddingLeft:    [B.PROP_PADDING_LEFT,     'u32'],
+  width:          [B.PROP_WIDTH,            'dim'],
+  height:         [B.PROP_HEIGHT,           'dim'],
+  weight:         [B.PROP_WEIGHT,           'f32'],
+  alignment:      [B.PROP_ALIGNMENT,        'u32'],
+  gap:            [B.PROP_GAP,              'u32'],
+  // Visual
+  background:     [B.PROP_BG_COLOR,         'color'],
+  color:          [B.PROP_FG_COLOR,         'color'],
+  cornerRadius:   [B.PROP_CORNER_RADIUS,    'u32'],
+  borderWidth:    [B.PROP_BORDER_WIDTH,     'u32'],
+  borderColor:    [B.PROP_BORDER_COLOR,     'color'],
+  shadow:         [B.PROP_SHADOW_ELEVATION, 'u32'],
+  // Text
+  fontSize:       [B.PROP_FONT_SIZE,        'u32'],
+  fontWeight:     [B.PROP_FONT_WEIGHT,      'u32'],
+  fontFamily:     [B.PROP_FONT_FAMILY,      'u32'],
+  textAlign:      [B.PROP_TEXT_ALIGN,       'u32'],
+  lineHeight:     [B.PROP_LINE_HEIGHT,      'u32'],
+  maxLines:       [B.PROP_MAX_LINES,        'u32'],
+  textOverflow:   [B.PROP_TEXT_OVERFLOW,    'u32'],
+  // Image
+  src:            [B.PROP_IMAGE_SRC,        'str'],
+  contentScale:   [B.PROP_CONTENT_SCALE,    'u32'],
+  // Input
+  placeholder:    [B.PROP_PLACEHOLDER,      'str'],
+  value:          [B.PROP_VALUE,            'str'],
+  keyboardType:   [B.PROP_KEYBOARD_TYPE,    'u32'],
+  secureEntry:    [B.PROP_SECURE_ENTRY,     'u32'],
+  // Behavior
+  enabled:        [B.PROP_ENABLED,          'u32'],
+  focusable:      [B.PROP_FOCUSABLE,        'u32'],
+  visible:        [B.PROP_VISIBLE,          'u32'],
+};
+
+const HOT_PROP_SETTERS = {
+  opacity:      B.setOpacity,
+  translationX: B.setTranslationX,
+  translationY: B.setTranslationY,
+  scaleX:       B.setScaleX,
+  scaleY:       B.setScaleY,
+  rotation:     B.setRotationZ,
+};
+
+/**
+ * Parse a CSS hex color string to a packed ARGB u32. Accepts:
+ *   #RGB / #RGBA / #RRGGBB / #AARRGGBB / #RRGGBBAA
+ * Numbers pass through unchanged.
+ */
+function parseColor(v) {
+  if (typeof v === 'number') return v | 0;
+  if (typeof v !== 'string') return 0;
+  let s = v.trim();
+  if (s.startsWith('#')) s = s.slice(1);
+  let r = 0, g = 0, b = 0, a = 0xFF;
+  if (s.length === 3) {
+    r = parseInt(s[0] + s[0], 16);
+    g = parseInt(s[1] + s[1], 16);
+    b = parseInt(s[2] + s[2], 16);
+  } else if (s.length === 4) {
+    r = parseInt(s[0] + s[0], 16);
+    g = parseInt(s[1] + s[1], 16);
+    b = parseInt(s[2] + s[2], 16);
+    a = parseInt(s[3] + s[3], 16);
+  } else if (s.length === 6) {
+    r = parseInt(s.slice(0, 2), 16);
+    g = parseInt(s.slice(2, 4), 16);
+    b = parseInt(s.slice(4, 6), 16);
+  } else if (s.length === 8) {
+    // Ambiguous between AARRGGBB and RRGGBBAA. We pick AARRGGBB
+    // (matches Compose's Color long encoding). Users wanting RRGGBBAA
+    // should pass the numeric u32 directly.
+    a = parseInt(s.slice(0, 2), 16);
+    r = parseInt(s.slice(2, 4), 16);
+    g = parseInt(s.slice(4, 6), 16);
+    b = parseInt(s.slice(6, 8), 16);
+  }
+  return ((a & 0xFF) << 24 | (r & 0xFF) << 16 | (g & 0xFF) << 8 | (b & 0xFF)) | 0;
+}
+
+/**
+ * Translate a "dim" prop value to the wire-format u32:
+ *   number      → literal dp
+ *   "fill"      → FILL_MAX sentinel
+ *   "wrap"      → WRAP_CONTENT sentinel
+ *   anything else → NO_VALUE (Kotlin side treats as "no constraint")
+ *
+ * Important: the fallback is NO_VALUE, not 0. A 0 here would be
+ * interpreted by Kotlin's `applyWidth/applyHeight` as `width(0.dp)` —
+ * a zero-width box. NO_VALUE means "fall through to the composable's
+ * default modifier."
+ */
+function parseDim(v) {
+  if (typeof v === 'number') return v | 0;
+  if (v === 'fill') return B.FILL_MAX;
+  if (v === 'wrap') return B.WRAP_CONTENT;
+  return B.NO_VALUE;
+}
+
+/**
+ * Walk a SkalNode subtree and release the diff cache row for each.
+ * Called from removeNode to keep the diff cache from accumulating stale
+ * rows on subtree removal. Iterative DFS — no recursion-depth risk on
+ * pathological trees.
+ */
+function releaseSubtreeDiffCache(root) {
+  const stack = [root];
+  while (stack.length > 0) {
+    const n = stack.pop();
+    B.diffCacheReleaseNode(n.id);
+    let c = n.firstChild;
+    while (c) {
+      stack.push(c);
+      c = c.nextSibling;
+    }
+  }
+}
+
 /**
  * Host node — a JS-side mirror of a bridge node. Maintains parent/sibling
  * pointers (Solid's universal renderer needs walking via getFirstChild +
@@ -101,15 +243,67 @@ const _renderer = createRenderer({
       B.scheduleCommit();
       return;
     }
-    // Numeric u32 props (padding, color, font_size, etc.) — opaque
-    // pass-through. Only useful once SkalNode in Kotlin starts reading
-    // node.props, which it doesn't yet.
-    if (typeof value === 'number' && Number.isInteger(value)) {
-      // Map well-known names to their prop IDs; anything else is ignored.
-      // Currently no composables read props, so this is a no-op.
+
+    // Hot props — animation-frequency, dedicated opcodes, no recompose.
+    const hotSetter = HOT_PROP_SETTERS[name];
+    if (hotSetter !== undefined) {
+      if (typeof value === 'number') {
+        hotSetter(node.id, value);
+        B.scheduleCommit();
+      }
       return;
     }
-    // Silently drop unknown string props for now.
+
+    // Cold props — typed map via diff-cached setter.
+    const coldDesc = COLD_PROPS[name];
+    if (coldDesc !== undefined) {
+      const [propKey, kind] = coldDesc;
+      if (value == null) return; // setting to null/undefined = "leave as previous"
+      switch (kind) {
+        case 'u32':
+          if (typeof value === 'number') {
+            B.setPropU32(node.id, propKey, value | 0);
+            B.scheduleCommit();
+          } else if (typeof value === 'boolean') {
+            B.setPropU32(node.id, propKey, value ? 1 : 0);
+            B.scheduleCommit();
+          }
+          return;
+        case 'f32':
+          if (typeof value === 'number') {
+            B.setPropF32(node.id, propKey, value);
+            B.scheduleCommit();
+          }
+          return;
+        case 'str':
+          B.setPropStr(node.id, propKey, String(value));
+          B.scheduleCommit();
+          return;
+        case 'color':
+          B.setPropU32(node.id, propKey, parseColor(value));
+          B.scheduleCommit();
+          return;
+        case 'dim':
+          B.setPropU32(node.id, propKey, parseDim(value));
+          B.scheduleCommit();
+          return;
+      }
+      return;
+    }
+
+    // Style-object form: <box style={{ background, padding, ... }}> —
+    // iterate the entries and recursively dispatch through this same
+    // function. Lets users co-locate styling without per-attr noise.
+    if (name === 'style' && value && typeof value === 'object') {
+      for (const key in value) {
+        this.setProperty(node, key, value[key]);
+      }
+      return;
+    }
+
+    // Unknown attribute — silently drop. Wire-level openness; renderer-
+    // level closedness. See PROPS_PLAN.md §… and the chat discussion
+    // "Can props be anything?" for the rationale.
   },
 
   insertNode(parent, node, anchor) {
@@ -137,6 +331,11 @@ const _renderer = createRenderer({
 
   removeNode(parent, node) {
     B.writeOp(B.OP_REMOVE_NODE, node.id, 0, 0);
+    // Release the diff cache row(s) for this node and any descendants
+    // we know about. The Kotlin drain's removeSubtree handles the
+    // descendants on its side; we mirror that here so the JS-side diff
+    // cache doesn't accumulate stale rows over a long session.
+    releaseSubtreeDiffCache(node);
     B.scheduleCommit();
     if (node.prevSibling) node.prevSibling.nextSibling = node.nextSibling;
     else parent.firstChild = node.nextSibling;

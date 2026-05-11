@@ -3,6 +3,8 @@ package com.skal.bridge
 import androidx.collection.MutableIntFloatMap
 import androidx.collection.MutableIntIntMap
 import androidx.collection.MutableIntObjectMap
+import androidx.collection.MutableIntSet
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshots.Snapshot
@@ -91,6 +93,37 @@ class SkalBridge(private val skal: SkalRuntime) {
     private var pumpWindowFill = 0
 
     /**
+     * Reused per-drain scratch — node ids whose cold props changed during
+     * the current drain. Cleared at the start of each drain. A field, not
+     * a local, so the [pumpOps] hot path pays zero allocation per drain.
+     *
+     * `MutableIntSet` is primitive-int-backed (no Integer boxing) and
+     * dedups duplicates internally — so a node touched 5× in one drain
+     * appears in the set exactly once.
+     */
+    private val touchedNodes: MutableIntSet = MutableIntSet()
+
+    /**
+     * Number of cold-prop op writes the last drain decoded (i.e. raw count
+     * of `OP_SET_PROP_*` calls, before coalescing). Useful as a proxy for
+     * "how much work did JS ask us to do this frame." Read by `PerfHud`.
+     */
+    @Volatile
+    var propWritesLastDrain: Int = 0
+        private set
+
+    /**
+     * Number of distinct nodes whose cold props changed in the last drain
+     * — i.e. the number of `propsVersion` bumps applied. With coalescing,
+     * this is <= [propWritesLastDrain] and equals the number of node
+     * composables that will be marked dirty this frame from prop changes.
+     * Read by `PerfHud`.
+     */
+    @Volatile
+    var coldPropsTouchedLastDrain: Int = 0
+        private set
+
+    /**
      * Defensive root fallback: if the JS app forgot to create node 1, treat
      * it as an empty Column so SkalRoot at least mounts.
      */
@@ -135,6 +168,10 @@ class SkalBridge(private val skal: SkalRuntime) {
         // apply IS the per-pump cost we want to track (it's where observer
         // fan-out actually fires now). EMA still smooths jitter across
         // frames.
+        // Per-drain counters reset before decoding so PerfHud always reads
+        // the LAST drain's totals (not a cumulative running sum).
+        var propWrites = 0
+
         Snapshot.withMutableSnapshot {
             val writePos = buffer.getInt(H_OP_WRITE_POS_OFFSET)
 
@@ -143,6 +180,10 @@ class SkalBridge(private val skal: SkalRuntime) {
             val ns = nodes
             val opEnd = OP_RING_OFFSET + writePos
             val strBase = STRING_HEAP_OFFSET
+            val touched = touchedNodes
+            // Cleared at START of drain — leaves the post-drain contents
+            // inspectable for debugging until the next pump begins.
+            touched.clear()
             var p = OP_RING_OFFSET
             while (p < opEnd) {
                 // Reader only consumes byte 0 of the opcode field; the writer
@@ -186,8 +227,43 @@ class SkalBridge(private val skal: SkalRuntime) {
                             movingNode?.parent?.value = a
                         }
                     }
-                    OP_SET_PROP_U32 -> ns.get(a)?.props?.put(b, c)
-                    OP_SET_PROP_F32 -> ns.get(a)?.propsF?.put(b, Float.fromBits(c))
+                    // ── Cold props ─────────────────────────────────────
+                    // Write to the typed non-reactive map, mark node touched.
+                    // The shared `propsVersion` bump fires once per (node,
+                    // drain) in the coalescing loop below — so 5 prop ops on
+                    // the same node produce one observer fan-out, not five.
+                    OP_SET_PROP_U32 -> {
+                        val node = ns.get(a)
+                        if (node != null) {
+                            node.props.put(b, c)
+                            touched.add(a)
+                            propWrites++
+                        }
+                    }
+                    OP_SET_PROP_F32 -> {
+                        val node = ns.get(a)
+                        if (node != null) {
+                            node.propsF.put(b, Float.fromBits(c))
+                            touched.add(a)
+                            propWrites++
+                        }
+                    }
+                    OP_SET_PROP_STR -> {
+                        val node = ns.get(a)
+                        if (node != null) {
+                            // Wire format: b = (key << 24) | (offset & 0xFFFFFF)
+                            //              c = length
+                            // 24-bit offset = 16 MiB (more than the 512 KiB
+                            // heap can hold); 8-bit key = 256 prop keys;
+                            // length = full u32, in practice bounded by heap.
+                            val key = (b ushr 24) and 0xFF
+                            val offset = b and 0xFFFFFF
+                            val length = c
+                            node.propsStr.put(key, readString(buf, strBase, offset, length))
+                            touched.add(a)
+                            propWrites++
+                        }
+                    }
                     OP_SET_TEXT -> ns.get(a)?.text?.value = readString(buf, strBase, b, c)
                     OP_BIND_HANDLER -> {
                         val node = ns.get(a)
@@ -198,11 +274,45 @@ class SkalBridge(private val skal: SkalRuntime) {
                             }
                         }
                     }
+                    // ── Hot props — direct MutableState writes ─────────
+                    // Bypass the props map AND propsVersion bump entirely.
+                    // The composable doesn't subscribe to these in its body;
+                    // only the `graphicsLayer { … }` block does, so changes
+                    // here update the GPU layer property without triggering
+                    // composition or layout. A 60 fps opacity animation does
+                    // zero recompose work — this is the whole point.
+                    OP_SET_OPACITY       -> ns.get(a)?.opacity?.value       = Float.fromBits(c)
+                    OP_SET_TRANSLATION_X -> ns.get(a)?.translationX?.value  = Float.fromBits(c)
+                    OP_SET_TRANSLATION_Y -> ns.get(a)?.translationY?.value  = Float.fromBits(c)
+                    OP_SET_SCALE_X       -> ns.get(a)?.scaleX?.value        = Float.fromBits(c)
+                    OP_SET_SCALE_Y       -> ns.get(a)?.scaleY?.value        = Float.fromBits(c)
+                    OP_SET_ROTATION_Z    -> ns.get(a)?.rotationZ?.value     = Float.fromBits(c)
                 }
                 p += 16
             }
+
+            // ── Coalesced propsVersion bumps ───────────────────────────
+            // One bump per touched node per drain, regardless of how many
+            // cold prop ops hit it. Inside the same snapshot block so all
+            // bumps land in the single observer fan-out at apply.
+            //
+            // The bumps are written THROUGH the snapshot (MutableState
+            // write), so Compose sees them; the underlying typed prop
+            // maps are non-snapshot but read-paired with this state, so
+            // any composable that read `propsVersion.value` last frame
+            // will be marked dirty exactly once when we bump it here.
+            touched.forEach { id ->
+                val node = ns.get(id) ?: return@forEach
+                node.propsVersion.value = node.propsVersion.value + 1
+            }
+
             lastOpSeq = seq
         }
+
+        // Publish per-drain stats AFTER the snapshot apply so PerfHud's
+        // poll never reads a half-updated picture.
+        propWritesLastDrain = propWrites
+        coldPropsTouchedLastDrain = touchedNodes.size
 
         val dt = mark.elapsedNow().inWholeNanoseconds
 
@@ -368,7 +478,7 @@ class SkalBridge(private val skal: SkalRuntime) {
         const val EVENT_RING_OFFSET = STRING_HEAP_OFFSET + STRING_HEAP_SIZE
         const val EVENT_RING_SIZE = (2 * 1024 * 1024) - EVENT_RING_OFFSET
 
-        // Opcodes
+        // ── Opcodes ───────────────────────────────────────────────
         const val OP_CREATE_NODE = 0x01
         const val OP_REMOVE_NODE = 0x02
         const val OP_INSERT_BEFORE = 0x03
@@ -376,8 +486,20 @@ class SkalBridge(private val skal: SkalRuntime) {
         const val OP_SET_PROP_F32 = 0x11
         const val OP_SET_TEXT = 0x14
         const val OP_BIND_HANDLER = 0x15
+        const val OP_SET_PROP_STR = 0x16
 
-        // Widget types
+        // Hot-prop opcodes — distinct from OP_SET_PROP_F32 so cold-only
+        // drains pay zero branches for hot-prop routing. The drain's
+        // outer `when (opcode)` is already a tableswitch; adding arms
+        // costs nothing per cold-prop op.
+        const val OP_SET_OPACITY       = 0x20
+        const val OP_SET_TRANSLATION_X = 0x21
+        const val OP_SET_TRANSLATION_Y = 0x22
+        const val OP_SET_SCALE_X       = 0x23
+        const val OP_SET_SCALE_Y       = 0x24
+        const val OP_SET_ROTATION_Z    = 0x25
+
+        // ── Widget types ──────────────────────────────────────────
         const val WT_BOX = 0
         const val WT_COLUMN = 1
         const val WT_ROW = 2
@@ -385,10 +507,80 @@ class SkalBridge(private val skal: SkalRuntime) {
         const val WT_BUTTON = 4
         const val WT_SCROLL_COLUMN = 5
 
-        // Event kinds (u32 in JS, byte here)
+        // ── Event kinds (u32 in JS, byte here) ────────────────────
         const val EV_CLICK = 0x01
         const val EV_CHANGE = 0x02
         const val EV_CLICK_BYTE = 0x01.toByte()
+
+        // ── Prop key namespace ────────────────────────────────────
+        // Partitioned by tier so the JS side can validate by range and
+        // future expansions don't collide. See PROPS_PLAN.md §2.2.
+        //
+        // 0x00–0x1F  layout      0x20–0x3F  visual      0x40–0x5F  text
+        // 0x60–0x7F  image       0x80–0x9F  input       0xA0–0xBF  behavior
+
+        // Layout (u32 unless noted)
+        const val PROP_PADDING          = 0x00     // dp, all sides
+        const val PROP_PADDING_TOP      = 0x01
+        const val PROP_PADDING_RIGHT    = 0x02
+        const val PROP_PADDING_BOTTOM   = 0x03
+        const val PROP_PADDING_LEFT     = 0x04
+        const val PROP_WIDTH            = 0x05     // dp; FILL_MAX / WRAP_CONTENT sentinels
+        const val PROP_HEIGHT           = 0x06
+        const val PROP_WEIGHT           = 0x07     // f32 → propsF
+        const val PROP_ALIGNMENT        = 0x08     // enum
+        const val PROP_GAP              = 0x09     // dp; arrangement spacedBy
+
+        // Visual
+        const val PROP_BG_COLOR         = 0x20     // ARGB u32
+        const val PROP_FG_COLOR         = 0x21     // ARGB u32 (text color, icon tint)
+        const val PROP_CORNER_RADIUS    = 0x22     // dp
+        const val PROP_BORDER_WIDTH     = 0x23     // dp
+        const val PROP_BORDER_COLOR     = 0x24     // ARGB u32
+        const val PROP_SHADOW_ELEVATION = 0x25     // dp
+
+        // Text
+        const val PROP_FONT_SIZE        = 0x40     // sp int
+        const val PROP_FONT_WEIGHT      = 0x41     // 100..900
+        const val PROP_FONT_FAMILY      = 0x42     // enum: 0=default 1=serif 2=mono 3=sans
+        const val PROP_TEXT_ALIGN       = 0x43     // enum: 0=start 1=center 2=end 3=justify
+        const val PROP_LINE_HEIGHT      = 0x44     // sp int
+        const val PROP_MAX_LINES        = 0x45     // int
+        const val PROP_TEXT_OVERFLOW    = 0x46     // enum: 0=clip 1=ellipsis 2=visible
+
+        // Image (string-valued src goes through propsStr)
+        const val PROP_IMAGE_SRC        = 0x60     // string
+        const val PROP_CONTENT_SCALE    = 0x61     // enum
+
+        // Input
+        const val PROP_PLACEHOLDER      = 0x80     // string
+        const val PROP_VALUE            = 0x81     // string
+        const val PROP_KEYBOARD_TYPE    = 0x82     // enum
+        const val PROP_SECURE_ENTRY     = 0x83     // bool (0/1)
+
+        // Behavior
+        const val PROP_ENABLED          = 0xA0     // bool
+        const val PROP_FOCUSABLE        = 0xA1     // bool
+        const val PROP_VISIBLE          = 0xA2     // bool
+
+        // ── Sentinel values for layout u32 props ──────────────────
+        // Encoded in PROP_WIDTH / PROP_HEIGHT / etc. to express
+        // intent without a separate opcode. NO_VALUE keeps the prop
+        // un-set (composable falls back to its default modifier).
+        const val NO_VALUE      = -1
+        const val FILL_MAX      = 0x7FFFFFFE
+        const val WRAP_CONTENT  = 0x7FFFFFFD
+
+        // ── Alignment enum values (for PROP_ALIGNMENT) ────────────
+        // Matches the cardinal options that Compose's Arrangement
+        // / Alignment APIs accept; the composable maps these to the
+        // right Compose value per axis.
+        const val ALIGN_START   = 0
+        const val ALIGN_CENTER  = 1
+        const val ALIGN_END     = 2
+        const val ALIGN_SPACE_BETWEEN = 3
+        const val ALIGN_SPACE_AROUND  = 4
+        const val ALIGN_SPACE_EVENLY  = 5
 
         // Multiplatform monotonic clock — JVM resolves to System.nanoTime,
         // Kotlin/Native to clock_gettime(CLOCK_MONOTONIC). Same cost as
@@ -401,28 +593,64 @@ class SkalBridge(private val skal: SkalRuntime) {
 /**
  * Per-node state.
  *
- * The fields actually read by composables ([text], [children],
- * [onClickHandlerId], [onChangeHandlerId]) are Compose snapshot states, so
- * reading them inside a composable subscribes that composable to *that
- * specific* MutableState — a SET_TEXT op recomposes only the matching Text
- * leaf.
+ * `@Stable` contract: this class's identity (reference equality) is
+ * sufficient for Compose to skip recomposition when only the reference is
+ * passed as a parameter and no state-object reads inside the composable
+ * changed. All observable mutation goes through one of the [MutableState]
+ * fields below — single-value reactive fields (text, handler IDs, hot
+ * props) write directly to their MutableState; cold props mutate the
+ * non-snapshot [props]/[propsF]/[propsStr] maps and PAIR each batch with
+ * a [propsVersion] bump so subscribers see the change.
  *
- * [props] / [propsF] are write-only from Compose's perspective today: they
- * exist for the wire format but no composable reads them. They're stored in
- * non-reactive primitive-keyed containers
- * ([MutableIntIntMap] / [MutableIntFloatMap]) so OP_SET_PROP_* writes don't
- * pay Snapshot bookkeeping AND don't box Int keys / Float values. The earlier
- * `HashMap<Int, Float>` form boxed both per .put — measurable in op-pump
- * profiles when SET_PROP_F32 fires every frame (animation, gesture).
- * If a future composable starts reading these, switch back to a reactive
- * container at that point.
+ * INVARIANT: a composable that reads any cold-prop map MUST first read
+ * [propsVersion] in the same body. Reading the maps in isolation is a
+ * silent bug — Compose has no way to know the value is stale.
+ *
+ * The fields read directly by composables (text, children, handler IDs,
+ * hot-prop states) are individual Compose snapshot states, so reading
+ * them inside a composable subscribes that composable to *that specific*
+ * MutableState — a SET_TEXT op recomposes only the matching Text leaf;
+ * a hot-prop change recomposes only the `graphicsLayer { … }` block.
+ *
+ * The cold [props]/[propsF]/[propsStr] maps are non-reactive primitive-
+ * keyed containers — zero-allocation puts and no per-write Snapshot
+ * bookkeeping. The earlier `HashMap<Int, Float>` form boxed both Int keys
+ * and Float values per `.put` — measurable in op-pump profiles when
+ * SET_PROP_F32 fires every frame (animation, gesture).
  */
+@Stable
 class NodeState(val type: Int) {
+    // ── Tree shape (Compose-reactive) ─────────────────────────────
     val parent = mutableStateOf(0)
-    val text = mutableStateOf("")
     val children: SnapshotStateList<Int> = mutableStateListOf()
+
+    // ── Per-node single-value reactive fields ─────────────────────
+    val text = mutableStateOf("")
     val onClickHandlerId = mutableStateOf(0)
     val onChangeHandlerId = mutableStateOf(0)
+
+    // ── Cold-prop storage (non-reactive, primitive-keyed) ─────────
+    // Zero-allocation puts. NOT visible to Compose on their own —
+    // composables must read `propsVersion` to know when these change.
     val props: MutableIntIntMap = MutableIntIntMap()
     val propsF: MutableIntFloatMap = MutableIntFloatMap()
+    val propsStr: MutableIntObjectMap<String> = MutableIntObjectMap()
+
+    // ── Cold-prop reactivity signal ───────────────────────────────
+    // Bumped once per (node, drain) by the coalescing loop at the
+    // end of pumpOps. Composables consuming cold props subscribe here.
+    val propsVersion = mutableStateOf(0)
+
+    // ── Hot props (animation-frequency) ───────────────────────────
+    // Each gets its own MutableState. Composables consume them inside
+    // a `graphicsLayer { … }` block, so changes skip composition +
+    // layout entirely and only update GPU layer properties. See
+    // PROPS_PLAN.md §5 for the rationale and the promotion criterion
+    // for adding more hot props in the future.
+    val opacity = mutableStateOf(1f)
+    val translationX = mutableStateOf(0f)
+    val translationY = mutableStateOf(0f)
+    val scaleX = mutableStateOf(1f)
+    val scaleY = mutableStateOf(1f)
+    val rotationZ = mutableStateOf(0f)
 }

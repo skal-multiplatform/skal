@@ -33,14 +33,26 @@ const H_EVENT_READ_POS  = HB_EVENT_READ_POS  >> 2;
 const B_OP_SEQ    = HB_OP_SEQ    >> 3;
 const B_EVENT_SEQ = HB_EVENT_SEQ >> 3;
 
-// Opcodes
-export const OP_CREATE_NODE   = 0x01;
-export const OP_REMOVE_NODE   = 0x02;
-export const OP_INSERT_BEFORE = 0x03;
-export const OP_SET_PROP_U32  = 0x10;
-export const OP_SET_PROP_F32  = 0x11;
-export const OP_SET_TEXT      = 0x14;
-export const OP_BIND_HANDLER  = 0x15;
+// ───────────────────────────────────────────────────────────────────────
+// Opcodes — must match SkalBridge.kt's companion object exactly.
+// ───────────────────────────────────────────────────────────────────────
+export const OP_CREATE_NODE       = 0x01;
+export const OP_REMOVE_NODE       = 0x02;
+export const OP_INSERT_BEFORE     = 0x03;
+export const OP_SET_PROP_U32      = 0x10;
+export const OP_SET_PROP_F32      = 0x11;
+export const OP_SET_TEXT          = 0x14;
+export const OP_BIND_HANDLER      = 0x15;
+export const OP_SET_PROP_STR      = 0x16;
+// Hot-prop opcodes — distinct from OP_SET_PROP_F32 so the Kotlin drain's
+// `when (opcode)` pays zero branches for hot-prop routing when no
+// animation is active. See PROPS_PLAN.md §2.1.
+export const OP_SET_OPACITY       = 0x20;
+export const OP_SET_TRANSLATION_X = 0x21;
+export const OP_SET_TRANSLATION_Y = 0x22;
+export const OP_SET_SCALE_X       = 0x23;
+export const OP_SET_SCALE_Y       = 0x24;
+export const OP_SET_ROTATION_Z    = 0x25;
 
 // Widget types
 export const WT_BOX           = 0;
@@ -53,6 +65,68 @@ export const WT_SCROLL_COLUMN = 5;
 // Event kinds
 export const EV_CLICK  = 0x01;
 export const EV_CHANGE = 0x02;
+
+// ───────────────────────────────────────────────────────────────────────
+// Prop key namespace — must match SkalBridge.kt's PROP_* constants.
+// Partitioned by tier; see PROPS_PLAN.md §2.2.
+// ───────────────────────────────────────────────────────────────────────
+
+// Layout (u32 unless noted)
+export const PROP_PADDING          = 0x00;
+export const PROP_PADDING_TOP      = 0x01;
+export const PROP_PADDING_RIGHT    = 0x02;
+export const PROP_PADDING_BOTTOM   = 0x03;
+export const PROP_PADDING_LEFT     = 0x04;
+export const PROP_WIDTH            = 0x05;
+export const PROP_HEIGHT           = 0x06;
+export const PROP_WEIGHT           = 0x07; // f32 → setPropF32
+export const PROP_ALIGNMENT        = 0x08;
+export const PROP_GAP              = 0x09;
+
+// Visual
+export const PROP_BG_COLOR         = 0x20;
+export const PROP_FG_COLOR         = 0x21;
+export const PROP_CORNER_RADIUS    = 0x22;
+export const PROP_BORDER_WIDTH     = 0x23;
+export const PROP_BORDER_COLOR     = 0x24;
+export const PROP_SHADOW_ELEVATION = 0x25;
+
+// Text
+export const PROP_FONT_SIZE        = 0x40;
+export const PROP_FONT_WEIGHT      = 0x41;
+export const PROP_FONT_FAMILY      = 0x42;
+export const PROP_TEXT_ALIGN       = 0x43;
+export const PROP_LINE_HEIGHT      = 0x44;
+export const PROP_MAX_LINES        = 0x45;
+export const PROP_TEXT_OVERFLOW    = 0x46;
+
+// Image (string-valued)
+export const PROP_IMAGE_SRC        = 0x60;
+export const PROP_CONTENT_SCALE    = 0x61;
+
+// Input (string-valued except enums)
+export const PROP_PLACEHOLDER      = 0x80;
+export const PROP_VALUE            = 0x81;
+export const PROP_KEYBOARD_TYPE    = 0x82;
+export const PROP_SECURE_ENTRY     = 0x83;
+
+// Behavior
+export const PROP_ENABLED          = 0xA0;
+export const PROP_FOCUSABLE        = 0xA1;
+export const PROP_VISIBLE          = 0xA2;
+
+// Sentinel values for width/height u32 props.
+export const NO_VALUE     = -1 | 0;          // prop unset → composable default
+export const FILL_MAX     = 0x7FFFFFFE | 0;
+export const WRAP_CONTENT = 0x7FFFFFFD | 0;
+
+// Alignment enum values (for PROP_ALIGNMENT).
+export const ALIGN_START         = 0;
+export const ALIGN_CENTER        = 1;
+export const ALIGN_END           = 2;
+export const ALIGN_SPACE_BETWEEN = 3;
+export const ALIGN_SPACE_AROUND  = 4;
+export const ALIGN_SPACE_EVENLY  = 5;
 
 // ───────────────────────────────────────────────────────────────────────
 // Acquire the shared buffer. __skal_acquireBridge is installed by the
@@ -150,6 +224,241 @@ export function scheduleCommit() {
 }
 
 // ───────────────────────────────────────────────────────────────────────
+// Diff cache — flat-array, O(1) lookup, sparse rows allocated per active
+// node. See PROPS_PLAN.md §4.2.
+//
+// The point of the cache: skip a wire write when the value is unchanged.
+// Most "renders" don't change every prop; for a button being re-emitted
+// because a sibling's count signal changed, skipping its bg-color write
+// is pure win.
+//
+// Sparse design — `nodeIdToRow` maps a node's id to a row in the flat
+// array. Rows are recycled via `freeRows` when nodes are removed. Cap
+// is generous (8192 active nodes × 64 prop slots = 2 MiB total flat
+// state) — well within budget.
+// ───────────────────────────────────────────────────────────────────────
+
+const MAX_ACTIVE_NODES = 8192;
+
+// Dense slot table — maps each defined PROP_* key (sparse across the
+// 0x00..0xA2 range) to a contiguous slot index in the per-node diff-
+// cache rows. Avoids the wasted memory of a sparse 256-wide row AND
+// the collision bug of masking with (key & 0x3F).
+//
+// `KEY_TO_SLOT[propKey] = slot` or -1 if the key is not registered as
+// a known cold prop. Build it once at module load; the lookup is then
+// a single Int8Array load per setProp call.
+const KEY_TO_SLOT = new Int8Array(256);
+KEY_TO_SLOT.fill(-1);
+
+// Layout (slots 0..9)
+KEY_TO_SLOT[PROP_PADDING]          = 0;
+KEY_TO_SLOT[PROP_PADDING_TOP]      = 1;
+KEY_TO_SLOT[PROP_PADDING_RIGHT]    = 2;
+KEY_TO_SLOT[PROP_PADDING_BOTTOM]   = 3;
+KEY_TO_SLOT[PROP_PADDING_LEFT]     = 4;
+KEY_TO_SLOT[PROP_WIDTH]            = 5;
+KEY_TO_SLOT[PROP_HEIGHT]           = 6;
+KEY_TO_SLOT[PROP_WEIGHT]           = 7;
+KEY_TO_SLOT[PROP_ALIGNMENT]        = 8;
+KEY_TO_SLOT[PROP_GAP]              = 9;
+// Visual (slots 10..15)
+KEY_TO_SLOT[PROP_BG_COLOR]         = 10;
+KEY_TO_SLOT[PROP_FG_COLOR]         = 11;
+KEY_TO_SLOT[PROP_CORNER_RADIUS]    = 12;
+KEY_TO_SLOT[PROP_BORDER_WIDTH]     = 13;
+KEY_TO_SLOT[PROP_BORDER_COLOR]     = 14;
+KEY_TO_SLOT[PROP_SHADOW_ELEVATION] = 15;
+// Text (slots 16..22)
+KEY_TO_SLOT[PROP_FONT_SIZE]        = 16;
+KEY_TO_SLOT[PROP_FONT_WEIGHT]      = 17;
+KEY_TO_SLOT[PROP_FONT_FAMILY]      = 18;
+KEY_TO_SLOT[PROP_TEXT_ALIGN]       = 19;
+KEY_TO_SLOT[PROP_LINE_HEIGHT]      = 20;
+KEY_TO_SLOT[PROP_MAX_LINES]        = 21;
+KEY_TO_SLOT[PROP_TEXT_OVERFLOW]    = 22;
+// Image (slots 23..24)
+KEY_TO_SLOT[PROP_IMAGE_SRC]        = 23;
+KEY_TO_SLOT[PROP_CONTENT_SCALE]    = 24;
+// Input (slots 25..28)
+KEY_TO_SLOT[PROP_PLACEHOLDER]      = 25;
+KEY_TO_SLOT[PROP_VALUE]            = 26;
+KEY_TO_SLOT[PROP_KEYBOARD_TYPE]    = 27;
+KEY_TO_SLOT[PROP_SECURE_ENTRY]     = 28;
+// Behavior (slots 29..31)
+KEY_TO_SLOT[PROP_ENABLED]          = 29;
+KEY_TO_SLOT[PROP_FOCUSABLE]        = 30;
+KEY_TO_SLOT[PROP_VISIBLE]          = 31;
+
+// Round up to 32 for a tidy power-of-two row stride. Leaves room to
+// add ~32 more cold props without resizing — beyond that, expand to 64.
+const SLOTS_PER_NODE = 32;
+
+const diffCacheU32 = new Int32Array(MAX_ACTIVE_NODES * SLOTS_PER_NODE);
+const diffCacheF32 = new Float32Array(MAX_ACTIVE_NODES * SLOTS_PER_NODE);
+const diffCacheStr = new Array(MAX_ACTIVE_NODES * SLOTS_PER_NODE);
+
+// Parallel "has value been set" flag, one byte per slot. Needed
+// because EVERY 32-bit pattern is a legitimate u32 prop value (colors,
+// dp counts, enums) — there is no sentinel int we can safely reserve.
+// Using `Uint8Array` keeps the check to a single load per setProp call,
+// and `0/1` lets us reset whole rows with `.fill(0)`.
+//
+// (For F32 we rely on NaN's `NaN !== NaN` semantics — that one sentinel
+// works because no animation value is ever NaN. Strings use `undefined`
+// as their unset sentinel — distinct from any user-supplied string.)
+const hasValueU32 = new Uint8Array(MAX_ACTIVE_NODES * SLOTS_PER_NODE);
+
+// Hot-prop cache — separate space from cold-prop cache. Each active
+// node has 6 slots (one per hot prop: opacity, transX, transY, scaleX,
+// scaleY, rotZ). Indexed by (row * HOT_PROPS_PER_NODE + hotIdx).
+const HOT_PROPS_PER_NODE = 6;
+const diffHotF32 = new Float32Array(MAX_ACTIVE_NODES * HOT_PROPS_PER_NODE);
+diffHotF32.fill(NaN);
+
+const nodeIdToRow = new Map();
+const freeRows    = [];
+let   nextRow     = 0;
+
+function rowFor(nodeId) {
+  let row = nodeIdToRow.get(nodeId);
+  if (row === undefined) {
+    row = freeRows.pop();
+    if (row === undefined) row = nextRow++;
+    if (row >= MAX_ACTIVE_NODES) {
+      throw new Error(`Skal: diff cache exhausted (>${MAX_ACTIVE_NODES} active nodes)`);
+    }
+    nodeIdToRow.set(nodeId, row);
+    const base = row * SLOTS_PER_NODE;
+    hasValueU32.fill(0, base, base + SLOTS_PER_NODE);
+    // U32 cache cells are filled lazily on first write — we only care
+    // about hasValueU32 for correctness, so the U32 cell can hold any
+    // garbage until first set. (We still zero the F32/Str sentinels
+    // because their first-write contract relies on the sentinel value.)
+    diffCacheF32.fill(NaN, base, base + SLOTS_PER_NODE);
+    for (let i = base; i < base + SLOTS_PER_NODE; i++) diffCacheStr[i] = undefined;
+  }
+  return row;
+}
+
+/**
+ * Release a node's diff-cache row. MUST be called from `removeNode` in
+ * the renderer — otherwise a recycled node id sees stale "last values"
+ * from its previous incarnation and silently drops legitimate writes.
+ *
+ * Both the cold row and the hot-prop row are released. The U32/F32/Str
+ * cells are reset to their unset sentinels lazily when `rowFor` next
+ * reclaims this row — no need to clear here.
+ */
+export function diffCacheReleaseNode(nodeId) {
+  const row = nodeIdToRow.get(nodeId);
+  if (row !== undefined) {
+    nodeIdToRow.delete(nodeId);
+    freeRows.push(row);
+    // Reset the hot-prop row too — it shares the same row index so
+    // recycling this row for a different node would otherwise see
+    // stale hot-prop "last values."
+    const hotBase = row * HOT_PROPS_PER_NODE;
+    diffHotF32.fill(NaN, hotBase, hotBase + HOT_PROPS_PER_NODE);
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Typed prop setters. Each does a diff-cache check first; if the value
+// hasn't changed, it skips the wire write entirely (no opcode, no
+// position bump, no commit dirty bit). Skipped writes don't count in
+// `jsWritesPerSecond`.
+//
+// Free functions (not methods on an object) so bun's JIT can inline
+// them at the call site — the per-call cost should be ~one TypedArray
+// store and one position bump in the common case.
+// ───────────────────────────────────────────────────────────────────────
+
+let propWritesCounter = 0;
+let propSkipsCounter  = 0;
+
+const _f32buf  = new Float32Array(1);
+const _u32view = new Uint32Array(_f32buf.buffer);
+
+export function setPropU32(nodeId, key, value) {
+  const slotIdx = KEY_TO_SLOT[key];
+  if (slotIdx < 0) return; // unknown key — drop silently (no recompose, no waste)
+  const row = rowFor(nodeId);
+  const slot = row * SLOTS_PER_NODE + slotIdx;
+  // | 0 normalizes the value to int32 — JS subtraction-then-equality
+  // would mis-fire on JS numbers that aren't exact 32-bit. The Int32Array
+  // load also yields a signed int, so this matches Kotlin's signed Int.
+  const v = value | 0;
+  // Two-step check: only consult the value cell if we've previously
+  // stored something there. Every 32-bit pattern is a legitimate u32
+  // prop value, so we can't reserve a sentinel — see hasValueU32.
+  if (hasValueU32[slot] !== 0 && diffCacheU32[slot] === v) { propSkipsCounter++; return; }
+  diffCacheU32[slot] = v;
+  hasValueU32[slot] = 1;
+  writeOp(OP_SET_PROP_U32, nodeId, key, v);
+  propWritesCounter++;
+}
+
+export function setPropF32(nodeId, key, value) {
+  const slotIdx = KEY_TO_SLOT[key];
+  if (slotIdx < 0) return;
+  const row = rowFor(nodeId);
+  const slot = row * SLOTS_PER_NODE + slotIdx;
+  if (diffCacheF32[slot] === value) { propSkipsCounter++; return; }
+  diffCacheF32[slot] = value;
+  // Encode the f32 bit pattern into u32 — Kotlin's drain calls
+  // Float.fromBits to recover it. The single-element Float32Array trick
+  // is the fastest way to get IEEE 754 bits in JS without a DataView.
+  _f32buf[0] = value;
+  writeOp(OP_SET_PROP_F32, nodeId, key, _u32view[0]);
+  propWritesCounter++;
+}
+
+export function setPropStr(nodeId, key, value) {
+  const slotIdx = KEY_TO_SLOT[key];
+  if (slotIdx < 0) return;
+  const row = rowFor(nodeId);
+  const slot = row * SLOTS_PER_NODE + slotIdx;
+  if (diffCacheStr[slot] === value) { propSkipsCounter++; return; }
+  diffCacheStr[slot] = value;
+  writeString(value == null ? '' : String(value));
+  // Wire format: b = (key << 24) | (offset & 0xFFFFFF); c = length.
+  // 24-bit offset = 16 MiB addressable, far above the 512 KiB heap.
+  // 8-bit key = 256 distinct prop keys, more than the namespace defines.
+  // 32-bit length supports any string up to 4 GiB, though in practice
+  // an entry can never exceed the 512 KiB heap.
+  const packedB = ((key & 0xFF) << 24) | (_strOffset & 0xFFFFFF);
+  writeOp(OP_SET_PROP_STR, nodeId, packedB, _strLength);
+  propWritesCounter++;
+}
+
+// ── Hot-prop setters — direct routes, dedicated opcodes ─────────────
+//
+// Each hot prop has its own dedicated opcode AND a slot in the separate
+// `diffHotF32` cache (declared above, alongside the cold cache).
+//
+// The drain in Kotlin dispatches each hot opcode directly to a
+// dedicated MutableState — no version bump, no recompose. Animation-
+// frequency updates here cost zero composition work.
+
+function setHotF32Indexed(nodeId, opcode, hotIdx, value) {
+  const row = rowFor(nodeId);
+  const slot = row * HOT_PROPS_PER_NODE + hotIdx;
+  if (diffHotF32[slot] === value) { propSkipsCounter++; return; }
+  diffHotF32[slot] = value;
+  _f32buf[0] = value;
+  writeOp(opcode, nodeId, 0, _u32view[0]);
+  propWritesCounter++;
+}
+
+export function setOpacity     (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_OPACITY,       0, v); }
+export function setTranslationX(nodeId, v) { setHotF32Indexed(nodeId, OP_SET_TRANSLATION_X, 1, v); }
+export function setTranslationY(nodeId, v) { setHotF32Indexed(nodeId, OP_SET_TRANSLATION_Y, 2, v); }
+export function setScaleX      (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_SCALE_X,       3, v); }
+export function setScaleY      (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_SCALE_Y,       4, v); }
+export function setRotationZ   (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_ROTATION_Z,    5, v); }
+
+// ───────────────────────────────────────────────────────────────────────
 // Event dispatch — Compose writes events into the event ring and wakes
 // the JS thread; the native bridge then runs `__skal_drainEvents()` which
 // looks up handlers and calls them.
@@ -203,12 +512,17 @@ globalThis.__skal_drainEvents = function () {
   lastEventSeq = seq;
 };
 
-// Debug snapshot.
+// Debug snapshot. `propWrites/propSkips` are diff-cache effectiveness
+// counters — visible via `JSON.parse(skalStatus()).propSkips / (writes+skips)`
+// from a JS console, or via Kotlin-side `propWritesLastDrain` /
+// `coldPropsTouchedLastDrain` which measure the receive side.
 globalThis.skalStatus = () => JSON.stringify({
   handlerCount: handlers.size,
   opSeq: Number(opSeq),
   lastEventSeq: Number(lastEventSeq),
   lastHandlerError,
+  propWrites: propWritesCounter,
+  propSkips: propSkipsCounter,
 });
 
 // ───────────────────────────────────────────────────────────────────────

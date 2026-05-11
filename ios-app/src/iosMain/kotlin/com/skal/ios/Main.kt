@@ -180,10 +180,13 @@ private fun PerfHud(bridge: SkalBridge) {
                         val fps = (1_000_000_000.0 / avgFrameNs).toInt()
                         val pumpMs = bridge.pumpAvgNs / 1_000_000.0
                         val peakMs = bridge.pumpPeakNs / 1_000_000.0
+                        val propWrites = bridge.propWritesLastDrain
+                        val propTouched = bridge.coldPropsTouchedLastDrain
                         // Kotlin's %.Xf on Native goes through NumberFormat which
                         // can pull in a chunky locale resolver; format manually.
                         displayText = "$fps FPS (${avgFrameMs.toFixed2()} ms) · " +
-                            "pump ${pumpMs.toFixed3()} ms (peak ${peakMs.toFixed2()} ms)"
+                            "pump ${pumpMs.toFixed3()} ms (peak ${peakMs.toFixed2()} ms) · " +
+                            "props ${propWrites}/${propTouched}"
                         if (++stdoutThrottle >= 6) {
                             stdoutThrottle = 0
                             println("[SkalIos] $displayText")

@@ -475,24 +475,89 @@ JIT/Wasm at runtime just go through their interpreter fallbacks
 3. `Source/JavaScriptCore/bytecode/InlineCacheCompiler.h` — CCallHelpers include
 4. `Source/WTF/wtf/PlatformHave.h` — HAVE_READLINE gates (2 sites)
 
-### Spike day 4 — bun-zig.o + libJSC.a + bun C++ all compile; link script ready; final link iterating
+### Spike day 4 — libskal.dylib for iOS device produced ✅
 
-**Update (2026-05-11 20:00)**: link attempt produced specific
+**Update (2026-05-11 21:39)**: **libskal.dylib for iOS arm64 device
+LINKED SUCCESSFULLY.** The `#elif OS(DARWIN) && !PLATFORM(MAC)` gate
+in `SecretsDarwin.cpp` (matching the same approach used in
+`NoOrphansTracker.cpp`) compiled cleanly. WebKit JSC rebuild + bun
+C++ bindings-4 rebuild + final link all green. The resulting dylib:
+
+```
+LC_BUILD_VERSION
+  platform IOS
+  minos    16.0
+  sdk      26.2
+
+C ABI symbols (all 6 present):
+  T _skal_acquire_bridge
+  T _skal_create_runtime
+  T _skal_dispose_runtime
+  T _skal_evaluate
+  T _skal_free_string
+  T _skal_wake_js
+
+JNI symbols leaked: none (✓ per § 0.5/V3)
+
+Mach-O 64-bit arm64
+Size: 64 MB stripped / 90 MB unstripped
+Location: build/skal-ios-device/libskal.dylib
+```
+
+**Earlier (2026-05-11 20:00)**: link attempt produced specific
 unresolved-symbol errors for `Bun::Secrets::{setPassword, getPassword,
-deletePassword}`. My iOS stubs in `SecretsDarwin.cpp` use
-`#elif PLATFORM(IOS_FAMILY)` — this gate may not be defined in bun's
-root.h compile context (unlike WebKit's own headers which set it).
-Switched to `#elif OS(DARWIN) && !PLATFORM(MAC)` which is reliably
-true on iOS (we already confirmed OS(DARWIN) was true on iOS earlier
-from the original error). WebKit cmake rebuild + bun C++ rebuild
-running in background — full cycle ~30-45 min. Expected to produce
-libskal.dylib once stubs link cleanly.
+deletePassword}`. My iOS stubs in `SecretsDarwin.cpp` initially used
+`#elif PLATFORM(IOS_FAMILY)` — that gate isn't reliably defined in
+bun's root.h compile context (unlike WebKit's own headers which set
+it). Switched to `#elif OS(DARWIN) && !PLATFORM(MAC)` which IS
+reliably true on iOS (we confirmed `OS(DARWIN)` was true on iOS
+earlier from the original error path). That fixed the symbol gap.
 
-**Status**: all build artifacts produced for iOS arm64 EXCEPT a final
-linkable libskal.dylib. The `link-skal-ios.sh` script is in place; the
-last few issues are iOS-specific symbol stubs needed for the final
-link. ~5 small issues remaining, none unknown — all match the pattern
-of "macOS-only API used by bun, needs iOS stub."
+**Status (2026-05-11 21:47)**: **iOS device .app builds end-to-end.**
+
+```
+SkalIosApp.app/                  arm64 iOS device, Release-iphoneos
+├── SkalIosApp                   Mach-O arm64 executable
+└── Frameworks/
+    ├── libskal.dylib            64 MB; IOS minos 16.0; bun+WebKit+JSC
+    └── Skal.framework/Skal      Kotlin/Native iosArm64 dynamic framework
+                                 LC_LOAD_DYLIB → @rpath/libskal.dylib
+```
+
+All three binaries: Mach-O arm64, LC_BUILD_VERSION=IOS (not
+IOSSIMULATOR). Built unsigned for the spike — the only thing left
+between this and a sideloaded iPhone is `DEVELOPMENT_TEAM` in
+`ios-app/iosApp/project.yml` + Xcode → Signing & Capabilities →
+"Automatically manage signing" with your Apple ID team.
+
+**End-to-end build sequence**:
+
+```sh
+# 1. Build libskal.dylib for iOS device (one-time / when bun patches change).
+#    ~30-45 min on M1 from cold; ~5 min incremental.
+PATH=$HOME/.cargo/bin:$PATH bash scripts/link-skal-ios.sh
+
+# 2. Build Skal.framework for iosArm64 (Kotlin/Native). ~3-4 min.
+cd ios-app && ./gradlew :linkReleaseFrameworkIosArm64 && cd ..
+
+# 3. Build the iOS .app. ~30 sec.
+cd ios-app/iosApp && xcodegen generate
+xcodebuild -project SkalIosApp.xcodeproj -scheme SkalIosApp \
+    -destination "generic/platform=iOS" -configuration Release build
+```
+
+**To run on a real iPhone**:
+1. Set `DEVELOPMENT_TEAM` in `ios-app/iosApp/project.yml` to your
+   personal Apple ID team ID (free Apple ID gets a "personal team"
+   with a 10-char team ID — find via Xcode → Settings → Accounts →
+   Apple IDs → team listing).
+2. `xcodegen generate` to regenerate the pbxproj.
+3. Open `ios-app/iosApp/SkalIosApp.xcodeproj` in Xcode, plug in
+   iPhone, hit Run. Xcode handles provisioning + codesign.
+
+(Free Apple ID limitations: 7-day app expiration, 3 apps max
+sideloaded per device, must re-sign weekly. Paid Developer Program
+($99/yr) removes these limits.)
 
 **Working artifacts on disk**:
 - `vendor/bun/build/ios-release/obj/*.o` — 1124 bun C++ objects for

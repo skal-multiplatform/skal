@@ -1,19 +1,24 @@
 // Skal iOS — Kotlin Multiplatform module producing Skal.framework.
 //
-// **Status: Phase 0** — Compose Multiplatform UI runs on iOS; the JS
-// runtime side (libskal.dylib equivalent for iOS) is not yet built.
-// Skal.kt's `evaluate()` throws NotImplementedError. See docs/ios-port.md
-// for the path to a real bun-iOS build.
+// **Status: Phase 2** — Compose Multiplatform UI runs on iOS Simulator
+// AND real iOS device. The bun-iOS runtime (libskal.dylib) is built
+// for both Simulator (scripts/link-skal-iossim.sh) and Device
+// (scripts/link-skal-ios.sh). Skal.kt's `evaluate()` resolves through
+// cinterop into the actual JSC engine.
 //
 // Targets:
-//   iosArm64           — physical iPhone/iPad (production)
-//   iosSimulatorArm64  — Xcode iOS Simulator on Apple Silicon (dev loop)
+//   iosArm64           — physical iPhone/iPad (uses build/skal-ios-device/)
+//   iosSimulatorArm64  — Xcode iOS Simulator on Apple Silicon (uses
+//                        build/skal-iossim/)
 //   iosX64             — Xcode iOS Simulator on Intel (rarely needed; kept
-//                        for parity with stock JetBrains templates)
+//                        for parity with stock JetBrains templates; uses
+//                        build/skal-iossim/)
 //
-// Output: `Skal.framework` (static) under
-// `build/bin/iosArm64/SkalDebugFramework/` etc. An Xcode app project
-// (not in this repo yet) would add this as an embedded framework.
+// Output: `Skal.framework` (dynamic, embeds LC_LOAD_DYLIB →
+// @rpath/libskal.dylib) under `build/bin/iosArm64/{release,debug}Framework/`
+// or `build/bin/iosSimulatorArm64/{release,debug}Framework/`.
+// The Xcode app in ios-app/iosApp/ embeds the matching variant per
+// active SDK via its postBuildScripts (see ios-app/iosApp/project.yml).
 
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 
@@ -34,15 +39,28 @@ kotlin {
 
     // Skal.framework is now DYNAMIC (was static in Phase 0). The shift
     // is necessary to generate an LC_LOAD_DYLIB record in the framework's
-    // Mach-O that points at @rpath/libskal.dylib (the bun runtime,
-    // re-stamped for iOS Simulator by scripts/link-skal-iossim.sh). With
-    // a static framework, the cinterop'd skal_* symbols would be left
-    // as undefined external references for the consuming Xcode app to
+    // Mach-O that points at @rpath/libskal.dylib (the bun runtime, built
+    // by scripts/link-skal-iossim.sh for the Simulator and
+    // scripts/link-skal-ios.sh for real iOS device). With a static
+    // framework, the cinterop'd skal_* symbols would be left as
+    // undefined external references for the consuming Xcode app to
     // resolve — that works, but means the Xcode project has to know
     // about libskal.dylib too. Going dynamic puts the dependency
     // declaration inside Skal.framework where it belongs.
+    //
+    // Two libskal builds exist, one per iOS Mach-O ABI:
+    //   build/skal-iossim/    — Simulator (LC_BUILD_VERSION = IOSSIMULATOR)
+    //   build/skal-ios-device/ — Device    (LC_BUILD_VERSION = IPHONEOS)
+    // The Kotlin/Native linker generates an iOS-Simulator framework for
+    // iosSimulatorArm64 + iosX64, and an iOS-Device framework for
+    // iosArm64. The two libskal flavors share the same install_name
+    // (@rpath/libskal.dylib) but differ in their LC_BUILD_VERSION, so
+    // dyld at runtime only accepts the matching pair.
     val skalIosSimDir = rootProject.file("../build/skal-iossim")
+    val skalIosDeviceDir = rootProject.file("../build/skal-ios-device")
     targets.withType<KotlinNativeTarget>().configureEach {
+        val isDeviceTarget = name == "iosArm64"
+        val skalLibDir = if (isDeviceTarget) skalIosDeviceDir else skalIosSimDir
         binaries.framework {
             baseName = "Skal"
             isStatic = false
@@ -50,8 +68,14 @@ kotlin {
             // generates LC_LOAD_DYLIB to libskal.dylib's install_name
             // (@rpath/libskal.dylib). dyld resolves @rpath against the
             // app's @executable_path/Frameworks at runtime.
-            if (skalIosSimDir.isDirectory) {
-                linkerOpts("-L${skalIosSimDir.absolutePath}", "-lskal")
+            //
+            // If the matching libskal hasn't been built yet, drop the
+            // linkerOpts entirely so `./gradlew assemble` still succeeds
+            // for the *other* iOS target — handy when you've built only
+            // the Simulator libskal and want to iterate on Sim without
+            // rebuilding the Device libskal each time.
+            if (skalLibDir.isDirectory) {
+                linkerOpts("-L${skalLibDir.absolutePath}", "-lskal")
             }
         }
     }

@@ -18,16 +18,30 @@ options:
 settings:
   base:
     SWIFT_VERSION: 5.9
+    # DEVELOPMENT_TEAM is empty by default — Simulator builds don't need
+    # it (`xcrun simctl install` ignores signature). For real-device
+    # builds, set the env var SKAL_DEVELOPMENT_TEAM before `xcodegen
+    # generate`, OR replace the empty string here with your 10-char team
+    # ID. Free Apple IDs get a "personal team" with a team ID you can
+    # find in Xcode → Settings → Accounts → Apple IDs → Manage
+    # Certificates. The same project.yml supports both signed (device)
+    # and unsigned (Simulator) builds via the per-SDK conditioning below.
     DEVELOPMENT_TEAM: ""
-    # Disable signing for Simulator builds — we don't need to sign for
-    # `xcrun simctl install`. Real device runs need a development team
-    # filled in (or sign the .app post-build).
-    CODE_SIGN_STYLE: Manual
-    CODE_SIGNING_REQUIRED: NO
-    CODE_SIGNING_ALLOWED: NO
-    # Skal.framework is built by the parent gradle module — point Xcode
-    # at the simulator-arm64 framework dir directly. Switching to a
-    # device build = swap iosSimulatorArm64 for iosArm64 here.
+    CODE_SIGN_STYLE: Automatic
+    # Per-SDK code signing: Simulator builds are unsigned (`xcrun simctl
+    # install` doesn't care), device builds use automatic signing (Xcode
+    # picks the dev provisioning profile matched to DEVELOPMENT_TEAM).
+    # The `[sdk=...]` bracket syntax is an Xcode build-setting feature
+    # that XcodeGen passes through verbatim into project.pbxproj.
+    "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": NO
+    "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO
+    "CODE_SIGNING_REQUIRED[sdk=iphoneos*]": YES
+    "CODE_SIGNING_ALLOWED[sdk=iphoneos*]": YES
+    "CODE_SIGN_IDENTITY[sdk=iphoneos*]": Apple Development
+    # Skal.framework is built by the parent gradle module. We pick the
+    # framework variant by SDK: Simulator → iosSimulatorArm64, device
+    # → iosArm64. Both targets are produced by the same gradle build
+    # (the Kotlin/Native compiler emits one .framework per target).
     #
     # The `$(SKAL_KOTLIN_VARIANT)` substitution flips between
     # debugFramework/ (45.9 MB, full klib + symbols) and releaseFramework/
@@ -37,9 +51,12 @@ settings:
     # aspirational rather than real. The mapping Debug → debug, Release →
     # release is set under settings.configs below; XcodeGen doesn't
     # provide a built-in `CONFIGURATION_LOWER`, so we define our own.
-    FRAMEWORK_SEARCH_PATHS:
+    "FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]":
       - $(inherited)
       - $(SRCROOT)/../build/bin/iosSimulatorArm64/$(SKAL_KOTLIN_VARIANT)Framework
+    "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]":
+      - $(inherited)
+      - $(SRCROOT)/../build/bin/iosArm64/$(SKAL_KOTLIN_VARIANT)Framework
   # Per-configuration overrides — see FRAMEWORK_SEARCH_PATHS comment.
   # The variable name is local to this project (Xcode build settings live
   # in a flat namespace per target; nothing else in our build references
@@ -115,28 +132,69 @@ targets:
         # the copyFiles phase below.
         ENABLE_USER_SCRIPT_SANDBOXING: NO
     dependencies:
-      # Embed Skal.framework — a dynamic Mach-O dylib (was static in
-      # Phase 0) carrying LC_LOAD_DYLIB → @rpath/libskal.dylib.
+      # Register Skal.framework for the project nav + link step. We
+      # point at the Simulator path here only because XcodeGen needs a
+      # concrete file at generation time (PBXFileRef paths are stored
+      # verbatim — Xcode build-setting variables like `$(SDK_NAME)`
+      # don't expand inside PBXFileRef.path). The actual linking
+      # resolves the framework by NAME via FRAMEWORK_SEARCH_PATHS,
+      # which IS SDK-conditional (see settings.base above) — so
+      # linking against this dep on an `iphoneos` build correctly
+      # finds the iosArm64 framework, not the Simulator one.
       #
-      # The `$(SKAL_KOTLIN_VARIANT)` substitution flips the embed
-      # target between debugFramework/ and releaseFramework/ at Xcode
-      # build time (Debug → debug, Release → release; see
-      # settings.configs above). XcodeGen writes the path verbatim
-      # into project.pbxproj as a PBXFileRef — Xcode expands the
-      # variable when copying into the .app/Frameworks/ bundle.
-      # Without this, Release builds would silently embed the 45.9 MB
-      # debug framework even though the 25.8 MB release framework
-      # exists, defeating the whole point of the Release config.
+      # `embed: false` because embedding via PBXFileRef would always
+      # copy the literal Simulator path. The postBuildScripts below
+      # handles the per-SDK framework copy + libskal.dylib placement.
+      #
+      # The `$(SKAL_KOTLIN_VARIANT)` substitution still flips
+      # debugFramework/ vs releaseFramework/ at Xcode build time
+      # (Debug → debug, Release → release; see settings.configs above).
       - framework: ../build/bin/iosSimulatorArm64/$(SKAL_KOTLIN_VARIANT)Framework/Skal.framework
-        embed: true
+        embed: false
         codeSign: false
-    # Copy the re-stamped libskal.dylib (bun + WebKit + JSC + the
-    # skal_entry.zig exports) into SkalIosApp.app/Frameworks/. We use a
-    # post-build Run Script (rather than XcodeGen's copyFiles, which
-    # treats paths as project-relative resource references) because the
-    # dylib lives outside the app's source tree — it's an artifact built
-    # by scripts/link-skal-iossim.sh.
+    # Copy Skal.framework and libskal.dylib into SkalIosApp.app/Frameworks/.
+    # We do this via post-build Run Scripts (rather than XcodeGen's
+    # copyFiles or `embed: true` on the framework dep) because:
+    #   1. The artifacts live outside the app's source tree (built by
+    #      `./gradlew :linkReleaseFrameworkIosArm64` and
+    #      `scripts/link-skal-ios.sh` respectively).
+    #   2. The right artifact depends on the active SDK (Sim vs device),
+    #      and PBXFileRef paths can't be SDK-conditional — but a shell
+    #      script can branch on `$PLATFORM_NAME` at build time.
     postBuildScripts:
+      - name: Embed Skal.framework
+        shell: /bin/bash
+        runOnlyWhenInstalling: false
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/Skal.framework/Skal
+        script: |
+          set -euo pipefail
+          # Pick the Kotlin/Native target matching the Xcode SDK.
+          # Same build, two outputs (iosSimulatorArm64/ and iosArm64/)
+          # produced by ./gradlew linkXxxFrameworkIosXxx.
+          if [[ "${PLATFORM_NAME}" == "iphoneos" ]]; then
+            kt_target="iosArm64"
+          else
+            kt_target="iosSimulatorArm64"
+          fi
+          # SRCROOT is .../ios-app/iosApp; ../build/ → ios-app/build/
+          # (Kotlin/Native framework outputs live here, NOT at the
+          # Skal root's build/. libskal.dylib does live at the root —
+          # see the next script.)
+          src="${SRCROOT}/../build/bin/${kt_target}/${SKAL_KOTLIN_VARIANT}Framework/Skal.framework"
+          dst="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/Skal.framework"
+          if [[ ! -d "$src" ]]; then
+            # Capitalize first letter portably (macOS /bin/bash is 3.2,
+            # which doesn't support the `${VAR^}` shorthand).
+            variant_cap="$(echo "${SKAL_KOTLIN_VARIANT}" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
+            target_cap="$(echo "${kt_target}" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
+            echo "error: $src not found — run \`./gradlew :link${variant_cap}Framework${target_cap}\` (e.g. linkDebugFrameworkIosArm64)" >&2
+            exit 1
+          fi
+          mkdir -p "$(dirname "$dst")"
+          rm -rf "$dst"
+          cp -R "$src" "$dst"
+          echo "✓ embedded Skal.framework from ${kt_target}/${SKAL_KOTLIN_VARIANT}Framework/"
       - name: Embed libskal.dylib
         shell: /bin/bash
         runOnlyWhenInstalling: false
@@ -144,8 +202,21 @@ targets:
           - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libskal.dylib
         script: |
           set -euo pipefail
-          src="${SRCROOT}/../../build/skal-iossim/libskal.dylib"
+          # Pick the libskal build dir matching the Xcode SDK.
+          # Simulator → build/skal-iossim/ (built by scripts/link-skal-iossim.sh)
+          # Device   → build/skal-ios-device/ (built by scripts/link-skal-ios.sh)
+          if [[ "${PLATFORM_NAME}" == "iphoneos" ]]; then
+            src="${SRCROOT}/../../build/skal-ios-device/libskal.dylib"
+            origin_script="scripts/link-skal-ios.sh"
+          else
+            src="${SRCROOT}/../../build/skal-iossim/libskal.dylib"
+            origin_script="scripts/link-skal-iossim.sh"
+          fi
           dst="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/libskal.dylib"
+          if [[ ! -f "$src" ]]; then
+            echo "error: $src not found — run \`bash $origin_script\` from Skal root" >&2
+            exit 1
+          fi
           mkdir -p "$(dirname "$dst")"
           cp "$src" "$dst"
           echo "✓ embedded $(stat -f '%z' "$src") bytes from $src"

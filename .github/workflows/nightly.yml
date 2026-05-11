@@ -1,0 +1,23 @@
+# Cross-platform regression guard. Builds all four targets every
+# night against the latest main, regardless of which paths changed.
+#
+# Per TODO_PLATFORMS § 0.5: per-platform path filters in
+# android.yml / desktop.yml / ios-sim.yml could let a coupling slip
+# through (e.g. someone changes scripts/build-app.sh thinking it's
+# Android-only but it actually feeds Desktop's bytecode too). This
+# workflow catches that within 24 hours.
+
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 5 * * *"  # 05:00 UTC every day
+  workflow_dispatch: {}
+
+jobs:
+  android:
+    uses: ./.github/workflows/android.yml
+  desktop:
+    uses: ./.github/workflows/desktop.yml
+  ios-sim:
+    uses: ./.github/workflows/ios-sim.yml

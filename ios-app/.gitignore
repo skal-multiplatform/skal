@@ -1,0 +1,17 @@
+# Kotlin/Native + Gradle outputs
+build/
+.gradle/
+.kotlin/
+
+# Xcode build outputs (XcodeGen regenerates the .xcodeproj from
+# project.yml — never commit it). DerivedData lives under
+# ~/Library/Developer/Xcode/DerivedData by default and is already
+# outside this tree.
+iosApp/SkalIosApp.xcodeproj/
+iosApp/build/
+iosApp/DerivedData/
+*.xcworkspace
+xcuserdata/
+
+# Simulator app installation artifacts
+*.app

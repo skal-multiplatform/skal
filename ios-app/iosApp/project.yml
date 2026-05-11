@@ -1,0 +1,151 @@
+# XcodeGen spec for the iOS host app that embeds Skal.framework.
+#
+# Regenerate the .xcodeproj from this file: `xcodegen generate`
+# (run from this directory). Don't hand-edit project.pbxproj — its
+# UUIDs change on every regeneration.
+#
+# This is intentionally a minimal shell. The "interesting" code lives
+# in ../src/iosMain/kotlin/com/skal/ios/Main.kt (the Kotlin entry
+# point) and the bun runtime work captured in docs/ios-port.md.
+
+name: SkalIosApp
+options:
+  bundleIdPrefix: com.skal
+  deploymentTarget:
+    iOS: 16.0
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: 5.9
+    DEVELOPMENT_TEAM: ""
+    # Disable signing for Simulator builds — we don't need to sign for
+    # `xcrun simctl install`. Real device runs need a development team
+    # filled in (or sign the .app post-build).
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGNING_ALLOWED: NO
+    # Skal.framework is built by the parent gradle module — point Xcode
+    # at the simulator-arm64 framework dir directly. Switching to a
+    # device build = swap iosSimulatorArm64 for iosArm64 here.
+    #
+    # The `$(SKAL_KOTLIN_VARIANT)` substitution flips between
+    # debugFramework/ (45.9 MB, full klib + symbols) and releaseFramework/
+    # (25.8 MB, R8-equivalent dead-strip) based on the active Xcode build
+    # configuration. Without it, Release builds picked up the debug
+    # framework regardless — making release-mode size + perf claims
+    # aspirational rather than real. The mapping Debug → debug, Release →
+    # release is set under settings.configs below; XcodeGen doesn't
+    # provide a built-in `CONFIGURATION_LOWER`, so we define our own.
+    FRAMEWORK_SEARCH_PATHS:
+      - $(inherited)
+      - $(SRCROOT)/../build/bin/iosSimulatorArm64/$(SKAL_KOTLIN_VARIANT)Framework
+  # Per-configuration overrides — see FRAMEWORK_SEARCH_PATHS comment.
+  # The variable name is local to this project (Xcode build settings live
+  # in a flat namespace per target; nothing else in our build references
+  # SKAL_KOTLIN_VARIANT, so the choice is arbitrary as long as it doesn't
+  # collide with an Xcode-built-in or Kotlin/Native-emitted setting).
+  configs:
+    Debug:
+      SKAL_KOTLIN_VARIANT: debug
+    Release:
+      SKAL_KOTLIN_VARIANT: release
+
+targets:
+  SkalIosApp:
+    type: application
+    platform: iOS
+    deploymentTarget: 16.0
+    sources:
+      - path: SkalIosApp
+        # XcodeGen scans the folder and auto-categorizes each file by
+        # extension into the right Xcode build phase: Swift → Sources,
+        # .plist → Resources, .xcassets → Resources, etc. The bytecode
+        # pair (.cjs + .cjs.jsc) lands in Resources via the fileGroups
+        # entry below — Xcode copies them into the .app's root so
+        # NSBundle.pathForResource("skal-app", "cjs") finds them.
+        # Without the bytecode at runtime, iOS Main.kt falls back to
+        # source eval and we lose the parse-free cold-start win
+        # (~500-700 ms on iOS where JIT is disabled — the only
+        # meaningful perf knob iOS offers).
+        #
+        # Earlier this entry had `type: folder.assetcatalog` — a
+        # misnomer that was silently ignored by XcodeGen (paths
+        # pointing at directories override that hint), but it stayed
+        # because dropping it didn't change the generated pbxproj.
+        # Removed now to avoid future readers thinking SkalIosApp/ is
+        # one giant .xcassets blob.
+    # NB: explicitly list the bytecode pair as resources so Xcode
+    # copies them into the .app's Resources/ rather than treating
+    # the unknown extensions as "ignore".
+    fileGroups:
+      - SkalIosApp/skal-app.cjs
+      - SkalIosApp/skal-app.cjs.jsc
+    info:
+      path: SkalIosApp/Info.plist
+      properties:
+        # Compose Multiplatform iOS requires this — without it, the
+        # PlistSanityCheck in androidx.compose.ui.uikit aborts with
+        # "inadequate performance on iPhones with high refresh rate."
+        # The key opts the app out of iOS's default 60Hz frame cap on
+        # ProMotion displays so Compose can drive at 120Hz.
+        CADisableMinimumFrameDurationOnPhone: true
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        CFBundleDisplayName: Skal
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.skal.ios.demo
+        INFOPLIST_FILE: SkalIosApp/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # The app loads libskal.dylib via dyld at startup (Skal.framework
+        # has LC_LOAD_DYLIB → @rpath/libskal.dylib). LD_RUNPATH_SEARCH_PATHS
+        # = @executable_path/Frameworks teaches dyld where @rpath
+        # resolves; the embedded dylib goes in SkalIosApp.app/Frameworks/
+        # via the copyFiles phase below.
+        LD_RUNPATH_SEARCH_PATHS:
+          - $(inherited)
+          - "@executable_path/Frameworks"
+        # libskal.dylib is referenced via @rpath at runtime; Xcode's
+        # link step doesn't need to see it (Skal.framework's Mach-O
+        # already declares the LC_LOAD_DYLIB record). But Xcode does
+        # need to know NOT to strip the dylib from the bundle, hence
+        # the copyFiles phase below.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    dependencies:
+      # Embed Skal.framework — a dynamic Mach-O dylib (was static in
+      # Phase 0) carrying LC_LOAD_DYLIB → @rpath/libskal.dylib.
+      #
+      # The `$(SKAL_KOTLIN_VARIANT)` substitution flips the embed
+      # target between debugFramework/ and releaseFramework/ at Xcode
+      # build time (Debug → debug, Release → release; see
+      # settings.configs above). XcodeGen writes the path verbatim
+      # into project.pbxproj as a PBXFileRef — Xcode expands the
+      # variable when copying into the .app/Frameworks/ bundle.
+      # Without this, Release builds would silently embed the 45.9 MB
+      # debug framework even though the 25.8 MB release framework
+      # exists, defeating the whole point of the Release config.
+      - framework: ../build/bin/iosSimulatorArm64/$(SKAL_KOTLIN_VARIANT)Framework/Skal.framework
+        embed: true
+        codeSign: false
+    # Copy the re-stamped libskal.dylib (bun + WebKit + JSC + the
+    # skal_entry.zig exports) into SkalIosApp.app/Frameworks/. We use a
+    # post-build Run Script (rather than XcodeGen's copyFiles, which
+    # treats paths as project-relative resource references) because the
+    # dylib lives outside the app's source tree — it's an artifact built
+    # by scripts/link-skal-iossim.sh.
+    postBuildScripts:
+      - name: Embed libskal.dylib
+        shell: /bin/bash
+        runOnlyWhenInstalling: false
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libskal.dylib
+        script: |
+          set -euo pipefail
+          src="${SRCROOT}/../../build/skal-iossim/libskal.dylib"
+          dst="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/libskal.dylib"
+          mkdir -p "$(dirname "$dst")"
+          cp "$src" "$dst"
+          echo "✓ embedded $(stat -f '%z' "$src") bytes from $src"

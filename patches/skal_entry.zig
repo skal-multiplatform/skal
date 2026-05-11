@@ -478,11 +478,138 @@ fn nativeWakeJs(_: JNIEnv, _: jclass, handle: jlong) callconv(.c) void {
     rt.vm.eventLoop().enqueueTaskConcurrent(&task.concurrent);
 }
 
+// ───────────────────────────────────────────────────────────────────────
+// C ABI exports — non-JNI surface for iOS / non-JVM embedders.
+//
+// Same Runtime struct, same eval-on-worker plumbing as the JNI exports
+// above; just plain C signatures so Kotlin/Native cinterop can bind
+// them. See native/ios/skal.h for the contract these must satisfy.
+//
+// On JVM targets (Android + macOS Desktop) these are exported too —
+// they're harmless extra symbols. The JNI exports stay primary on JVM.
+// On iOS the JNI exports are dead weight (no JVM); a future
+// link-skal-iossim.sh / link-skal-ios.sh script can pass
+// --exported_symbols_list to strip them.
+// ───────────────────────────────────────────────────────────────────────
+
+fn skal_create_runtime() callconv(.c) i64 {
+    const rt = Runtime.init(skalAllocator()) catch return 0;
+    return @intCast(@intFromPtr(rt));
+}
+
+fn skal_dispose_runtime(handle: i64) callconv(.c) void {
+    _ = handle;
+    // Intentional leak; bun's VM teardown is process-exit-only.
+}
+
+// libc malloc/free for the result buffer: skal_free_string only gets a
+// pointer back (no length) so we use the standard C allocator that
+// tracks size internally. The result buffer that EvalRequest produced
+// (in rt.allocator) is copied into a malloc'd slot, then the original
+// is freed.
+extern "c" fn malloc(size: usize) ?*anyopaque;
+extern "c" fn free(ptr: ?*anyopaque) void;
+
+fn skal_evaluate(
+    handle: i64,
+    source_ptr: [*]const u8,
+    source_len: usize,
+    url_ptr: [*]const u8,
+    url_len: usize,
+    out_result: *?[*]u8,
+    out_result_len: *usize,
+    out_is_error: *c_int,
+) callconv(.c) void {
+    out_result.* = null;
+    out_result_len.* = 0;
+    out_is_error.* = 0;
+    if (handle == 0) {
+        out_is_error.* = 1;
+        return;
+    }
+    const rt: *Runtime = @ptrFromInt(@as(usize, @intCast(handle)));
+
+    const source: []const u8 = source_ptr[0..source_len];
+    const url: []const u8 = if (url_len > 0) url_ptr[0..url_len] else "skal:eval";
+
+    var req: EvalRequest = .{ .rt = rt, .source = source, .url = url };
+    req.runOnWorker();
+    defer if (req.result_buf.len > 0) rt.allocator.free(req.result_buf);
+
+    out_is_error.* = if (req.is_error) 1 else 0;
+
+    if (req.result_buf.len > 0) {
+        // Copy into a libc-malloc'd buffer so callers can free it with
+        // a length-less call (skal_free_string → libc free).
+        if (malloc(req.result_buf.len)) |p| {
+            const dst: [*]u8 = @ptrCast(p);
+            @memcpy(dst[0..req.result_buf.len], req.result_buf);
+            out_result.* = dst;
+            out_result_len.* = req.result_buf.len;
+        } else {
+            // libc malloc failed — most likely a real OOM. Don't drop
+            // the request silently: surface a sentinel error string the
+            // Kotlin side can decode and turn into a RuntimeException.
+            // Use a small static literal so we don't need yet-another
+            // allocator to report failure.
+            const oom_msg = "skal: out of memory copying eval result";
+            const buf = malloc(oom_msg.len);
+            if (buf) |p| {
+                const dst: [*]u8 = @ptrCast(p);
+                @memcpy(dst[0..oom_msg.len], oom_msg);
+                out_result.* = dst;
+                out_result_len.* = oom_msg.len;
+            }
+            // If even the sentinel allocation fails, leave out_result
+            // null but signal error — caller still sees out_is_error=1
+            // and a null/empty body is treated as "OOM, no detail".
+            out_is_error.* = 1;
+        }
+    }
+}
+
+fn skal_free_string(str: ?[*]u8) callconv(.c) void {
+    if (str) |p| free(@ptrCast(p));
+}
+
+fn skal_acquire_bridge(
+    handle: i64,
+    out_ptr: *?*anyopaque,
+    out_len: *usize,
+) callconv(.c) void {
+    out_ptr.* = null;
+    out_len.* = 0;
+    if (handle == 0) return;
+    const rt: *Runtime = @ptrFromInt(@as(usize, @intCast(handle)));
+    out_ptr.* = @ptrCast(rt.bridge.buffer.ptr);
+    out_len.* = rt.bridge.buffer.len;
+}
+
+fn skal_wake_js(handle: i64) callconv(.c) void {
+    if (handle == 0) return;
+    const rt: *Runtime = @ptrFromInt(@as(usize, @intCast(handle)));
+
+    const task = bun.default_allocator.create(EventDrainTask) catch return;
+    task.* = .{ .rt = rt };
+    task.any = bun.jsc.AnyTask.New(EventDrainTask, EventDrainTask.run).init(task);
+    task.concurrent = .{ .task = task.any.task(), .next = .none };
+    rt.vm.eventLoop().enqueueTaskConcurrent(&task.concurrent);
+}
+
 comptime {
+    // JNI exports — JVM consumers (Android, macOS Desktop).
     @export(&jniOnLoad, .{ .name = "JNI_OnLoad", .linkage = .strong });
     @export(&nativeCreateRuntime, .{ .name = "Java_com_skal_Skal_nativeCreateRuntime", .linkage = .strong });
     @export(&nativeDisposeRuntime, .{ .name = "Java_com_skal_Skal_nativeDisposeRuntime", .linkage = .strong });
     @export(&nativeEvaluate, .{ .name = "Java_com_skal_Skal_nativeEvaluate", .linkage = .strong });
     @export(&nativeAcquireBridge, .{ .name = "Java_com_skal_Skal_nativeAcquireBridge", .linkage = .strong });
     @export(&nativeWakeJs, .{ .name = "Java_com_skal_Skal_nativeWakeJs", .linkage = .strong });
+
+    // C ABI exports — iOS Kotlin/Native cinterop consumer.
+    @export(&skal_create_runtime, .{ .name = "skal_create_runtime", .linkage = .strong });
+    @export(&skal_dispose_runtime, .{ .name = "skal_dispose_runtime", .linkage = .strong });
+    @export(&skal_evaluate, .{ .name = "skal_evaluate", .linkage = .strong });
+    @export(&skal_free_string, .{ .name = "skal_free_string", .linkage = .strong });
+    @export(&skal_acquire_bridge, .{ .name = "skal_acquire_bridge", .linkage = .strong });
+    @export(&skal_wake_js, .{ .name = "skal_wake_js", .linkage = .strong });
 }

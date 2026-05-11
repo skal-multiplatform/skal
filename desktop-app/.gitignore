@@ -1,0 +1,8 @@
+# Gradle / Kotlin build outputs
+build/
+.gradle/
+.kotlin/
+local.properties
+
+# Compose Desktop nativeDistributions outputs (.dmg / .deb / .msi)
+# land under build/ already; nothing extra needed.

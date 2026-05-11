@@ -29,7 +29,55 @@ public final class Skal implements AutoCloseable {
 
     public String evaluate(String source, String url) {
         if (handle == 0L) throw new IllegalStateException("Skal: runtime is closed");
-        return nativeEvaluate(handle, source, url);
+        // JNI's GetStringUTFChars returns *modified* UTF-8: characters above
+        // U+FFFF (e.g. 🚀 in our skal-app.js bundle) get encoded as their
+        // UTF-16 surrogate pair, with each surrogate emitted as a 3-byte
+        // sequence. JSC's WTF::String::fromUTF8 expects standard UTF-8 and
+        // rejects the modified form (the surrogate codepoints aren't valid
+        // UTF-8). The result is a silently-empty source — JSC evaluates
+        // nothing, returns undefined, and the bundle's IIFE never runs.
+        //
+        // Workaround: escape every non-ASCII code unit as a backslash-u
+        // hex escape before crossing the JNI boundary. The resulting source
+        // is pure ASCII, so modified UTF-8 == standard UTF-8 and JSC parses
+        // it correctly. Each Java char is a UTF-16 code unit, so a surrogate
+        // pair like 🚀 (U+1F680) naturally emits as two consecutive escapes
+        // — both ECMAScript-valid in any string-literal context.
+        return nativeEvaluate(handle, asciiEscapeForJni(source), url);
+    }
+
+    /**
+     * Replace every code unit greater than 0x7F with a backslash-u four-hex
+     * escape so the entire source string survives JNI's modified-UTF-8
+     * conversion unscathed. See {@link #evaluate(String, String)} for the
+     * bug this works around.
+     *
+     * <p>Cost: one allocation + one pass per evaluate. For our 18 KB Solid
+     * bundle (5 non-ASCII chars), this adds ~30 µs to a ~10 ms parse —
+     * invisible. If a future bundle is mostly non-ASCII, consider switching
+     * to a {@code byte[]}-based JNI method instead.
+     */
+    private static String asciiEscapeForJni(String s) {
+        // Fast path — most sources are pure ASCII.
+        boolean clean = true;
+        for (int i = 0, n = s.length(); i < n; i++) {
+            if (s.charAt(i) > 0x7F) { clean = false; break; }
+        }
+        if (clean) return s;
+
+        StringBuilder sb = new StringBuilder(s.length() + 16);
+        for (int i = 0, n = s.length(); i < n; i++) {
+            char c = s.charAt(i);
+            if (c <= 0x7F) {
+                sb.append(c);
+            } else {
+                sb.append("\\u");
+                String hex = Integer.toHexString(c);
+                for (int pad = hex.length(); pad < 4; pad++) sb.append('0');
+                sb.append(hex);
+            }
+        }
+        return sb.toString();
     }
 
     /**

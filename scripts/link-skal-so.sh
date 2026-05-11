@@ -133,15 +133,30 @@ LDFLAGS=(
   -lc -lm -llog
 )
 
+UNSTRIPPED="${SKAL_BUILD}/libskal.unstripped.so"
 OUT="${SKAL_BUILD}/libskal.so"
-echo "linking ${OUT}"
+echo "linking ${UNSTRIPPED}"
 cd "${BUN_BUILD}"   # so relative paths in the .rsp resolve
-"${CXX}" "@${INPUTS_FILE}" "${LDFLAGS[@]}" -o "${OUT}"
+"${CXX}" "@${INPUTS_FILE}" "${LDFLAGS[@]}" -o "${UNSTRIPPED}"
+
+# Strip non-export symbols from the shipped .so. --strip-unneeded drops
+# everything not needed for relocations or dynamic linking; -x adds
+# "remove all local symbols" (debug syms etc.). Keeps the JNI export
+# table intact — those symbols are hard-anchored via --export-dynamic-symbol
+# above, so the linker marked them as required-dynamic.
+#
+# Why two outputs: ART loads libskal.so via System.loadLibrary, which only
+# needs the dynamic symbol table — debug syms are dead weight in the APK
+# (~60 MB of dead weight for our build). We keep the unstripped sibling
+# under build/skal-android/ for symbolicating native crashes via
+# llvm-addr2line + the build-id from logcat. See docs/crash-symbolication.md
+# (TODO_PLATFORMS § 1.4).
+"${LLVM_BIN}/llvm-strip" --strip-unneeded -x "${UNSTRIPPED}" -o "${OUT}"
 
 echo
-echo "✓ libskal.so produced:"
-ls -la "${OUT}"
+echo "✓ libskal.so produced (stripped + unstripped):"
+ls -la "${OUT}" "${UNSTRIPPED}"
 file "${OUT}"
 echo
-echo "JNI symbols:"
+echo "JNI symbols (stripped binary, must still be present):"
 "${LLVM_BIN}/llvm-nm" -D "${OUT}" 2>/dev/null | grep -E "JNI_OnLoad|Java_com_skal" || true

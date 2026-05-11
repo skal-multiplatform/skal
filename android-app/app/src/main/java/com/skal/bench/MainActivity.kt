@@ -23,7 +23,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import com.skal.Skal
+import com.skal.createSkal
 import com.skal.bridge.SkalBridge
 import com.skal.bridge.SkalRoot
 
@@ -38,7 +38,10 @@ class MainActivity : ComponentActivity() {
         // bridge once it's ready. We block the UI briefly here for the demo;
         // a real app would show a loader and skip recomposition until ready.
         val initStart = System.nanoTime()
-        val skal = Skal()
+        // createSkal() is the multiplatform factory in shared/ — on JVM
+        // it returns a SkalRuntime backed by the JNI-loaded com.skal.Skal
+        // Java class (which still owns the libskal.so loadLibrary call).
+        val skal = createSkal()
         val initMs = (System.nanoTime() - initStart) / 1_000_000.0
 
         val evalStart = System.nanoTime()
@@ -82,22 +85,50 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Copy [name] from the APK's assets/ directory into the app's filesDir,
-     * overwriting any prior copy. Returns the absolute filesystem path of
-     * the extracted file.
+     * Copy [name] from the APK's assets/ directory into the app's filesDir
+     * — but skip the copy if the destination already matches the APK's
+     * lastModified time (i.e. nothing was upgraded since the last launch).
      *
-     * Called per-launch in release mode. Cost is one ~25-250 KB read+write
-     * for the JS source / bytecode pair. We don't currently skip the copy
-     * when the file is unchanged — would need to compare against APK's last
-     * modified time, which is doable but not yet wired up.
+     * Background: the release path needs `skal-app.cjs` + `.cjs.jsc` on
+     * a real filesystem so bun's module loader can `await import(file://…)`
+     * them with the bytecode cache attached. APK assets aren't mmap'd as
+     * regular files (they're inside the .apk's zip stream), so we extract
+     * once. Re-extracting on every launch costs ~1-10 ms for the 250 KB
+     * pair — small but unnecessary on warm launches where the APK install
+     * timestamp hasn't changed.
+     *
+     * Strategy: stash the APK's lastModified time in a sibling marker
+     * file (`<name>.mtime`). If marker matches the current APK and the
+     * extracted file is on disk, skip the copy. Otherwise, copy and
+     * write the new marker.
+     *
+     * Per TODO_PLATFORMS § 2.5.
      */
     private fun extractAsset(name: String): String {
         val outFile = filesDir.resolve(name)
+        val markerFile = filesDir.resolve("$name.apk-mtime")
+
+        // The .apk's lastModified jumps on every install/upgrade — even
+        // for sideloads via `adb install -r`. PackageManager surfaces it
+        // as ApplicationInfo.sourceDir's mtime; we read it directly rather
+        // than via PackageInfo.lastUpdateTime (the latter rounds to whole
+        // seconds and is sometimes unset on dev builds).
+        val apkMtime = applicationInfo.sourceDir?.let { java.io.File(it).lastModified() } ?: 0L
+        val markerMtime = if (markerFile.exists()) markerFile.readText().toLongOrNull() ?: -1L else -1L
+
+        if (outFile.exists() && markerMtime == apkMtime && apkMtime > 0L) {
+            // Already extracted from this APK install — skip the copy.
+            return outFile.absolutePath
+        }
+
         assets.open(name).use { input ->
             outFile.outputStream().use { output ->
                 input.copyTo(output)
             }
         }
+        // Write the marker AFTER the file is fully on disk so a crash
+        // mid-copy leaves the marker stale → next launch re-extracts.
+        markerFile.writeText(apkMtime.toString())
         return outFile.absolutePath
     }
 }

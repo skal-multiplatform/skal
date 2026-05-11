@@ -7,10 +7,12 @@ index 6698634..f48ca20 100644
  }
  
 +// Skal: pull in the JNI bridge so its @export'd symbols land in the bun-zig
-+// build outputs. On non-Android targets it's a no-op (bun's main() drives
-+// the program normally).
++// build outputs. On non-embedded targets bun's main() drives the program
++// normally — the JNI symbols are unreferenced and would be GC'd by the
++// linker anyway. We include the import on darwin too so the host-side
++// libskal.dylib (used by desktop-app/) gets the same JNI surface.
 +comptime {
-+    if (builtin.target.abi.isAndroid()) {
++    if (builtin.target.abi.isAndroid() or builtin.target.os.tag == .macos) {
 +        _ = @import("./skal_entry.zig");
 +    }
 +}

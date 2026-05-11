@@ -1,0 +1,109 @@
+# Android build pipeline. Per TODO_PLATFORMS § 0.5/V1, Android's CI
+# triggers ONLY on changes that affect Android — shared module,
+# android-app source, vendor/bun (rebuilds libskal.so), and the
+# Android-specific link script.
+#
+# Other platforms' CI failures (Desktop signing, iOS device profiles,
+# etc.) don't block this lane.
+
+name: android
+
+on:
+  pull_request:
+    paths:
+      - shared/**
+      - android-app/**
+      - vendor/bun/**
+      - patches/skal_entry.zig
+      - patches/0001-bun-main-android-skal-import.patch
+      - scripts/link-skal-so.sh
+      - scripts/build-app.sh
+      - scripts/build-icu-android.sh
+      - scripts/build-jsc-android.sh
+      - js-app/**
+      - native/ios/**       # skal_entry.zig consumes skal.h shape
+      - .github/workflows/android.yml
+  push:
+    branches: [main]
+    paths:
+      - shared/**
+      - android-app/**
+      - vendor/bun/**
+      - patches/**
+      - scripts/build-*.sh
+      - scripts/link-skal-so.sh
+      - js-app/**
+      - .github/workflows/android.yml
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      ANDROID_NDK_ROOT: /opt/homebrew/share/android-ndk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+
+      # bun's lolhtml dep needs nightly Rust. rustup is preinstalled
+      # on macos-15 runners; we just toggle the toolchain.
+      - run: rustup install nightly && rustup default nightly
+
+      # Cached: vendor sources clone (shallow), Android NDK, bun's
+      # build-cache (~/.bun/build-cache/), Konan deps.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor
+            ~/.bun/build-cache
+            ~/.konan
+          key: android-vendor-${{ hashFiles('patches/bun-base-commit.txt', 'patches/webkit-base-commit.txt') }}
+
+      - name: Bootstrap (clone + apply patches + npm install)
+        run: scripts/setup.sh
+
+      - name: Build vendored bun (release)
+        working-directory: vendor/bun
+        run: PATH="$HOME/.cargo/bin:$PATH" bun run build:release
+
+      - name: Build ICU + JSC for Android (cached after first run)
+        run: |
+          [[ -d build/icu-android ]] || scripts/build-icu-android.sh
+          [[ -d build/jsc-android ]] || scripts/build-jsc-android.sh
+
+      - name: Build bun for Android
+        working-directory: vendor/bun
+        run: PATH="$HOME/.cargo/bin:$PATH" bun scripts/build.ts --profile=android-release --build-dir=$(pwd)/build/android
+
+      - name: Link libskal.so
+        run: scripts/link-skal-so.sh
+
+      - name: Build skal-app.js (Vite + bytecode via vendored bun)
+        working-directory: js-app
+        run: |
+          bun install
+          bun run build
+
+      - name: assembleDebug
+        working-directory: android-app
+        run: ./gradlew :app:assembleDebug
+
+      - name: assembleRelease
+        working-directory: android-app
+        run: ./gradlew :app:assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: |
+            android-app/app/build/outputs/apk/debug/*.apk
+            android-app/app/build/outputs/apk/release/*.apk
+            build/skal-android/libskal.unstripped.so

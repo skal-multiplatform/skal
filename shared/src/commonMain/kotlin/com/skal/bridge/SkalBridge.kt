@@ -1,46 +1,53 @@
 package com.skal.bridge
 
-import android.util.SparseArray
-import android.util.SparseIntArray
+import androidx.collection.MutableIntFloatMap
+import androidx.collection.MutableIntIntMap
+import androidx.collection.MutableIntObjectMap
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshots.SnapshotStateList
-import com.skal.Skal
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import com.skal.SkalRuntime
+import kotlin.concurrent.Volatile
+import kotlin.time.TimeSource
 
 /**
- * Skal ↔ Compose bridge. Owns the shared 2 MiB DirectByteBuffer that bun's
+ * Skal ↔ Compose bridge. Owns the shared 2 MiB [SkalBuffer] that bun's
  * worker thread writes ops into. On each Compose frame, [pumpOps] is called
  * to drain the op ring and push mutations into compose-observable state.
  *
  * Layout (must match assets/skal-app.js + skal_entry.zig):
  *   [Header 64B][Op ring 1 MiB][String heap 512 KiB][Event ring 64 KiB]
+ *
+ * Multiplatform — the same source compiles for Android, Desktop (JVM),
+ * and iOS (Kotlin/Native). Platform-specific bits live behind
+ * [SkalRuntime] (the JS-runtime handle) and [SkalBuffer] (the bridge
+ * memory wrapper).
  */
-class SkalBridge(private val skal: Skal) {
-    private val buffer: ByteBuffer = skal.acquireBridge().order(ByteOrder.LITTLE_ENDIAN)
+class SkalBridge(private val skal: SkalRuntime) {
+    private val buffer: SkalBuffer = skal.acquireBridge()
 
     private var lastOpSeq: Long = 0L
 
     /**
-     * One state per JS-created node. Keyed by JS node id (dense small ints,
-     * so SparseArray's binary search beats a HashMap on cache pressure).
+     * One state per JS-created node. Keyed by JS node id (dense small ints — `MutableIntObjectMap` is
+     * primitive-int-keyed and avoids the Integer boxing a plain HashMap
+     * would impose on every per-op lookup).
      *
      * NOT a SnapshotStateMap: nothing recomposes purely because a node was
      * added or removed from this container. The composable tree is driven by
      * each parent's `children` SnapshotStateList — when a parent's children
      * mutate, the parent recomposes and invokes SkalNode(newId), at which
-     * point the SparseArray entry for `newId` has already been populated by
+     * point the [nodes] entry for `newId` has already been populated by
      * pumpOps (CREATE_NODE always precedes INSERT_BEFORE in the op stream).
      *
      * Removing the SnapshotStateMap eliminates per-`get` Snapshot read
      * tracking — measurable savings on every op decode and every
      * SkalNode composition.
      */
-    val nodes: SparseArray<NodeState> = SparseArray()
+    val nodes: MutableIntObjectMap<NodeState> = MutableIntObjectMap()
 
     /**
-     * Reusable scratch for UTF-8 string decoding in [readStringRef]. Grows
+     * Reusable scratch for UTF-8 string decoding in [readString]. Grows
      * on demand. Only touched on the UI thread (pumpOps is called from
      * withFrameNanos), so no synchronization needed.
      */
@@ -53,8 +60,9 @@ class SkalBridge(private val skal: Skal) {
      * there's work to do" rather than "average cost across all frames" —
      * which is what's interesting for tuning.
      *
-     * Read by [com.skal.bench.PerfHud]; not Compose state because the HUD
-     * already has a withFrameNanos coroutine that polls it once per frame.
+     * Read by `PerfHud` (in each platform's app module); not Compose
+     * state because the HUD already has a withFrameNanos coroutine that
+     * polls it once per frame.
      */
     @Volatile
     var pumpAvgNs: Long = 0L
@@ -102,7 +110,7 @@ class SkalBridge(private val skal: Skal) {
         // Time only the actually-draining frames. The seq-equal early return
         // above is a single 64-bit load + compare; tracking that case in the
         // EMA would just dilute the meaningful "drain cost" signal.
-        val tStart = System.nanoTime()
+        val mark = TIME_SOURCE.markNow()
 
         val writePos = buffer.getInt(H_OP_WRITE_POS_OFFSET)
 
@@ -115,7 +123,7 @@ class SkalBridge(private val skal: Skal) {
         while (p < opEnd) {
             // Reader only consumes byte 0 of the opcode field; the writer
             // packs the high 24 bits as zero.
-            val opcode = buf.get(p).toInt() and 0xff
+            val opcode = buf.getByte(p).toInt() and 0xff
             val a = buf.getInt(p + 4)
             val b = buf.getInt(p + 8)
             val c = buf.getInt(p + 12)
@@ -155,7 +163,7 @@ class SkalBridge(private val skal: Skal) {
                     }
                 }
                 OP_SET_PROP_U32 -> ns.get(a)?.props?.put(b, c)
-                OP_SET_PROP_F32 -> ns.get(a)?.propsF?.put(b, java.lang.Float.intBitsToFloat(c))
+                OP_SET_PROP_F32 -> ns.get(a)?.propsF?.put(b, Float.fromBits(c))
                 OP_SET_TEXT -> ns.get(a)?.text?.value = readString(buf, strBase, b, c)
                 OP_BIND_HANDLER -> {
                     val node = ns.get(a)
@@ -171,7 +179,7 @@ class SkalBridge(private val skal: Skal) {
         }
         lastOpSeq = seq
 
-        val dt = System.nanoTime() - tStart
+        val dt = mark.elapsedNow().inWholeNanoseconds
 
         // EMA with α=1/8 — smooths jitter while staying responsive enough
         // that a sudden +1000-batch frame visibly bumps the displayed value.
@@ -199,13 +207,13 @@ class SkalBridge(private val skal: Skal) {
 
     /**
      * Compose calls this from an onClick. Writes an event record to the
-     * event ring and wakes the JS thread (single JNI call).
+     * event ring and wakes the JS thread (single JNI/cinterop call).
      */
     fun dispatchEvent(handlerId: Int, eventKind: Byte = EV_CLICK_BYTE) {
         if (handlerId == 0) return
         val pos = buffer.getInt(H_EVENT_WRITE_POS_OFFSET)
         val base = EVENT_RING_OFFSET + pos
-        buffer.put(base, eventKind)
+        buffer.putByte(base, eventKind)
         buffer.putInt(base + 4, handlerId)
         val newPos = (pos + 16) % EVENT_RING_SIZE
         buffer.putInt(H_EVENT_WRITE_POS_OFFSET, newPos)
@@ -220,7 +228,7 @@ class SkalBridge(private val skal: Skal) {
      * — no u16|u16 packing, so a single frame can address the full string
      * heap (used to be capped at 64 KiB per frame).
      */
-    private fun readString(buf: ByteBuffer, base: Int, offset: Int, length: Int): String {
+    private fun readString(buf: SkalBuffer, base: Int, offset: Int, length: Int): String {
         if (length == 0) return ""
         // Reuse the per-bridge scratch — pumpOps is the only consumer and runs
         // exclusively on the UI thread (withFrameNanos), so no synchronization.
@@ -229,15 +237,13 @@ class SkalBridge(private val skal: Skal) {
             scratch = ByteArray(maxOf(length, scratch.size * 2))
             stringScratch = scratch
         }
-        // Bulk relative read is the fastest path for DirectByteBuffer (no
-        // backing array). No save/restore of position: nothing else in
-        // pumpOps reads relatively, and the next pumpOps call will set its
-        // own absolute reads.
-        buf.position(base + offset)
-        buf.get(scratch, 0, length)
+        // Bulk read from the string heap into our scratch buffer. JVM impl
+        // resolves to ByteBuffer.position()+get(); iOS impl will resolve to
+        // a memcpy from the cinterop'd CPointer.
+        buf.copyToByteArray(scratch, base + offset, length)
         // String constructor copies into its own char[]; scratch is free for
         // immediate reuse on the next op.
-        return String(scratch, 0, length, Charsets.UTF_8)
+        return scratch.decodeToString(0, length)
     }
 
     /**
@@ -264,7 +270,7 @@ class SkalBridge(private val skal: Skal) {
      * Order across the subtree doesn't matter — these are flat-map deletes
      * from [nodes], no parent-cleanup-after-children dependency.
      */
-    private fun removeSubtree(id: Int, ns: SparseArray<NodeState>) {
+    private fun removeSubtree(id: Int, ns: MutableIntObjectMap<NodeState>) {
         val rootNode = ns.get(id) ?: return
 
         // Detach the subtree root from its parent's children list — the only
@@ -307,7 +313,7 @@ class SkalBridge(private val skal: Skal) {
         }
     }
 
-    private fun readSeq(buf: ByteBuffer, offset: Int): Long {
+    private fun readSeq(buf: SkalBuffer, offset: Int): Long {
         // VarHandle would be more correct for atomic load; for our writer-
         // bumps-once-per-frame model, plain getLong is fine — the cache-line
         // visibility is established by the per-frame commit barrier on the
@@ -358,6 +364,12 @@ class SkalBridge(private val skal: Skal) {
         const val EV_CLICK = 0x01
         const val EV_CHANGE = 0x02
         const val EV_CLICK_BYTE = 0x01.toByte()
+
+        // Multiplatform monotonic clock — JVM resolves to System.nanoTime,
+        // Kotlin/Native to clock_gettime(CLOCK_MONOTONIC). Same cost as
+        // raw System.nanoTime() — TimeMark allocation is on-stack since
+        // ValueTimeMark is an inline value class.
+        private val TIME_SOURCE = TimeSource.Monotonic
     }
 }
 
@@ -372,9 +384,13 @@ class SkalBridge(private val skal: Skal) {
  *
  * [props] / [propsF] are write-only from Compose's perspective today: they
  * exist for the wire format but no composable reads them. They're stored in
- * non-reactive containers ([SparseIntArray] / [HashMap]) so OP_SET_PROP_*
- * writes don't pay Snapshot bookkeeping. If a future composable starts
- * reading them, switch back to a reactive container at that point.
+ * non-reactive primitive-keyed containers
+ * ([MutableIntIntMap] / [MutableIntFloatMap]) so OP_SET_PROP_* writes don't
+ * pay Snapshot bookkeeping AND don't box Int keys / Float values. The earlier
+ * `HashMap<Int, Float>` form boxed both per .put — measurable in op-pump
+ * profiles when SET_PROP_F32 fires every frame (animation, gesture).
+ * If a future composable starts reading these, switch back to a reactive
+ * container at that point.
  */
 class NodeState(val type: Int) {
     val parent = mutableStateOf(0)
@@ -382,6 +398,6 @@ class NodeState(val type: Int) {
     val children: SnapshotStateList<Int> = mutableStateListOf()
     val onClickHandlerId = mutableStateOf(0)
     val onChangeHandlerId = mutableStateOf(0)
-    val props: SparseIntArray = SparseIntArray()
-    val propsF: HashMap<Int, Float> = HashMap()
+    val props: MutableIntIntMap = MutableIntIntMap()
+    val propsF: MutableIntFloatMap = MutableIntFloatMap()
 }

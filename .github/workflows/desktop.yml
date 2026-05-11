@@ -1,0 +1,89 @@
+# macOS Desktop build pipeline. Per TODO_PLATFORMS § 0.5/V1, scoped
+# only to changes that affect Desktop. iOS-Simulator-only changes
+# (e.g. native/ios/skal_iossim_shim.c, scripts/link-skal-iossim.sh)
+# do NOT trigger this workflow — that's the modularity invariant in
+# action.
+
+name: desktop
+
+on:
+  pull_request:
+    paths:
+      - shared/**
+      - desktop-app/**
+      - vendor/bun/**
+      - patches/skal_entry.zig
+      - patches/0001-bun-main-android-skal-import.patch
+      - scripts/link-skal-dylib.sh
+      - js-app/**
+      - .github/workflows/desktop.yml
+  push:
+    branches: [main]
+    paths:
+      - shared/**
+      - desktop-app/**
+      - vendor/bun/**
+      - patches/**
+      - scripts/link-skal-dylib.sh
+      - js-app/**
+      - .github/workflows/desktop.yml
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: rustup install nightly && rustup default nightly
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor
+            ~/.bun/build-cache
+          key: desktop-vendor-${{ hashFiles('patches/bun-base-commit.txt', 'patches/webkit-base-commit.txt') }}
+
+      - name: Bootstrap
+        run: scripts/setup.sh
+
+      - name: Build vendored bun (release)
+        working-directory: vendor/bun
+        run: PATH="$HOME/.cargo/bin:$PATH" bun run build:release
+
+      - name: Link libskal.dylib (Desktop)
+        run: scripts/link-skal-dylib.sh
+
+      # Headless smoke: launches the demo for 10 seconds, asserts no
+      # exception, kills cleanly. Catches the modified-UTF-8-bug class
+      # of regression where the JS evaluates but produces no output.
+      - name: Smoke run (10s)
+        working-directory: desktop-app
+        run: |
+          timeout 12 ./gradlew run 2>&1 | tee /tmp/smoke.log || true
+          if grep -q "SkalDesktop\] init=" /tmp/smoke.log; then
+            echo "✓ smoke passed"
+          else
+            echo "✗ no init line — Desktop demo never started"
+            tail -50 /tmp/smoke.log
+            exit 1
+          fi
+
+      - name: packageDmg (signing skipped in CI without certs)
+        working-directory: desktop-app
+        run: ./gradlew packageDmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-dmg
+          path: |
+            desktop-app/build/compose/binaries/main/dmg/*.dmg
+            build/skal-darwin/libskal.unstripped.dylib

@@ -12,11 +12,39 @@ produce `skal-app.cjs.jsc`. That's the user's globally installed bun
 coincidence). When they drift, JSC silently rejects the bytecode at runtime
 and falls back to parsing — observable only as a perf regression, no error.
 
-Fix: build `vendor/bun/` for darwin host, store the binary in
-`build/host/bun`, point `build:bytecode` at it. ~1 hr to wire, ~30 min to
-actually build host bun on first run.
+**Update**: as of the desktop port, `vendor/bun/build/release/bun-profile`
+exists (built by `bun run build:release` from `vendor/bun/`). Wiring is
+the only remaining work: point `js-app/package.json:build:bytecode` at
+that path (or symlink it to `build/host/bun`), and add a build-script
+guard that builds it on first run if missing.
 
 See `docs/bytecode-cache.md` § "JSC version coupling".
+
+### Desktop port — open follow-ups
+The desktop port lives in `desktop-app/`. It reuses the Android bridge
+sources via `srcDirs` and ships its own `Main.kt`. Working as of
+2026-05-10. Loose ends:
+
+  * **Auto-build libskal.dylib.** `desktop-app/native/libskal.dylib`
+    is currently a manual symlink to `build/skal-darwin/libskal.dylib`.
+    Add a Gradle task that runs `scripts/link-skal-dylib.sh` (which in
+    turn runs `bun run build:release` if outputs are stale) before
+    `:run` — same shape as `android-app`'s prebuild.
+  * **Strip the dylib.** `libskal.dylib` is 91 MB unstripped. A `strip
+    -x` pass should drop it to ~30 MB without losing JNI symbols (the
+    `-x` flag keeps externally-visible symbols). Mirror the
+    Android-side strip step in `link-skal-dylib.sh`.
+  * **Macos version pin warning.** The link emits `ld: warning: object
+    file ... was built for newer 'macOS' version (26.0) than being
+    linked (14.0)` for ~30 lsquic .o files. bun's release profile sets
+    `-mmacosx-version-min=26` (Tahoe), our link script uses 14. Pick
+    one — probably bump our link to whatever bun used, since the
+    objects already targeted that.
+  * **DemoChrome belongs in android-app, not duplicated.** Both
+    `MainActivity.kt` and `desktop-app/Main.kt` carry their own
+    HUD/title chrome. Once we figure out the right shape (probably a
+    common `@Composable` in the bridge package taking a `bridge` and
+    a `metrics` struct), drop the duplication.
 
 ### gitignore JS build artifacts
 `android-app/app/src/main/assets/skal-app.js`, `skal-app.cjs`, and
@@ -86,12 +114,134 @@ universal renderer model and our bridge don't currently express
 "viewport-driven mounting." Worth designing if Skal targets serious list
 UIs.
 
-### Hot reload over a debug channel
-Debug builds re-parse `skal-app.js` (the IIFE) on every launch — that's
-already set up to be hot-reload-friendly. Missing: a debug channel that
-pushes updated source to a running runtime, triggers re-evaluation,
-preserves Solid signal state across the swap. Likely a small server in
-the Android process that watches for `adb push`-driven source updates.
+### Investigate pump-time spike on bulk inserts (+200 button)
+**Symptom**: clicking the `200` button (50 → 200 tweets) drives Desktop's
+`bridge.pumpPeakNs` to **~110 ms**, locking the UI thread for ~6.5 frames
+at 60 Hz. The FPS HUD visibly freezes for the duration; observed
+2026-05-11 with the post-recomposition-fix Desktop build. Same pattern
+hits `500` / `1000` / `2000` / `5000` buttons proportionally.
+
+What's actually slow (need to confirm via profiler):
+  1. **pumpOps drain** — 150 × (OP_CREATE_NODE + OP_INSERT_BEFORE +
+     OP_SET_TEXT) ≈ 450 ops × ~10 µs each = ~5 ms. Probably NOT the
+     bottleneck.
+  2. **SnapshotStateList mutations** — 150 `children.add(idx, b)` calls
+     on the root column's children list, each one fires snapshot
+     observers, each one schedules a Compose recomposition pass.
+  3. **Compose layout** — 200 Text composables measured + placed
+     synchronously inside the same frame after the snapshot apply.
+     Likely the dominant cost (~50-100 ms for 200 items).
+
+Three candidate fixes, in increasing order of effort/payoff:
+
+  • **Batch SnapshotStateList writes** (~2 hr). Wrap the per-frame
+    bridge drain in `Snapshot.withMutableSnapshot { ... }` so the 150
+    children.add calls produce ONE snapshot notification instead of
+    150. Should shave the snapshot-observer overhead. Doesn't help
+    Compose's layout cost.
+
+  • **Defer post-pump recomposition to the next frame** (~3 hr).
+    Today pumpOps writes to MutableState INSIDE withFrameNanos's
+    callback, so Compose layout runs in the same frame. Move the
+    Snapshot.apply() to `Dispatchers.Main.immediate` post-frame so
+    layout happens in the next frame's budget. Hides the spike but
+    doesn't reduce total work — the next frame still drops.
+
+  • **LazyColumn / WT_LAZY_COLUMN widget type** (~1-2 days). Solves
+    the root cause: Compose only lays out viewport-visible items. See
+    the entry above on LazyColumn. This is the real fix; the two
+    above are mitigations until it lands.
+
+Measure before optimizing — capture a sampled CPU profile of the +200
+click (Android Studio Profiler / async-profiler / VisualVM Flight
+Recorder) to confirm which of the three is actually dominant. The
+~50-100 ms layout estimate is from observed total spike minus
+estimated pump cost; it could be wrong.
+
+**Why this isn't urgent**: 200 tweets is an artificial demo benchmark.
+Real apps with 200 list items would use LazyColumn anyway. But the
+spike is the visible "feels janky" symptom non-perf-savvy reviewers
+will notice first, so worth fixing before public dev-platform launch.
+
+**Follow-up observation (2026-05-11)**: on a second Desktop debug run,
+the same +200 click was invisible in the pump-time trace — peak stayed
+at the initial-render 28.84 ms throughout the session, no jump. The
+difference: the click landed ~3-4 seconds later, after HotSpot tiered
+pumpOps + Compose layout from C1 to C2. That means **the 109 ms spike
+was substantially a JIT-warmup artifact**, not a steady-state
+algorithmic issue. Steady-state cost for inserting 150 children into a
+SnapshotStateList + Compose laying out 200 Text composables is closer
+to 10-20 ms (well inside frame budget).
+
+This changes the priority ordering of the three candidate fixes:
+  • The two "mitigation" fixes (batched snapshot + deferred recompose)
+    target steady-state cost and would barely move the needle once
+    JIT is warm.
+  • The "real fix" (LazyColumn / WT_LAZY_COLUMN) still pays off for
+    truly large lists (5000+ items where even warm Compose can't lay
+    them all out per frame).
+  • A **new fourth option**: pre-warm the pump+layout path at startup
+    (run a synthetic burst of CREATE_NODE+INSERT_BEFORE+SET_TEXT ops
+    before the window opens, then drain) so the first user-triggered
+    big-batch op hits C2-compiled code. Cheap (~30 lines) and would
+    eliminate the cold-click spike entirely. Most cost-effective fix
+    if profiling confirms JIT-warmup is the dominant factor.
+
+Re-measure with a CPU profile under both cold and warm conditions
+before picking a fix — the cold-vs-warm gap may be the whole story.
+
+### Hot reload — upgrade from "fast restart" to true HMR
+**Status as of today**: `js-app/dev-watch.ts` (run via `bun run dev:hot`)
+delivers ~2 sec edit-to-device cycle by `adb push` + `am force-stop` +
+`am start`. MainActivity prefers `/data/local/tmp/skal-app-hotreload.js`
+when present in debug builds.
+
+This is "fast restart with hot source" — every cycle wipes Solid signal
+state, scroll position, text input. Fine for layout/styling work, less
+fine for interactive debugging. Android-only (uses `adb push`).
+
+**Two upgrade rings, deferred:**
+
+**Stage A — no-restart, Android only** (~3 hr)
+1. Wrap render in `createRoot(dispose => …)` so we have a teardown handle
+2. Add `__skal_reset_bridge()` host fn (clears `nodes: SparseArray` except
+   root, drops Compose's children-list slots; ~30 lines Kotlin/Zig)
+3. JS dev client uses Android's FileObserver (or polls) on
+   `/data/local/tmp/skal-app-hotreload.js`; on change, calls `dispose()`,
+   `__skal_reset_bridge()`, then `(0, eval)(newSource)` to remount fresh
+4. dev-watch.ts drops the `am force-stop + start` step
+
+Cycle time drops from ~2 sec → ~300 ms. State still resets (signals come
+back as new instances) but the runtime stays alive (libskal.so + bun VM
++ JIT-warm caches all preserved).
+
+**Stage B — WebSocket transport, multi-platform** (~4 hr on top of A)
+1. New `js-app/scripts/dev-server.ts` — bun script that watches src/,
+   rebuilds via Vite, broadcasts new bytes over `ws://localhost:9999/hmr`
+2. Dev-only JS client embedded in skal-app.js (gated by `import.meta.env.DEV`)
+   connects to the WS, receives `{ type: 'reload', source }` messages
+3. Per-platform connectivity glue:
+   - Android: `adb reverse tcp:9999 tcp:9999`
+   - iOS simulator: localhost works directly
+   - iOS device: bind dev server to `0.0.0.0`, connect to host's LAN IP
+     (or mDNS like Expo)
+   - Desktop: localhost works directly
+4. `scripts/dev.sh` switches on platform, runs the right setup
+
+Cycle time stays ~300 ms but mechanism becomes platform-neutral. Adding
+a new platform = "how does the device reach localhost" — usually one
+shell command.
+
+**Stage C — actual Fast Refresh with state preservation** (its own project)
+React's Fast Refresh, Solid-Refresh, etc. — snapshot signal values via
+stable identity (babel plugin marks each createSignal with a name),
+restore matching values after reload. Real engineering: babel-plugin work,
+deeper teardown semantics, edge cases around signals removed/added across
+versions. Defer indefinitely unless a Skal app actually requires it.
+
+**Trigger to revisit**: when 2-sec MVP cycle becomes a measured
+productivity hit, OR when iOS / multi-platform shipping starts, whichever
+comes first.
 
 ### `dispatchEvent` uses plain `putLong` for `event_seq`
 `SkalBridge.kt:dispatchEvent` writes `event_seq` via plain `buffer.putLong`,
@@ -104,6 +254,81 @@ practice, pedantically correct.
 per click. For touch/scroll streams (60–120/sec) it's irrelevant; for
 hypothetical high-frequency input (motion sensors at 1 kHz) we'd want
 a free list. Pool the tasks if/when this becomes a real load.
+
+## Platforms
+
+### iOS port — Simulator fully working; device path still open
+Phase 0 (Compose Multiplatform iOS pipeline alive) shipped in
+`ios-app/`. `Skal.framework` builds for both `iosArm64` (device) and
+`iosSimulatorArm64` (Simulator); the framework exposes
+`com.skal.ios.MainKt.MainViewController()` which returns a
+`UIViewController` rendered by Compose. The XcodeGen-managed host
+app under `ios-app/iosApp/` consumes the framework, builds with
+`xcodebuild -sdk iphonesimulator`, and was verified rendering on
+iPhone 15 Pro Max (iOS 17.0) on 2026-05-10. See `ios-app/README.md`
+for the build + install recipe.
+
+Two iOS-specific config items learned the hard way (documented in
+the source):
+  * `Info.plist` must contain
+    `<key>CADisableMinimumFrameDurationOnPhone</key><true/>` —
+    Compose Multiplatform aborts with a `PlistSanityCheck` error
+    otherwise.
+  * Avoid `FontFamily.Monospace` in the placeholder UI — on
+    Simulator's Skia → CoreText path, loading the system mono
+    typeface SIGABRTs in `TFileDataReference::Map` for unclear
+    sandbox reasons. Default body font is fine.
+
+**Phase 1 (✅ shipped 2026-05-10)**: bridge + Skal moved into a
+new `shared/` Kotlin Multiplatform module with `commonMain`,
+`jvmMain`, and `iosMain` source sets. android-app, desktop-app,
+and ios-app all consume it via composite build
+(`includeBuild("../shared")`).
+
+**Phase 4 (✅ shipped 2026-05-10, out of dependency order)**: the
+cinterop bridge — `native/ios/skal.h` for the C entry surface,
+`shared/src/iosMain/cinterop/skal.def` for the Kotlin/Native
+bindings (initially shipped with an inline stub, replaced when
+Phase 2-Simulator landed), `iosMain` actuals (`SkalIosRuntime`,
+`SkalBuffer` over `CPointer<UByteVar>` with explicit little-endian
+shuffles).
+
+**Phase 2-Simulator (✅ shipped 2026-05-10 via shortcut)**: real bun
++ JSC + SolidJS demo running on iPhone 15 Pro Max simulator (iOS
+17.0). The shortcut: vtool re-stamp of macOS `libskal.dylib` to
+IOSSIMULATOR platform (`scripts/link-skal-iossim.sh`) + a tiny
+`__clear_cache` shim in `native/ios/skal_iossim_shim.c` + linker
+fixups (`-Wl,-U,___clear_cache` for per-symbol flat-namespace
+lookup). C-side exports added to `skal_entry.zig` alongside the
+existing JNI exports (`skal_create_runtime` /
+`skal_evaluate` / `skal_acquire_bridge` / `skal_wake_js` /
+`skal_dispose_runtime` / `skal_free_string`). The `Skal.framework`
+shipped from `ios-app/` is now dynamic (was static in Phase 0)
+with `LC_LOAD_DYLIB → @rpath/libskal.dylib`; the iOS app embeds
+both Skal.framework and libskal.dylib under `Frameworks/`.
+
+**Not yet done — see `docs/ios-port.md`:**
+  * **Phase 2-Device (~1 week)**: real cross-compile to
+    `aarch64-apple-ios`. The vtool trick only works on Simulator
+    (which runs arm64 darwin code over the macOS kernel); device
+    binaries are linked against the iphoneos SDK with a different
+    sysroot and JSC must be built with `-DENABLE_JIT=0`. Add
+    `os: "ios"` to `vendor/bun/scripts/build/config.ts`, build
+    WebKit-iOS from source (no prebuilt available), gate
+    `tinycc`/`asan` etc. for iOS, switch `skal_entry.zig` JNI exports
+    to a plain-C surface for cinterop. Biggest unknown: which deps'
+    cmake configs handle iOS SDK cleanly without patching.
+  * **Phase 3 (~1 day)**: relink as `Skal.framework` (static) instead
+    of `libskal.dylib` — iOS apps don't load arbitrary dylibs.
+    `link-skal-framework.sh` mirrors `link-skal-dylib.sh` shape.
+  * **Phase 4 (~1 day)**: cinterop `.def` + Kotlin/Native actual
+    `Skal.kt` calling the C exports. Validate end-to-end JS eval +
+    bridge ops on Simulator.
+  * **Perf reality check**: iOS JIT restrictions mean JSC runs
+    interpreter-only when embedded outside WKWebView. Bytecode cache
+    saves parse time; tiered JIT savings (~5-10× on hot code) we
+    don't get. Realistic perf ceiling: "fast enough for UI work,
+    slower than Android for compute-heavy JS."
 
 ## Architecture
 

@@ -731,6 +731,59 @@ index c65a70d..0e21ef6 100644
          .windows => @enumFromInt(win32),
          .freebsd => @enumFromInt(freebsd),
          .wasm => @compileError("Unsupported operating system: " ++ @tagName(Environment.os)),
+diff --git a/src/jsc/bindings/BunProcess.cpp b/src/jsc/bindings/BunProcess.cpp
+index 6935f0c..4da7cdf 100644
+--- a/src/jsc/bindings/BunProcess.cpp
++++ b/src/jsc/bindings/BunProcess.cpp
+@@ -2520,7 +2520,9 @@ static JSValue constructProcessConfigObject(VM& vm, JSObject* processObject)
+     variables->putDirect(vm, JSC::Identifier::fromString(vm, "force_dynamic_crt"_s), JSC::jsNumber(0), 0);
+     variables->putDirect(vm, JSC::Identifier::fromString(vm, "napi_build_version"_s), JSC::jsNumber(Napi::DEFAULT_NAPI_VERSION), 0);
+     variables->putDirect(vm, JSC::Identifier::fromString(vm, "nasm_version"_s), JSC::jsNumber(2), 0);
+-#elif OS(MACOS)
++// Skal: ios shares macOS's process.config values (both are Apple OSes with
++// the same darwin compile-flag profile from bun's perspective).
++#elif OS(MACOS) || OS(IOS)
+     variables->putDirect(vm, JSC::Identifier::fromString(vm, "control_flow_guard"_s), JSC::jsBoolean(false), 0);
+     variables->putDirect(vm, JSC::Identifier::fromString(vm, "coverage"_s), JSC::jsBoolean(false), 0);
+     variables->putDirect(vm, JSC::Identifier::fromString(vm, "dcheck_always_on"_s), JSC::jsNumber(0), 0);
+diff --git a/src/jsc/bindings/NoOrphansTracker.cpp b/src/jsc/bindings/NoOrphansTracker.cpp
+index db887d2..92843b9 100644
+--- a/src/jsc/bindings/NoOrphansTracker.cpp
++++ b/src/jsc/bindings/NoOrphansTracker.cpp
+@@ -31,7 +31,14 @@
+ 
+ #include "root.h"
+ 
+-#if OS(DARWIN)
++// Skal: this whole file is macOS-only — libproc.h is unsupported on iOS
++// (iPhoneOS.sdk doesn't ship it, and proc_listpids et al are restricted
++// in third-party iOS apps' sandbox anyway). NoOrphansTracker is a debug
++// safety net for `spawnSync` orphan cleanup; iOS apps don't typically
++// spawn subprocesses (Apple sandbox blocks fork+exec via posix_spawn
++// EPERM), so the tracker just becomes a no-op. Gate the whole file on
++// PLATFORM(MAC) instead of OS(DARWIN).
++#if PLATFORM(MAC)
+ 
+ #include <libproc.h>
+ #include <signal.h>
+diff --git a/src/jsc/bindings/SecretsDarwin.cpp b/src/jsc/bindings/SecretsDarwin.cpp
+index c25ff88..26eb39f 100644
+--- a/src/jsc/bindings/SecretsDarwin.cpp
++++ b/src/jsc/bindings/SecretsDarwin.cpp
+@@ -1,6 +1,12 @@
+ #include "root.h"
+ 
+-#if OS(DARWIN)
++// Skal: gate on PLATFORM(MAC) — iOS Security framework lacks SecAccessRef
++// and several keychain APIs marked __API_UNAVAILABLE(ios). Skal apps
++// shouldn't use Bun's keychain bindings on iOS anyway; iOS keychain
++// access goes through different APIs. On iOS this file compiles to no
++// symbols (the Secrets.h consumers will see a linker error if they try
++// to use this; Bun's runtime guards process.platform checks elsewhere).
++#if PLATFORM(MAC)
+ 
+ #include "Secrets.h"
+ #include <dlfcn.h>
 diff --git a/src/main.zig b/src/main.zig
 index 6698634..675002c 100644
 --- a/src/main.zig

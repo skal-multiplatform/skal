@@ -779,7 +779,7 @@ index db887d2..92843b9 100644
  #include <libproc.h>
  #include <signal.h>
 diff --git a/src/jsc/bindings/SecretsDarwin.cpp b/src/jsc/bindings/SecretsDarwin.cpp
-index c25ff88..84fe10d 100644
+index c25ff88..132b2f5 100644
 --- a/src/jsc/bindings/SecretsDarwin.cpp
 +++ b/src/jsc/bindings/SecretsDarwin.cpp
 @@ -1,6 +1,12 @@
@@ -800,7 +800,7 @@ index c25ff88..84fe10d 100644
  } // namespace Secrets
  } // namespace Bun
  
-+#elif PLATFORM(IOS_FAMILY)
++#elif OS(DARWIN) && !PLATFORM(MAC)
 +
 +// Skal: iOS stubs — keychain access on iOS uses a different API surface
 +// (kSecAttrAccessible* + per-app keychain), and Bun's macOS-style ACL

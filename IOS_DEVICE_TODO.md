@@ -477,6 +477,17 @@ JIT/Wasm at runtime just go through their interpreter fallbacks
 
 ### Spike day 4 — bun-zig.o + libJSC.a + bun C++ all compile; link script ready; final link iterating
 
+**Update (2026-05-11 20:00)**: link attempt produced specific
+unresolved-symbol errors for `Bun::Secrets::{setPassword, getPassword,
+deletePassword}`. My iOS stubs in `SecretsDarwin.cpp` use
+`#elif PLATFORM(IOS_FAMILY)` — this gate may not be defined in bun's
+root.h compile context (unlike WebKit's own headers which set it).
+Switched to `#elif OS(DARWIN) && !PLATFORM(MAC)` which is reliably
+true on iOS (we already confirmed OS(DARWIN) was true on iOS earlier
+from the original error). WebKit cmake rebuild + bun C++ rebuild
+running in background — full cycle ~30-45 min. Expected to produce
+libskal.dylib once stubs link cleanly.
+
 **Status**: all build artifacts produced for iOS arm64 EXCEPT a final
 linkable libskal.dylib. The `link-skal-ios.sh` script is in place; the
 last few issues are iOS-specific symbol stubs needed for the final

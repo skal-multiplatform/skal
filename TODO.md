@@ -255,6 +255,58 @@ per click. For touch/scroll streams (60–120/sec) it's irrelevant; for
 hypothetical high-frequency input (motion sensors at 1 kHz) we'd want
 a free list. Pool the tasks if/when this becomes a real load.
 
+### Investigate enabling JSC JIT at runtime on Android
+**Status today**: bun's Android port ships with `g_jscConfig.useJIT=false`
+on startup — JSC stays in LLInt interpreter regardless of how hot a
+function gets. Rough ceiling: ~5-10× slower than JIT-on for compute-
+heavy loops; UI orchestration (the dominant Skal workload) is closer
+to 1.5-2× slower. iOS Simulator on Apple Silicon gets full JIT for
+free because it runs darwin arm64 code over the macOS kernel; iOS
+device physically cannot JIT (Apple's kernel-level W^X enforcement +
+`pthread_jit_write_protect_np` is `__API_UNAVAILABLE(ios)`).
+
+**Why bun disables on Android, not "Android forbids JIT"**:
+  * Mobile JS sessions are often short — JIT compilation overhead
+    rarely amortizes for sub-second handler bursts.
+  * Memory: JIT'd code is permanent resident bytes (~20-50 MB of
+    extra footprint for a steady-state app).
+  * Battery: JIT compilation is CPU/energy intensive.
+  * Bytecode cache (`.cjs.jsc`) already eliminates the parse cost
+    — the main reason JIT was a big win historically.
+  * Distribution simplicity — some app stores/scanners flag RWX
+    allocations.
+
+Android itself **technically allows** runtime-executable memory via
+`mmap(PROT_EXEC)` / `mprotect()`. SELinux + bionic don't block it
+for normal NDK apps. The constraint is bun's runtime choice, not the
+OS.
+
+**The investigation**:
+  1. Build a Skal Android variant with `useJIT=true` (Baseline only
+     to start; DFG/FTL incrementally).
+  2. Benchmark: cold-start cost, steady-state memory, +1000 setCount
+     throughput, real Solid app interaction (the existing demo).
+  3. Measure CPU/battery delta over a 5-min session (Android
+     Battery Historian).
+  4. Decide based on data:
+     * Net positive on workloads we care about → opt-in build flag
+       (`SKAL_ANDROID_JIT=1`) for development; ship JIT-ON as
+       default if measurably better.
+     * Net negative → document the trade-offs, keep JIT-OFF.
+     * Mixed → ship as a per-app config (`skal.config.ts` flag).
+
+**Why "development builds" might be a sweet spot**: dev cycles
+benefit from fast iteration on hot code paths (running benchmarks,
+exercising large data sets), while production benefits from
+predictable memory/battery. An opt-in flag preserves both.
+
+**Effort**: ~1-2 days for the build flag + benchmark suite,
+contingent on bun's existing `useJIT` config being already wired
+through (it is — bun's own non-mobile builds have it on).
+
+**Cross-references**: see IOS_DEVICE_TODO.md § "JIT compile-time-on
+/ runtime-off pattern" for the same machinery from the iOS side.
+
 ## Platforms
 
 ### iOS port — Simulator fully working; device path still open

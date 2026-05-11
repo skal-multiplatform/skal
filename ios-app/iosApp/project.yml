@@ -165,8 +165,15 @@ targets:
       - name: Embed Skal.framework
         shell: /bin/bash
         runOnlyWhenInstalling: false
-        outputFiles:
-          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/Skal.framework/Skal
+        # NO outputFiles + NO inputFiles → Xcode treats this script as
+        # always-out-of-date and re-runs it on every build. Without this,
+        # Xcode's incremental build sees a previously-copied
+        # Skal.framework in the .app, decides "nothing to do", and the
+        # iOS Sim ends up running yesterday's framework binary even
+        # though `./gradlew :linkDebugFrameworkIosSimulatorArm64`
+        # produced a fresh one. (Asked-and-answered the hard way.)
+        # The cp is cheap so re-running unconditionally is fine.
+        alwaysOutOfDate: true
         script: |
           set -euo pipefail
           # Pick the Kotlin/Native target matching the Xcode SDK.
@@ -198,8 +205,11 @@ targets:
       - name: Embed libskal.dylib
         shell: /bin/bash
         runOnlyWhenInstalling: false
-        outputFiles:
-          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libskal.dylib
+        # Same rationale as Embed Skal.framework above — Xcode's
+        # incremental build skips the embed when the .app already has
+        # a copy, and we end up running stale binaries. Re-cp on every
+        # build; it's a single file copy and cheap.
+        alwaysOutOfDate: true
         script: |
           set -euo pipefail
           # Pick the libskal build dir matching the Xcode SDK.

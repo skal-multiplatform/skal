@@ -21,9 +21,12 @@ const TAG_TO_WIDGET = {
   column:       B.WT_COLUMN,
   scrollColumn: B.WT_SCROLL_COLUMN,
   row:          B.WT_ROW,
-  // 'text' is intentionally NOT here — text content is created via
-  // createTextNode below. Devs use plain string children for text:
+  // <text label="..." fontSize={...}> — for STYLED text content
+  // (font size/weight/color/etc.). For unstyled text, use plain
+  // strings as children of any container:
   //   <column>{() => `Count: ${count()}`}</column>
+  // The string child is auto-wrapped as an unstyled WT_TEXT leaf.
+  text:         B.WT_TEXT,
   button:       B.WT_BUTTON,
 };
 
@@ -236,8 +239,11 @@ const _renderer = createRenderer({
       }
       return;
     }
-    // <button label="..." /> — set the button's text content.
-    if (name === 'label' && node.tag === 'button') {
+    // <button label="..." /> or <text label="..." /> — set the
+    // node's text content. Same OP_SET_TEXT for both; renderer-side
+    // semantic is identical (the widget composable consumes
+    // `node.text.value`).
+    if (name === 'label' && (node.tag === 'button' || node.tag === 'text')) {
       const s = value == null ? '' : String(value);
       B.setText(node.id, s);
       B.scheduleCommit();

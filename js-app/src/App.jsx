@@ -18,12 +18,102 @@ const TWEET_LINES = [
   "Every config file format eventually grows a turing-complete templating layer",
 ];
 
-const TWEETS = Array.from({ length: 5000 }, (_, i) => {
-  const author = `@user${(i * 2654435761) >>> 17}`;
-  return `${author}: ${TWEET_LINES[i % TWEET_LINES.length]} (#${i + 1})`;
-});
+// Pre-compute the tweet pool as {author, body, num} records — Tweet
+// component is simpler than parsing strings at render time.
+const TWEETS = Array.from({ length: 5000 }, (_, i) => ({
+  author: `@user${(i * 2654435761) >>> 17}`,
+  body: TWEET_LINES[i % TWEET_LINES.length],
+  num: i + 1,
+}));
 
 const COUNT_BUTTONS = [50, 200, 500, 1000, 2000, 5000];
+
+// Palette — defined once at module scope so the prop diff cache hits on
+// identical color strings across every tweet. Otherwise each tweet would
+// allocate a fresh string for every setProperty call.
+const COLOR_CARD_BG       = '#FFFFFFFF';
+const COLOR_CARD_BORDER   = '#FFE5E5EA';
+const COLOR_AUTHOR        = '#FF1DA1F2';
+const COLOR_BODY          = '#FF1F2937';
+const COLOR_REACTION_IDLE_BG     = '#FFF1F5F9';
+const COLOR_REACTION_IDLE_FG     = '#FF475569';
+const COLOR_REACTION_LIKE_BG     = '#FF22C55E';  // green when liked
+const COLOR_REACTION_REPLY_BG    = '#FFEF4444';  // red when replied
+const COLOR_REACTION_ACTIVE_FG   = '#FFFFFFFF';
+
+/**
+ * One tweet card. Solid creates a fresh component instance per tweet, so
+ * each Tweet has its own per-card signals (like state, like count, etc).
+ * Clicking a reaction toggles its "active" state and bumps the count.
+ *
+ * Performance shape:
+ *  - Each interaction (one click) updates ~3 reactive props on the
+ *    affected button (background, color, label) — Solid's fine-grained
+ *    tracking means only THAT button's effects re-run, not any sibling
+ *    tweet, not the author/body text.
+ *  - The bridge's diff cache short-circuits redundant writes when toggling
+ *    back to a previously-seen color, so a like→unlike→like cycle writes
+ *    each color value exactly once over its lifetime.
+ *  - The Kotlin drain coalesces those 3 prop writes into ONE recompose
+ *    of the affected SkalButton (one propsVersion bump per node per drain).
+ */
+function Tweet(props) {
+  const [likes, setLikes]     = createSignal(0);
+  const [liked, setLiked]     = createSignal(false);
+  const [replies, setReplies] = createSignal(0);
+  const [replied, setReplied] = createSignal(false);
+
+  return (
+    <column
+      background={COLOR_CARD_BG}
+      padding={12}
+      cornerRadius={10}
+      borderWidth={1}
+      borderColor={COLOR_CARD_BORDER}
+      gap={6}
+    >
+      <text fontWeight={700} fontSize={14} color={COLOR_AUTHOR} label={props.author} />
+      <text fontSize={14} color={COLOR_BODY} maxLines={3} textOverflow={1} label={props.body} />
+      <row gap={10}>
+        {/* Reactive attribute values: use expressions that DIRECTLY
+            call the signal (likes(), liked(), …). Solid's babel
+            plugin detects the signal call and wraps the expression
+            in effect() automatically. Do NOT wrap in an outer arrow
+            function — `() => expr` is opaque to the plugin and
+            passes through to setProperty as a literal Function value
+            (which `String(fn)` then renders as source code). */}
+        <button
+          label={`♥ ${likes()}`}
+          fontSize={12}
+          padding={6}
+          cornerRadius={16}
+          background={liked() ? COLOR_REACTION_LIKE_BG : COLOR_REACTION_IDLE_BG}
+          color={liked() ? COLOR_REACTION_ACTIVE_FG : COLOR_REACTION_IDLE_FG}
+          onClick={() => {
+            // Toggle-and-adjust: like+1 the first click, like-1 the
+            // second. Matches the familiar Twitter/X heart semantics.
+            const next = !liked();
+            setLiked(next);
+            setLikes(likes() + (next ? 1 : -1));
+          }}
+        />
+        <button
+          label={`↩ ${replies()}`}
+          fontSize={12}
+          padding={6}
+          cornerRadius={16}
+          background={replied() ? COLOR_REACTION_REPLY_BG : COLOR_REACTION_IDLE_BG}
+          color={replied() ? COLOR_REACTION_ACTIVE_FG : COLOR_REACTION_IDLE_FG}
+          onClick={() => {
+            const next = !replied();
+            setReplied(next);
+            setReplies(replies() + (next ? 1 : -1));
+          }}
+        />
+      </row>
+    </column>
+  );
+}
 
 export default function App() {
   const [count, setCount] = createSignal(0);
@@ -42,19 +132,14 @@ export default function App() {
   // array as reactive: any signal change re-runs the array-level effect,
   // which calls each function child to "unwrap" it, which CREATES NEW text
   // nodes for every string-returning child (the tweet list, the bench
-  // texts, etc.). On a fragment with 50 tweets, every setCount allocates
-  // 50+ fresh text nodes — the string heap fills in ~126 iterations.
+  // texts, etc.).
   //
   // With a single root element, children are inserted individually and
   // each function child gets its own isolated effect. setCount only
   // re-runs the count-text effect, nothing else.
   return (
     <column background="#FFFAFAFA" padding={16} gap={12}>
-      <box
-        background="#FF1DA1F2"
-        padding={12}
-        cornerRadius={8}
-      >
+      <box background="#FF1DA1F2" padding={12} cornerRadius={8}>
         {() => `Count: ${count()}`}
       </box>
       <row gap={8}>
@@ -106,7 +191,9 @@ export default function App() {
       {tweetBenchMs}
 
       <For each={tweetsToShow()}>
-        {(tweet) => tweet}
+        {(tweet) => (
+          <Tweet author={tweet.author} body={tweet.body} num={tweet.num} />
+        )}
       </For>
     </column>
   );

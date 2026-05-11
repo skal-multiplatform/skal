@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -410,27 +412,47 @@ private fun SkalButton(node: NodeState, bridge: SkalBridge) {
     val enabled = node.props.getOrDefault(SkalBridge.PROP_ENABLED, 1) != 0
     val width = node.props.getOrDefault(SkalBridge.PROP_WIDTH, SkalBridge.NO_VALUE)
     val height = node.props.getOrDefault(SkalBridge.PROP_HEIGHT, SkalBridge.NO_VALUE)
-    val m = applyHeight(applyWidth(Modifier, width), height)
-        .skalHotLayer(node)
+
+    // Material3 Button does NOT honor Modifier.background — its surface
+    // color is controlled via the `colors` ButtonColors parameter. So
+    // we route bg/fg props through ButtonDefaults.buttonColors rather
+    // than skalColdVisual (which uses Modifier.background internally).
+    val bg = node.props.getOrDefault(SkalBridge.PROP_BG_COLOR, 0)
+    val fg = node.props.getOrDefault(SkalBridge.PROP_FG_COLOR, 0)
+    val fontSize = node.props.getOrDefault(SkalBridge.PROP_FONT_SIZE, 14)
+
+    // Optional cornerRadius override — defaults to the Material3 pill
+    // shape if absent.
+    val cornerRadius = node.props.getOrDefault(SkalBridge.PROP_CORNER_RADIUS, -1)
+
+    // Optional compact mode — when PROP_PADDING is set, override the
+    // Material3 default contentPadding (24dp horizontal × 8dp vertical
+    // = chunky 48dp-tall buttons). The 3:1 horizontal:vertical ratio
+    // matches Material3's own default proportions, so `padding={6}`
+    // produces an 18dp × 6dp pill that looks like a scaled-down
+    // Material3 button rather than a stubby one.
+    val pad = node.props.getOrDefault(SkalBridge.PROP_PADDING, -1)
+    val contentPadding = if (pad >= 0) PaddingValues(horizontal = (pad * 3).dp, vertical = pad.dp)
+                         else ButtonDefaults.ContentPadding
+
+    val defaults = ButtonDefaults.buttonColors()
+    val colors = if (bg != 0 || fg != 0) {
+        ButtonDefaults.buttonColors(
+            containerColor = if (bg != 0) Color(bg.toLong() and 0xFFFFFFFFL) else defaults.containerColor,
+            contentColor   = if (fg != 0) Color(fg.toLong() and 0xFFFFFFFFL) else defaults.contentColor,
+        )
+    } else defaults
+
+    val m = applyHeight(applyWidth(Modifier, width), height).skalHotLayer(node)
 
     Button(
         onClick = { bridge.dispatchEvent(node.onClickHandlerId.value) },
         enabled = enabled,
+        colors = colors,
+        contentPadding = contentPadding,
+        shape = if (cornerRadius >= 0) RoundedCornerShape(cornerRadius.dp) else ButtonDefaults.shape,
         modifier = m,
     ) {
-        // Inline the button's label text styling — Material3 Button's
-        // own colors API governs the button surface; we only set the
-        // text color when the user explicitly requested one.
-        val fontSize = node.props.getOrDefault(SkalBridge.PROP_FONT_SIZE, 14)
-        val fgColorRaw = node.props.getOrDefault(SkalBridge.PROP_FG_COLOR, 0)
-        if (fgColorRaw != 0) {
-            Text(
-                text = node.text.value,
-                fontSize = fontSize.sp,
-                color = Color(fgColorRaw.toLong() and 0xFFFFFFFFL),
-            )
-        } else {
-            Text(text = node.text.value, fontSize = fontSize.sp)
-        }
+        Text(text = node.text.value, fontSize = fontSize.sp)
     }
 }

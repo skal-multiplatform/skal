@@ -5,6 +5,7 @@ import androidx.collection.MutableIntIntMap
 import androidx.collection.MutableIntObjectMap
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.skal.SkalRuntime
 import kotlin.concurrent.Volatile
@@ -112,72 +113,96 @@ class SkalBridge(private val skal: SkalRuntime) {
         // EMA would just dilute the meaningful "drain cost" signal.
         val mark = TIME_SOURCE.markNow()
 
-        val writePos = buffer.getInt(H_OP_WRITE_POS_OFFSET)
+        // ── Batch all state mutations in one Snapshot apply ────────────────
+        //
+        // Each `children.add(idx, b)` / `node.text.value = …` below goes
+        // through Compose's Snapshot system. Without this wrapper, every
+        // write fires the registered write-observers immediately (chiefly
+        // Compose's recomposer, which walks its tracked-scope graph to mark
+        // affected composables dirty). On a +200-tweet drain that's 300+
+        // separate fan-outs — pure bookkeeping overhead, since the recomposer
+        // ends up scheduling only ONE recomposition per frame anyway.
+        //
+        // `withMutableSnapshot { ... }` creates a local mutable snapshot;
+        // writes accumulate there, observers are silent, and at block exit
+        // a single merged change set is applied — one fan-out for the whole
+        // batch. Reads inside the block see the local snapshot's state
+        // (including its own pending writes), so the `parent.children
+        // .indexOf(anchor)` lookup still sees a freshly-inserted anchor
+        // within the same drain — same observable behavior as before.
+        //
+        // The pump-time measurement intentionally encloses the apply: the
+        // apply IS the per-pump cost we want to track (it's where observer
+        // fan-out actually fires now). EMA still smooths jitter across
+        // frames.
+        Snapshot.withMutableSnapshot {
+            val writePos = buffer.getInt(H_OP_WRITE_POS_OFFSET)
 
-        // Hoist into locals so the JIT doesn't re-fetch fields each iter.
-        val buf = buffer
-        val ns = nodes
-        val opEnd = OP_RING_OFFSET + writePos
-        val strBase = STRING_HEAP_OFFSET
-        var p = OP_RING_OFFSET
-        while (p < opEnd) {
-            // Reader only consumes byte 0 of the opcode field; the writer
-            // packs the high 24 bits as zero.
-            val opcode = buf.getByte(p).toInt() and 0xff
-            val a = buf.getInt(p + 4)
-            val b = buf.getInt(p + 8)
-            val c = buf.getInt(p + 12)
-            when (opcode) {
-                OP_CREATE_NODE -> ns.put(a, NodeState(b))
-                OP_REMOVE_NODE -> removeSubtree(a, ns)
-                OP_INSERT_BEFORE -> {
-                    val parent = ns.get(a)
-                    if (parent != null) {
-                        // Auto-detach: Solid's keyed-list reordering relies on
-                        // DOM-style insertNode semantics — moving a node by
-                        // re-inserting without first calling removeNode. Our
-                        // bridge has to enforce the "node id appears in at most
-                        // one parent's children list at a time" invariant
-                        // ourselves; the DOM does it implicitly. Without this,
-                        // any reorder would leave the moving id duplicated in
-                        // both old and new parents.
-                        val movingNode = ns.get(b)
-                        if (movingNode != null) {
-                            val oldParentId = movingNode.parent.value
-                            if (oldParentId != 0) {
-                                ns.get(oldParentId)?.children?.let { oldChildren ->
-                                    val oldIdx = oldChildren.lastIndexOf(b)
-                                    if (oldIdx >= 0) oldChildren.removeAt(oldIdx)
+            // Hoist into locals so the JIT doesn't re-fetch fields each iter.
+            val buf = buffer
+            val ns = nodes
+            val opEnd = OP_RING_OFFSET + writePos
+            val strBase = STRING_HEAP_OFFSET
+            var p = OP_RING_OFFSET
+            while (p < opEnd) {
+                // Reader only consumes byte 0 of the opcode field; the writer
+                // packs the high 24 bits as zero.
+                val opcode = buf.getByte(p).toInt() and 0xff
+                val a = buf.getInt(p + 4)
+                val b = buf.getInt(p + 8)
+                val c = buf.getInt(p + 12)
+                when (opcode) {
+                    OP_CREATE_NODE -> ns.put(a, NodeState(b))
+                    OP_REMOVE_NODE -> removeSubtree(a, ns)
+                    OP_INSERT_BEFORE -> {
+                        val parent = ns.get(a)
+                        if (parent != null) {
+                            // Auto-detach: Solid's keyed-list reordering relies on
+                            // DOM-style insertNode semantics — moving a node by
+                            // re-inserting without first calling removeNode. Our
+                            // bridge has to enforce the "node id appears in at most
+                            // one parent's children list at a time" invariant
+                            // ourselves; the DOM does it implicitly. Without this,
+                            // any reorder would leave the moving id duplicated in
+                            // both old and new parents.
+                            val movingNode = ns.get(b)
+                            if (movingNode != null) {
+                                val oldParentId = movingNode.parent.value
+                                if (oldParentId != 0) {
+                                    ns.get(oldParentId)?.children?.let { oldChildren ->
+                                        val oldIdx = oldChildren.lastIndexOf(b)
+                                        if (oldIdx >= 0) oldChildren.removeAt(oldIdx)
+                                    }
                                 }
                             }
-                        }
-                        val children = parent.children
-                        val anchor = c
-                        if (anchor == 0) {
-                            children.add(b)
-                        } else {
-                            val idx = children.indexOf(anchor)
-                            if (idx >= 0) children.add(idx, b) else children.add(b)
-                        }
-                        movingNode?.parent?.value = a
-                    }
-                }
-                OP_SET_PROP_U32 -> ns.get(a)?.props?.put(b, c)
-                OP_SET_PROP_F32 -> ns.get(a)?.propsF?.put(b, Float.fromBits(c))
-                OP_SET_TEXT -> ns.get(a)?.text?.value = readString(buf, strBase, b, c)
-                OP_BIND_HANDLER -> {
-                    val node = ns.get(a)
-                    if (node != null) {
-                        when (b) {
-                            EV_CLICK -> node.onClickHandlerId.value = c
-                            EV_CHANGE -> node.onChangeHandlerId.value = c
+                            val children = parent.children
+                            val anchor = c
+                            if (anchor == 0) {
+                                children.add(b)
+                            } else {
+                                val idx = children.indexOf(anchor)
+                                if (idx >= 0) children.add(idx, b) else children.add(b)
+                            }
+                            movingNode?.parent?.value = a
                         }
                     }
+                    OP_SET_PROP_U32 -> ns.get(a)?.props?.put(b, c)
+                    OP_SET_PROP_F32 -> ns.get(a)?.propsF?.put(b, Float.fromBits(c))
+                    OP_SET_TEXT -> ns.get(a)?.text?.value = readString(buf, strBase, b, c)
+                    OP_BIND_HANDLER -> {
+                        val node = ns.get(a)
+                        if (node != null) {
+                            when (b) {
+                                EV_CLICK -> node.onClickHandlerId.value = c
+                                EV_CHANGE -> node.onChangeHandlerId.value = c
+                            }
+                        }
+                    }
                 }
+                p += 16
             }
-            p += 16
+            lastOpSeq = seq
         }
-        lastOpSeq = seq
 
         val dt = mark.elapsedNow().inWholeNanoseconds
 

@@ -1,0 +1,89 @@
+diff --git a/Source/JavaScriptCore/assembler/FastJITPermissions.h b/Source/JavaScriptCore/assembler/FastJITPermissions.h
+index 4e4067d009..7787e7fbd4 100644
+--- a/Source/JavaScriptCore/assembler/FastJITPermissions.h
++++ b/Source/JavaScriptCore/assembler/FastJITPermissions.h
+@@ -94,7 +94,15 @@ static ALWAYS_INLINE void threadSelfRestrict()
+         RELEASE_ASSERT_NOT_REACHED();
+ }
+ 
+-#elif CPU(ARM64)
++// Skal: gate the pthread_jit_write_protect_np() arm64 path on
++// PLATFORM(MAC) — pthread_jit_write_protect_* is marked unavailable on
++// iOS (`pthread.h` carries an explicit __API_UNAVAILABLE attribute).
++// Third-party iOS apps can't toggle JIT permissions; they can't have
++// JIT at all. We're building with ENABLE_JIT=OFF anyway, so this
++// branch is unreachable on iOS at runtime — but the header still
++// gets compiled, so we need it to type-check. Falls through to the
++// generic stub below that just RELEASE_ASSERT_NOT_REACHEDs.
++#elif CPU(ARM64) && PLATFORM(MAC)
+ #include <pthread.h>
+ 
+ template <MemoryRestriction restriction>
+diff --git a/Source/JavaScriptCore/bytecode/InlineCacheCompiler.h b/Source/JavaScriptCore/bytecode/InlineCacheCompiler.h
+index ba267b0bbd..787e024758 100644
+--- a/Source/JavaScriptCore/bytecode/InlineCacheCompiler.h
++++ b/Source/JavaScriptCore/bytecode/InlineCacheCompiler.h
+@@ -28,6 +28,13 @@
+ #if ENABLE(JIT)
+ 
+ #include "AccessCase.h"
++// Skal: needed for CCallHelpers::Jump / CCallHelpers::JumpList nested
++// types referenced as method return types below (~lines 279-280).
++// Newer clang (Xcode 26) is stricter about accessing nested types via
++// forward declaration; older clangs on macOS/Linux let this through.
++// CCallHelpers.h is itself `#if ENABLE(JIT)`-guarded, so this include
++// is empty when JIT is off and adds nothing to non-JIT builds.
++#include "CCallHelpers.h"
+ #include "InlineCacheHandler.h"
+ #include "JITStubRoutine.h"
+ #include "JSFunctionInlines.h"
+diff --git a/Source/WTF/wtf/PlatformHave.h b/Source/WTF/wtf/PlatformHave.h
+index c81e6e9d13..bb39935fe0 100644
+--- a/Source/WTF/wtf/PlatformHave.h
++++ b/Source/WTF/wtf/PlatformHave.h
+@@ -101,7 +101,13 @@
+ #define HAVE_HISERVICES 1
+ #endif
+ 
+-#if PLATFORM(IOS_FAMILY)
++// Skal: iOS SDK doesn't ship <readline/history.h> — macOS exposes it via
++// libedit's BSD-compatible API but iPhoneOS.sdk has no equivalent.
++// HAVE_READLINE was previously defined unconditionally on IOS_FAMILY,
++// which broke the JSC shell build for real iOS targets.
++// (Note: line ~228 below also defines HAVE_READLINE for OS(DARWIN);
++// that one's similarly gated to PLATFORM(MAC) only.)
++#if PLATFORM(IOS_FAMILY) && 0
+ #define HAVE_READLINE 1
+ #endif
+ 
+@@ -224,7 +230,11 @@
+ #define HAVE_PTHREAD_SETNAME_NP 1
+ #endif
+ 
+-#if OS(DARWIN)
++// Skal: gate on PLATFORM(MAC) — macOS provides readline via libedit, but
++// iPhoneOS.sdk doesn't ship <readline/history.h>. See § iOS port. The
++// JSC shell (jsc.cpp) is the only consumer; without this gate the iOS
++// build fails on jsc.cpp:140.
++#if PLATFORM(MAC)
+ #define HAVE_READLINE 1
+ #endif
+ 
+diff --git a/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp b/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp
+index 2d2a68d9c2..78d0eeaf74 100644
+--- a/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp
++++ b/Source/WTF/wtf/posix/OSAllocatorPOSIX.cpp
+@@ -53,7 +53,12 @@
+ #include <wtf/spi/cocoa/MachVMSPI.h>
+ #endif
+ 
+-#if OS(DARWIN)
++// Skal: gate on PLATFORM(MAC) instead of OS(DARWIN). OS(DARWIN) is true for
++// macOS AND iOS (Apple Mach-O kernel family), but mach_vm.h is marked
++// "unsupported" in iPhoneOS.sdk and mach_vm_map isn't available to
++// third-party iOS apps. On iOS we fall through to the regular mmap-based
++// allocator below (same path Linux + Android use).
++#if PLATFORM(MAC)
+ 
+ #include <mach/mach.h>
+ #include <mach/mach_vm.h>

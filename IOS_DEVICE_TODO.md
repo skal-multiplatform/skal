@@ -457,6 +457,59 @@ JIT/Wasm at runtime just go through their interpreter fallbacks
 3. `Source/JavaScriptCore/bytecode/InlineCacheCompiler.h` — CCallHelpers include
 4. `Source/WTF/wtf/PlatformHave.h` — HAVE_READLINE gates (2 sites)
 
+### Spike day 3 — Bun C++ side fully compiles for iOS
+
+**Status**: bun's TypeScript build system fully configures for iOS,
+all 22 deps build, only the final link remains. ~1277 LOC of bun
+patches (`patches/0004-bun-ios-target-plumbing.patch`) — 36 files
+touched.
+
+**Per-dep error trajectory**:
+
+| Issue | Fix | Where |
+|---|---|---|
+| `linux build missing abi` | Add `aarch64-ios.16.0` zigTarget branch | `scripts/build/zig.ts` |
+| c-ares: `<malloc.h>` not found (and 83 others) | `cfg.darwin → cfg.apple` in cares.ts | `deps/cares.ts` |
+| libarchive: `st_atim`/`linux/fs.h` etc (and 6 others) | `cfg.darwin → cfg.apple` in libarchive.ts | `deps/libarchive.ts` |
+| lolhtml: wrong rust target (`aarch64-unknown-linux-gnu`) | Add `aarch64-apple-ios` to rustTargetTriple | `deps/lolhtml.ts` |
+| lolhtml: stable rustc finds `-Z` flag | Run ninja with `PATH=$HOME/.cargo/bin:$PATH` so rustup proxy wins over Homebrew's stable rustc | session env (not a patch) |
+| lolhtml: `-Cpanic=abort` needs nightly buildStd | Add `cfg.apple` to `canBuildStdImmediateAbort` | `deps/lolhtml.ts` |
+| `std::bit_cast` missing on iOS 14 libc++ | Bump iOS min from 14 → 16 (matches Skal's deployment target) | `build.zig`, `zig.ts` |
+| iOS C++ cross-compile target unset | New `if (ios) { crossTarget = "aarch64-apple-ios16.0"; sysroot = xcrun --sdk iphoneos }` block | `scripts/build/config.ts` |
+| bun's local WebKit cmake missing iOS flags | Add iOS-specific cmake args mirroring `scripts/build-jsc-ios.sh` | `deps/webkit.ts` |
+
+**Configure** (`bun scripts/build.ts --profile=ios-release
+--build-dir=build/ios-release --configure-only`): produces a
+`build.ninja` with **22 deps, 88 codegen steps, 1134 objects** all
+targeting `ios-aarch64`.
+
+**Changes landed in `patches/0004-bun-ios-target-plumbing.patch`**
+(expanded to ~1140 LOC total across both Zig + TS sides):
+
+1. `scripts/build/config.ts`:
+   - `"ios"` added to `OS` type
+   - `Config.ios` (boolean) + `Config.apple` (= darwin || ios)
+   - `unix`/`kqueue` extended to include iOS
+   - `ndkHostTag` exhaustiveness — iOS is target-only
+2. `scripts/build/zig.ts`: `zigTarget()` returns `aarch64-ios.14.0`
+3. `scripts/build/profiles.ts`: new `ios-release` profile
+
+**Next failure surface** (discovered by running ninja against the iOS
+config): individual deps have Linux/macOS-specific assumptions that
+need iOS-aware patches. First two seen:
+
+| Dep | Failure | Fix shape |
+|---|---|---|
+| `libarchive` | `struct stat` field `st_atim`/`st_mtim`/`st_ctim` missing on iOS (those are Linux; darwin uses `st_atimespec`/etc.) | Pass `-DHAVE_STRUCT_STAT_ST_ATIMESPEC` to libarchive cc on iOS; same as macOS treatment |
+| `libarchive` | `<sys/sysmacros.h>` not found | Linux-only header; needs `cfg.linux`-only include |
+
+**Pattern**: each dep has 2-5 such issues. The macOS prebuilt would have
+been configured via autoconf-style probing; the `direct` mode bun uses
+needs explicit defines. Estimated ~2-5 hours per dep × 15 deps =
+**1-2 focused days** of mechanical work. Each dep build script in
+`scripts/build/deps/<name>.ts` gets an iOS branch mirroring its
+darwin branch (most defines transfer 1:1 since iOS is darwin-family).
+
 ### Spike day 2 — earlier (now historical)
 
 **Status as of 2026-05-11**: cmake configured cleanly, ninja build at

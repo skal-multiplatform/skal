@@ -14,7 +14,9 @@
     "_6": "// → fallback to parsing → cold-start regression with no error. Per",
     "_7": "// TODO_PLATFORMS § 1.1.",
     "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && \"$BUN\" build ../android-app/app/src/main/assets/skal-app.js --bytecode --format=cjs --outdir=../android-app/app/src/main/assets/ --entry-naming=skal-app.cjs --root=../android-app/app/src/main/assets'",
-    "dev": "vite build --watch"
+    "dev": "vite build --watch",
+    "dev:web": "vite --config vite.config.web.js",
+    "build:web": "vite build --config vite.config.web.js"
   },
   "dependencies": {
     "solid-js": "^1.9.12"

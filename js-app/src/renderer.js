@@ -159,6 +159,60 @@ function parseDim(v) {
 }
 
 /**
+ * Set one prop on a custom (registry-dispatched) node.
+ *
+ * Built-in widgets dispatch through TAG_TO_WIDGET + COLD_PROPS — each
+ * prop has a known u8 key and typed encoding. For custom widgets the
+ * renderer can't know the prop names ahead of time (the dev's adapter
+ * does), so we dispatch by JS value type:
+ *
+ *   • function  → name-keyed handler binding (onClick → "onClick", etc.)
+ *   • number    → setCustomPropF32 if there's a decimal, else U32
+ *   • string    → setCustomPropStr (max 255 bytes)
+ *   • boolean   → setCustomPropU32 with 0/1
+ *   • null/undef → skipped (mirrors built-in setProperty behavior:
+ *                  "leave as previous")
+ *
+ * Adapters read these back via NodeState.getCustomPropF32(name, fb) etc.
+ */
+function _setCustomProperty(node, name, value) {
+  if (value == null) return;
+  const t = typeof value;
+  if (t === 'function') {
+    const handlerId = B.newHandlerId(value);
+    B.bindCustomHandler(node.id, name, handlerId);
+    B.scheduleCommit();
+    return;
+  }
+  if (t === 'number') {
+    // Integer fast-path: avoid the F32 → bits → F32 round-trip when
+    // the value is a whole integer that fits in u32. Most custom-prop
+    // numbers (counts, enum indices, hex colors) are integral.
+    if (Number.isInteger(value) && value >= 0 && value <= 0xFFFFFFFF) {
+      B.setCustomPropU32(node.id, name, value | 0);
+    } else {
+      B.setCustomPropF32(node.id, name, value);
+    }
+    B.scheduleCommit();
+    return;
+  }
+  if (t === 'string') {
+    B.setCustomPropStr(node.id, name, value);
+    B.scheduleCommit();
+    return;
+  }
+  if (t === 'boolean') {
+    B.setCustomPropU32(node.id, name, value ? 1 : 0);
+    B.scheduleCommit();
+    return;
+  }
+  // Other types (objects, arrays) — no native encoding. The adapter
+  // can teach itself how to read them via a child-node pattern; from
+  // the renderer's POV, silently drop. Logging here would spam during
+  // legitimate dev experimentation.
+}
+
+/**
  * Walk a SkalNode subtree and release the diff cache row for each.
  * Called from removeNode to keep the diff cache from accumulating stale
  * rows on subtree removal. Iterative DFS — no recursion-depth risk on
@@ -187,10 +241,15 @@ function releaseSubtreeDiffCache(root) {
  * + JS sibling pointers) in sync.
  */
 class SkalNode {
-  constructor(tag, id, isText = false) {
+  constructor(tag, id, isText = false, isCustom = false) {
     this.tag = tag;
     this.id = id;
     this.isText = isText;
+    // True for nodes created from a JSX tag NOT in TAG_TO_WIDGET —
+    // registry-dispatched on the Flutter side (see SkalRegistry.dart).
+    // Prop writes on custom nodes go through the name-keyed
+    // setCustomProp* ops instead of the enum-keyed setProp* ops.
+    this.isCustom = isCustom;
     this.parent = null;
     this.firstChild = null;
     this.lastChild = null;
@@ -205,14 +264,24 @@ class SkalNode {
 
 const _renderer = createRenderer({
   createElement(tag) {
-    const wt = TAG_TO_WIDGET[tag];
-    if (wt === undefined) {
-      throw new Error(`Skal: unknown JSX tag <${tag}>`);
-    }
     const id = B.allocNodeId();
-    B.writeOp(B.OP_CREATE_NODE, id, wt, 0);
+    const wt = TAG_TO_WIDGET[tag];
+    if (wt !== undefined) {
+      // Built-in widget — fast enum-keyed path.
+      B.writeOp(B.OP_CREATE_NODE, id, wt, 0);
+      B.scheduleCommit();
+      return new SkalNode(tag, id, /*isText*/ false, /*isCustom*/ false);
+    }
+    // Unknown tag → custom (registry-dispatched on the Flutter side).
+    // The wire format carries the name hash; the host's SkalRegistry
+    // table maps it to a real Flutter widget builder. No error here —
+    // any tag is renderable as long as `SkalRegistry.registerWidget`
+    // has been called with this exact `tag` name. If the registration
+    // is missing, the host renders a debug placeholder + logs (see
+    // root.dart's `_buildCustom`).
+    B.createCustomNode(id, tag);
     B.scheduleCommit();
-    return new SkalNode(tag, id, false);
+    return new SkalNode(tag, id, /*isText*/ false, /*isCustom*/ true);
   },
 
   createTextNode(value) {
@@ -235,6 +304,13 @@ const _renderer = createRenderer({
   },
 
   setProperty(node, name, value, _prev) {
+    // Custom (registry-dispatched) nodes: all props are name-keyed.
+    // We don't consult COLD_PROPS / HOT_PROPS / `label` — those are
+    // for the built-in widget set. Dispatch by JS value type instead.
+    if (node.isCustom) {
+      _setCustomProperty(node, name, value);
+      return;
+    }
     // onClick / onclick — wire to a bridge handler ID.
     if (name === 'onClick' || name === 'onclick') {
       if (typeof value === 'function') {

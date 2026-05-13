@@ -1,5 +1,6 @@
 import { createSignal, createMemo, For } from 'solid-js';
 import { Container, Column, Row, Text, Button, ListView } from 'skal';
+import { Greeting } from 'skal-greeting';
 
 const TWEET_LINES = [
   "Just shipped a new feature, feeling great about how it turned out 🚀",
@@ -161,6 +162,10 @@ export default function App() {
     // buttons) scrolls together with the tweet feed, which matches
     // the Twitter/X UX of "search bar scrolls away as you read".
     <ListView background="#FFFAFAFA" padding={16} gap={12}>
+      {/* Custom widget — registered on the Flutter side via
+          SkalRegistry, rendered through the wtCustom dispatch in
+          root.dart. Validates the substrate end-to-end. */}
+      <Greeting name="Skal" color="#FF1DA1F2" fontSize={20} />
       <Container background="#FF1DA1F2" padding={12} cornerRadius={8}>
         {() => `Count: ${count()}`}
       </Container>

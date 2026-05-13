@@ -29,6 +29,12 @@ export default defineConfig({
       // exports are runtime-fallback throwers; the babel plugin
       // strips real usages at compile time.
       'skal': resolve(__dirname, 'src/skal/index.js'),
+      // Example Skal adapter package — see js-app/src/skal-greeting and
+      // flutter/skal_flutter/lib/adapters/greeting.dart for the matched
+      // pair. Real third-party adapters would live as separate pub.dev /
+      // npm publications; here we keep both halves in-tree for the
+      // demo + Slice 1 validation.
+      'skal-greeting': resolve(__dirname, 'src/skal-greeting/index.js'),
     },
   },
   plugins: [
@@ -39,7 +45,17 @@ export default defineConfig({
       },
       babel: {
         plugins: [
-          [skalJsxPlugin, { moduleName: 'skal' }],
+          [skalJsxPlugin, {
+            moduleName: 'skal',
+            // Each entry adds another module the macro recognizes; values
+            // are { ImportedName: 'loweredTag' } maps. Custom widgets
+            // lower to a camelCase intrinsic tag that matches the Dart-
+            // side SkalRegistry registration key (see greeting.dart's
+            // `SkalRegistry.registerWidget('greeting', …)`).
+            modules: {
+              'skal-greeting': { Greeting: 'greeting' },
+            },
+          }],
         ],
       },
     }),

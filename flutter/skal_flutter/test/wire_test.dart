@@ -16,11 +16,20 @@ void main() {
       expect(opCreateNode, 0x01);
       expect(opRemoveNode, 0x02);
       expect(opInsertBefore, 0x03);
+      expect(opCreateCustomNode, 0x04);
       expect(opSetPropU32, 0x10);
       expect(opSetPropF32, 0x11);
       expect(opSetText, 0x14);
       expect(opBindHandler, 0x15);
       expect(opSetPropStr, 0x16);
+    });
+
+    test('custom-widget prop opcodes occupy 0x17-0x1B', () {
+      expect(opDeclareName, 0x17);
+      expect(opSetCustomPropU32, 0x18);
+      expect(opSetCustomPropF32, 0x19);
+      expect(opSetCustomPropStr, 0x1A);
+      expect(opBindCustomHandler, 0x1B);
     });
 
     test('hot-prop opcodes occupy the 0x20+ range and are distinct', () {
@@ -43,6 +52,7 @@ void main() {
       expect(wtScrollView, 5);
       expect(wtListView, 6);
       expect(wtReorderableListView, 7);
+      expect(wtCustom, 8);
     });
   });
 

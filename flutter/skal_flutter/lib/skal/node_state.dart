@@ -120,6 +120,21 @@ class NodeState {
   final Map<int, double> propsF = <int, double>{};
   final Map<int, String> propsStr = <int, String>{};
 
+  // ── Custom-widget storage (string-keyed, lazy) ─────────────────────
+  // Populated only for nodes whose `type == wtCustom`. Each node carries
+  // its registry name in [customWidgetName] (the registry key the host
+  // dispatches to) plus four optional name-keyed maps. Lazy because
+  // 99% of nodes are built-in widgets and would carry empty maps for no
+  // reason — see the docstring on each field.
+  //
+  // Reads use [getCustomPropU32] / F32 / Str / Handler with fallbacks
+  // so adapters can be written without null-checking each prop.
+  String? customWidgetName;
+  Map<String, int>? _customPropsU32;
+  Map<String, double>? _customPropsF32;
+  Map<String, String>? _customPropsStr;
+  Map<String, int>? _customHandlers;
+
   // ── Hot props (plain — Hot notifier fires on any of them) ──────────
   double opacity      = 1.0;
   double translationX = 0.0;
@@ -155,6 +170,43 @@ class NodeState {
   int getPropU32(int key, [int fallback = 0]) => props[key] ?? fallback;
   double getPropF32(int key, [double fallback = 0.0]) => propsF[key] ?? fallback;
   String? getPropStr(int key) => propsStr[key];
+
+  // ── Custom-prop accessors (string-keyed, used only by registry-built
+  //    widgets) ───────────────────────────────────────────────────────
+  //
+  // The four reads return whatever the bridge last wrote for that name
+  // on this node, or [fallback] if nothing was written. The setters
+  // lazy-allocate their backing map on first write — keeps NodeState
+  // small for built-in widgets that never touch these.
+
+  int getCustomPropU32(String name, [int fallback = 0]) =>
+      _customPropsU32?[name] ?? fallback;
+  double getCustomPropF32(String name, [double fallback = 0.0]) =>
+      _customPropsF32?[name] ?? fallback;
+  String? getCustomPropStr(String name) => _customPropsStr?[name];
+  int getCustomHandler(String name) => _customHandlers?[name] ?? 0;
+
+  void setCustomPropU32(String name, int value) {
+    (_customPropsU32 ??= <String, int>{})[name] = value;
+  }
+  void setCustomPropF32(String name, double value) {
+    (_customPropsF32 ??= <String, double>{})[name] = value;
+  }
+  void setCustomPropStr(String name, String value) {
+    (_customPropsStr ??= <String, String>{})[name] = value;
+  }
+  void setCustomHandler(String name, int handlerId) {
+    (_customHandlers ??= <String, int>{})[name] = handlerId;
+  }
+
+  /// Iterate every (name, value) pair written by the bridge for this
+  /// custom node. Useful for adapters that want to inspect their full
+  /// prop bag (e.g. to forward unknown props to a generic config
+  /// object). Returns the live map — don't mutate during iteration.
+  Map<String, int>? get customPropsU32 => _customPropsU32;
+  Map<String, double>? get customPropsF32 => _customPropsF32;
+  Map<String, String>? get customPropsStr => _customPropsStr;
+  Map<String, int>? get customHandlers => _customHandlers;
 
   void dispose() {
     cold.dispose();

@@ -1,8 +1,9 @@
 // Babel plugin — rewrites capitalized JSX tags like <Column> back to
 // their lowercase intrinsic form <column> at build time, but ONLY
-// when the capitalized identifier was imported from the configured
-// skal module. Other capitalized tags (user components, third-party
-// imports) are left alone.
+// when the capitalized identifier was imported from a module the
+// plugin has been told to recognize. Other capitalized tags (user
+// components like <Tweet>, third-party imports from unrecognized
+// modules) are left alone.
 //
 // Why this exists:
 //
@@ -18,7 +19,7 @@
 //   then processes, producing the same fast intrinsic call path
 //   used by the original lowercase syntax. Zero runtime overhead;
 //   the developer still gets capitalized JSX for IDE auto-complete,
-//   type safety (via the .d.ts), and refactoring tools.
+//   type safety (via JSDoc @type annotations), and refactoring tools.
 //
 // Why all work happens in Program.enter:
 //
@@ -39,18 +40,44 @@
 //   the JSX and stripped the imports — solid sees a clean lowercase
 //   AST.
 //
-// Pattern reference: this is the same trick used by MDX, vanilla-extract,
-// babel-plugin-styled-components — scope-aware import rewriting.
+// Multi-module support:
+//
+//   The `'skal'` module ships with the framework and provides the
+//   built-in widgets. Third-party Flutter-package wrappers (e.g.
+//   `skal_image_picker`) ship their own modules with their own
+//   capitalized names. The plugin accepts:
+//
+//     [skalJsxPlugin, {
+//       moduleName: 'skal',            // built-ins (legacy single-module)
+//       modules: {                     // additional modules + their names
+//         'skal_image_picker': { ImagePicker: 'imagePicker' },
+//         'skal_video_player': { VideoPlayer: 'videoPlayer' },
+//       },
+//     }]
+//
+//   For custom widgets, the lowered tag name is camelCase (first
+//   letter lowercased) and matches the registry key on the Dart
+//   side. The renderer.js fallthrough hits the custom path for any
+//   tag it doesn't recognize in its built-in TAG_TO_WIDGET, so the
+//   lowered name flows through naturally.
+//
+// Pattern reference: this is the same trick used by MDX,
+// vanilla-extract, babel-plugin-styled-components — scope-aware
+// import rewriting.
 
 const DEFAULT_MODULE = 'skal';
 
 // Canonical map: capitalized JSX identifier → lowercase intrinsic tag
 // name that the renderer's TAG_TO_WIDGET map recognizes. Identity case
-// for most; Container is the Flutter-aligned alias for box.
+// for most; Container is the Flutter-aligned alias for Box.
 //
-// Adding a new widget here is one entry. The matching lowercase tag
-// must already be in renderer.js's TAG_TO_WIDGET.
-const WIDGET_NAMES = {
+// Adding a new built-in widget: one entry here + matching lowercase
+// tag in renderer.js's TAG_TO_WIDGET + matching wt constant in
+// wire.dart/bridge.js + matching _build* in root.dart.
+//
+// Adding a third-party custom widget: don't touch this map — the
+// adapter package provides its own name map via the `modules` option.
+const BUILT_IN_WIDGET_NAMES = {
   Box:                  'box',
   Container:            'box',
   Column:               'column',
@@ -67,13 +94,37 @@ module.exports = function ({ types: t }) {
     name: 'skal-jsx',
     visitor: {
       Program(path, state) {
+        // Build the full module → names map from the plugin options.
+        // The default 'skal' module is always present; additional
+        // modules are merged in. A user can override 'skal' by setting
+        // `moduleName` (legacy) or putting an entry under that key in
+        // `modules` (current).
         const moduleName = state.opts.moduleName || DEFAULT_MODULE;
+        const moduleToNames = new Map();
+        moduleToNames.set(moduleName, BUILT_IN_WIDGET_NAMES);
+        if (state.opts.modules && typeof state.opts.modules === 'object') {
+          for (const m of Object.keys(state.opts.modules)) {
+            const overlay = state.opts.modules[m];
+            if (overlay && typeof overlay === 'object') {
+              // Allow `modules['skal']` to extend built-ins rather than
+              // shadow them — `{...builtins, ...overlay}` semantics.
+              moduleToNames.set(m, m === moduleName
+                ? { ...BUILT_IN_WIDGET_NAMES, ...overlay }
+                : overlay);
+            }
+          }
+        }
+
+        // Per-file state: which local identifiers map to which intrinsic
+        // tag names. Built from `import` declarations in the first pass.
         const localToIntrinsic = new Map();
 
         // ── First pass: harvest skal imports, strip them ───────────
         path.get('body').forEach((stmt) => {
           if (!stmt.isImportDeclaration()) return;
-          if (stmt.node.source.value !== moduleName) return;
+          const source = stmt.node.source.value;
+          const nameMap = moduleToNames.get(source);
+          if (!nameMap) return;
 
           const remaining = [];
           for (const spec of stmt.node.specifiers) {
@@ -87,7 +138,7 @@ module.exports = function ({ types: t }) {
             // JSX references `Col`, so we key the rewrite map on local.
             const importedName = spec.imported.name;
             const localName = spec.local.name;
-            const intrinsic = WIDGET_NAMES[importedName];
+            const intrinsic = nameMap[importedName];
             if (intrinsic) {
               localToIntrinsic.set(localName, intrinsic);
               // (specifier dropped — JSX usages will be lowered)

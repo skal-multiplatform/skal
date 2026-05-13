@@ -40,6 +40,7 @@ import 'package:flutter/scheduler.dart';
 import 'bridge.dart';
 import 'memoizing_listenable_builder.dart';
 import 'node_state.dart';
+import 'registry.dart';
 import 'wire.dart';
 
 /// Mounts the bridge's node tree. Drives `bridge.pumpOps()` once per
@@ -119,8 +120,56 @@ Widget _buildForType(NodeState node, SkalBridge bridge) {
     case wtRow:                  return _buildRow(node, bridge);
     case wtText:                 return _buildText(node);
     case wtButton:               return _buildButton(node, bridge);
+    case wtCustom:               return _buildCustom(node, bridge);
     default:                     return const SizedBox.shrink();
   }
+}
+
+/// Dispatch to a registered widget builder for a wtCustom node. The
+/// node's `customWidgetName` was set by the drain when it processed
+/// the opCreateCustomNode op (which carried the name hash that the
+/// drain resolved via the name dictionary).
+///
+/// If no builder is registered for the name — typical causes: the dev
+/// forgot to call the codegen's `registerAll()`, or a typo in JSX vs
+/// registration — we render a visible debug placeholder so the gap is
+/// obvious rather than silent. In release builds we render an empty
+/// SizedBox to keep the gap from polluting production UI.
+Widget _buildCustom(NodeState n, SkalBridge bridge) {
+  final name = n.customWidgetName;
+  if (name == null) {
+    assert(() {
+      debugPrint('[skal] wtCustom node has no customWidgetName — '
+          'opCreateCustomNode was not followed by an opDeclareName for '
+          'its hash?');
+      return true;
+    }());
+    return const SizedBox.shrink();
+  }
+  final builder = SkalRegistry.widgetBuilderFor(name);
+  if (builder == null) {
+    assert(() {
+      debugPrint('[skal] no widget builder registered for <$name>. '
+          'Did you forget SkalRegistry.registerWidget("$name", …) in main()?');
+      return true;
+    }());
+    // Visible placeholder in debug only — release-mode renders empty
+    // so a missing adapter doesn't leak diagnostic text to end users.
+    bool inDebug = false;
+    assert(() { inDebug = true; return true; }());
+    if (inDebug) {
+      return Container(
+        padding: const EdgeInsets.all(8),
+        color: const Color(0x33FF0000),
+        child: Text(
+          'no adapter: <$name>',
+          style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 11),
+        ),
+      );
+    }
+    return const SizedBox.shrink();
+  }
+  return builder(n, bridge);
 }
 
 // ─────────────────────────────────────────────────────────────────────────

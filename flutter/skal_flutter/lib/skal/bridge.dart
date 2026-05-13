@@ -35,6 +35,7 @@ import 'dart:typed_data';
 
 import '../skal_ffi.dart';
 import 'node_state.dart';
+import 'registry.dart';
 import 'wire.dart';
 
 class SkalBridge {
@@ -84,6 +85,19 @@ class SkalBridge {
   /// appropriate notifier(s) per touched node. A field (not a local)
   /// so the pumpOps hot path pays zero allocation per drain.
   final Set<int> _touched = <int>{};
+
+  /// Name dictionary for custom-widget dispatch. Populated by
+  /// [opDeclareName] ops emitted lazily by the JS encoder the first
+  /// time it sees a given name (widget name, custom prop key, or
+  /// custom event name). All subsequent custom-prop / custom-handler /
+  /// wtCustom-create ops carry just the 32-bit hash; the drain
+  /// resolves the hash back to a string via this map.
+  ///
+  /// FNV-1a 32-bit hashes. Collision probability across a few hundred
+  /// names is negligible; if it ever bit us in production we'd switch
+  /// to xxhash + 64-bit. For now FNV is good enough and trivial to
+  /// implement on both sides.
+  final Map<int, String> _nameDict = <int, String>{};
 
   // ── Perf instrumentation (read by PerfHud) ───────────────────────
   int pumpAvgNs = 0;
@@ -198,6 +212,14 @@ class SkalBridge {
           ns[a] = NodeState(b);
           break;
 
+        case opCreateCustomNode:
+          // a = nodeId, b = nameHash (resolved via _nameDict, which was
+          // populated by a prior opDeclareName op for this same hash).
+          final node = NodeState(wtCustom);
+          node.customWidgetName = _nameDict[b];
+          ns[a] = node;
+          break;
+
         case opRemoveNode:
           _removeSubtree(a, ns);
           break;
@@ -300,6 +322,77 @@ class SkalBridge {
             } else if (b == evChange) {
               node.onChangeHandlerId = c;
             }
+            node.coldDirty = true;
+            touched.add(a);
+          }
+          break;
+
+        // ── Custom-widget machinery ─────────────────────────────────
+        //
+        // Wire shape for these is the same 16-byte op as built-ins,
+        // but the "key" arg is a 32-bit name hash that resolves to a
+        // string via _nameDict (populated by opDeclareName).
+
+        case opDeclareName:
+          // a = nameHash, b = nameHeapOffset, c = nameHeapLen.
+          // Dictionary entries persist for the lifetime of the bridge;
+          // names are uniqued + interned on the JS side so each hash
+          // is declared exactly once.
+          _nameDict[a] = _readString(kStringHeapOff + b, c);
+          break;
+
+        case opSetCustomPropU32:
+          final node = ns[a];
+          final name = _nameDict[b];
+          if (node != null && name != null) {
+            node.setCustomPropU32(name, c);
+            node.coldDirty = true;
+            touched.add(a);
+            propWrites++;
+          }
+          break;
+
+        case opSetCustomPropF32:
+          final node = ns[a];
+          final name = _nameDict[b];
+          if (node != null && name != null) {
+            node.setCustomPropF32(name, _bitsToF32(c));
+            node.coldDirty = true;
+            touched.add(a);
+            propWrites++;
+          }
+          break;
+
+        case opSetCustomPropStr:
+          // Wire format: b = nameHash, c = (offset << 8) | length.
+          // Value length is capped at 255 bytes — see PROP_PLAN /
+          // wire.dart comment for the rationale. Use enum-keyed
+          // opSetPropStr for longer values.
+          final node = ns[a];
+          final name = _nameDict[b];
+          if (node != null && name != null) {
+            final offset = (c >> 8) & 0xFFFFFF;
+            final length = c & 0xFF;
+            node.setCustomPropStr(
+              name,
+              _readString(kStringHeapOff + offset, length),
+            );
+            node.coldDirty = true;
+            touched.add(a);
+            propWrites++;
+          }
+          break;
+
+        case opBindCustomHandler:
+          // Named handlers — like opBindHandler but the event name is
+          // a string ("onTap", "onCameraMove", ...) instead of an
+          // evClick / evChange enum. The adapter on the Flutter side
+          // fires `bridge.dispatchEvent(handlerId)` when the underlying
+          // widget's matching callback fires.
+          final node = ns[a];
+          final name = _nameDict[b];
+          if (node != null && name != null) {
+            node.setCustomHandler(name, c);
             node.coldDirty = true;
             touched.add(a);
           }
@@ -517,5 +610,39 @@ class SkalBridge {
       _data.setInt64(hEventSeq, seq + 1, Endian.little);
     }
     if (_eventOverflow.isNotEmpty) skal.wakeJs();
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Public registry helpers (called from custom-widget adapters)
+  // ──────────────────────────────────────────────────────────────────
+
+  /// Build a typed value from a child node via the registered value
+  /// builder. Adapters call this when a third-party widget's
+  /// constructor expects structured data — e.g.
+  ///
+  /// ```dart
+  /// final markers = <Marker>{};
+  /// for (final id in n.childIds) {
+  ///   final m = bridge.buildValue<Marker>(id);
+  ///   if (m != null) markers.add(m);
+  /// }
+  /// return GoogleMap(markers: markers, ...);
+  /// ```
+  ///
+  /// Returns null if [nodeId] doesn't exist, the node isn't a custom
+  /// (wtCustom) node, no value builder is registered for the node's
+  /// widget name, or the builder's return type doesn't match [T].
+  /// Callers should treat null as "child wasn't a value this adapter
+  /// recognizes" and skip it — usually JSX has mistakenly nested a
+  /// non-data widget under a parent that expects only data children.
+  T? buildValue<T>(int nodeId) {
+    final node = nodes[nodeId];
+    if (node == null) return null;
+    final name = node.customWidgetName;
+    if (name == null) return null;
+    final builder = SkalRegistry.valueBuilderFor(name);
+    if (builder == null) return null;
+    final result = builder(node, this);
+    return result is T ? result : null;
   }
 }

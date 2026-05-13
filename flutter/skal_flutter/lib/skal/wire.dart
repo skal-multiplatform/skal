@@ -33,14 +33,40 @@ const int kEventRingOffset = kStringHeapOff + kStringHeapSize;
 const int kEventRingSize   = kBridgeSize - kEventRingOffset;
 
 // ── Opcodes (1 byte; reader masks the low byte of the u32 opcode word) ─
-const int opCreateNode      = 0x01;
-const int opRemoveNode      = 0x02;
-const int opInsertBefore    = 0x03;
-const int opSetPropU32      = 0x10;
-const int opSetPropF32      = 0x11;
-const int opSetText         = 0x14;
-const int opBindHandler     = 0x15;
-const int opSetPropStr      = 0x16;
+const int opCreateNode       = 0x01;
+const int opRemoveNode       = 0x02;
+const int opInsertBefore     = 0x03;
+// Like opCreateNode but for a custom (registry-dispatched) widget. The
+// `nameHash` arg is a 32-bit FNV-1a of the widget name; the host looks
+// up the matching builder in `SkalRegistry` to know what to construct.
+// The name string itself is brought into the dictionary via a prior
+// [opDeclareName] (emitted once per unique name).
+const int opCreateCustomNode = 0x04;
+const int opSetPropU32       = 0x10;
+const int opSetPropF32       = 0x11;
+const int opSetText          = 0x14;
+const int opBindHandler      = 0x15;
+const int opSetPropStr       = 0x16;
+// ── Custom-widget props (name-keyed, not enum-keyed) ────────────────
+//
+// Where built-in widget props use a u8 enum key (propBgColor = 0x20,
+// etc.), custom widgets identify their props by an arbitrary string
+// name ("latitude", "onMapReady", ...). The wire optimization: each
+// unique name is hashed (FNV-1a 32-bit) and declared ONCE with
+// [opDeclareName], which writes the name to the string heap and
+// associates it with the hash on the host side. Subsequent prop ops
+// reference the name by hash only — no string-heap traffic per write.
+//
+// Wire shape for opDeclareName: (nameHash, nameHeapOffset, nameHeapLen).
+// Wire shape for the four prop ops: (nodeId, nameHash, value).
+// String values use the same packed (offset<<8 | len) encoding as
+// opSetPropStr — values longer than 255 bytes need to be split or use
+// the enum-keyed opSetPropStr fast path instead.
+const int opDeclareName       = 0x17;
+const int opSetCustomPropU32  = 0x18;
+const int opSetCustomPropF32  = 0x19;
+const int opSetCustomPropStr  = 0x1A;
+const int opBindCustomHandler = 0x1B;
 // Hot props — own opcodes so the drain dispatches them directly to
 // dedicated ValueNotifiers without the propsVersion bump. See
 // PROPS_PLAN.md §5.
@@ -92,6 +118,15 @@ const int wtListView             = 6;
 /// by picking this widget — making the perf contract explicit at the
 /// call site rather than something the framework adaptively guesses.
 const int wtReorderableListView  = 7;
+/// Custom widget — dispatched through `SkalRegistry`. The wire knows
+/// the node is "something registered by name"; the actual widget name
+/// comes from the prior [opCreateCustomNode]'s `nameHash` arg, looked
+/// up in the name dictionary populated by [opDeclareName].
+///
+/// Lets devs (and codegen) bring arbitrary Flutter widgets — `GoogleMap`,
+/// `VideoPlayer`, anything from pub.dev — into JSX with a 5-line
+/// adapter, without touching the wire format.
+const int wtCustom               = 8;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick  = 0x01;

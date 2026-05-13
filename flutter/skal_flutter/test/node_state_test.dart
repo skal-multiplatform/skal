@@ -66,4 +66,79 @@ void main() {
       expect(n.hasChildren, isFalse);
     });
   });
+
+  group('NodeState — custom widget storage', () {
+    test('custom prop maps are lazy (null until written)', () {
+      // The vast majority of nodes are built-in widgets that never touch
+      // the custom-prop bag. Carrying four empty maps each would cost
+      // ~50 bytes × N nodes for nothing.
+      final n = NodeState(wtCustom);
+      expect(n.customPropsU32, isNull);
+      expect(n.customPropsF32, isNull);
+      expect(n.customPropsStr, isNull);
+      expect(n.customHandlers, isNull);
+    });
+
+    test('custom prop maps allocate on first write, persist on read', () {
+      final n = NodeState(wtCustom);
+
+      n.setCustomPropU32('zoom', 14);
+      n.setCustomPropF32('latitude', 37.7749);
+      n.setCustomPropStr('source', 'camera');
+      n.setCustomHandler('onTap', 0xABCD);
+
+      expect(n.getCustomPropU32('zoom'), 14);
+      expect(n.getCustomPropF32('latitude'), closeTo(37.7749, 1e-9));
+      expect(n.getCustomPropStr('source'), 'camera');
+      expect(n.getCustomHandler('onTap'), 0xABCD);
+
+      expect(n.customPropsU32, hasLength(1));
+      expect(n.customPropsF32, hasLength(1));
+      expect(n.customPropsStr, hasLength(1));
+      expect(n.customHandlers, hasLength(1));
+    });
+
+    test('getCustomProp* returns fallback for missing keys', () {
+      final n = NodeState(wtCustom);
+      // No maps allocated yet — getter must not throw, must return the
+      // fallback. Adapters depend on this so they can write
+      // `getCustomPropF32('zoom', 14.0)` without first probing.
+      expect(n.getCustomPropU32('missing'), 0);
+      expect(n.getCustomPropU32('missing', 42), 42);
+      expect(n.getCustomPropF32('missing'), 0.0);
+      expect(n.getCustomPropF32('missing', 1.5), 1.5);
+      expect(n.getCustomPropStr('missing'), isNull);
+      expect(n.getCustomHandler('missing'), 0);
+
+      // Same shape after some writes — the getter shouldn't accidentally
+      // shadow other keys with the fallback.
+      n.setCustomPropU32('zoom', 14);
+      expect(n.getCustomPropU32('zoom', 99), 14);
+      expect(n.getCustomPropU32('other', 99), 99);
+    });
+
+    test('custom prop writes do not fire cold notifier', () {
+      // Same contract as the built-in cold-prop maps: the bridge fires
+      // cold.notify() once per drain after coalescing. Direct map writes
+      // must stay silent or the per-prop fan-out cost would dominate.
+      final n = NodeState(wtCustom);
+      var coldCount = 0;
+      n.cold.addListener(() => coldCount++);
+
+      n.setCustomPropU32('zoom', 14);
+      n.setCustomPropF32('latitude', 37.7749);
+      n.setCustomPropStr('source', 'camera');
+      n.setCustomHandler('onTap', 1);
+
+      expect(coldCount, 0, reason: 'custom-prop writes must not fan out');
+    });
+
+    test('customWidgetName starts null, can be set by the bridge', () {
+      final n = NodeState(wtCustom);
+      expect(n.customWidgetName, isNull,
+          reason: 'name comes from opCreateCustomNode, set by the drain');
+      n.customWidgetName = 'GoogleMap';
+      expect(n.customWidgetName, 'GoogleMap');
+    });
+  });
 }

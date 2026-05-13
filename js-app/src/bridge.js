@@ -42,14 +42,29 @@ const B_LAST_DRAINED_SEQ  = HB_LAST_DRAINED_SEQ  >> 3;
 // ───────────────────────────────────────────────────────────────────────
 // Opcodes — must match wire.dart exactly.
 // ───────────────────────────────────────────────────────────────────────
-export const OP_CREATE_NODE       = 0x01;
-export const OP_REMOVE_NODE       = 0x02;
-export const OP_INSERT_BEFORE     = 0x03;
-export const OP_SET_PROP_U32      = 0x10;
-export const OP_SET_PROP_F32      = 0x11;
-export const OP_SET_TEXT          = 0x14;
-export const OP_BIND_HANDLER      = 0x15;
-export const OP_SET_PROP_STR      = 0x16;
+export const OP_CREATE_NODE         = 0x01;
+export const OP_REMOVE_NODE         = 0x02;
+export const OP_INSERT_BEFORE       = 0x03;
+// Like CREATE_NODE but for a custom (registry-dispatched) widget. The
+// nameHash arg is a 32-bit FNV-1a of the widget name; the host looks
+// up the matching builder in SkalRegistry. The name string is first
+// brought into the host's dictionary via OP_DECLARE_NAME (emitted
+// once per unique name).
+export const OP_CREATE_CUSTOM_NODE  = 0x04;
+export const OP_SET_PROP_U32        = 0x10;
+export const OP_SET_PROP_F32        = 0x11;
+export const OP_SET_TEXT            = 0x14;
+export const OP_BIND_HANDLER        = 0x15;
+export const OP_SET_PROP_STR        = 0x16;
+// Custom-widget props are name-keyed (not enum-keyed). Each unique
+// name is interned + declared once via OP_DECLARE_NAME; subsequent
+// prop writes reference the name by 32-bit hash only. See bridge.dart
+// for the full rationale.
+export const OP_DECLARE_NAME        = 0x17;
+export const OP_SET_CUSTOM_PROP_U32 = 0x18;
+export const OP_SET_CUSTOM_PROP_F32 = 0x19;
+export const OP_SET_CUSTOM_PROP_STR = 0x1A;
+export const OP_BIND_CUSTOM_HANDLER = 0x1B;
 // Hot-prop opcodes — distinct from OP_SET_PROP_F32 so the host's
 // switch on opcode dispatches them directly to their dedicated
 // notifier without going through the cold-prop machinery. See
@@ -82,6 +97,12 @@ export const WT_LIST_VIEW            = 6;
 // are O(log N). On the Flutter side renders to `ReorderableListView.builder`.
 // Pay the constant-factor cost only when you explicitly opt in.
 export const WT_REORDERABLE_LIST_VIEW = 7;
+// Custom widget — dispatched on the Flutter side via SkalRegistry.
+// The renderer emits OP_CREATE_CUSTOM_NODE (carrying the widget's
+// name hash) instead of OP_CREATE_NODE when it sees an unknown JSX
+// tag. The host looks the name up in its registry to know what real
+// Flutter widget to build.
+export const WT_CUSTOM                = 8;
 
 // Event kinds
 export const EV_CLICK  = 0x01;
@@ -637,6 +658,85 @@ export function setTranslationY(nodeId, v) { setHotF32Indexed(nodeId, OP_SET_TRA
 export function setScaleX      (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_SCALE_X,       3, v); }
 export function setScaleY      (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_SCALE_Y,       4, v); }
 export function setRotationZ   (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_ROTATION_Z,    5, v); }
+
+// ───────────────────────────────────────────────────────────────────────
+// Custom-widget machinery — name-keyed props + handlers + create.
+//
+// Built-in widgets identify their props with a u8 enum key (PROP_BG_COLOR
+// = 0x20, etc.). Custom widgets identify their props with an arbitrary
+// string name ("latitude", "onMapReady", …). The wire optimization:
+// each unique name is hashed (FNV-1a 32-bit) and declared ONCE via
+// OP_DECLARE_NAME — which writes the name to the string heap and tells
+// the host to associate the hash with it. Every subsequent prop op
+// carries just the hash. No heap traffic per write.
+//
+// `_nameHashes` is the JS-side intern table. The first write of any
+// name pays for one heap entry + one OP_DECLARE_NAME op; thereafter
+// the cost matches built-in prop writes (one 16-byte op).
+// ───────────────────────────────────────────────────────────────────────
+
+const _nameHashes = new Map();
+
+// FNV-1a 32-bit. Computed over JS UTF-16 code units (not UTF-8 bytes) —
+// the Dart side never recomputes the hash, it just receives it via
+// OP_DECLARE_NAME and stores the mapping. So the hash function only
+// needs to be deterministic + collision-resistant on its own.
+function _fnv1a32(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h;
+}
+
+// Get-or-create: return the cached hash for `name`, OR compute it,
+// write the name to the string heap, emit OP_DECLARE_NAME, and cache.
+function _internName(name) {
+  let h = _nameHashes.get(name);
+  if (h !== undefined) return h;
+  h = _fnv1a32(name);
+  writeString(name);
+  writeOp(OP_DECLARE_NAME, h, _strOffset, _strLength);
+  _nameHashes.set(name, h);
+  return h;
+}
+
+// Create a custom (registry-dispatched) node. The host looks up `name`
+// in SkalRegistry to know what real Flutter widget to build.
+export function createCustomNode(nodeId, name) {
+  const h = _internName(name);
+  writeOp(OP_CREATE_CUSTOM_NODE, nodeId, h, 0);
+}
+
+export function setCustomPropU32(nodeId, name, value) {
+  const h = _internName(name);
+  writeOp(OP_SET_CUSTOM_PROP_U32, nodeId, h, value >>> 0);
+}
+
+export function setCustomPropF32(nodeId, name, value) {
+  const h = _internName(name);
+  _f32view[0] = value;
+  writeOp(OP_SET_CUSTOM_PROP_F32, nodeId, h, _u32view[0]);
+}
+
+// String values cap at 255 chars (8-bit length, packed alongside the
+// 24-bit heap offset in arg c). Beyond that, fall back to enum-keyed
+// setPropStr or split the value. Per wire.dart's opSetCustomPropStr
+// comment.
+export function setCustomPropStr(nodeId, name, value) {
+  const h = _internName(name);
+  writeString(value == null ? '' : String(value));
+  const offset = _strOffset & 0xFFFFFF;
+  const len = _strLength & 0xFF;
+  const packed = (offset << 8) | len;
+  writeOp(OP_SET_CUSTOM_PROP_STR, nodeId, h, packed);
+}
+
+export function bindCustomHandler(nodeId, name, handlerId) {
+  const h = _internName(name);
+  writeOp(OP_BIND_CUSTOM_HANDLER, nodeId, h, handlerId);
+}
 
 // ───────────────────────────────────────────────────────────────────────
 // Event dispatch — the host writes events into the event ring and wakes

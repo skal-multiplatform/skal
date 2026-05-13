@@ -29,6 +29,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'adapters/greeting.dart' as greeting_adapter;
 import 'skal/bridge.dart';
 import 'skal/root.dart';
 import 'skal_ffi.dart';
@@ -40,6 +41,15 @@ void main() async {
   final bootClock = Stopwatch()..start();
   final t0 = bootClock.elapsedMicroseconds;
   WidgetsFlutterBinding.ensureInitialized();
+
+  // ── 0. Register custom widget adapters ──────────────────────────────
+  //
+  // For real apps each third-party Skal adapter package would expose
+  // its own registerAll(). The dev's main() calls each in turn before
+  // runApp(). Order is "registrations win on collision" — later
+  // registrations override earlier, so codegen output runs first and
+  // hand-written manual adapters run after to shadow as needed.
+  greeting_adapter.registerAll();
 
   // ── 1. Create the bun runtime ───────────────────────────────────────
   final tCreate0 = bootClock.elapsedMicroseconds;

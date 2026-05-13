@@ -439,8 +439,8 @@ class SkalBridge {
       final cur = stack.removeLast();
       final node = ns[cur];
       if (node == null) continue;
-      stack.addAll(node.children);
-      node.children.clear();
+      stack.addAll(node.childIds);
+      node.clearChildren();
       ns.remove(cur);
       node.dispose();
     }

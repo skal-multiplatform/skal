@@ -307,11 +307,8 @@ class _HotLayer extends StatelessWidget {
 /// position; inserting / removing / reordering doesn't tear down
 /// siblings.
 List<Widget> _childWidgets(NodeState node, SkalBridge bridge) {
-  final ids = node.children;
-  final n = ids.length;
   final out = <Widget>[];
-  for (var i = 0; i < n; i++) {
-    final id = ids[i];
+  for (final id in node.childIds) {
     out.add(SkalNode(
       nodeId: id,
       bridge: bridge,
@@ -376,7 +373,7 @@ Widget _buildLazyColumn(NodeState n, SkalBridge bridge) {
   // arrangement. If we ever need alignment in a lazy column, the
   // right shape is a SliverList with a leading/trailing widget.
   final gap = n.getPropU32(propGap, 8);
-  final ids = n.children;
+  final count = n.childCount;
 
   // Outer Padding to match the default 16dp content padding column has,
   // since DecoratedBox-via-_applyColdVisual would inset bg inside any
@@ -389,10 +386,12 @@ Widget _buildLazyColumn(NodeState n, SkalBridge bridge) {
     // For interspersed-gap rendering we double the slot count and
     // alternate: even = real child, odd = gap. Cheaper than building
     // a Column-per-row with gap inside.
-    itemCount: ids.isEmpty ? 0 : (ids.length * 2 - 1),
+    itemCount: count == 0 ? 0 : (count * 2 - 1),
     itemBuilder: (_, i) {
       if (i.isOdd) return SizedBox(height: gap.toDouble());
-      final childId = ids[i ~/ 2];
+      // O(log N) per visible item — for ListView's ~10-item window
+      // that's ~130 ops/frame at N=10K, negligible.
+      final childId = n.childAt(i ~/ 2);
       return SkalNode(
         nodeId: childId,
         bridge: bridge,

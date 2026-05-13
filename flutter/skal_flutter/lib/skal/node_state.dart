@@ -29,6 +29,8 @@
 
 import 'package:flutter/foundation.dart';
 
+import 'indexed_child_list.dart';
+
 /// ChangeNotifier with a public `notify()` — Flutter's default
 /// `notifyListeners` is @protected. One-line subclass so the bridge's
 /// end-of-drain loop can fire it from outside the class. Public
@@ -48,54 +50,49 @@ class NodeState {
   /// moving node from its old parent's children list.
   int parent = 0;
 
-  /// Children ids. Mutated in place by pumpOps for zero allocation
-  /// per insert. Widgets read this list inside the cold-notifier
-  /// listener (so subscriptions are right) and re-emit child SkalNode
-  /// widgets in order, each keyed by id.
+  /// Children ids backed by a [TreapChildList] for O(log N) on every
+  /// operation. Mutations go through [appendChild] / [insertChildAt] /
+  /// [removeChildAt]; reads via [childCount] / [childAt] / [childIds].
   ///
-  /// MUTATIONS MUST GO THROUGH [appendChild] / [insertChildAt] /
-  /// [removeChildAt]. Those keep the parallel [_childIdx] map in sync
-  /// so [childIndexOf] is O(1) — the bridge's INSERT_BEFORE /
-  /// auto-detach paths call indexOf once per move, and an O(N) scan
-  /// per call becomes O(N²) cumulative on big reorders (e.g. sorting
-  /// a 5000-tweet list). Reads via index / iteration are unchanged.
-  final List<int> children = <int>[];
+  /// Why the treap: we can't know what dev workloads will look like.
+  /// A `List<int>` + `Map<int,int>` is faster on append (4× at
+  /// N=5000) but degrades to O(N) on insert/remove anywhere except
+  /// the tail. A reorder-heavy app (drag-and-drop, sort, animated
+  /// shuffle) hits an O(N²) cliff there — a 5K-item sort takes 240 ms
+  /// (UI-freezing) on the list approach vs 7 ms on the treap. The 1 ms
+  /// of extra append cost at scale is imperceptible; the 240 ms freeze
+  /// isn't. We default to the safer choice.
+  ///
+  /// See lib/skal/indexed_child_list.dart for both implementations and
+  /// test/indexed_child_list_test.dart for the full benchmark.
+  final TreapChildList _children = TreapChildList();
 
-  /// id → position in [children]. Maintained by [appendChild],
-  /// [insertChildAt], [removeChildAt]. Lookup is O(1).
-  final Map<int, int> _childIdx = <int, int>{};
+  /// Number of children. O(1).
+  int get childCount => _children.length;
 
-  /// O(1) lookup of a child's position in [children]. Returns -1 if the
-  /// id is not a child of this node.
-  int childIndexOf(int id) => _childIdx[id] ?? -1;
+  /// Whether this node has any children. O(1).
+  bool get hasChildren => _children.length > 0;
 
-  /// Append [id] to [children]. O(1).
-  void appendChild(int id) {
-    _childIdx[id] = children.length;
-    children.add(id);
-  }
+  /// Iterable view of all child ids in order. O(N) to traverse.
+  Iterable<int> get childIds => _children.items;
 
-  /// Insert [id] into [children] at [pos]. O(N − pos) — the tail
-  /// shifts (native memmove in Dart's `List<int>.insert`) and the
-  /// shifted entries are re-indexed in [_childIdx]. Typical UI inserts
-  /// are near the tail, so this is fast in practice.
-  void insertChildAt(int pos, int id) {
-    children.insert(pos, id);
-    for (int i = pos; i < children.length; i++) {
-      _childIdx[children[i]] = i;
-    }
-  }
+  /// Id at position [pos]. O(log N).
+  int childAt(int pos) => _children.idAt(pos);
 
-  /// Remove the child at [pos]. O(N − pos), same shape as
-  /// [insertChildAt].
-  void removeChildAt(int pos) {
-    final removedId = children[pos];
-    children.removeAt(pos);
-    _childIdx.remove(removedId);
-    for (int i = pos; i < children.length; i++) {
-      _childIdx[children[i]] = i;
-    }
-  }
+  /// O(log N) lookup of a child's position. Returns -1 if absent.
+  int childIndexOf(int id) => _children.indexOf(id);
+
+  /// Append [id]. O(log N).
+  void appendChild(int id) => _children.append(id);
+
+  /// Insert [id] at position [pos]. O(log N).
+  void insertChildAt(int pos, int id) => _children.insertAt(pos, id);
+
+  /// Remove the child at [pos]. O(log N).
+  void removeChildAt(int pos) => _children.removeAt(pos);
+
+  /// Drop all children. O(1) — the underlying tree is replaced.
+  void clearChildren() => _children.clear();
 
   // ── Per-node single-value reactive fields (plain) ──────────────────
   String text = '';

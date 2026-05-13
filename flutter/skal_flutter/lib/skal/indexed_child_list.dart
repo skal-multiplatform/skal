@@ -46,6 +46,11 @@ abstract class IndexedChildList {
 
   /// Sequential iteration of all ids in order. O(N) either way.
   Iterable<int> get items;
+
+  /// Drop all entries. O(1) for both impls — just releases references
+  /// for GC; the underlying buffer/tree is replaced rather than
+  /// element-by-element cleared.
+  void clear();
 }
 
 /// Map-backed implementation:
@@ -103,6 +108,12 @@ class ListChildList implements IndexedChildList {
 
   @override
   Iterable<int> get items => _list;
+
+  @override
+  void clear() {
+    _list.clear();
+    _idx.clear();
+  }
 }
 
 /// Order-statistic treap. Every operation is O(log N) expected. The
@@ -193,6 +204,12 @@ class TreapChildList implements IndexedChildList {
       }
     }
     throw RangeError('idAt($pos): out of bounds for length=$length');
+  }
+
+  @override
+  void clear() {
+    _root = null;
+    _byId.clear();
   }
 
   @override

@@ -62,7 +62,8 @@ void main() {
       expect(n.text, '');
       expect(n.onClickHandlerId, 0);
       expect(n.parent, 0);
-      expect(n.children, isEmpty);
+      expect(n.childCount, 0);
+      expect(n.hasChildren, isFalse);
     });
   });
 }

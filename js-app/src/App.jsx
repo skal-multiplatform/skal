@@ -20,13 +20,20 @@ const TWEET_LINES = [
 
 // Pre-compute the tweet pool as {author, body, num} records — Tweet
 // component is simpler than parsing strings at render time.
-const TWEETS = Array.from({ length: 5000 }, (_, i) => ({
+//
+// Sized at 15000 so the "10000 (heap stress)" button has fresh source
+// items to mount. Each tweet's strings total ~150–200 bytes
+// (author, body, several hex colors, two button labels), so 10000
+// fresh mounts write ~1.5–2 MiB of string-heap bytes — past the
+// 1 MiB heap capacity, forcing flushAndWaitForDrain to fire its
+// spin-wait + reset path at least once during the mount.
+const TWEETS = Array.from({ length: 15000 }, (_, i) => ({
   author: `@user${(i * 2654435761) >>> 17}`,
   body: TWEET_LINES[i % TWEET_LINES.length],
   num: i + 1,
 }));
 
-const COUNT_BUTTONS = [50, 200, 500, 1000, 2000, 5000];
+const COUNT_BUTTONS = [50, 200, 500, 1000, 2000, 5000, 10000];
 
 // Palette — defined once at module scope so the prop diff cache hits on
 // identical color strings across every tweet. Otherwise each tweet would

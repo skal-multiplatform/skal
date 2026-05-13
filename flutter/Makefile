@@ -31,16 +31,25 @@ JS_BUNDLE  := $(ASSETS)/skal-app.js
 JS_CJS     := $(ASSETS)/skal-app.cjs
 JS_JSC     := $(ASSETS)/skal-app.cjs.jsc
 
-.PHONY: help all bundle release debug profile clean
+.PHONY: help all bundle release debug profile macos ios-sim test clean
 
 help:
 	@echo "Skal-Flutter make targets:"
-	@echo "  bundle    — rebuild skal-app.{js,cjs,cjs.jsc} from js-app/ sources"
-	@echo "              and sync into flutter/skal_flutter/assets/"
-	@echo "  debug     — bundle + flutter build apk --debug (arm64)"
-	@echo "  profile   — bundle + flutter build apk --profile (arm64)"
-	@echo "  release   — bundle + flutter build apk --release (arm64) — ships bytecode cache"
-	@echo "  clean     — drop Flutter build artifacts"
+	@echo ""
+	@echo "  Android APK:"
+	@echo "    debug      — bundle + flutter build apk --debug (arm64)"
+	@echo "    profile    — bundle + flutter build apk --profile (arm64)"
+	@echo "    release    — bundle + flutter build apk --release (arm64) — ships bytecode cache"
+	@echo ""
+	@echo "  Other targets:"
+	@echo "    macos      — bundle + flutter build macos --release"
+	@echo "    ios-sim    — bundle + flutter build ios --simulator --debug"
+	@echo "    test       — flutter test (Dart unit tests; no bundle needed)"
+	@echo "    bundle     — rebuild skal-app.{js,cjs,cjs.jsc} into flutter/skal_flutter/assets/"
+	@echo "    clean      — drop Flutter build artifacts"
+	@echo ""
+	@echo "  iOS device release builds require an Apple signing identity and are not"
+	@echo "  in the Makefile; run \`flutter build ios --release\` from skal_flutter/."
 
 all: release
 
@@ -70,6 +79,27 @@ profile: bundle
 debug: bundle
 	cd $(FLUTTER) && flutter build apk --debug --target-platform android-arm64
 	@echo "✓ $(APK_DIR)/app-debug.apk"
+
+# ── Other targets ────────────────────────────────────────────────────
+#
+# macOS Desktop and iOS Simulator targets are convenience wrappers
+# around the underlying `flutter build` commands documented in the
+# README. They depend on `bundle` for the same reason the APK targets
+# do — Flutter's asset pipeline picks up `assets/skal-app.*` directly,
+# so a stale bundle would silently ship in the .app.
+
+macos: bundle
+	cd $(FLUTTER) && flutter build macos --release
+	@echo "✓ $(FLUTTER)/build/macos/Build/Products/Release/skal_flutter.app"
+
+ios-sim: bundle
+	cd $(FLUTTER) && flutter build ios --simulator --debug
+	@echo "✓ $(FLUTTER)/build/ios/iphonesimulator/Runner.app"
+
+# Dart-only tests — pure unit tests against wire.dart + node_state.dart
+# state machine. No bundle / libskal dependency.
+test:
+	cd $(FLUTTER) && flutter test
 
 clean:
 	cd $(FLUTTER) && flutter clean

@@ -146,7 +146,7 @@ class SkalApp extends StatelessWidget {
               PerfHud(bridge: bridge, initMs: initMs, evalMs: evalMs, bootMs: bootMs),
               // SkalRoot is mounted inside Expanded only (no outer
               // SingleChildScrollView). The JS app's root is a
-              // <lazyColumn>, which renders to ListView.builder —
+              // <listView>, which renders to ListView.builder —
               // a self-contained vertical scroller that virtualizes
               // its children. Wrapping it in another vertical
               // scroller would (a) crash on unbounded constraints,
@@ -154,8 +154,9 @@ class SkalApp extends StatelessWidget {
               // size to intrinsic content).
               //
               // If the JS app uses a plain <column> as its root,
-              // anything off-screen will be clipped. Use <lazyColumn>
-              // at the top level for scrollable content.
+              // anything off-screen will be clipped. Use <listView>
+              // (or <reorderableListView>) at the top level for
+              // scrollable content.
               Expanded(child: SkalRoot(bridge: bridge)),
             ],
           ),

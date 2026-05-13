@@ -15,20 +15,24 @@
 import { createRenderer } from 'solid-js/universal';
 import * as B from './bridge.js';
 
-// Map JSX tag → widget type opcode.
+// Map JSX tag → widget type opcode. Tag names mirror Flutter widget
+// names so the layer underneath is unsurprising — `<column>` →
+// `Column`, `<listView>` → `ListView`, `<reorderableListView>` →
+// `ReorderableListView`, etc.
 const TAG_TO_WIDGET = {
-  box:          B.WT_BOX,
-  column:       B.WT_COLUMN,
-  scrollColumn: B.WT_SCROLL_COLUMN,
-  lazyColumn:   B.WT_LAZY_COLUMN,
-  row:          B.WT_ROW,
+  box:                  B.WT_BOX,
+  column:               B.WT_COLUMN,
+  scrollView:           B.WT_SCROLL_VIEW,
+  listView:             B.WT_LIST_VIEW,
+  reorderableListView:  B.WT_REORDERABLE_LIST_VIEW,
+  row:                  B.WT_ROW,
   // <text label="..." fontSize={...}> — for STYLED text content
   // (font size/weight/color/etc.). For unstyled text, use plain
   // strings as children of any container:
   //   <column>{() => `Count: ${count()}`}</column>
   // The string child is auto-wrapped as an unstyled WT_TEXT leaf.
-  text:         B.WT_TEXT,
-  button:       B.WT_BUTTON,
+  text:                 B.WT_TEXT,
+  button:               B.WT_BUTTON,
 };
 
 // ───────────────────────────────────────────────────────────────────────
@@ -387,9 +391,9 @@ export const {
 // constraints come directly from the host's Expanded — no
 // intermediate Column to consume them.
 //
-// Earlier this was wt_scroll_column, which wrapped everything in a
+// Earlier this was wt_scroll_view, which wrapped everything in a
 // SingleChildScrollView. That worked when the App used a plain
-// <column> but broke once we introduced <lazyColumn> — nested
+// <column> but broke once we introduced <listView> — nested
 // scrollables of the same axis collapse to height 0 (the inner
 // ListView gets unbounded height from the outer scroller and can't
 // compute its viewport extent). wt_box avoids the issue by being

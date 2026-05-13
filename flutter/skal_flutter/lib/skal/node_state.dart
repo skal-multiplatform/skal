@@ -30,6 +30,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'indexed_child_list.dart';
+import 'wire.dart';
 
 /// ChangeNotifier with a public `notify()` — Flutter's default
 /// `notifyListeners` is @protected. One-line subclass so the bridge's
@@ -50,22 +51,28 @@ class NodeState {
   /// moving node from its old parent's children list.
   int parent = 0;
 
-  /// Children ids backed by a [TreapChildList] for O(log N) on every
-  /// operation. Mutations go through [appendChild] / [insertChildAt] /
-  /// [removeChildAt]; reads via [childCount] / [childAt] / [childIds].
+  /// Children ids. Backing is picked at construct time from the
+  /// widget [type] — the dev signals their mutation pattern by which
+  /// widget they reach for, and the bridge provisions accordingly:
   ///
-  /// Why the treap: we can't know what dev workloads will look like.
-  /// A `List<int>` + `Map<int,int>` is faster on append (4× at
-  /// N=5000) but degrades to O(N) on insert/remove anywhere except
-  /// the tail. A reorder-heavy app (drag-and-drop, sort, animated
-  /// shuffle) hits an O(N²) cliff there — a 5K-item sort takes 240 ms
-  /// (UI-freezing) on the list approach vs 7 ms on the treap. The 1 ms
-  /// of extra append cost at scale is imperceptible; the 240 ms freeze
-  /// isn't. We default to the safer choice.
+  ///   • [wtReorderableListView] → [TreapChildList]
+  ///       O(log N) on every op. Pay the constant-factor overhead
+  ///       only for nodes that actually mutate at random positions
+  ///       (drag-and-drop, animated shuffle, live reorder).
   ///
-  /// See lib/skal/indexed_child_list.dart for both implementations and
-  /// test/indexed_child_list_test.dart for the full benchmark.
-  final TreapChildList _children = TreapChildList();
+  ///   • everything else → [ListChildList]
+  ///       O(1) append + indexOf, O(N − pos) insert/remove. Wins on
+  ///       constant factors AND memory (~2.8× lighter than a treap
+  ///       node). The vast majority of nodes — every `<column>`,
+  ///       `<row>`, `<button>`, plus append-only `<listView>` feeds
+  ///       — sit on this path forever.
+  ///
+  /// This split mirrors Flutter's own `ListView` / `ReorderableListView`
+  /// API gap, with the same trade-off: explicit at the call site,
+  /// zero runtime adaptivity overhead. See
+  /// `test/indexed_child_list_test.dart` for the head-to-head bench
+  /// that motivated the split.
+  final IndexedChildList _children;
 
   /// Number of children. O(1).
   int get childCount => _children.length;
@@ -76,22 +83,28 @@ class NodeState {
   /// Iterable view of all child ids in order. O(N) to traverse.
   Iterable<int> get childIds => _children.items;
 
-  /// Id at position [pos]. O(log N).
+  /// Id at position [pos]. Cost depends on this node's widget type:
+  /// O(1) for list-backed nodes / O(log N) for reorderable list.
   int childAt(int pos) => _children.idAt(pos);
 
-  /// O(log N) lookup of a child's position. Returns -1 if absent.
+  /// Lookup of a child's position. Returns -1 if absent.
+  /// O(1) for list-backed / O(log N) for reorderable list.
   int childIndexOf(int id) => _children.indexOf(id);
 
-  /// Append [id]. O(log N).
+  /// Append [id]. O(1) amortized for list-backed / O(log N) for
+  /// reorderable list.
   void appendChild(int id) => _children.append(id);
 
-  /// Insert [id] at position [pos]. O(log N).
+  /// Insert [id] at position [pos]. O(N − pos) for list-backed /
+  /// O(log N) for reorderable list.
   void insertChildAt(int pos, int id) => _children.insertAt(pos, id);
 
-  /// Remove the child at [pos]. O(log N).
+  /// Remove the child at [pos]. O(N − pos) for list-backed /
+  /// O(log N) for reorderable list.
   void removeChildAt(int pos) => _children.removeAt(pos);
 
-  /// Drop all children. O(1) — the underlying tree is replaced.
+  /// Drop all children. O(N) — see [IndexedChildList.clear] for the
+  /// Map.clear cost. Subtree-teardown path; not per-frame.
   void clearChildren() => _children.clear();
 
   // ── Per-node single-value reactive fields (plain) ──────────────────
@@ -125,7 +138,15 @@ class NodeState {
   bool coldDirty = false;
   bool hotDirty  = false;
 
-  NodeState(this.type);
+  NodeState(this.type) : _children = _backingFor(type);
+
+  /// Pick the children-list backing based on the widget type. Done
+  /// once at construct time — no runtime adaptivity, no per-mutation
+  /// type check, no promotion event. The widget IS the signal.
+  static IndexedChildList _backingFor(int type) {
+    if (type == wtReorderableListView) return TreapChildList();
+    return ListChildList();
+  }
 
   /// Read cold props. Caller must already be inside a [cold] listener
   /// (or equivalent — e.g. inside `SkalNode`'s builder, called after

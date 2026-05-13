@@ -61,18 +61,27 @@ export const OP_SET_SCALE_X       = 0x23;
 export const OP_SET_SCALE_Y       = 0x24;
 export const OP_SET_ROTATION_Z    = 0x25;
 
-// Widget types
-export const WT_BOX           = 0;
-export const WT_COLUMN        = 1;
-export const WT_ROW           = 2;
-export const WT_TEXT          = 3;
-export const WT_BUTTON        = 4;
-export const WT_SCROLL_COLUMN = 5;
-// Lazy-rendered vertically-scrolling column. The host builds only the
-// child widgets currently visible (ListView.builder on Flutter).
-// Same NodeState graph as wt_column / wt_scrollColumn — the renderer
-// just chooses a virtualizing layout.
-export const WT_LAZY_COLUMN   = 6;
+// Widget types — naming mirrors Flutter's widget vocabulary.
+export const WT_BOX                  = 0;
+export const WT_COLUMN               = 1;
+export const WT_ROW                  = 2;
+export const WT_TEXT                 = 3;
+export const WT_BUTTON               = 4;
+// Eagerly-built scrolling column — Flutter `SingleChildScrollView` +
+// `Column`. Use only for short scrollable content (no virtualization).
+export const WT_SCROLL_VIEW          = 5;
+// Lazy-rendered, virtualizing vertical list — Flutter `ListView.builder`.
+// Child widgets are constructed only as they scroll into view. The
+// bridge's NodeState graph still holds every entry; the host just
+// doesn't materialize off-screen widgets. Append-only contract — the
+// children-list backing is the cheap O(1) ListChildList. For random-
+// position mutation, use WT_REORDERABLE_LIST_VIEW.
+export const WT_LIST_VIEW            = 6;
+// Same shape as WT_LIST_VIEW but children-list backing is an order-
+// statistic treap, so insertAt / removeAt / move at random positions
+// are O(log N). On the Flutter side renders to `ReorderableListView.builder`.
+// Pay the constant-factor cost only when you explicitly opt in.
+export const WT_REORDERABLE_LIST_VIEW = 7;
 
 // Event kinds
 export const EV_CLICK  = 0x01;

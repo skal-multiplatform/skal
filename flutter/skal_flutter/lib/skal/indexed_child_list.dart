@@ -9,17 +9,19 @@
 //   indexOf(id) -> int   — return position of id (or -1)
 //   idAt(pos) -> int     — return id at position
 //
-// NodeState uses [TreapChildList] (O(log N) on everything) as its
-// production backing store — the safer default for arbitrary dev
-// workloads, since a List-based approach degrades to O(N) on insert/
-// remove anywhere except the tail and freezes the UI on reorder-heavy
-// patterns.
+// NodeState picks its backing at construct time based on the widget
+// type (see `node_state.dart`):
 //
-// [ListChildList] (O(1) append + indexOf, O(N − pos) insert/remove)
-// is kept here for the correctness-equivalence oracle and the
-// side-by-side benchmark in `test/indexed_child_list_test.dart`. It
-// has no callers in production code; deleting it would mean the
-// benchmark loses its comparison baseline.
+//   • [wtReorderableListView] → [TreapChildList]
+//       Drag-and-drop / mid-list mutation pattern. O(log N) anywhere.
+//
+//   • everything else → [ListChildList]
+//       Append-only or read-mostly. O(1) append + indexOf, O(N − pos)
+//       insert/remove. Wins on constant factors + memory for the >99%
+//       of nodes that hold a handful of children.
+//
+// Both impls are exported so `test/indexed_child_list_test.dart` can
+// run the correctness equivalence + side-by-side benchmark against them.
 
 import 'dart:math' as math;
 
@@ -50,9 +52,11 @@ abstract class IndexedChildList {
   /// Sequential iteration of all ids in order. O(N) either way.
   Iterable<int> get items;
 
-  /// Drop all entries. O(1) for both impls — just releases references
-  /// for GC; the underlying buffer/tree is replaced rather than
-  /// element-by-element cleared.
+  /// Drop all entries. O(N) for both impls — the tree/list itself is
+  /// dropped in O(1) (just releases the root reference for GC), but
+  /// both impls also clear an id→position / id→node Map alongside,
+  /// and Dart's Map.clear walks every entry. Not on any hot path —
+  /// happens during subtree teardown, not per frame.
   void clear();
 }
 

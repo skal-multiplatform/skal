@@ -40,8 +40,9 @@ void main() {
       expect(wtRow, 2);
       expect(wtText, 3);
       expect(wtButton, 4);
-      expect(wtScrollColumn, 5);
-      expect(wtLazyColumn, 6);
+      expect(wtScrollView, 5);
+      expect(wtListView, 6);
+      expect(wtReorderableListView, 7);
     });
   });
 

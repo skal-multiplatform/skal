@@ -111,14 +111,15 @@ class SkalNode extends StatelessWidget {
 
 Widget _buildForType(NodeState node, SkalBridge bridge) {
   switch (node.type) {
-    case wtBox:          return _buildBox(node, bridge);
-    case wtColumn:       return _buildColumn(node, bridge);
-    case wtScrollColumn: return _buildScrollColumn(node, bridge);
-    case wtLazyColumn:   return _buildLazyColumn(node, bridge);
-    case wtRow:          return _buildRow(node, bridge);
-    case wtText:         return _buildText(node);
-    case wtButton:       return _buildButton(node, bridge);
-    default:             return const SizedBox.shrink();
+    case wtBox:                  return _buildBox(node, bridge);
+    case wtColumn:               return _buildColumn(node, bridge);
+    case wtScrollView:           return _buildScrollView(node, bridge);
+    case wtListView:             return _buildListView(node, bridge);
+    case wtReorderableListView:  return _buildReorderableListView(node, bridge);
+    case wtRow:                  return _buildRow(node, bridge);
+    case wtText:                 return _buildText(node);
+    case wtButton:               return _buildButton(node, bridge);
+    default:                     return const SizedBox.shrink();
   }
 }
 
@@ -357,21 +358,24 @@ Widget _buildColumn(NodeState n, SkalBridge bridge) {
   return _HotLayer(node: n, child: inner);
 }
 
-/// Lazy-rendered column — backed by `ListView.builder`. Only the
-/// visible window of children plus a small overscan buffer is built.
-/// Mount cost is constant regardless of how many nodes are in the
-/// children list; the bridge's NodeState graph still holds all 5000
-/// entries, but Flutter only constructs Element trees for the ~10
-/// currently visible.
+/// Lazy-rendered list — backed by `ListView.builder`. Only the visible
+/// window of children plus a small overscan buffer is built. Mount cost
+/// is constant regardless of how many nodes are in the children list;
+/// the bridge's NodeState graph still holds all 5000 entries, but
+/// Flutter only constructs Element trees for the ~10 currently visible.
+///
+/// Children-list backing is `ListChildList` (see NodeState) — O(1)
+/// append, O(N − pos) insert/remove elsewhere. For drag-and-drop or
+/// mid-list mutation, use `<reorderableListView>` instead.
 ///
 /// Note: ListView.builder can NOT be wrapped in another scroller of
 /// the same axis. The JS app should make this the OUTERMOST vertical
-/// scroller (or use `<scrollColumn>` if it needs eager rendering).
-Widget _buildLazyColumn(NodeState n, SkalBridge bridge) {
+/// scroller (or use `<scrollView>` if it needs eager rendering).
+Widget _buildListView(NodeState n, SkalBridge bridge) {
   // Note: PROP_ALIGNMENT is intentionally ignored in lazy mode —
   // ListView.builder positions children by extent, not by MainAxis
-  // arrangement. If we ever need alignment in a lazy column, the
-  // right shape is a SliverList with a leading/trailing widget.
+  // arrangement. If we ever need alignment in a lazy list, the right
+  // shape is a SliverList with a leading/trailing widget.
   final gap = n.getPropU32(propGap, 8);
   final count = n.childCount;
 
@@ -389,8 +393,7 @@ Widget _buildLazyColumn(NodeState n, SkalBridge bridge) {
     itemCount: count == 0 ? 0 : (count * 2 - 1),
     itemBuilder: (_, i) {
       if (i.isOdd) return SizedBox(height: gap.toDouble());
-      // O(log N) per visible item — for ListView's ~10-item window
-      // that's ~130 ops/frame at N=10K, negligible.
+      // O(1) on list-backed ListChildList for the visible window.
       final childId = n.childAt(i ~/ 2);
       return SkalNode(
         nodeId: childId,
@@ -419,7 +422,75 @@ Widget _buildLazyColumn(NodeState n, SkalBridge bridge) {
   return _HotLayer(node: n, child: inner);
 }
 
-Widget _buildScrollColumn(NodeState n, SkalBridge bridge) {
+/// Drag-and-drop reorderable list — backed by `ReorderableListView.builder`.
+///
+/// Same shape as [_buildListView], but:
+///   • Children-list backing is `TreapChildList`, so any-position
+///     mutation is O(log N). The dev signed up for this by picking
+///     the widget type; cheap-list users (`<listView>`) don't pay
+///     the treap tax.
+///   • Each child is wrapped with a key Flutter uses to track the
+///     drag gesture.
+///   • An `onReorder` callback is required by Flutter — we wire it as
+///     a no-op pending a proper JS reorder-event protocol. The list
+///     still renders correctly; drag gestures complete but don't
+///     persist into the bridge state. Wiring this end-to-end means
+///     adding a new event kind (EV_REORDER) and a JS handler — see
+///     the `TODO(reorder-events)` marker on the onReorder callback.
+Widget _buildReorderableListView(NodeState n, SkalBridge bridge) {
+  final gap = n.getPropU32(propGap, 8);
+  final count = n.childCount;
+  final pad = _paddingFor(n, 16);
+
+  Widget inner = ReorderableListView.builder(
+    padding: pad,
+    // No gap interleaving here — ReorderableListView wants real items
+    // only (every slot needs a stable Key for drag tracking). Apply
+    // bottom-margin per child instead.
+    itemCount: count,
+    itemBuilder: (_, i) {
+      // O(log N) per visible item under TreapChildList.
+      final childId = n.childAt(i);
+      final child = SkalNode(
+        nodeId: childId,
+        bridge: bridge,
+        key: ValueKey<int>(childId),
+      );
+      // Last child gets no trailing gap.
+      if (gap == 0 || i == count - 1) return child;
+      return Padding(
+        key: ValueKey<int>(childId),
+        padding: EdgeInsets.only(bottom: gap.toDouble()),
+        child: child,
+      );
+    },
+    onReorder: (oldIndex, newIndex) {
+      // TODO(reorder-events): emit an EV_REORDER on the event ring
+      // (handlerId, oldIndex, newIndex) so the JS app can update its
+      // source array. For now Flutter swallows the gesture and the
+      // next pumpOps() re-builds the list from the unchanged bridge
+      // state — visually the item snaps back, which is the right
+      // safe default until the event protocol is in place.
+    },
+  );
+
+  final bg = n.getPropU32(propBgColor, 0);
+  final corner = n.getPropU32(propCornerRadius, 0);
+  if (bg != 0 || corner > 0) {
+    inner = DecoratedBox(
+      decoration: BoxDecoration(
+        color: bg != 0 ? _argb(bg) : null,
+        borderRadius:
+            corner > 0 ? BorderRadius.circular(corner.toDouble()) : null,
+      ),
+      child: inner,
+    );
+  }
+
+  return _HotLayer(node: n, child: inner);
+}
+
+Widget _buildScrollView(NodeState n, SkalBridge bridge) {
   final alignment = n.getPropU32(propAlignment, -1);
   final gap = n.getPropU32(propGap, 8);
 

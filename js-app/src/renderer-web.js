@@ -1,8 +1,9 @@
 // Solid universal-renderer adapter for Skal — DOM target.
 //
 // Parallel to renderer.js (which targets the native Flutter host).
-// Same JSX tags (`<column>`, `<box>`, `<row>`, `<scrollColumn>`,
-// `<text>`, `<button>`), same prop names (`background`, `padding`,
+// Same JSX tags (`<column>`, `<box>`, `<row>`, `<scrollView>`,
+// `<listView>`, `<reorderableListView>`, `<text>`, `<button>`),
+// same prop names (`background`, `padding`,
 // `cornerRadius`, `opacity`, ...), but here we produce real DOM nodes
 // and inline CSS instead of writing bridge ops.
 //
@@ -23,18 +24,21 @@ import { createRenderer } from 'solid-js/universal';
 // ──────────────────────────────────────────────────────────────────────
 
 const TAG_TO_HTML = {
-  column:       'div',
-  scrollColumn: 'div',
+  column:               'div',
+  scrollView:           'div',
   // Web has no virtualization story for arbitrary DOM children — a
-  // <lazyColumn> just degrades to a regular scrollable div with all
-  // children eagerly mounted. The virtualization is a host-side
-  // optimization (Flutter ListView.builder); on web the browser's own
-  // scroll virtualization handles render culling at the GPU layer.
-  lazyColumn:   'div',
-  row:          'div',
-  box:          'div',
-  text:         'span',
-  button:       'button',
+  // <listView> / <reorderableListView> just degrades to a regular
+  // scrollable div with all children eagerly mounted. The virtualization
+  // is a host-side optimization (Flutter ListView.builder); on web the
+  // browser's own scroll virtualization handles render culling at the
+  // GPU layer. Reorder UX is also not wired up on web; the tag is
+  // accepted for renderer parity so the SAME JSX runs both targets.
+  listView:             'div',
+  reorderableListView:  'div',
+  row:                  'div',
+  box:                  'div',
+  text:                 'span',
+  button:               'button',
 };
 
 // Baseline inline styles applied at createElement time. Each prop set
@@ -58,7 +62,13 @@ function applyDefaults(el, tag) {
       s.padding = '16px';
       s.gap = '8px';
       break;
-    case 'scrollColumn':
+    case 'scrollView':
+    case 'listView':
+    case 'reorderableListView':
+      // All three render as scrollable flex-column div on web. Native
+      // host distinguishes them for virtualization + reorder UX; the
+      // browser handles render culling itself, so on web they're the
+      // same shape.
       s.display = 'flex';
       s.flexDirection = 'column';
       s.alignItems = 'flex-start';

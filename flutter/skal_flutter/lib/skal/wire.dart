@@ -52,21 +52,46 @@ const int opSetScaleY       = 0x24;
 const int opSetRotationZ    = 0x25;
 
 // ── Widget types (NodeState.type) ─────────────────────────────────────
-const int wtBox          = 0;
-const int wtColumn       = 1;
-const int wtRow          = 2;
-const int wtText         = 3;
-const int wtButton       = 4;
-const int wtScrollColumn = 5;
-/// Vertically-scrolling lazily-built column. Backed by Flutter's
+//
+// Naming mirrors Flutter's widget vocabulary so the layer underneath
+// is unsurprising: `<column>` → `Column`, `<listView>` → `ListView`,
+// etc. The split between `listView` and `reorderableListView` is the
+// same API-level split Flutter uses (`ListView.builder` vs
+// `ReorderableListView.builder`), and it doubles as the signal the
+// bridge needs to pick the right children-list backing — see
+// `NodeState._children` in `node_state.dart`.
+const int wtBox                  = 0;
+const int wtColumn               = 1;
+const int wtRow                  = 2;
+const int wtText                 = 3;
+const int wtButton               = 4;
+/// Eagerly-built scrolling column — Flutter's `SingleChildScrollView`
+/// wrapping a `Column`. Use when you want scroll but child count is
+/// small (no virtualization). For long feeds, prefer [wtListView].
+const int wtScrollView           = 5;
+/// Vertically-scrolling lazily-built list. Backed by Flutter's
 /// `ListView.builder` — children are constructed only as they scroll
 /// into view, so a 5000-item feed mounts ~10 child widgets up front
 /// instead of all 50K node widgets at once. Children are still all
 /// registered in the bridge (the JS side emits CREATE_NODE +
-/// INSERT_BEFORE for every Tweet), but the Flutter Element tree only
-/// materializes the visible window. Same NodeState-keyed-by-id model;
-/// the only difference is at build time.
-const int wtLazyColumn   = 6;
+/// INSERT_BEFORE for every item), but the Flutter Element tree only
+/// materializes the visible window.
+///
+/// Append-only contract: this widget's children-list backing is the
+/// cheap O(1)-append `ListChildList`. Inserting / removing at random
+/// positions on a large `<listView>` will hit the O(N) tail-shift
+/// cost. For drag-and-drop / random-position mutation, use
+/// [wtReorderableListView].
+const int wtListView             = 6;
+/// Vertically-scrolling lazily-built list, with drag-and-drop reorder
+/// support. Backed by Flutter's `ReorderableListView.builder`.
+///
+/// Children-list backing is an order-statistic treap, so insertAt /
+/// removeAt / move-item are O(log N) regardless of position. Pay the
+/// constant-factor overhead vs `listView` only when the dev opts in
+/// by picking this widget — making the perf contract explicit at the
+/// call site rather than something the framework adaptively guesses.
+const int wtReorderableListView  = 7;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick  = 0x01;

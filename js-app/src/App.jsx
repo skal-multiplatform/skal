@@ -145,17 +145,21 @@ export default function App() {
   // each function child gets its own isolated effect. setCount only
   // re-runs the count-text effect, nothing else.
   return (
-    // <lazyColumn> — virtualized scroll container. ListView.builder on
+    // <listView> — virtualized scroll container. ListView.builder on
     // Flutter only materializes the ~10 items in the visible window
     // plus a small overscan buffer, so a 5000-tweet feed mounts ~10
     // Element trees up front instead of 50K. The NodeState graph
     // still holds all 5000 entries because Solid's <For> mounted them
     // — the host just doesn't build the off-screen widgets.
     //
+    // Children-list backing is ListChildList (O(1) append, O(N − pos)
+    // mid-list mutation). For drag-and-drop reorder UIs, swap to
+    // <reorderableListView> (TreapChildList, O(log N) everywhere).
+    //
     // The control row (Count / Increment / benchmarks / count
     // buttons) scrolls together with the tweet feed, which matches
     // the Twitter/X UX of "search bar scrolls away as you read".
-    <lazyColumn background="#FFFAFAFA" padding={16} gap={12}>
+    <listView background="#FFFAFAFA" padding={16} gap={12}>
       <box background="#FF1DA1F2" padding={12} cornerRadius={8}>
         {() => `Count: ${count()}`}
       </box>
@@ -217,6 +221,6 @@ export default function App() {
           <Tweet author={tweet.author} body={tweet.body} num={tweet.num} />
         )}
       </For>
-    </lazyColumn>
+    </listView>
   );
 }

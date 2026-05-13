@@ -3,10 +3,10 @@
 // (i.e. not part of stock Solid).
 //
 // Status: reserved tooling. <ChunkedFor> exists but the demo
-// (App.jsx) uses plain <For> because <lazyColumn>'s Flutter-side
+// (App.jsx) uses plain <For> because <listView>'s Flutter-side
 // virtualization already bounds per-frame work to ~10 widgets and
 // JS-side chunking becomes redundant. ChunkedFor remains useful for
-// the cases lazyColumn can't help with: non-virtualized layouts,
+// the cases listView can't help with: non-virtualized layouts,
 // infinite-feed UX where users expect to see items stream in, or
 // "the list is small enough that scrolling doesn't matter but the
 // initial mount is expensive enough to want progressive feedback."

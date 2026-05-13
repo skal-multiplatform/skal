@@ -137,138 +137,115 @@ void main() {
       stdout.writeln('  ChildList performance — wall-clock per workload, lower = better');
       stdout.writeln('=' * 72);
 
-      final formatRow = _RowFormatter(['Workload', 'N', 'ListChildList', 'TreapChildList', 'List / Treap']);
+      final formatRow = _RowFormatter([
+        'Workload',
+        'N',
+        'List',
+        'Treap',
+        'List / Treap',
+      ]);
       stdout.writeln(formatRow.header());
       stdout.writeln(formatRow.separator());
 
-      for (final n in sizes) {
-        // ─── append N ────────────────────────────────────────────────
-        final listAppendMs = _bench(() {
-          final l = ListChildList();
-          for (int i = 0; i < n; i++) l.append(i + 1);
-        });
-        final treapAppendMs = _bench(() {
-          final t = TreapChildList();
-          for (int i = 0; i < n; i++) t.append(i + 1);
-        });
+      // Run one workload against both impls. [build] takes an empty
+      // [IndexedChildList] and applies the workload (build phase IS
+      // the workload). For workloads that need a pre-built list, use
+      // [runReadWorkload] instead so the populate phase isn't timed.
+      void runWorkload(String name, int n, void Function(IndexedChildList) build) {
+        final listMs = _bench(() => build(ListChildList()));
+        final treapMs = _bench(() => build(TreapChildList()));
         stdout.writeln(formatRow.row([
-          'Append',
+          name,
           '$n',
-          _ms(listAppendMs),
-          _ms(treapAppendMs),
-          _ratio(listAppendMs, treapAppendMs),
+          _ms(listMs),
+          _ms(treapMs),
+          _ratio(listMs, treapMs),
         ]));
+      }
 
-        // ─── indexOf N ids (in a pre-built list of N) ─────────────────
+      // Two-phase form for read-only / steady-state workloads. [populate]
+      // runs once outside the timed body to bring each impl to N items;
+      // [read] is what gets benchmarked. Without this split the timing
+      // conflates the impls' (different) build costs with the operation
+      // we actually want to measure — pure indexOf cost, in the IndexOf×N
+      // row's case.
+      void runReadWorkload(
+        String name,
+        int n,
+        void Function(IndexedChildList) populate,
+        void Function(IndexedChildList) read,
+      ) {
         final preL = ListChildList();
         final preT = TreapChildList();
-        for (int i = 0; i < n; i++) { preL.append(i + 1); preT.append(i + 1); }
-        final ids = List<int>.generate(n, (i) => i + 1);
-        final shuffleRng = math.Random(0xfeed);
-        ids.shuffle(shuffleRng);
-
-        final listIndexMs = _bench(() {
-          int acc = 0;
-          for (final id in ids) acc += preL.indexOf(id);
-          if (acc < 0) throw StateError('unreachable'); // keep `acc` live
-        });
-        final treapIndexMs = _bench(() {
-          int acc = 0;
-          for (final id in ids) acc += preT.indexOf(id);
-          if (acc < 0) throw StateError('unreachable');
-        });
+        populate(preL);
+        populate(preT);
+        final listMs = _bench(() => read(preL));
+        final treapMs = _bench(() => read(preT));
         stdout.writeln(formatRow.row([
-          'IndexOf×N',
+          name,
           '$n',
-          _ms(listIndexMs),
-          _ms(treapIndexMs),
-          _ratio(listIndexMs, treapIndexMs),
+          _ms(listMs),
+          _ms(treapMs),
+          _ratio(listMs, treapMs),
         ]));
+      }
+
+      for (final n in sizes) {
+        // ─── append N ────────────────────────────────────────────────
+        runWorkload('Append', n, (c) {
+          for (int i = 0; i < n; i++) c.append(i + 1);
+        });
+
+        // ─── indexOf N ids in a pre-built N-item list ────────────────
+        // Pure indexOf timing — the populate phase below runs outside
+        // the bench timer.
+        final ids = List<int>.generate(n, (i) => i + 1);
+        ids.shuffle(math.Random(0xfeed));
+        runReadWorkload(
+          'IndexOf×N',
+          n,
+          (c) { for (int i = 0; i < n; i++) c.append(i + 1); },
+          (c) {
+            int acc = 0;
+            for (final id in ids) acc += c.indexOf(id);
+            if (acc < 0) throw StateError('unreachable');
+          },
+        );
 
         // ─── insertAt random positions ───────────────────────────────
-        // Same RNG seed for both so positions are identical.
+        // Same RNG seed across impls so positions are identical.
         final positions = _gen(n, math.Random(0xabc1));
-        final listInsertMs = _bench(() {
-          final l = ListChildList();
+        runWorkload('RandomInsert', n, (c) {
           for (int i = 0; i < n; i++) {
-            final pos = positions[i] % (l.length + 1);
-            l.insertAt(pos, i + 1);
+            final pos = positions[i] % (c.length + 1);
+            c.insertAt(pos, i + 1);
           }
         });
-        final treapInsertMs = _bench(() {
-          final t = TreapChildList();
-          for (int i = 0; i < n; i++) {
-            final pos = positions[i] % (t.length + 1);
-            t.insertAt(pos, i + 1);
-          }
-        });
-        stdout.writeln(formatRow.row([
-          'RandomInsert',
-          '$n',
-          _ms(listInsertMs),
-          _ms(treapInsertMs),
-          _ratio(listInsertMs, treapInsertMs),
-        ]));
 
         // ─── removeAt random positions ───────────────────────────────
         final removePositions = _gen(n, math.Random(0xabc2));
-        final listRemoveMs = _bench(() {
-          final l = ListChildList();
-          for (int i = 0; i < n; i++) l.append(i + 1);
+        runWorkload('RandomRemove', n, (c) {
+          for (int i = 0; i < n; i++) c.append(i + 1);
           for (int i = 0; i < n; i++) {
-            final pos = removePositions[i] % l.length;
-            l.removeAt(pos);
+            final pos = removePositions[i] % c.length;
+            c.removeAt(pos);
           }
         });
-        final treapRemoveMs = _bench(() {
-          final t = TreapChildList();
-          for (int i = 0; i < n; i++) t.append(i + 1);
-          for (int i = 0; i < n; i++) {
-            final pos = removePositions[i] % t.length;
-            t.removeAt(pos);
-          }
-        });
-        stdout.writeln(formatRow.row([
-          'RandomRemove',
-          '$n',
-          _ms(listRemoveMs),
-          _ms(treapRemoveMs),
-          _ratio(listRemoveMs, treapRemoveMs),
-        ]));
 
         // ─── Sort-like: starting from an N-item list, do N random
         //    "move to random position" cycles. Mimics drag-and-drop
         //    reorder traffic.
         final movePositions = _gen(n, math.Random(0xabc3));
-        final listSortMs = _bench(() {
-          final l = ListChildList();
-          for (int i = 0; i < n; i++) l.append(i + 1);
+        runWorkload('SortLike', n, (c) {
+          for (int i = 0; i < n; i++) c.append(i + 1);
           for (int i = 0; i < n; i++) {
-            final from = movePositions[i] % l.length;
-            final id = l.idAt(from);
-            l.removeAt(from);
-            final to = (movePositions[i] * 31) % (l.length + 1);
-            l.insertAt(to, id);
+            final from = movePositions[i] % c.length;
+            final id = c.idAt(from);
+            c.removeAt(from);
+            final to = (movePositions[i] * 31) % (c.length + 1);
+            c.insertAt(to, id);
           }
         });
-        final treapSortMs = _bench(() {
-          final t = TreapChildList();
-          for (int i = 0; i < n; i++) t.append(i + 1);
-          for (int i = 0; i < n; i++) {
-            final from = movePositions[i] % t.length;
-            final id = t.idAt(from);
-            t.removeAt(from);
-            final to = (movePositions[i] * 31) % (t.length + 1);
-            t.insertAt(to, id);
-          }
-        });
-        stdout.writeln(formatRow.row([
-          'SortLike',
-          '$n',
-          _ms(listSortMs),
-          _ms(treapSortMs),
-          _ratio(listSortMs, treapSortMs),
-        ]));
 
         stdout.writeln(formatRow.separator());
       }

@@ -1,8 +1,8 @@
 // Web entry — mounts the Solid app into a DOM root element.
 //
 // The web counterpart to index.jsx (which mounts into the Skal bridge's
-// pre-created root WT_SCROLL_COLUMN). On web there's no bridge; we just
-// reuse the standard DOM <body><div id="app"></div> root.
+// pre-created root WT_BOX). On web there's no bridge; we just reuse
+// the standard DOM <body><div id="app"></div> root.
 //
 // Same App.jsx, same Tweet component, same JSX. The `~renderer` alias
 // is swapped at build time (see vite.config.web.js) to renderer-web.js,

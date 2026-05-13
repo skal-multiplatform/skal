@@ -263,11 +263,27 @@ let _strOffset = 0;
 let _strLength = 0;
 
 function writeString(s) {
+  // Worst-case UTF-8 expansion is 3 bytes per code unit (BMP chars; the
+  // 4-byte surrogate-pair case averages 2 bytes per code unit, so 3× is
+  // conservative). If the next string might not fit, drain everything
+  // first — flushAndWaitForDrain resets strWritePos along with the op
+  // ring, and by then Dart has copied every drained SET_TEXT /
+  // SET_PROP_STR into Dart String objects, so the heap bytes are safe
+  // to overwrite. Mirrors the op-ring near-end guard in writeOp.
+  if (strWritePos + s.length * 3 > STRING_HEAP_END) {
+    flushAndWaitForDrain();
+  }
   const start = strWritePos - STRING_HEAP_OFFSET;
   const slot = u8.subarray(strWritePos, STRING_HEAP_END);
   const { read, written } = TEXT_ENCODER.encodeInto(s, slot);
   if (read !== s.length) {
-    throw new Error(`Skal: string heap full (need ${s.length} code units, fit ${read})`);
+    // Even after a drain-reset the heap can't fit this string.
+    // Means a single value is larger than the entire heap — caller
+    // error (probably wants to chunk or paginate text), not capacity
+    // churn we can recover from.
+    throw new Error(
+      `Skal: string too large for heap (${s.length} code units > ${STRING_HEAP_SIZE} bytes)`,
+    );
   }
   strWritePos += written;
   _strOffset = start;

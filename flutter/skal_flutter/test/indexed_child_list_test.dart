@@ -79,6 +79,30 @@ void main() {
         if (step % 250 == 0) assertEqual('step $step');
       }
       assertEqual('final');
+
+      // Full-iteration equivalence — the spot-checks inside assertEqual
+      // sample indexOf for 10 random ids, but never traverse all items.
+      // After a non-trivial treap structure built up over 5K random
+      // ops, an in-order walk could expose subtle bugs (parent-pointer
+      // drift, wrong subtree-size update) that positional reads miss.
+      expect(candidate.items.toList(), reference.items.toList(),
+          reason: 'full in-order iteration after random ops');
+
+      // clear() is used in production by bridge.dart's _removeSubtree
+      // but isn't exercised by the random-ops switch above. Verify it
+      // resets state to empty on both impls.
+      reference.clear();
+      candidate.clear();
+      assertEqual('after clear');
+      expect(reference.length, 0);
+      expect(candidate.length, 0);
+      expect(candidate.indexOf(1), -1, reason: 'indexOf after clear');
+      // After clear, re-append should restart positions from 0.
+      reference.append(42);
+      candidate.append(42);
+      expect(candidate.indexOf(42), 0);
+      expect(reference.indexOf(42), 0);
+      expect(candidate.idAt(0), 42);
     });
 
     test('indexOf returns -1 for absent ids in both impls', () {

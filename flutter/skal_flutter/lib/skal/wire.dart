@@ -21,7 +21,7 @@ const int hEventSeq            = 16;   // u64 — Dart bumps after each event wr
 const int hEventWritePos       = 24;   // u32
 const int hEventReadPos        = 28;   // u32
 const int hLastDrainedSeq      = 32;   // u64 — Dart bumps after each drain (JS spin-wait target)
-const int hLastDrainedWritePos = 40;   // u32 — bytes Dart has consumed (JS reset-safe checkpoint)
+const int hLastDrainedWritePos = 40;   // u32 — reserved slot; not currently read by either side
 
 const int kHeaderSize     = 64;
 const int kOpRingOffset   = kHeaderSize;

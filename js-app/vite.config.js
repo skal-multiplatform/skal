@@ -1,6 +1,10 @@
 import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';
 import { resolve } from 'path';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const skalJsxPlugin = require('./babel-plugin-skal-jsx.cjs');
 
 // Solid's universal-renderer mode: babel-preset-solid (wrapped by
 // vite-plugin-solid) compiles JSX into direct calls to OUR custom
@@ -9,11 +13,22 @@ import { resolve } from 'path';
 // `moduleName` tells the babel plugin where those helpers come from.
 // We expose them via the `~renderer` alias so the import works the
 // same from any source file regardless of nesting.
+//
+// `skal-jsx` babel plugin runs BEFORE solid's preset (babel plugin
+// pass precedes preset pass). It rewrites capitalized JSX tags like
+// <Column> back to their lowercase intrinsic form <column> at build
+// time, so the runtime never pays the component-wrapper overhead.
+// See babel-plugin-skal-jsx.js for the full rationale.
 
 export default defineConfig({
   resolve: {
     alias: {
       '~renderer': resolve(__dirname, 'src/renderer.js'),
+      // Bare-specifier import path for the capitalized-component
+      // module. Used as `import { Column, Row } from 'skal'`. The
+      // exports are runtime-fallback throwers; the babel plugin
+      // strips real usages at compile time.
+      'skal': resolve(__dirname, 'src/skal/index.js'),
     },
   },
   plugins: [
@@ -21,6 +36,11 @@ export default defineConfig({
       solid: {
         generate: 'universal',
         moduleName: '~renderer',
+      },
+      babel: {
+        plugins: [
+          [skalJsxPlugin, { moduleName: 'skal' }],
+        ],
       },
     }),
   ],

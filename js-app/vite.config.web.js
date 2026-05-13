@@ -15,11 +15,16 @@
 import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';
 import { resolve } from 'path';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const skalJsxPlugin = require('./babel-plugin-skal-jsx.cjs');
 
 export default defineConfig({
   resolve: {
     alias: {
       '~renderer': resolve(__dirname, 'src/renderer-web.js'),
+      'skal': resolve(__dirname, 'src/skal/index.js'),
     },
   },
   plugins: [
@@ -27,6 +32,11 @@ export default defineConfig({
       solid: {
         generate: 'universal',
         moduleName: '~renderer',
+      },
+      babel: {
+        plugins: [
+          [skalJsxPlugin, { moduleName: 'skal' }],
+        ],
       },
     }),
   ],

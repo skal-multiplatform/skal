@@ -1,4 +1,5 @@
 import { createSignal, createMemo, For } from 'solid-js';
+import { Container, Column, Row, Text, Button, ListView } from 'skal';
 
 const TWEET_LINES = [
   "Just shipped a new feature, feeling great about how it turned out 🚀",
@@ -71,7 +72,7 @@ function Tweet(props) {
   const [replied, setReplied] = createSignal(false);
 
   return (
-    <column
+    <Column
       background={COLOR_CARD_BG}
       padding={12}
       cornerRadius={10}
@@ -79,9 +80,9 @@ function Tweet(props) {
       borderColor={COLOR_CARD_BORDER}
       gap={6}
     >
-      <text fontWeight={700} fontSize={14} color={COLOR_AUTHOR} label={`#${props.num} · ${props.author}`} />
-      <text fontSize={14} color={COLOR_BODY} maxLines={3} textOverflow={1} label={props.body} />
-      <row gap={10}>
+      <Text fontWeight={700} fontSize={14} color={COLOR_AUTHOR} label={`#${props.num} · ${props.author}`} />
+      <Text fontSize={14} color={COLOR_BODY} maxLines={3} textOverflow={1} label={props.body} />
+      <Row gap={10}>
         {/* Reactive attribute values: use expressions that DIRECTLY
             call the signal (likes(), liked(), …). Solid's babel
             plugin detects the signal call and wraps the expression
@@ -89,7 +90,7 @@ function Tweet(props) {
             function — `() => expr` is opaque to the plugin and
             passes through to setProperty as a literal Function value
             (which `String(fn)` then renders as source code). */}
-        <button
+        <Button
           label={`♥ ${likes()}`}
           fontSize={12}
           padding={6}
@@ -104,7 +105,7 @@ function Tweet(props) {
             setLikes(likes() + (next ? 1 : -1));
           }}
         />
-        <button
+        <Button
           label={`↩ ${replies()}`}
           fontSize={12}
           padding={6}
@@ -117,8 +118,8 @@ function Tweet(props) {
             setReplies(replies() + (next ? 1 : -1));
           }}
         />
-      </row>
-    </column>
+      </Row>
+    </Column>
   );
 }
 
@@ -145,7 +146,7 @@ export default function App() {
   // each function child gets its own isolated effect. setCount only
   // re-runs the count-text effect, nothing else.
   return (
-    // <listView> — virtualized scroll container. ListView.builder on
+    // <ListView> — virtualized scroll container. ListView.builder on
     // Flutter only materializes the ~10 items in the visible window
     // plus a small overscan buffer, so a 5000-tweet feed mounts ~10
     // Element trees up front instead of 50K. The NodeState graph
@@ -154,20 +155,20 @@ export default function App() {
     //
     // Children-list backing is ListChildList (O(1) append, O(N − pos)
     // mid-list mutation). For drag-and-drop reorder UIs, swap to
-    // <reorderableListView> (TreapChildList, O(log N) everywhere).
+    // <ReorderableListView> (TreapChildList, O(log N) everywhere).
     //
     // The control row (Count / Increment / benchmarks / count
     // buttons) scrolls together with the tweet feed, which matches
     // the Twitter/X UX of "search bar scrolls away as you read".
-    <listView background="#FFFAFAFA" padding={16} gap={12}>
-      <box background="#FF1DA1F2" padding={12} cornerRadius={8}>
+    <ListView background="#FFFAFAFA" padding={16} gap={12}>
+      <Container background="#FF1DA1F2" padding={12} cornerRadius={8}>
         {() => `Count: ${count()}`}
-      </box>
-      <row gap={8}>
-        <button label="Increment" onClick={() => setCount(count() + 1)} />
-        <button label="Decrement" onClick={() => setCount(count() - 1)} />
-      </row>
-      <button
+      </Container>
+      <Row gap={8}>
+        <Button label="Increment" onClick={() => setCount(count() + 1)} />
+        <Button label="Decrement" onClick={() => setCount(count() - 1)} />
+      </Row>
+      <Button
         label="+1000 (benchmark)"
         onClick={() => {
           const startCount = count();
@@ -194,10 +195,10 @@ export default function App() {
       />
       {bigBenchMs}
 
-      <row>
+      <Row>
         <For each={COUNT_BUTTONS}>
           {(n) => (
-            <button
+            <Button
               label={`${n}`}
               onClick={() => {
                 const t1 = performance.now();
@@ -213,7 +214,7 @@ export default function App() {
             />
           )}
         </For>
-      </row>
+      </Row>
       {tweetBenchMs}
 
       <For each={tweetsToShow()}>
@@ -221,6 +222,6 @@ export default function App() {
           <Tweet author={tweet.author} body={tweet.body} num={tweet.num} />
         )}
       </For>
-    </listView>
+    </ListView>
   );
 }

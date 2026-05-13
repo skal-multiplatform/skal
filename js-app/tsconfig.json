@@ -16,6 +16,17 @@
     "verbatimModuleSyntax": true,
     "noEmit": true,
 
+    // Mirror the Vite resolve.alias entries so the IDE's TS service
+    // can follow `import { ListView } from 'skal'` to the actual
+    // module file. Without this, cmd-click + hover + auto-complete
+    // all silently fail for these bare specifiers — TS doesn't read
+    // Vite's config.
+    "baseUrl": ".",
+    "paths": {
+      "skal": ["./src/skal/index.js"],
+      "~renderer": ["./src/renderer.js"]
+    },
+
     // Best practices
     "strict": true,
     "skipLibCheck": true,

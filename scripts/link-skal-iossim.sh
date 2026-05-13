@@ -105,7 +105,7 @@ SHIM_O="${SKAL_BUILD}/skal_iossim_shim.o"
   "${SKAL_ROOT}/native/ios/skal_iossim_shim.c"
 echo "${SHIM_O}" >> "${INPUTS_FILE}"
 
-# ── Exported-symbols list (iOS-only — C ABI for cinterop) ─────────────
+# ── Exported-symbols list (C ABI for dart:ffi) ────────────────────────
 #
 # Exports only the C ABI (`skal_*`) the Flutter host's dart:ffi
 # bindings call into. Each platform binary exports only what its

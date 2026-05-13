@@ -1,32 +1,39 @@
-# macOS Desktop build pipeline. Per TODO_PLATFORMS § 0.5/V1, scoped
-# only to changes that affect Desktop. iOS-Simulator-only changes
-# (e.g. native/ios/skal_iossim_shim.c, scripts/link-skal-iossim.sh)
-# do NOT trigger this workflow — that's the modularity invariant in
-# action.
+# macOS Desktop build pipeline. Scoped only to changes that affect
+# the Flutter macOS shell. iOS-Simulator-only changes (e.g.
+# native/ios/skal_iossim_shim.c, scripts/link-skal-iossim.sh) do NOT
+# trigger this workflow — modularity invariant: per-platform builds
+# only relink on inputs that actually flow into them.
 
 name: desktop
 
 on:
   pull_request:
     paths:
-      - shared/**
-      - desktop-app/**
-      - vendor/bun/**
-      - patches/skal_entry.zig
-      - patches/0001-bun-main-android-skal-import.patch
-      - scripts/link-skal-dylib.sh
+      - flutter/skal_flutter/macos/**
+      - flutter/skal_flutter/lib/**
+      - flutter/skal_flutter/pubspec.yaml
+      - flutter/scripts/link-libskal-flutter-mac.sh
       - js-app/**
+      - patches/skal_entry.zig
+      - patches/bun-base-commit.txt
+      - patches/0001-bun-main-android-skal-import.patch
+      - patches/0002-bun-tools-find-lld-on-darwin.patch
+      - scripts/setup.sh
+      - native/ios/skal.h
       - .github/workflows/desktop.yml
   push:
     branches: [main]
     paths:
-      - shared/**
-      - desktop-app/**
-      - vendor/bun/**
-      - patches/**
-      - scripts/link-skal-dylib.sh
+      - flutter/skal_flutter/macos/**
+      - flutter/skal_flutter/lib/**
+      - flutter/skal_flutter/pubspec.yaml
+      - flutter/scripts/link-libskal-flutter-mac.sh
       - js-app/**
+      - patches/**
+      - scripts/setup.sh
+      - native/ios/skal.h
       - .github/workflows/desktop.yml
+  workflow_call:
 
 concurrency:
   group: desktop-${{ github.ref }}
@@ -38,52 +45,63 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: subosito/flutter-action@v2
         with:
-          distribution: temurin
-          java-version: 17
-      - uses: gradle/actions/setup-gradle@v4
+          channel: stable
+          cache: true
       - run: rustup install nightly && rustup default nightly
+      - uses: oven-sh/setup-bun@v2
 
       - uses: actions/cache@v4
         with:
           path: |
             vendor
             ~/.bun/build-cache
-          key: desktop-vendor-${{ hashFiles('patches/bun-base-commit.txt', 'patches/webkit-base-commit.txt') }}
+          key: desktop-vendor-${{ hashFiles('patches/bun-base-commit.txt', 'patches/webkit-base-commit.txt', 'patches/0*.patch', 'patches/skal_entry.zig') }}
 
-      - name: Bootstrap
+      - name: Bootstrap (clone + apply patches + copy skal_entry.zig)
         run: scripts/setup.sh
 
-      - name: Build vendored bun (release)
+      - name: Build vendored bun for host (release)
         working-directory: vendor/bun
         run: PATH="$HOME/.cargo/bin:$PATH" bun run build:release
 
-      - name: Link libskal.dylib (Desktop)
-        run: scripts/link-skal-dylib.sh
+      - name: Re-link libskal.dylib for Flutter macOS
+        run: flutter/scripts/link-libskal-flutter-mac.sh
 
-      # Headless smoke: launches the demo for 10 seconds, asserts no
-      # exception, kills cleanly. Catches the modified-UTF-8-bug class
-      # of regression where the JS evaluates but produces no output.
-      - name: Smoke run (10s)
-        working-directory: desktop-app
+      - name: Build skal-app.{js,cjs,cjs.jsc}
+        working-directory: js-app
         run: |
-          timeout 12 ./gradlew run 2>&1 | tee /tmp/smoke.log || true
-          if grep -q "SkalDesktop\] init=" /tmp/smoke.log; then
+          bun install
+          bun run build
+
+      - name: flutter build macos --release
+        working-directory: flutter/skal_flutter
+        run: flutter build macos --release
+
+      # Headless smoke: launches the .app for 10 s, asserts the
+      # `[skal] init=…` line appears in stdout. Catches the silent-eval
+      # regression (the UTF-8-encoding-bug class of bug) where the JS
+      # bundle "loads" but no ops ever reach the bridge.
+      - name: Smoke run (10 s)
+        run: |
+          APP=flutter/skal_flutter/build/macos/Build/Products/Release/skal_flutter.app
+          "$APP/Contents/MacOS/skal_flutter" > /tmp/smoke.log 2>&1 &
+          SMOKE_PID=$!
+          sleep 10
+          kill "$SMOKE_PID" 2>/dev/null || true
+          if grep -q "\[skal\] init=" /tmp/smoke.log; then
             echo "✓ smoke passed"
+            grep "\[skal\]" /tmp/smoke.log
           else
-            echo "✗ no init line — Desktop demo never started"
+            echo "✗ no [skal] init line — Desktop demo never started"
             tail -50 /tmp/smoke.log
             exit 1
           fi
 
-      - name: packageDmg (signing skipped in CI without certs)
-        working-directory: desktop-app
-        run: ./gradlew packageDmg
-
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-dmg
+          name: desktop-flutter
           path: |
-            desktop-app/build/compose/binaries/main/dmg/*.dmg
+            flutter/skal_flutter/build/macos/Build/Products/Release/skal_flutter.app
             build/skal-darwin/libskal.unstripped.dylib

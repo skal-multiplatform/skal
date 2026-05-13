@@ -82,7 +82,7 @@ echo "0x12ec5b0
 ## macOS Desktop
 
 Crash log source:
-- `~/Library/Logs/DiagnosticReports/SkalDesktop-*.ips` (modern format)
+- `~/Library/Logs/DiagnosticReports/skal_flutter-*.ips` (modern format)
 - `Console.app` → Crash Reports
 
 ### Example .ips snippet
@@ -129,9 +129,10 @@ xcrun atos \
 
 ## iOS Simulator
 
-Crash log source: same `~/Library/Logs/DiagnosticReports/SkalIosApp-*.ips`
-files macOS Desktop uses — Simulator crashes land in the host machine's
-DiagnosticReports dir. Real iOS device crashes come via `Window →
+Crash log source: `~/Library/Logs/DiagnosticReports/Runner-*.ips` —
+Simulator crashes land in the host machine's DiagnosticReports dir,
+named after the iOS Runner.app process (Flutter's default iOS target
+is named `Runner`). Real iOS device crashes come via `Window →
 Devices and Simulators → View Device Logs` in Xcode.
 
 The `usedImages` entry to look for is `libskal.dylib` from inside the

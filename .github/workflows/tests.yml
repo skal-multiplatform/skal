@@ -1,0 +1,58 @@
+# Dart unit-test fast lane.
+#
+# Runs the wire-format snapshot tests and node-state behaviour tests on
+# every PR that touches the renderer or its tests. Pure Dart — no
+# vendor/bun rebuild, no native toolchain — so it completes in ~2 min
+# and gives quick feedback when someone changes a constant in wire.dart
+# and forgets to update the matching one in js-app/src/bridge.js.
+#
+# Heavier per-platform workflows (android.yml, desktop.yml, ios-sim.yml)
+# only run on changes to their respective inputs; this is the cheap
+# always-on signal.
+
+name: tests
+
+on:
+  pull_request:
+    paths:
+      - flutter/skal_flutter/lib/skal/**
+      - flutter/skal_flutter/test/**
+      - flutter/skal_flutter/pubspec.yaml
+      - flutter/skal_flutter/analysis_options.yaml
+      - .github/workflows/tests.yml
+  push:
+    branches: [main]
+    paths:
+      - flutter/skal_flutter/lib/skal/**
+      - flutter/skal_flutter/test/**
+      - flutter/skal_flutter/pubspec.yaml
+      - flutter/skal_flutter/analysis_options.yaml
+      - .github/workflows/tests.yml
+  workflow_call:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: flutter pub get
+        working-directory: flutter/skal_flutter
+        run: flutter pub get
+
+      - name: flutter analyze
+        working-directory: flutter/skal_flutter
+        run: flutter analyze --no-fatal-infos lib/ test/
+
+      - name: flutter test
+        working-directory: flutter/skal_flutter
+        run: flutter test

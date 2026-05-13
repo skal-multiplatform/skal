@@ -1,39 +1,44 @@
-# Android build pipeline. Per TODO_PLATFORMS § 0.5/V1, Android's CI
-# triggers ONLY on changes that affect Android — shared module,
-# android-app source, vendor/bun (rebuilds libskal.so), and the
-# Android-specific link script.
+# Android build pipeline. Scoped to changes that actually affect the
+# Android APK: the Flutter Android shell, the JS bundle, bun's host
+# build, libskal.so's link script, and the Android-only ICU/JSC scripts.
 #
-# Other platforms' CI failures (Desktop signing, iOS device profiles,
-# etc.) don't block this lane.
+# Other platforms' CI failures (Desktop link issues, iOS device profiles)
+# don't block this lane.
 
 name: android
 
 on:
   pull_request:
     paths:
-      - shared/**
-      - android-app/**
-      - vendor/bun/**
+      - flutter/skal_flutter/android/**
+      - flutter/skal_flutter/lib/**
+      - flutter/skal_flutter/pubspec.yaml
+      - flutter/scripts/link-libskal-flutter.sh
+      - js-app/**
       - patches/skal_entry.zig
+      - patches/bun-base-commit.txt
       - patches/0001-bun-main-android-skal-import.patch
-      - scripts/link-skal-so.sh
-      - scripts/build-app.sh
+      - patches/0003-bun-uws-disable-epoll-pwait2-on-android.patch
+      - scripts/setup.sh
       - scripts/build-icu-android.sh
       - scripts/build-jsc-android.sh
-      - js-app/**
-      - native/ios/**       # skal_entry.zig consumes skal.h shape
+      - native/ios/skal.h
       - .github/workflows/android.yml
   push:
     branches: [main]
     paths:
-      - shared/**
-      - android-app/**
-      - vendor/bun/**
-      - patches/**
-      - scripts/build-*.sh
-      - scripts/link-skal-so.sh
+      - flutter/skal_flutter/android/**
+      - flutter/skal_flutter/lib/**
+      - flutter/skal_flutter/pubspec.yaml
+      - flutter/scripts/link-libskal-flutter.sh
       - js-app/**
+      - patches/**
+      - scripts/setup.sh
+      - scripts/build-icu-android.sh
+      - scripts/build-jsc-android.sh
+      - native/ios/skal.h
       - .github/workflows/android.yml
+  workflow_call:
 
 concurrency:
   group: android-${{ github.ref }}
@@ -41,8 +46,11 @@ concurrency:
 
 jobs:
   build:
+    # arm64 macOS — bun's host build and the Android cross-build both
+    # run faster on Apple Silicon, and Homebrew's android-ndk cask
+    # works out of the box.
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       ANDROID_NDK_ROOT: /opt/homebrew/share/android-ndk
     steps:
@@ -52,25 +60,36 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
 
       # bun's lolhtml dep needs nightly Rust. rustup is preinstalled
       # on macos-15 runners; we just toggle the toolchain.
       - run: rustup install nightly && rustup default nightly
 
-      # Cached: vendor sources clone (shallow), Android NDK, bun's
-      # build-cache (~/.bun/build-cache/), Konan deps.
+      # bun (used to bundle js-app and run scripts/setup.sh).
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install Android NDK
+        run: brew install --cask android-ndk
+
+      # Cached: vendored bun+WebKit clones, bun's incremental build
+      # cache, ICU + JSC for Android (these are 30-60 min cold).
       - uses: actions/cache@v4
         with:
           path: |
             vendor
             ~/.bun/build-cache
-            ~/.konan
-          key: android-vendor-${{ hashFiles('patches/bun-base-commit.txt', 'patches/webkit-base-commit.txt') }}
+            build/icu-android
+            build/jsc-android
+          key: android-vendor-${{ hashFiles('patches/bun-base-commit.txt', 'patches/webkit-base-commit.txt', 'patches/0*.patch', 'patches/skal_entry.zig') }}
 
-      - name: Bootstrap (clone + apply patches + npm install)
+      - name: Bootstrap (clone + apply patches + copy skal_entry.zig)
         run: scripts/setup.sh
 
-      - name: Build vendored bun (release)
+      - name: Build vendored bun for host (release)
         working-directory: vendor/bun
         run: PATH="$HOME/.cargo/bin:$PATH" bun run build:release
 
@@ -79,31 +98,34 @@ jobs:
           [[ -d build/icu-android ]] || scripts/build-icu-android.sh
           [[ -d build/jsc-android ]] || scripts/build-jsc-android.sh
 
-      - name: Build bun for Android
+      - name: Cross-compile bun for Android
         working-directory: vendor/bun
-        run: PATH="$HOME/.cargo/bin:$PATH" bun scripts/build.ts --profile=android-release --build-dir=$(pwd)/build/android
+        run: |
+          PATH="$HOME/.cargo/bin:$PATH" bun scripts/build.ts \
+            --profile=android-release \
+            --build-dir=$(pwd)/build/android
 
-      - name: Link libskal.so
-        run: scripts/link-skal-so.sh
+      - name: Re-link libskal.so for the Flutter Android app
+        run: flutter/scripts/link-libskal-flutter.sh
 
-      - name: Build skal-app.js (Vite + bytecode via vendored bun)
+      - name: Build skal-app.{js,cjs,cjs.jsc}
         working-directory: js-app
         run: |
           bun install
           bun run build
 
-      - name: assembleDebug
-        working-directory: android-app
-        run: ./gradlew :app:assembleDebug
+      - name: flutter build apk --release
+        working-directory: flutter/skal_flutter
+        run: flutter build apk --release --target-platform android-arm64
 
-      - name: assembleRelease
-        working-directory: android-app
-        run: ./gradlew :app:assembleRelease
+      - name: flutter build apk --debug
+        working-directory: flutter/skal_flutter
+        run: flutter build apk --debug --target-platform android-arm64
 
       - uses: actions/upload-artifact@v4
         with:
           name: android-apks
           path: |
-            android-app/app/build/outputs/apk/debug/*.apk
-            android-app/app/build/outputs/apk/release/*.apk
+            flutter/skal_flutter/build/app/outputs/flutter-apk/app-release.apk
+            flutter/skal_flutter/build/app/outputs/flutter-apk/app-debug.apk
             build/skal-android/libskal.unstripped.so

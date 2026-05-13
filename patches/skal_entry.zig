@@ -116,12 +116,12 @@ extern fn Bun__REPL__evaluate(
 // Both sides agree on this layout, also documented in PROPS_PLAN.md § 2.
 // ───────────────────────────────────────────────────────────────────────
 
-const BRIDGE_SIZE: usize = 1024 * 1024 * 2; // 2 MiB total
+const BRIDGE_SIZE: usize = 1024 * 1024 * 6; // 6 MiB total
 const HEADER_SIZE: usize = 64;
-const OP_RING_OFFSET: usize = HEADER_SIZE; // bytes 64..1MB+64
-const OP_RING_SIZE: usize = 1024 * 1024;
+const OP_RING_OFFSET: usize = HEADER_SIZE;
+const OP_RING_SIZE: usize = 4 * 1024 * 1024;
 const STRING_HEAP_OFFSET: usize = OP_RING_OFFSET + OP_RING_SIZE;
-const STRING_HEAP_SIZE: usize = 512 * 1024;
+const STRING_HEAP_SIZE: usize = 1024 * 1024;
 const EVENT_RING_OFFSET: usize = STRING_HEAP_OFFSET + STRING_HEAP_SIZE;
 const EVENT_RING_SIZE: usize = BRIDGE_SIZE - EVENT_RING_OFFSET;
 

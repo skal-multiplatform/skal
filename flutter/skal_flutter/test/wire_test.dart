@@ -78,21 +78,24 @@ void main() {
       expect(hEventSeq, 16);
       expect(hEventWritePos, 24);
       expect(hEventReadPos, 28);
+      expect(hLastDrainedSeq, 32);
+      expect(hLastDrainedWritePos, 40);
     });
 
     test('ring layout sizes', () {
       expect(kHeaderSize, 64);
       expect(kOpRingOffset, 64);
-      expect(kOpRingSize, 1024 * 1024);
-      expect(kStringHeapOff, 64 + 1024 * 1024);
-      expect(kStringHeapSize, 512 * 1024);
-      // Event ring occupies whatever's left of the 2 MiB buffer
+      expect(kOpRingSize, 4 * 1024 * 1024);
+      expect(kStringHeapOff, 64 + 4 * 1024 * 1024);
+      expect(kStringHeapSize, 1024 * 1024);
+      expect(kBridgeSize, 6 * 1024 * 1024);
+      // Event ring occupies whatever's left of the 6 MiB buffer
       // after header + op ring + string heap.
-      expect(kEventRingOffset, 64 + 1024 * 1024 + 512 * 1024);
+      expect(kEventRingOffset, 64 + 4 * 1024 * 1024 + 1024 * 1024);
       expect(
         kEventRingOffset + kEventRingSize,
-        2 * 1024 * 1024,
-        reason: 'header + op ring + string heap + event ring must fill 2 MiB',
+        kBridgeSize,
+        reason: 'header + op ring + string heap + event ring must fill 6 MiB',
       );
     });
   });

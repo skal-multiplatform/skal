@@ -9,30 +9,35 @@
 // + patches/skal_entry.zig.
 // ───────────────────────────────────────────────────────────────────────
 
-const BRIDGE_SIZE = 2 * 1024 * 1024;
+const BRIDGE_SIZE = 6 * 1024 * 1024;
 const HEADER_SIZE = 64;
 export const OP_RING_OFFSET = HEADER_SIZE;
-export const OP_RING_SIZE = 1024 * 1024;
+export const OP_RING_SIZE = 4 * 1024 * 1024;
 export const STRING_HEAP_OFFSET = OP_RING_OFFSET + OP_RING_SIZE;
-export const STRING_HEAP_SIZE = 512 * 1024;
+export const STRING_HEAP_SIZE = 1024 * 1024;
 export const EVENT_RING_OFFSET = STRING_HEAP_OFFSET + STRING_HEAP_SIZE;
 const STRING_HEAP_END = STRING_HEAP_OFFSET + STRING_HEAP_SIZE;
 
 // Header layout — byte offsets, then derived u32 / BigInt64 indices.
-const HB_OP_SEQ          = 0;   // u64
-const HB_OP_WRITE_POS    = 8;   // u32
-const HB_STR_WRITE_POS   = 12;  // u32
-const HB_EVENT_SEQ       = 16;  // u64
-const HB_EVENT_WRITE_POS = 24;  // u32
-const HB_EVENT_READ_POS  = 28;  // u32
+const HB_OP_SEQ           = 0;   // u64
+const HB_OP_WRITE_POS     = 8;   // u32
+const HB_STR_WRITE_POS    = 12;  // u32
+const HB_EVENT_SEQ        = 16;  // u64
+const HB_EVENT_WRITE_POS  = 24;  // u32
+const HB_EVENT_READ_POS   = 28;  // u32
+const HB_LAST_DRAINED_SEQ = 32;  // u64 — Dart bumps after each drain (JS spin-wait target)
+
+// Reserved: bytes 40..43 hold Dart's drain checkpoint (u32). JS doesn't
+// read it today; the seq above is sufficient for spin-wait synchronization.
 
 const H_OP_WRITE_POS    = HB_OP_WRITE_POS    >> 2;
 const H_STR_WRITE_POS   = HB_STR_WRITE_POS   >> 2;
 const H_EVENT_WRITE_POS = HB_EVENT_WRITE_POS >> 2;
 const H_EVENT_READ_POS  = HB_EVENT_READ_POS  >> 2;
 
-const B_OP_SEQ    = HB_OP_SEQ    >> 3;
-const B_EVENT_SEQ = HB_EVENT_SEQ >> 3;
+const B_OP_SEQ            = HB_OP_SEQ            >> 3;
+const B_EVENT_SEQ         = HB_EVENT_SEQ         >> 3;
+const B_LAST_DRAINED_SEQ  = HB_LAST_DRAINED_SEQ  >> 3;
 
 // ───────────────────────────────────────────────────────────────────────
 // Opcodes — must match wire.dart exactly.
@@ -156,24 +161,100 @@ const TEXT_ENCODER = new TextEncoder();
 const OP_RING_OFFSET32 = OP_RING_OFFSET >> 2;
 const OP_RING_END32 = (OP_RING_OFFSET + OP_RING_SIZE) >> 2;
 
+// Auto-commit threshold — when opWritePos32 has advanced this many
+// u32-indices since the last publish, JS bumps opSeq mid-batch
+// (without resetting). Lets the host's next Ticker tick consume a
+// chunk while JS keeps writing, so a 5000-tweet mount shows "list
+// growing" instead of "click → pause → everything appears."
+//
+// Each op writes 4 u32-indices (16 bytes), so this constant translates
+// to 16384 / 4 = 4096 ops per commit chunk = 64 KiB per chunk.
+// ~120 tweets per chunk in the demo's tweet-card structure.
+const AUTO_COMMIT_OPS = 16384;
+
+// Near-end threshold — once writePos is this close to the ring end,
+// every writeOp triggers flushAndWaitForDrain() instead of crashing
+// past the boundary. One op's worth of margin (4 u32-indices = 16 B)
+// is all we need — flushAndWaitForDrain writes only to the header,
+// not the ring, so the slack just has to cover the in-progress op.
+const RING_NEAR_END32 = OP_RING_END32 - 4;
+
 let opSeq = 0n;
 let opWritePos32 = OP_RING_OFFSET32;
 let strWritePos = STRING_HEAP_OFFSET;
 
+// Tracks the writePos at which we last bumped opSeq. Auto-commit kicks
+// in when (opWritePos32 - lastCommittedPos32) >= AUTO_COMMIT_OPS.
+let lastCommittedPos32 = OP_RING_OFFSET32;
+
 function resetFrame() {
-  opWritePos32 = OP_RING_OFFSET32;
-  strWritePos = STRING_HEAP_OFFSET;
+  opWritePos32       = OP_RING_OFFSET32;
+  strWritePos        = STRING_HEAP_OFFSET;
+  lastCommittedPos32 = OP_RING_OFFSET32;
+}
+
+// Publish current write position to the host without resetting the
+// ring. Used both by auto-commit (mid-batch progressive painting) and
+// by flushAndWaitForDrain (overflow handling).
+function publishProgress() {
+  u32[H_OP_WRITE_POS]  = (opWritePos32 - OP_RING_OFFSET32) << 2;
+  u32[H_STR_WRITE_POS] = strWritePos - STRING_HEAP_OFFSET;
+  opSeq += 1n;
+  Atomics.store(seqArr, B_OP_SEQ, opSeq);
+  lastCommittedPos32 = opWritePos32;
+}
+
+// Overflow path — JS would write past the end of the ring. Publish
+// what we have, spin until the host drains it, then reset writePos to
+// the start of the ring so we can keep going. Cross-thread sync: the
+// host is on Flutter's UI thread and drains in its Ticker callback;
+// each spin iteration is a single atomic load (~ns). We bound the spin
+// to 250 ms so a genuinely wedged UI thread surfaces an error instead
+// of hanging forever.
+function flushAndWaitForDrain() {
+  publishProgress();
+  const targetSeq = opSeq;
+  // 5 s budget. Throwing here is dangerous in microtask context —
+  // ChunkedFor's queued steps aren't wrapped in try/catch, and an
+  // uncaught throw in a microtask blows through to bun's error
+  // printer (which can itself segfault under heavy load). Instead,
+  // log a warning and fall through to overwrite the ring. The host
+  // will catch up eventually; in the worst case the user sees one
+  // visually-stale chunk before the next drain resolves it.
+  const deadline = performance.now() + 5000;
+  while (true) {
+    const drained = Atomics.load(seqArr, B_LAST_DRAINED_SEQ);
+    if (drained >= targetSeq) break;
+    if (performance.now() > deadline) {
+      console.warn('Skal: drain spin timeout — UI thread slow; ring will overwrite');
+      break;
+    }
+  }
+  opWritePos32       = OP_RING_OFFSET32;
+  strWritePos        = STRING_HEAP_OFFSET;
+  lastCommittedPos32 = OP_RING_OFFSET32;
 }
 
 export function writeOp(opcode, a, b, c) {
-  const w = opWritePos32;
-  if (w + 4 > OP_RING_END32) throw new Error('Skal: op ring overflow');
+  let w = opWritePos32;
+  // Overflow guard — must run BEFORE the write so the safety margin in
+  // RING_NEAR_END32 keeps publishProgress's own writes safe.
+  if (w >= RING_NEAR_END32) {
+    flushAndWaitForDrain();
+    w = opWritePos32;
+  }
   // Opcode packs as a full u32 (high 24 bits zero); reader consumes byte 0.
   u32[w]     = opcode >>> 0;
   u32[w + 1] = a >>> 0;
   u32[w + 2] = b >>> 0;
   u32[w + 3] = c >>> 0;
   opWritePos32 = w + 4;
+  // Progressive commit — host's next vsync drains everything written
+  // since the last bump. Without this, a 5K-tweet mount sits silent
+  // until end-of-batch.
+  if ((opWritePos32 - lastCommittedPos32) >= AUTO_COMMIT_OPS) {
+    publishProgress();
+  }
 }
 
 // Outputs of writeString — module globals so we don't allocate a tuple
@@ -199,20 +280,37 @@ export function setText(id, text) {
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// Frame commit — Solid's effect flush calls this; the host drains on the
-// next vsync. Lossy single-buffer model (each commit overwrites the ring;
-// renderer re-emits on every state change so UI converges to the latest).
+// Frame commit — Solid's effect flush calls this at the end of each
+// reactive batch. By the time we get here, writeOp may already have
+// fired several auto-commits inside the batch (progressive painting);
+// this final commit publishes any remaining ops.
+//
+// Important: commit does NOT reset writePos. opWritePos32 grows
+// monotonically across batches until flushAndWaitForDrain (overflow
+// path) spin-waits for the host to fully catch up and resets to 0.
+// Resetting at end-of-batch is the wrong thing — it rewinds the local
+// cursor while leaving the published H_OP_WRITE_POS stale, so the
+// host's drain checkpoint sits above the new batch's first chunk and
+// those ops get silently skipped. The (no-resetFrame) shape here is
+// the fix for that bug; see flushAndWaitForDrain for the wrap-around.
 // ───────────────────────────────────────────────────────────────────────
 
 let scheduled = false;
 
 function commit() {
   scheduled = false;
-  u32[H_OP_WRITE_POS]  = (opWritePos32 - OP_RING_OFFSET32) << 2;
-  u32[H_STR_WRITE_POS] = strWritePos - STRING_HEAP_OFFSET;
-  opSeq += 1n;
-  Atomics.store(seqArr, B_OP_SEQ, opSeq);
-  resetFrame();
+  // Publish any un-published progress and let the host catch up over
+  // the next vsync(s). DO NOT resetFrame here — that would rewind the
+  // local writePos but leave the published H_OP_WRITE_POS stale, so
+  // the host would skip the first chunk of the next batch (it'd see
+  // its lastDrainedWritePos checkpoint sitting above the new writes).
+  //
+  // Reset only happens inside flushAndWaitForDrain, after the host
+  // has confirmed it drained everything via Atomics.store on
+  // lastDrainedSeq. opWritePos32 grows monotonically until then.
+  if (opWritePos32 !== lastCommittedPos32) {
+    publishProgress();
+  }
 }
 
 /**
@@ -240,12 +338,16 @@ export function scheduleCommit() {
 // is pure win.
 //
 // Sparse design — `nodeIdToRow` maps a node's id to a row in the flat
-// array. Rows are recycled via `freeRows` when nodes are removed. Cap
-// is generous (8192 active nodes × 64 prop slots = 2 MiB total flat
-// state) — well within budget.
+// array. Rows are recycled via `freeRows` when nodes are removed.
+//
+// The flat arrays grow on demand via amortized doubling (same pattern
+// as Vec<T>::push / V8's elements backing store). Initial capacity
+// covers the typical 50–500 node app for free; large apps (5000-tweet
+// feeds, infinite-scroll lists) trigger one or two growth passes and
+// then settle. There is no hard cap — the JS heap is the only limit.
 // ───────────────────────────────────────────────────────────────────────
 
-const MAX_ACTIVE_NODES = 8192;
+let activeNodeCapacity = 1024;
 
 // Dense slot table — maps each defined PROP_* key (sparse across the
 // 0x00..0xA2 range) to a contiguous slot index in the per-node diff-
@@ -301,9 +403,13 @@ KEY_TO_SLOT[PROP_VISIBLE]          = 31;
 // add ~32 more cold props without resizing — beyond that, expand to 64.
 const SLOTS_PER_NODE = 32;
 
-const diffCacheU32 = new Int32Array(MAX_ACTIVE_NODES * SLOTS_PER_NODE);
-const diffCacheF32 = new Float32Array(MAX_ACTIVE_NODES * SLOTS_PER_NODE);
-const diffCacheStr = new Array(MAX_ACTIVE_NODES * SLOTS_PER_NODE);
+// `let` bindings (not const) — `growCache()` rebinds them when the
+// flat-array capacity doubles. JS modules pass `let` exports as live
+// bindings, and within-module reads always observe the current value,
+// so the per-prop setters below don't need any indirection.
+let diffCacheU32 = new Int32Array(activeNodeCapacity * SLOTS_PER_NODE);
+let diffCacheF32 = new Float32Array(activeNodeCapacity * SLOTS_PER_NODE);
+let diffCacheStr = new Array(activeNodeCapacity * SLOTS_PER_NODE);
 
 // Parallel "has value been set" flag, one byte per slot. Needed
 // because EVERY 32-bit pattern is a legitimate u32 prop value (colors,
@@ -314,27 +420,69 @@ const diffCacheStr = new Array(MAX_ACTIVE_NODES * SLOTS_PER_NODE);
 // (For F32 we rely on NaN's `NaN !== NaN` semantics — that one sentinel
 // works because no animation value is ever NaN. Strings use `undefined`
 // as their unset sentinel — distinct from any user-supplied string.)
-const hasValueU32 = new Uint8Array(MAX_ACTIVE_NODES * SLOTS_PER_NODE);
+let hasValueU32 = new Uint8Array(activeNodeCapacity * SLOTS_PER_NODE);
 
 // Hot-prop cache — separate space from cold-prop cache. Each active
 // node has 6 slots (one per hot prop: opacity, transX, transY, scaleX,
 // scaleY, rotZ). Indexed by (row * HOT_PROPS_PER_NODE + hotIdx).
 const HOT_PROPS_PER_NODE = 6;
-const diffHotF32 = new Float32Array(MAX_ACTIVE_NODES * HOT_PROPS_PER_NODE);
+let diffHotF32 = new Float32Array(activeNodeCapacity * HOT_PROPS_PER_NODE);
 diffHotF32.fill(NaN);
 
 const nodeIdToRow = new Map();
 const freeRows    = [];
 let   nextRow     = 0;
 
+// Amortized doubling — when nextRow would exceed capacity, allocate
+// new typed arrays of 2× the size, copy existing contents over, and
+// rebind. O(n) per growth, O(1) amortized per row. Initial cap of 1024
+// covers a 50–200-node demo with zero growths; a 30,000-node feed
+// triggers 5 growths total (1k→2k→4k→8k→16k→32k).
+function growCache() {
+  const newCap = activeNodeCapacity * 2;
+  const oldRows = activeNodeCapacity * SLOTS_PER_NODE;
+  const newRows = newCap * SLOTS_PER_NODE;
+  const oldHotRows = activeNodeCapacity * HOT_PROPS_PER_NODE;
+  const newHotRows = newCap * HOT_PROPS_PER_NODE;
+
+  // U32 + Uint8 default to zero on construction, which is the unset
+  // sentinel — just copy old data into the head and the tail stays 0.
+  const newU32 = new Int32Array(newRows);
+  newU32.set(diffCacheU32);
+  diffCacheU32 = newU32;
+
+  const newHas = new Uint8Array(newRows);
+  newHas.set(hasValueU32);
+  hasValueU32 = newHas;
+
+  // F32 unset sentinel is NaN. Copy old data first, then NaN-fill only
+  // the new tail — fill(NaN, oldRows) is roughly half the work of
+  // filling the whole array and then overwriting the head.
+  const newF32 = new Float32Array(newRows);
+  newF32.set(diffCacheF32);
+  newF32.fill(NaN, oldRows);
+  diffCacheF32 = newF32;
+
+  const newHot = new Float32Array(newHotRows);
+  newHot.set(diffHotF32);
+  newHot.fill(NaN, oldHotRows);
+  diffHotF32 = newHot;
+
+  // diffCacheStr is a plain Array — auto-grows when written to, but
+  // bumping `.length` here lets V8/JSC's elements backing store
+  // pre-size in one shot instead of nudging on every first write.
+  // Default value at the new positions is `undefined` (= unset).
+  diffCacheStr.length = newRows;
+
+  activeNodeCapacity = newCap;
+}
+
 function rowFor(nodeId) {
   let row = nodeIdToRow.get(nodeId);
   if (row === undefined) {
     row = freeRows.pop();
     if (row === undefined) row = nextRow++;
-    if (row >= MAX_ACTIVE_NODES) {
-      throw new Error(`Skal: diff cache exhausted (>${MAX_ACTIVE_NODES} active nodes)`);
-    }
+    if (row >= activeNodeCapacity) growCache();
     nodeIdToRow.set(nodeId, row);
     const base = row * SLOTS_PER_NODE;
     hasValueU32.fill(0, base, base + SLOTS_PER_NODE);
@@ -486,7 +634,7 @@ export function bindHandler(nodeId, eventKind, handlerId) {
 
 let lastEventSeq = 0n;
 let lastHandlerError = null;
-const EVENT_RING_BYTES = 2 * 1024 * 1024 - EVENT_RING_OFFSET;
+const EVENT_RING_BYTES = BRIDGE_SIZE - EVENT_RING_OFFSET;
 const EVENT_RING_BASE32 = EVENT_RING_OFFSET >> 2;
 const EVENT_RING_END32  = (EVENT_RING_OFFSET + EVENT_RING_BYTES) >> 2;
 const EVENT_SAFETY      = (EVENT_RING_BYTES / 16) | 0;

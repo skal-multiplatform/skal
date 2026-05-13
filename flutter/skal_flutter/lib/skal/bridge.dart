@@ -52,6 +52,14 @@ class SkalBridge {
   /// pumpOps early-returns without walking the ring.
   int _lastOpSeq = 0;
 
+  /// Byte offset (relative to the op ring base) up to which we've
+  /// drained. JS auto-commits mid-batch as the ring fills, bumping
+  /// opSeq and advancing writePos without resetting; we resume the
+  /// drain from this checkpoint so each op is consumed exactly once.
+  /// When JS resets writePos to 0 (overflow path or end-of-batch), we
+  /// detect the regression and snap this back to 0 too.
+  int _lastDrainedWritePos = 0;
+
   /// One state per JS-created node, keyed by JS node id (dense small
   /// ints). Plain Map<int,NodeState> — primitive int keys avoid
   /// boxing in Dart AOT.
@@ -107,6 +115,13 @@ class SkalBridge {
     _drain();
     _lastOpSeq = seq;
 
+    // Publish drained seq back to the JS side. JS spin-waits on this
+    // value inside flushAndWaitForDrain to know we've caught up. The
+    // companion hLastDrainedWritePos slot is reserved in the wire
+    // format but currently unread on the JS side, so we don't bother
+    // writing it.
+    _data.setInt64(hLastDrainedSeq, seq, Endian.little);
+
     // EMA with α=1/8 — smooths jitter while staying responsive to
     // sudden bumps (e.g. a +1000-batch frame visibly nudges the avg).
     final dt = (_pumpClock.elapsedMicroseconds - t0) * 1000; // µs→ns
@@ -136,8 +151,19 @@ class SkalBridge {
     // from a misbehaving JS host) must not let the decoder read past the
     // op ring into the string heap.
     final writePos = data.getInt32(hOpWritePos, Endian.little).clamp(0, kOpRingSize);
+
+    // Detect a JS-side wrap. flushAndWaitForDrain spin-waits for us to
+    // catch up THEN resets opWritePos32 to 0; the next publishProgress
+    // exposes a writePos lower than our checkpoint, which is the signal
+    // that the ring has wrapped and we should resume the drain from
+    // offset 0. (End-of-batch commit no longer resets, so this only
+    // fires on the overflow path — see bridge.js `commit()`.)
+    if (writePos < _lastDrainedWritePos) {
+      _lastDrainedWritePos = 0;
+    }
+
     final opEnd = kOpRingOffset + writePos;
-    int p = kOpRingOffset;
+    int p = kOpRingOffset + _lastDrainedWritePos;
     int propWrites = 0;
 
     while (p < opEnd) {
@@ -192,6 +218,11 @@ class SkalBridge {
               if (idx >= 0) {
                 children.insert(idx, b);
               } else {
+                // Anchor not yet a child of this parent — defensive
+                // fallback to append. Not observed in practice with
+                // Solid's universal renderer (which always inserts
+                // anchors before referring to them), but a misbehaving
+                // renderer would otherwise lose ops here.
                 children.add(b);
               }
             }
@@ -337,6 +368,11 @@ class SkalBridge {
 
     propWritesLastDrain = propWrites;
     coldPropsTouchedLastDrain = coldCount;
+
+    // Advance the drain checkpoint. JS reads this back to know when
+    // it's safe to reset writePos to 0 (we've consumed everything) or
+    // how far it must spin-wait for at near-overflow.
+    _lastDrainedWritePos = writePos;
   }
 
   /// IEEE-754 bit pattern → double via aliased ByteData. Same trick

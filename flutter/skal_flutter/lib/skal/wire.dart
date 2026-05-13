@@ -14,20 +14,23 @@
 const int kRootNodeId = 1;
 
 // ── Header offsets (bytes into the shared region) ────────────────────
-const int hOpSeq         = 0;    // u64 — bun bumps after each frame's commit
-const int hOpWritePos    = 8;    // u32 — bytes from OP_RING_OFFSET
-const int hStrWritePos   = 12;   // u32 — bytes from STRING_HEAP_OFFSET
-const int hEventSeq      = 16;   // u64 — Dart bumps after each event write
-const int hEventWritePos = 24;   // u32
-const int hEventReadPos  = 28;   // u32
+const int hOpSeq               = 0;    // u64 — JS bumps on every commit (incl. auto-commits)
+const int hOpWritePos          = 8;    // u32 — bytes from OP_RING_OFFSET; advances during a batch
+const int hStrWritePos         = 12;   // u32 — bytes from STRING_HEAP_OFFSET
+const int hEventSeq            = 16;   // u64 — Dart bumps after each event write
+const int hEventWritePos       = 24;   // u32
+const int hEventReadPos        = 28;   // u32
+const int hLastDrainedSeq      = 32;   // u64 — Dart bumps after each drain (JS spin-wait target)
+const int hLastDrainedWritePos = 40;   // u32 — bytes Dart has consumed (JS reset-safe checkpoint)
 
 const int kHeaderSize     = 64;
 const int kOpRingOffset   = kHeaderSize;
-const int kOpRingSize     = 1024 * 1024;
+const int kOpRingSize     = 4 * 1024 * 1024;
 const int kStringHeapOff  = kOpRingOffset + kOpRingSize;
-const int kStringHeapSize = 512 * 1024;
+const int kStringHeapSize = 1024 * 1024;
+const int kBridgeSize     = 6 * 1024 * 1024;
 const int kEventRingOffset = kStringHeapOff + kStringHeapSize;
-const int kEventRingSize   = (2 * 1024 * 1024) - kEventRingOffset;
+const int kEventRingSize   = kBridgeSize - kEventRingOffset;
 
 // ── Opcodes (1 byte; reader masks the low byte of the u32 opcode word) ─
 const int opCreateNode      = 0x01;

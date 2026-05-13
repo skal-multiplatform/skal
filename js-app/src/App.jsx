@@ -72,7 +72,7 @@ function Tweet(props) {
       borderColor={COLOR_CARD_BORDER}
       gap={6}
     >
-      <text fontWeight={700} fontSize={14} color={COLOR_AUTHOR} label={props.author} />
+      <text fontWeight={700} fontSize={14} color={COLOR_AUTHOR} label={`#${props.num} · ${props.author}`} />
       <text fontSize={14} color={COLOR_BODY} maxLines={3} textOverflow={1} label={props.body} />
       <row gap={10}>
         {/* Reactive attribute values: use expressions that DIRECTLY
@@ -190,9 +190,14 @@ export default function App() {
               label={`${n}`}
               onClick={() => {
                 const t1 = performance.now();
-                setVisibleTweets(n);
-                const ms = (performance.now() - t1).toFixed(3);
-                setTweetBenchMs(`set to ${n} in ${ms} ms (handler)`);
+                try {
+                  setVisibleTweets(n);
+                  const ms = (performance.now() - t1).toFixed(3);
+                  setTweetBenchMs(`set to ${n} in ${ms} ms`);
+                } catch (e) {
+                  const msg = (e && (e.message || String(e))) || 'unknown';
+                  setTweetBenchMs(`ERROR @ ${n}: ${msg}`);
+                }
               }}
             />
           )}

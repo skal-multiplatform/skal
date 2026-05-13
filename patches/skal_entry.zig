@@ -1,80 +1,31 @@
-//! Skal JNI bridge — exposes bun's runtime to Android Java/Kotlin via JNI.
+//! Skal — embedded bun + JSC runtime, exposes JS to a host renderer.
 //!
-//! Architecture (mirrors standalone bun):
+//! Architecture:
 //!
 //!   ┌─────────────┐    enqueueTaskConcurrent    ┌─────────────────────┐
-//!   │ Java thread │ ─────────────────────────► │  Skal worker thread │
-//!   │   (UI/bg)   │                             │  owns VM, runs      │
+//!   │ Host thread │ ─────────────────────────► │  Skal worker thread │
+//!   │  (UI/main)  │                             │  owns VM, runs      │
 //!   │             │ ◄───────  ResetEvent ────── │  tickPossiblyForever│
 //!   └─────────────┘                             └─────────────────────┘
 //!
-//! Plus: an ultra-low-latency UI bridge built on a single 1 MiB shared
+//! Plus: an ultra-low-latency UI bridge built on a single 2 MiB shared
 //! memory region. JS sees it as a `Uint8Array` (no copy via JSC's
-//! `JSObjectMakeArrayBufferWithBytesNoCopy`); Kotlin sees it as a
-//! `DirectByteBuffer` (no copy via JNI's `NewDirectByteBuffer`). Both
-//! sides write/read through their own views of the same memory.
+//! `JSObjectMakeArrayBufferWithBytesNoCopy`); the host sees it via a
+//! raw pointer + length returned by `skal_acquire_bridge`. Both sides
+//! write/read through their own views of the same memory.
 //!
-//! Layout (see patches/SKAL_WIRE.md for the full spec):
+//! Layout (see PROPS_PLAN.md § 2 for the full spec):
 //!
 //!   [ Header 64B ][ Op ring 1 MiB ][ String heap 512 KiB ][ Event ring 64 KiB ]
 //!
 //! Sync is a single atomic seq counter per direction. JS bumps op_seq
-//! after writing a frame's worth of ops; Compose bumps event_seq after
+//! after writing a frame's worth of ops; the host bumps event_seq after
 //! writing a touch event.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const bun = @import("bun");
 const jsc = bun.jsc;
-
-// ───────────────────────────────────────────────────────────────────────
-// JNI ABI — slot-indexed access to JNINativeInterface.
-// ───────────────────────────────────────────────────────────────────────
-
-const jint = i32;
-const jlong = i64;
-const jboolean = u8;
-const jclass = ?*anyopaque;
-const jstring = ?*anyopaque;
-const jobject = ?*anyopaque;
-const JNIEnv = ?*const ?*const anyopaque;
-const JavaVM = ?*const ?*const anyopaque;
-
-const JNI_VERSION_1_6: jint = 0x00010006;
-
-const JniSlot = struct {
-    pub const NewStringUTF: usize = 167;
-    pub const GetStringUTFChars: usize = 169;
-    pub const ReleaseStringUTFChars: usize = 170;
-    pub const NewDirectByteBuffer: usize = 229;
-};
-
-inline fn jniFn(env: JNIEnv, comptime index: usize, comptime FnType: type) FnType {
-    const tbl: [*]const ?*const anyopaque = @ptrCast(@alignCast(env.?.*));
-    const fp = tbl[index] orelse @panic("JNI vtable slot is null");
-    return @ptrCast(@alignCast(fp));
-}
-
-fn getStringUTFOwned(env: JNIEnv, allocator: std.mem.Allocator, s: jstring) !?[]u8 {
-    if (s == null) return null;
-    const Get = *const fn (JNIEnv, jstring, ?*jboolean) callconv(.c) ?[*:0]const u8;
-    const Rel = *const fn (JNIEnv, jstring, ?[*:0]const u8) callconv(.c) void;
-    const get = jniFn(env, JniSlot.GetStringUTFChars, Get);
-    const rel = jniFn(env, JniSlot.ReleaseStringUTFChars, Rel);
-    const ptr = get(env, s, null) orelse return null;
-    defer rel(env, s, ptr);
-    return try allocator.dupe(u8, std.mem.span(ptr));
-}
-
-fn newStringUTF(env: JNIEnv, bytes: [*:0]const u8) jstring {
-    const F = *const fn (JNIEnv, [*:0]const u8) callconv(.c) jstring;
-    return jniFn(env, JniSlot.NewStringUTF, F)(env, bytes);
-}
-
-fn newDirectByteBuffer(env: JNIEnv, addr: *anyopaque, capacity: jlong) jobject {
-    const F = *const fn (JNIEnv, *anyopaque, jlong) callconv(.c) jobject;
-    return jniFn(env, JniSlot.NewDirectByteBuffer, F)(env, addr, capacity);
-}
 
 // ───────────────────────────────────────────────────────────────────────
 // JSC C API — minimal subset for registering a native global function and
@@ -160,9 +111,9 @@ extern fn Bun__REPL__evaluate(
 // Shared bridge buffer.
 //
 // One contiguous 1.5 MiB region pinned for the life of the runtime. JS
-// gets a no-copy ArrayBuffer; Kotlin gets a no-copy DirectByteBuffer.
+// gets a no-copy ArrayBuffer; the host gets a raw pointer view.
 //
-// Both sides agree on this layout, also documented in patches/SKAL_WIRE.md.
+// Both sides agree on this layout, also documented in PROPS_PLAN.md § 2.
 // ───────────────────────────────────────────────────────────────────────
 
 const BRIDGE_SIZE: usize = 1024 * 1024 * 2; // 2 MiB total
@@ -297,7 +248,7 @@ fn installBridgeGlobals(vm: *jsc.VirtualMachine) void {
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// EvalRequest — same as before, posted from Java thread to bun's queue.
+// EvalRequest — posted from the host thread to bun's worker queue.
 // ───────────────────────────────────────────────────────────────────────
 
 const EvalRequest = struct {
@@ -353,7 +304,7 @@ const EvalRequest = struct {
 };
 
 // ───────────────────────────────────────────────────────────────────────
-// EventDrainTask — scheduled by Compose's nativeWakeJs. Runs on the JS
+// EventDrainTask — scheduled by the host's wakeJs call. Runs on the JS
 // thread; calls into JS land which reads the event ring and dispatches
 // to JS handlers. JS-side dispatcher is `globalThis.__skal_drainEvents`,
 // installed by the JS bridge module.
@@ -418,78 +369,9 @@ fn skalAllocator() std.mem.Allocator {
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// JNI exports
-// ───────────────────────────────────────────────────────────────────────
-
-fn jniOnLoad(_: JavaVM, _: ?*anyopaque) callconv(.c) jint {
-    return JNI_VERSION_1_6;
-}
-
-fn nativeCreateRuntime(_: JNIEnv, _: jclass) callconv(.c) jlong {
-    const rt = Runtime.init(skalAllocator()) catch return 0;
-    return @intCast(@intFromPtr(rt));
-}
-
-fn nativeDisposeRuntime(_: JNIEnv, _: jclass, handle: jlong) callconv(.c) void {
-    _ = handle;
-    // Intentional leak; bun's VM teardown is process-exit-only.
-}
-
-fn nativeEvaluate(env: JNIEnv, _: jclass, handle: jlong, j_source: jstring, j_url: jstring) callconv(.c) jstring {
-    if (handle == 0) return null;
-    const rt: *Runtime = @ptrFromInt(@as(usize, @intCast(handle)));
-
-    var arena = std.heap.ArenaAllocator.init(rt.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const source = (getStringUTFOwned(env, a, j_source) catch return null) orelse return null;
-    const url = (getStringUTFOwned(env, a, j_url) catch null) orelse "skal:eval";
-
-    var req: EvalRequest = .{ .rt = rt, .source = source, .url = url };
-    req.runOnWorker();
-
-    defer if (req.result_buf.len > 0) rt.allocator.free(req.result_buf);
-
-    const utf8z = a.dupeZ(u8, req.result_buf) catch return null;
-    return newStringUTF(env, utf8z.ptr);
-}
-
-/// Returns a DirectByteBuffer over the shared bridge memory (no copy).
-/// Called once at startup by the Kotlin side.
-fn nativeAcquireBridge(env: JNIEnv, _: jclass, handle: jlong) callconv(.c) jobject {
-    if (handle == 0) return null;
-    const rt: *Runtime = @ptrFromInt(@as(usize, @intCast(handle)));
-    return newDirectByteBuffer(env, rt.bridge.buffer.ptr, @intCast(rt.bridge.buffer.len));
-}
-
-/// Compose has written one or more events into the event ring and
-/// incremented event_seq. Wake the JS thread so it drains the ring.
-/// Called from the Compose thread.
-fn nativeWakeJs(_: JNIEnv, _: jclass, handle: jlong) callconv(.c) void {
-    if (handle == 0) return;
-    const rt: *Runtime = @ptrFromInt(@as(usize, @intCast(handle)));
-
-    // Heap-alloc a one-shot drain task. Must outlive enqueue → run.
-    const task = bun.default_allocator.create(EventDrainTask) catch return;
-    task.* = .{ .rt = rt };
-    task.any = bun.jsc.AnyTask.New(EventDrainTask, EventDrainTask.run).init(task);
-    task.concurrent = .{ .task = task.any.task(), .next = .none };
-    rt.vm.eventLoop().enqueueTaskConcurrent(&task.concurrent);
-}
-
-// ───────────────────────────────────────────────────────────────────────
-// C ABI exports — non-JNI surface for iOS / non-JVM embedders.
-//
-// Same Runtime struct, same eval-on-worker plumbing as the JNI exports
-// above; just plain C signatures so Kotlin/Native cinterop can bind
-// them. See native/ios/skal.h for the contract these must satisfy.
-//
-// On JVM targets (Android + macOS Desktop) these are exported too —
-// they're harmless extra symbols. The JNI exports stay primary on JVM.
-// On iOS the JNI exports are dead weight (no JVM); a future
-// link-skal-iossim.sh / link-skal-ios.sh script can pass
-// --exported_symbols_list to strip them.
+// C ABI exports — the surface dart:ffi binds against. Plain C signatures
+// so any non-JS embedder (Flutter, an FFI client, a C test harness)
+// can call into the runtime. See native/ios/skal.h for the contract.
 // ───────────────────────────────────────────────────────────────────────
 
 fn skal_create_runtime() callconv(.c) i64 {
@@ -549,7 +431,7 @@ fn skal_evaluate(
         } else {
             // libc malloc failed — most likely a real OOM. Don't drop
             // the request silently: surface a sentinel error string the
-            // Kotlin side can decode and turn into a RuntimeException.
+            // host can decode and turn into a runtime exception.
             // Use a small static literal so we don't need yet-another
             // allocator to report failure.
             const oom_msg = "skal: out of memory copying eval result";
@@ -597,15 +479,7 @@ fn skal_wake_js(handle: i64) callconv(.c) void {
 }
 
 comptime {
-    // JNI exports — JVM consumers (Android, macOS Desktop).
-    @export(&jniOnLoad, .{ .name = "JNI_OnLoad", .linkage = .strong });
-    @export(&nativeCreateRuntime, .{ .name = "Java_com_skal_Skal_nativeCreateRuntime", .linkage = .strong });
-    @export(&nativeDisposeRuntime, .{ .name = "Java_com_skal_Skal_nativeDisposeRuntime", .linkage = .strong });
-    @export(&nativeEvaluate, .{ .name = "Java_com_skal_Skal_nativeEvaluate", .linkage = .strong });
-    @export(&nativeAcquireBridge, .{ .name = "Java_com_skal_Skal_nativeAcquireBridge", .linkage = .strong });
-    @export(&nativeWakeJs, .{ .name = "Java_com_skal_Skal_nativeWakeJs", .linkage = .strong });
-
-    // C ABI exports — iOS Kotlin/Native cinterop consumer.
+    // C ABI exports — dart:ffi consumer.
     @export(&skal_create_runtime, .{ .name = "skal_create_runtime", .linkage = .strong });
     @export(&skal_dispose_runtime, .{ .name = "skal_dispose_runtime", .linkage = .strong });
     @export(&skal_evaluate, .{ .name = "skal_evaluate", .linkage = .strong });

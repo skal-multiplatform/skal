@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Link bun's release object files as libskal.dylib for the iOS Simulator
-# (aarch64-apple-ios-simulator). Independent of link-skal-dylib.sh per
-# TODO_PLATFORMS § 0.5/V1 — this script's outputs (build/skal-iossim/)
-# don't depend on Desktop's outputs (build/skal-darwin/), and a change
-# to Desktop's link doesn't relink this binary.
+# (aarch64-apple-ios-simulator). Independent of the macOS link script
+# (flutter/scripts/link-libskal-flutter-mac.sh) — this script's outputs
+# (build/skal-iossim/) don't depend on Desktop's outputs (build/skal-darwin/),
+# and a change to Desktop's link doesn't relink this binary.
 #
 # How this works (and why it's not a clean cross-compile):
 #
@@ -14,26 +14,20 @@
 #   but linking in object file built for macOS". So we can't ask the
 #   linker for an iOS-tagged dylib up-front.
 #
-#   Workaround: link with macOS target (same flags as Desktop's
-#   link-skal-dylib.sh would use), then `vtool -set-build-version 7
-#   14.0 14.0 -replace` to overwrite LC_BUILD_VERSION to IOSSIMULATOR.
-#   iOS Simulator on Apple Silicon runs arm64 darwin code natively over
-#   the macOS kernel — the only thing checking the platform tag is
-#   dyld_sim at app load. Re-stamping is enough.
+#   Workaround: link with macOS target (same flags the Desktop link
+#   uses), then `vtool -set-build-version 7 14.0 14.0 -replace` to
+#   overwrite LC_BUILD_VERSION to IOSSIMULATOR. iOS Simulator on Apple
+#   Silicon runs arm64 darwin code natively over the macOS kernel —
+#   the only thing checking the platform tag is dyld_sim at app load.
+#   Re-stamping is enough.
 #
-#   When Phase 2-Device lands and bun's build can target
-#   `aarch64-apple-ios-simulator` directly, this script becomes a
-#   real cross-compile and the vtool step disappears.
-#
-# Differences from link-skal-dylib.sh:
+# Unique requirements vs the Desktop macOS link:
 #   * Compiles native/ios/skal_iossim_shim.c — provides __clear_cache,
 #     which iOS Simulator's libSystem doesn't export but bun's .o
 #     files reference (macOS libSystem.B does export it).
 #   * `-Wl,-U,___clear_cache` for per-symbol flat-namespace lookup so
 #     dyld at runtime resolves it to our local definition instead of
 #     to libSystem.B (which, on iOS Sim, doesn't have it).
-#   * Exports only the C ABI surface (`skal_*`) — no JNI symbols since
-#     there's no JVM on iOS.
 #   * Output dir is build/skal-iossim/ (Desktop ships build/skal-darwin/).
 set -euo pipefail
 
@@ -42,7 +36,7 @@ BUN_DIR="${SKAL_ROOT}/vendor/bun"
 BUN_BUILD="${BUN_DIR}/build/release"
 SKAL_BUILD="${SKAL_ROOT}/build/skal-iossim"
 
-# Toolchain discovery — see link-skal-dylib.sh's comment for rationale.
+# Toolchain discovery — Homebrew llvm@21 (matches bun's build).
 # We use the macOS SDK here (not iPhoneSimulator.sdk) because the bun
 # .o files were built for macOS and vtool re-stamps the output to
 # IOSSIMULATOR after link. Switching to iPhoneSimulator.sdk now would
@@ -113,11 +107,9 @@ echo "${SHIM_O}" >> "${INPUTS_FILE}"
 
 # ── Exported-symbols list (iOS-only — C ABI for cinterop) ─────────────
 #
-# No JNI exports here — there's no JVM on iOS. This is the V3 half of
-# the modularity invariants in TODO_PLATFORMS § 0.5: each platform's
-# binary exports only what its platform needs. Desktop's
-# link-skal-dylib.sh exports just the JNI surface; this exports just
-# the C surface that shared/src/iosMain/.../skal.def cinterop-binds.
+# Exports only the C ABI (`skal_*`) the Flutter host's dart:ffi
+# bindings call into. Each platform binary exports only what its
+# platform actually needs.
 
 SKAL_SYMS="${SKAL_BUILD}/skal-exports.txt"
 cat > "${SKAL_SYMS}" <<'EOF'
@@ -198,6 +190,3 @@ xcrun vtool -show "${OUT}" | grep -A 5 "LC_BUILD_VERSION" || true
 echo
 echo "C ABI symbols (must all be present):"
 "${LLVM_BIN}/llvm-nm" -gU "${OUT}" 2>/dev/null | grep -E "^[0-9a-f]+ T _(skal_|_clear_cache)" || echo "(none — link probably failed)"
-echo
-echo "JNI symbols (must NOT be present per § 0.5/V3):"
-"${LLVM_BIN}/llvm-nm" -gU "${OUT}" 2>/dev/null | grep -E "JNI_OnLoad|Java_com_skal" && echo "  ✗ JNI symbols leaked into iOS binary" || echo "  ✓ none"

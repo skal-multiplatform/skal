@@ -1,11 +1,12 @@
-// Skal bridge — wraps the shared 2 MiB DirectByteBuffer that the JS worker
-// thread shares with Compose. This module is the lowest level: raw op
+// Skal bridge — wraps the shared 2 MiB ArrayBuffer that the JS worker
+// thread shares with the native host. This module is the lowest level: raw op
 // writers, atomic seq counters, event dispatch.
 //
 // Higher-level code (the universal renderer in renderer.js) builds on top.
 
 // ───────────────────────────────────────────────────────────────────────
-// Buffer layout — must match Kotlin SkalBridge + skal_entry.zig.
+// Buffer layout — must match flutter/skal_flutter/lib/skal/wire.dart
+// + patches/skal_entry.zig.
 // ───────────────────────────────────────────────────────────────────────
 
 const BRIDGE_SIZE = 2 * 1024 * 1024;
@@ -34,7 +35,7 @@ const B_OP_SEQ    = HB_OP_SEQ    >> 3;
 const B_EVENT_SEQ = HB_EVENT_SEQ >> 3;
 
 // ───────────────────────────────────────────────────────────────────────
-// Opcodes — must match SkalBridge.kt's companion object exactly.
+// Opcodes — must match wire.dart exactly.
 // ───────────────────────────────────────────────────────────────────────
 export const OP_CREATE_NODE       = 0x01;
 export const OP_REMOVE_NODE       = 0x02;
@@ -44,9 +45,10 @@ export const OP_SET_PROP_F32      = 0x11;
 export const OP_SET_TEXT          = 0x14;
 export const OP_BIND_HANDLER      = 0x15;
 export const OP_SET_PROP_STR      = 0x16;
-// Hot-prop opcodes — distinct from OP_SET_PROP_F32 so the Kotlin drain's
-// `when (opcode)` pays zero branches for hot-prop routing when no
-// animation is active. See PROPS_PLAN.md §2.1.
+// Hot-prop opcodes — distinct from OP_SET_PROP_F32 so the host's
+// switch on opcode dispatches them directly to their dedicated
+// notifier without going through the cold-prop machinery. See
+// PROPS_PLAN.md §5.
 export const OP_SET_OPACITY       = 0x20;
 export const OP_SET_TRANSLATION_X = 0x21;
 export const OP_SET_TRANSLATION_Y = 0x22;
@@ -61,14 +63,19 @@ export const WT_ROW           = 2;
 export const WT_TEXT          = 3;
 export const WT_BUTTON        = 4;
 export const WT_SCROLL_COLUMN = 5;
+// Lazy-rendered vertically-scrolling column. The host builds only the
+// child widgets currently visible (ListView.builder on Flutter).
+// Same NodeState graph as wt_column / wt_scrollColumn — the renderer
+// just chooses a virtualizing layout.
+export const WT_LAZY_COLUMN   = 6;
 
 // Event kinds
 export const EV_CLICK  = 0x01;
 export const EV_CHANGE = 0x02;
 
 // ───────────────────────────────────────────────────────────────────────
-// Prop key namespace — must match SkalBridge.kt's PROP_* constants.
-// Partitioned by tier; see PROPS_PLAN.md §2.2.
+// Prop key namespace — must match wire.dart's prop* constants.
+// Partitioned by tier; see PROPS_PLAN.md §6.
 // ───────────────────────────────────────────────────────────────────────
 
 // Layout (u32 unless noted)
@@ -116,7 +123,7 @@ export const PROP_FOCUSABLE        = 0xA1;
 export const PROP_VISIBLE          = 0xA2;
 
 // Sentinel values for width/height u32 props.
-export const NO_VALUE     = -1 | 0;          // prop unset → composable default
+export const NO_VALUE     = -1 | 0;          // prop unset → host default
 export const FILL_MAX     = 0x7FFFFFFE | 0;
 export const WRAP_CONTENT = 0x7FFFFFFD | 0;
 
@@ -192,7 +199,7 @@ export function setText(id, text) {
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// Frame commit — Solid's effect flush calls this; Compose drains on the
+// Frame commit — Solid's effect flush calls this; the host drains on the
 // next vsync. Lossy single-buffer model (each commit overwrites the ring;
 // renderer re-emits on every state change so UI converges to the latest).
 // ───────────────────────────────────────────────────────────────────────
@@ -225,7 +232,7 @@ export function scheduleCommit() {
 
 // ───────────────────────────────────────────────────────────────────────
 // Diff cache — flat-array, O(1) lookup, sparse rows allocated per active
-// node. See PROPS_PLAN.md §4.2.
+// node. See PROPS_PLAN.md §4.
 //
 // The point of the cache: skip a wire write when the value is unchanged.
 // Most "renders" don't change every prop; for a button being re-emitted
@@ -382,12 +389,12 @@ const _u32view = new Uint32Array(_f32buf.buffer);
 
 export function setPropU32(nodeId, key, value) {
   const slotIdx = KEY_TO_SLOT[key];
-  if (slotIdx < 0) return; // unknown key — drop silently (no recompose, no waste)
+  if (slotIdx < 0) return; // unknown key — drop silently (no host rebuild, no wire byte spent)
   const row = rowFor(nodeId);
   const slot = row * SLOTS_PER_NODE + slotIdx;
   // | 0 normalizes the value to int32 — JS subtraction-then-equality
   // would mis-fire on JS numbers that aren't exact 32-bit. The Int32Array
-  // load also yields a signed int, so this matches Kotlin's signed Int.
+  // load also yields a signed int, so this matches Dart's signed int.
   const v = value | 0;
   // Two-step check: only consult the value cell if we've previously
   // stored something there. Every 32-bit pattern is a legitimate u32
@@ -406,7 +413,7 @@ export function setPropF32(nodeId, key, value) {
   const slot = row * SLOTS_PER_NODE + slotIdx;
   if (diffCacheF32[slot] === value) { propSkipsCounter++; return; }
   diffCacheF32[slot] = value;
-  // Encode the f32 bit pattern into u32 — Kotlin's drain calls
+  // Encode the f32 bit pattern into u32 — the host's drain calls
   // Float.fromBits to recover it. The single-element Float32Array trick
   // is the fastest way to get IEEE 754 bits in JS without a DataView.
   _f32buf[0] = value;
@@ -437,8 +444,8 @@ export function setPropStr(nodeId, key, value) {
 // Each hot prop has its own dedicated opcode AND a slot in the separate
 // `diffHotF32` cache (declared above, alongside the cold cache).
 //
-// The drain in Kotlin dispatches each hot opcode directly to a
-// dedicated MutableState — no version bump, no recompose. Animation-
+// The host's drain dispatches each hot opcode directly to its
+// dedicated notifier — no cold-prop fan-out, no full rebuild. Animation-
 // frequency updates here cost zero composition work.
 
 function setHotF32Indexed(nodeId, opcode, hotIdx, value) {
@@ -459,7 +466,7 @@ export function setScaleY      (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_SCA
 export function setRotationZ   (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_ROTATION_Z,    5, v); }
 
 // ───────────────────────────────────────────────────────────────────────
-// Event dispatch — Compose writes events into the event ring and wakes
+// Event dispatch — the host writes events into the event ring and wakes
 // the JS thread; the native bridge then runs `__skal_drainEvents()` which
 // looks up handlers and calls them.
 // ───────────────────────────────────────────────────────────────────────
@@ -514,7 +521,7 @@ globalThis.__skal_drainEvents = function () {
 
 // Debug snapshot. `propWrites/propSkips` are diff-cache effectiveness
 // counters — visible via `JSON.parse(skalStatus()).propSkips / (writes+skips)`
-// from a JS console, or via Kotlin-side `propWritesLastDrain` /
+// from a JS console, or via host-side `propWritesLastDrain` /
 // `coldPropsTouchedLastDrain` which measure the receive side.
 globalThis.skalStatus = () => JSON.stringify({
   handlerCount: handlers.size,

@@ -1,5 +1,0 @@
-# Gradle / Kotlin / Kotlin Native build outputs
-build/
-.gradle/
-.kotlin/
-local.properties

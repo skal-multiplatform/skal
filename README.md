@@ -1,85 +1,96 @@
 # Skal
 
-> Solid in JS, Compose Multiplatform rendering. One bridge, three platforms.
+> Solid in JS, Flutter rendering, native plugins, one bridge.
 
-Skal embeds [bun](https://bun.sh) (and [JavaScriptCore](https://trac.webkit.org/wiki/JavaScriptCore))
-inside a [Compose Multiplatform](https://www.jetbrains.com/lp/compose-multiplatform/) app. Your UI
-is a [SolidJS](https://www.solidjs.com/) component tree; Skal's bridge translates Solid's
+Skal embeds [bun](https://bun.sh) + [JavaScriptCore](https://trac.webkit.org/wiki/JavaScriptCore)
+inside a [Flutter](https://flutter.dev/) app. Your UI is a [SolidJS](https://www.solidjs.com/)
+component tree; Skal's bridge translates Solid's
 [universal renderer](https://www.solidjs.com/docs/latest/api#createcomponent) ops into
-Compose composables. Same JS bundle runs on Android, macOS Desktop, and iOS Simulator.
+Flutter widgets through a zero-copy 2 MiB shared memory region. Same JS bundle, native
+performance, pub.dev's plugin ecosystem for camera / location / biometrics / file picker
+and every other RN-shaped native capability.
+
+This is **"RN but actually fast"** — Solid + bun beat React + Hermes on the JS side; a
+permanent shared ArrayBuffer beats RN's old MessageQueue serialization on the bridge side;
+pub.dev's plugin ecosystem covers every native capability you'd otherwise need to bridge by hand.
+
+See [`ENGINE_CHOICE.md`](ENGINE_CHOICE.md) for the full decision matrix.
 
 ## Status
 
 | Platform | State | Notes |
 |----------|-------|-------|
-| **Android** | ✅ working | arm64 only; release path uses bun bytecode cache for parse-free cold start |
-| **macOS Desktop** | ✅ working | Compose Desktop window with the Solid demo, JNI-backed |
-| **iOS Simulator** | ✅ working | Real bun runtime via vtool re-stamp + cinterop bridge (see [docs/ios-port.md](docs/ios-port.md)) |
-| **iOS Device** | ⏳ pending | needs full bun cross-compile — Phase 2-Device in `docs/ios-port.md` |
-| **Linux/Windows Desktop** | ⏳ pending | tracked in `TODO_PLATFORMS.md` § 3.4 |
+| **Android** | ✅ working | arm64 only currently; release path uses bun bytecode cache |
+| **iOS Simulator** | ✅ working | dylib re-stamped from macOS arm64 → IOSSIMULATOR via `vtool`; debug + profile only (Flutter blocks release on Sim) |
+| **iOS Device** | ✅ working | bun + WebKit cross-compiled for `aarch64-apple-ios`; libskal.dylib embedded + signed by Xcode |
+| **macOS Desktop** | ✅ working | debug + release; libskal.dylib in `macos/Frameworks/` |
+| **Linux / Windows Desktop** | ⏳ pending | Flutter Desktop supports them; per-platform libskal linkers not written |
+| **Web** | ✅ working | separate target — Solid + DOM directly, no Flutter Web |
 
-See [`TODO_PLATFORMS.md`](TODO_PLATFORMS.md) for the punch list to take each platform from
-"demo runs" to "ship-it on app stores".
+See [`PERFORMANCE.md`](PERFORMANCE.md) for the perf decision log and budget invariants.
 
 ## What it looks like
 
-The same `skal-app.js` (a Solid app with a counter, +1000-bench button, and 5000 fake
-tweets) on each platform. Wire format and bridge code is in `shared/`; per-platform native
-runtime is `libskal.so` (Android) / `libskal.dylib` (Desktop, iOS Sim).
+The same `skal-app.js` (a Solid app with a counter, +1000-bench button, and up-to-5000-tweet
+feed) runs on each platform. JSX in, native UI out. Performance budget on the emulator:
+
+```
+init 20 ms · first eval 36 ms (bytecode cache hit) · boot 56 ms
+60 FPS · pump 0.151 ms avg (0.151 ms peak) · 1207 prop writes / 316 nodes touched
+```
 
 ## Architecture
 
 ```
-                 .———————————————————————————————————————.
-                 |  shared/ (Kotlin Multiplatform)        |
-                 |    commonMain: SkalBridge, SkalRoot,   |
-                 |                SkalRuntime, SkalBuffer |
-                 |    jvmMain:    Skal.java + JNI wrapper |
-                 |    iosMain:    cinterop'd C wrapper    |
-                 |  drains the op ring once per frame     |
-                 .———————————————————————————————————————.
-                          ^                ^
-                          | bridge ops     | bridge ops
-                          | (2 MiB shared  | (2 MiB shared
-                          |  ring buffer)  |  ring buffer)
-                          |                |
-                 .—————————————————————————————————.
-                 |  libskal.{so,dylib}              |
-                 |    bun runtime + JSC + bridge.js |
-                 |    skal_entry.zig — JNI + C ABI  |
-                 .—————————————————————————————————.
-                          ^
-                          | __skal_acquireBridge()
-                          | (no-copy ArrayBuffer)
-                          |
-                 .—————————————————————————————————.
-                 |  skal-app.js (Solid + universal  |
-                 |   renderer + bridge.js helpers)  |
-                 .—————————————————————————————————.
+                 ┌──────────────────────────────────────────┐
+                 │  flutter/skal_flutter/lib/skal/          │
+                 │    wire.dart       — opcode constants    │
+                 │    node_state.dart — per-node Notifier×2 │
+                 │    bridge.dart     — pumpOps op decoder  │
+                 │    root.dart       — SkalNode widget tree│
+                 │  drains the op ring once per Ticker tick │
+                 └──────────────────────────────────────────┘
+                          ▲
+                          │ bridge ops (2 MiB shared
+                          │             ArrayBuffer)
+                          │
+                 ┌──────────────────────────────────┐
+                 │  libskal.{so,dylib}              │
+                 │    bun runtime + JSC + bridge    │
+                 │    skal_entry.zig — C ABI exports│
+                 └──────────────────────────────────┘
+                          ▲
+                          │ globalThis.__skal_acquireBridge()
+                          │ (no-copy ArrayBuffer)
+                          │
+                 ┌──────────────────────────────────┐
+                 │  skal-app.js (Solid + universal  │
+                 │   renderer + bridge.js helpers)  │
+                 └──────────────────────────────────┘
 ```
 
-The bridge is a 2 MiB shared memory region with three rings:
+The shared region has three rings:
 
-  * **Op ring** (1 MiB) — JS writes node-tree mutations, Compose reads them. CREATE_NODE,
-    INSERT_BEFORE, SET_TEXT, etc.
-  * **String heap** (512 KiB) — UTF-8 bytes for SET_TEXT payloads.
-  * **Event ring** (~448 KiB) — Compose writes touch events, JS reads them.
+- **Op ring** (1 MiB) — JS writes node-tree mutations, Dart reads them. `CREATE_NODE`,
+  `INSERT_BEFORE`, `SET_PROP_*`, `SET_TEXT`, etc.
+- **String heap** (512 KiB) — UTF-8 bytes referenced by string ops.
+- **Event ring** (~448 KiB) — Dart writes gesture events, JS reads them.
 
-JS sees the region as a `Uint8Array` (no copy via JSC's `JSObjectMakeArrayBufferWithBytesNoCopy`);
-Kotlin sees it as a `DirectByteBuffer` on JVM (no copy via JNI's `NewDirectByteBuffer`)
-or as a `CPointer<UByteVar>` on Kotlin/Native iOS (cinterop). See
-[`patches/SKAL_WIRE.md`](patches/SKAL_WIRE.md) for the wire format and
-[`docs/bytecode-cache.md`](docs/bytecode-cache.md) for the JSC bytecode story.
+JS sees the region as a `Uint8Array` (zero-copy via JSC's
+`JSObjectMakeArrayBufferWithBytesNoCopy`). Dart sees it as a `Uint8List` view over an
+FFI pointer (zero-copy via `Pointer<Uint8>.asTypedList`). Same bytes, same memory, no
+serialization in the bridge hot path.
 
 ## Build
 
 ### Prerequisites
 
-  * macOS 14+ (other hosts: TODO — see `TODO_PLATFORMS.md` § 3.4)
-  * Xcode 16+ (15 may work; 26.x verified)
-  * JDK 17 — Gradle's toolchain manager auto-downloads if absent
-  * `~/.cargo/bin` on PATH (for bun's lolhtml dep — `rustup install nightly` once)
-  * Android NDK at `/opt/homebrew/share/android-ndk` (Android only)
+- macOS 14+ (other hosts: TODO)
+- Flutter 3.41+ (`flutter --version`)
+- Xcode 16+ — needed for both the libskal iOS/macOS cross-compile and the Flutter iOS/macOS shells
+- JDK 17 — Gradle's toolchain manager auto-downloads if absent
+- `~/.cargo/bin` on PATH (`rustup install nightly` once — bun's lolhtml dep)
+- Android NDK at `/opt/homebrew/share/android-ndk`
 
 ### One-time setup
 
@@ -89,73 +100,116 @@ or as a `CPointer<UByteVar>` on Kotlin/Native iOS (cinterop). See
 scripts/setup.sh
 
 # Builds the host bun used for bytecode generation. ~30 min cold,
-# ~3 min incremental. Required by every platform.
+# ~3 min incremental.
 cd vendor/bun
 PATH="$HOME/.cargo/bin:$PATH" bun run build:release
 cd ../..
+
+# Builds bun for Android (~30 min cold, ~3 min incremental).
+ANDROID_NDK_ROOT=/opt/homebrew/share/android-ndk \
+  bun --cwd vendor/bun scripts/build.ts --profile=android-release \
+  --build-dir=$(pwd)/vendor/bun/build/android
+
+# Build ICU + JSC for Android (one-time, ~30-60 min).
+scripts/build-icu-android.sh
+scripts/build-jsc-android.sh
+
+# Link libskal.so for the Flutter Android app.
+flutter/scripts/link-libskal-flutter.sh
 ```
 
-### Per-platform builds
+### Day-to-day builds
 
-| Platform | Command |
-|----------|---------|
-| Android  | `scripts/build-icu-android.sh && scripts/build-jsc-android.sh` (one-time) → `cd vendor/bun && PATH=... bun scripts/build.ts --profile=android-release` → `scripts/link-skal-so.sh` → `cd android-app && ./gradlew :app:assembleDebug` |
-| Desktop  | `scripts/link-skal-dylib.sh` → `cd desktop-app && ./gradlew run` (Gradle's `linkSkalDylib` task auto-invokes the link script for fresh checkouts) |
-| iOS Sim  | `scripts/link-skal-iossim.sh` → `cd ios-app && ./gradlew linkDebugFrameworkIosSimulatorArm64` → `cd iosApp && xcodegen generate && xcodebuild ...` (full recipe in `ios-app/README.md`) |
+**Android APK** (the Makefile orchestrates JS bundle + bytecode + Flutter):
 
-### JS bundle
+```sh
+cd flutter
+make release    # JS bundle + bytecode + Flutter APK
+make profile    # same, profile mode (Dart AOT + DevTools wiring)
+make debug      # debug mode (hot reload friendly)
+```
 
-Edit `js-app/src/`, then `cd js-app && bun run build`. Produces:
-  * `android-app/app/src/main/assets/skal-app.js` (Vite IIFE bundle, used by Debug)
-  * `android-app/app/src/main/assets/skal-app.cjs` + `.cjs.jsc` (bytecode pair, used by Release for parse-free start)
+**Other targets** — rebuild the JS bundle first, then invoke Flutter directly:
 
-Bytecode generation uses `vendor/bun/build/release/bun` — see `js-app/scripts/find-vendored-bun.sh`
-for why we don't use `$PATH` bun.
+```sh
+cd js-app && bun run build   # rebuild skal-app.{js,cjs,cjs.jsc} into flutter assets
+cd ../flutter/skal_flutter
+
+# Android — equivalent to `make release`
+flutter build apk --release --target-platform android-arm64
+adb install -r build/app/outputs/flutter-apk/app-release.apk
+
+# macOS Desktop
+flutter build macos --release           # or --debug
+open build/macos/Build/Products/Release/skal_flutter.app
+
+# iOS Simulator (release blocked by Flutter — Dart AOT has no Sim target)
+flutter build ios --simulator --debug   # or --profile
+xcrun simctl install booted build/ios/iphonesimulator/Runner.app
+xcrun simctl launch --console-pty booted com.skal.skalFlutter
+
+# iOS Device (requires a provisioning profile)
+flutter build ios --release
+```
+
+### Bytecode regeneration footgun
+
+The `.cjs.jsc` is JSC-version-keyed to the bun used at build time. The Makefile + the
+vendored-bun resolver in `js-app/scripts/find-vendored-bun.sh` guard against version drift.
+If you ever see a cold-launch regression with no error, regenerate with the vendored bun:
+
+```sh
+cd js-app && bun run build
+```
 
 ## Module layout
 
 ```
 skal/
-├── shared/                   # KMP module — bridge code, runs on all platforms
-├── android-app/              # Android Gradle module — produces APK
-├── desktop-app/              # Compose Desktop module — produces .dmg
-├── ios-app/                  # Kotlin/Native iOS framework + Xcode host project
+├── flutter/                  # Flutter shell — primary host renderer
+│   ├── Makefile              # bundle + APK orchestration
+│   ├── scripts/
+│   │   └── link-libskal-flutter.sh   # re-link libskal.so with skal_* C-ABI exports
+│   └── skal_flutter/         # the Flutter app
+│       ├── lib/skal/         # Dart-side renderer (~1300 LOC)
+│       │   ├── wire.dart
+│       │   ├── node_state.dart
+│       │   ├── bridge.dart
+│       │   ├── root.dart
+│       │   └── memoizing_listenable_builder.dart
+│       ├── lib/skal_ffi.dart # dart:ffi bindings to skal_* C ABI
+│       ├── lib/main.dart     # boot + PerfHud
+│       ├── assets/           # skal-app.js + .cjs + .cjs.jsc (the JS bundle)
+│       └── test/             # wire + node_state unit tests
 ├── js-app/                   # Solid UI — Vite + bytecode pipeline
-├── native/                   # C entry surface for iOS cinterop + iOS Sim shim
-├── patches/                  # bun + WebKit patches; skal_entry.zig (the runtime)
-├── scripts/                  # link-skal-*.sh, build-*.sh, setup.sh
-├── vendor/                   # cloned by setup.sh: bun + WebKit at pinned commits
-├── build/                    # build outputs — skal-android/, skal-darwin/, skal-iossim/
-└── docs/                     # bytecode-cache.md, ios-port.md, SKAL_WIRE.md (in patches/)
+│   └── src/
+│       ├── App.jsx           # the demo
+│       ├── bridge.js         # JS-side bridge (op encoder, diff cache)
+│       ├── renderer.js       # Solid universal renderer for native targets
+│       └── renderer-web.js   # Solid universal renderer for the web target
+├── native/                   # C entry surface (native/ios/skal.h)
+├── patches/                  # bun + WebKit patches
+├── scripts/                  # ICU/JSC builds, libskal linkers per-platform
+├── vendor/                   # bun + WebKit pinned commits (setup.sh clones)
+├── build/                    # build outputs
+└── docs/                     # bytecode-cache.md, crash-symbolication.md
 ```
-
-## What lands where (modularity invariants)
-
-Per `TODO_PLATFORMS.md` § 0.5:
-
-  * `libskal.so` (Android, JNI exports only)
-  * `libskal.dylib` macOS Desktop (JNI exports only, no iOS code)
-  * `libskal.dylib` iOS Simulator (C exports only, with `__clear_cache` shim)
-  * `libskal.dylib` iOS Device (future, C exports only)
-
-Same `bun-zig.*.o` source feeds all four; the link step is per-platform and outputs go in
-distinct `build/skal-<platform>/` dirs. Changing the iOS Sim link script doesn't relink
-the Desktop binary, and vice versa.
-
-CI is per-platform (`.github/workflows/{android,desktop,ios-sim}.yml`) with paths-filtered
-triggers. A nightly cross-platform job catches the case where a per-platform PR's filter
-let a coupling slip through.
 
 ## Documentation
 
-| Doc | Audience |
-|-----|----------|
-| [`TODO_PLATFORMS.md`](TODO_PLATFORMS.md) | Anyone shipping a platform — the punch list |
-| [`docs/ios-port.md`](docs/ios-port.md) | Phase 2-Device (real iOS cross-compile) |
+| Doc | What's in it |
+|---|---|
+| [`ENGINE_CHOICE.md`](ENGINE_CHOICE.md) | Why bun+JSC, why Flutter, alternatives considered |
+| [`PERFORMANCE.md`](PERFORMANCE.md) | Perf decision log + budget invariants |
+| [`PROPS_PLAN.md`](PROPS_PLAN.md) | Wire-format prop architecture (renderer-agnostic) |
 | [`docs/bytecode-cache.md`](docs/bytecode-cache.md) | Why `.cjs.jsc` exists; JSC version coupling |
-| [`patches/SKAL_WIRE.md`](patches/SKAL_WIRE.md) | Bridge wire format spec |
-| [`TODO.md`](TODO.md) | Smaller deferred items (perf, hot reload research, etc.) |
-| `ios-app/README.md` | iOS-specific build + Xcode setup |
+| [`docs/crash-symbolication.md`](docs/crash-symbolication.md) | Symbolicating libskal crashes from device logs |
+| [`TODO.md`](TODO.md) / [`TODO_PLATFORMS.md`](TODO_PLATFORMS.md) | Open work |
+
+## What's next
+
+- Linux / Windows Desktop shells — Flutter Desktop supports them; per-platform libskal linkers not written yet
+- Plugin bridge — Dart-side dispatcher exposing pub.dev plugins (camera, geo, etc.) to JS
 
 ## License
 

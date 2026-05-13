@@ -13,7 +13,7 @@
     "_5": "// it and vendor/bun's JSC silently invalidates the .jsc cache at runtime",
     "_6": "// → fallback to parsing → cold-start regression with no error. Per",
     "_7": "// TODO_PLATFORMS § 1.1.",
-    "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && \"$BUN\" build ../android-app/app/src/main/assets/skal-app.js --bytecode --format=cjs --outdir=../android-app/app/src/main/assets/ --entry-naming=skal-app.cjs --root=../android-app/app/src/main/assets'",
+    "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && \"$BUN\" build ../flutter/skal_flutter/assets/skal-app.js --bytecode --format=cjs --outdir=../flutter/skal_flutter/assets/ --entry-naming=skal-app.cjs --root=../flutter/skal_flutter/assets'",
     "dev": "vite build --watch",
     "dev:web": "vite --config vite.config.web.js",
     "build:web": "vite build --config vite.config.web.js"

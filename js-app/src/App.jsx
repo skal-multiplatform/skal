@@ -4,7 +4,7 @@ const TWEET_LINES = [
   "Just shipped a new feature, feeling great about how it turned out 🚀",
   "Hot take: the best APIs are the ones you don't have to read docs for",
   "Spent the morning refactoring legacy code — so much cleaner now",
-  "Compose Multiplatform is genuinely maturing into something special",
+  "There's no such thing as 'just a small change' in production code",
   "If your tests are slow, that's a smell. Fast tests = good tests",
   "Bun's startup time keeps surprising me, even after a year",
   "Why is naming things still the hardest part of programming?",
@@ -54,8 +54,8 @@ const COLOR_REACTION_ACTIVE_FG   = '#FFFFFFFF';
  *  - The bridge's diff cache short-circuits redundant writes when toggling
  *    back to a previously-seen color, so a like→unlike→like cycle writes
  *    each color value exactly once over its lifetime.
- *  - The Kotlin drain coalesces those 3 prop writes into ONE recompose
- *    of the affected SkalButton (one propsVersion bump per node per drain).
+ *  - The host drain coalesces those 3 prop writes into ONE rebuild
+ *    of the affected button (one cold.notify() per node per drain).
  */
 function Tweet(props) {
   const [likes, setLikes]     = createSignal(0);
@@ -138,7 +138,17 @@ export default function App() {
   // each function child gets its own isolated effect. setCount only
   // re-runs the count-text effect, nothing else.
   return (
-    <column background="#FFFAFAFA" padding={16} gap={12}>
+    // <lazyColumn> — virtualized scroll container. ListView.builder on
+    // Flutter only materializes the ~10 items in the visible window
+    // plus a small overscan buffer, so a 5000-tweet feed mounts ~10
+    // Element trees up front instead of 50K. The NodeState graph
+    // still holds all 5000 entries because Solid's <For> mounted them
+    // — the host just doesn't build the off-screen widgets.
+    //
+    // The control row (Count / Increment / benchmarks / count
+    // buttons) scrolls together with the tweet feed, which matches
+    // the Twitter/X UX of "search bar scrolls away as you read".
+    <lazyColumn background="#FFFAFAFA" padding={16} gap={12}>
       <box background="#FF1DA1F2" padding={12} cornerRadius={8}>
         {() => `Count: ${count()}`}
       </box>
@@ -195,6 +205,6 @@ export default function App() {
           <Tweet author={tweet.author} body={tweet.body} num={tweet.num} />
         )}
       </For>
-    </column>
+    </lazyColumn>
   );
 }

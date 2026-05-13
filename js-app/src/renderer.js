@@ -20,6 +20,7 @@ const TAG_TO_WIDGET = {
   box:          B.WT_BOX,
   column:       B.WT_COLUMN,
   scrollColumn: B.WT_SCROLL_COLUMN,
+  lazyColumn:   B.WT_LAZY_COLUMN,
   row:          B.WT_ROW,
   // <text label="..." fontSize={...}> — for STYLED text content
   // (font size/weight/color/etc.). For unstyled text, use plain
@@ -44,8 +45,8 @@ const TAG_TO_WIDGET = {
 //   - color: accepts CSS hex string "#RRGGBB" or "#AARRGGBB", or u32
 //   - dim: accepts number (literal dp) or "fill" / "wrap" sentinel
 //
-// Adding a new prop is one entry here + a matching read in the Kotlin
-// composable. ~10 lines total.
+// Adding a new prop is one entry here + a matching read in the
+// host builder. ~10 lines total.
 // ───────────────────────────────────────────────────────────────────────
 
 const COLD_PROPS = {
@@ -124,7 +125,7 @@ function parseColor(v) {
     b = parseInt(s.slice(4, 6), 16);
   } else if (s.length === 8) {
     // Ambiguous between AARRGGBB and RRGGBBAA. We pick AARRGGBB
-    // (matches Compose's Color long encoding). Users wanting RRGGBBAA
+    // (matches Dart's Color(0xAARRGGBB) constructor). Users wanting RRGGBBAA
     // should pass the numeric u32 directly.
     a = parseInt(s.slice(0, 2), 16);
     r = parseInt(s.slice(2, 4), 16);
@@ -139,10 +140,10 @@ function parseColor(v) {
  *   number      → literal dp
  *   "fill"      → FILL_MAX sentinel
  *   "wrap"      → WRAP_CONTENT sentinel
- *   anything else → NO_VALUE (Kotlin side treats as "no constraint")
+ *   anything else → NO_VALUE (host treats as "no constraint")
  *
  * Important: the fallback is NO_VALUE, not 0. A 0 here would be
- * interpreted by Kotlin's `applyWidth/applyHeight` as `width(0.dp)` —
+ * interpreted by the host's _applyWidth/_applyHeight as `SizedBox(width: 0)` —
  * a zero-width box. NO_VALUE means "fall through to the composable's
  * default modifier."
  */
@@ -250,7 +251,7 @@ const _renderer = createRenderer({
       return;
     }
 
-    // Hot props — animation-frequency, dedicated opcodes, no recompose.
+    // Hot props — animation-frequency, dedicated opcodes, no full rebuild.
     const hotSetter = HOT_PROP_SETTERS[name];
     if (hotSetter !== undefined) {
       if (typeof value === 'number') {
@@ -308,8 +309,8 @@ const _renderer = createRenderer({
     }
 
     // Unknown attribute — silently drop. Wire-level openness; renderer-
-    // level closedness. See PROPS_PLAN.md §… and the chat discussion
-    // "Can props be anything?" for the rationale.
+    // level closedness: the wire format reserves slots for future props,
+    // but each renderer only emits the ones it knows. See PROPS_PLAN.md §6.
   },
 
   insertNode(parent, node, anchor) {
@@ -338,7 +339,7 @@ const _renderer = createRenderer({
   removeNode(parent, node) {
     B.writeOp(B.OP_REMOVE_NODE, node.id, 0, 0);
     // Release the diff cache row(s) for this node and any descendants
-    // we know about. The Kotlin drain's removeSubtree handles the
+    // we know about. The host's _removeSubtree handles the
     // descendants on its side; we mirror that here so the JS-side diff
     // cache doesn't accumulate stale rows over a long session.
     releaseSubtreeDiffCache(node);
@@ -377,10 +378,25 @@ export const {
 
 // ───────────────────────────────────────────────────────────────────────
 // The root host node. Pre-creates the bridge node with id=ROOT_NODE_ID
-// (which Kotlin's SkalRoot mounts at) and exposes it for Solid's render().
+// (which Flutter's SkalRoot mounts at) and exposes it for Solid's render().
+//
+// Root is a wt_box — single-child passthrough. The Flutter renderer
+// builds a wt_box with one child as just that child, no wrapping
+// widget. This lets the App's outer container be ANY widget shape
+// (lazy column, scroll column, plain column, …) and have its layout
+// constraints come directly from the host's Expanded — no
+// intermediate Column to consume them.
+//
+// Earlier this was wt_scroll_column, which wrapped everything in a
+// SingleChildScrollView. That worked when the App used a plain
+// <column> but broke once we introduced <lazyColumn> — nested
+// scrollables of the same axis collapse to height 0 (the inner
+// ListView gets unbounded height from the outer scroller and can't
+// compute its viewport extent). wt_box avoids the issue by being
+// transparent.
 // ───────────────────────────────────────────────────────────────────────
 
-B.writeOp(B.OP_CREATE_NODE, B.ROOT_NODE_ID, B.WT_SCROLL_COLUMN, 0);
+B.writeOp(B.OP_CREATE_NODE, B.ROOT_NODE_ID, B.WT_BOX, 0);
 B.scheduleCommit();
 
-export const root = new SkalNode('scrollColumn', B.ROOT_NODE_ID, false);
+export const root = new SkalNode('box', B.ROOT_NODE_ID, false);

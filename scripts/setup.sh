@@ -89,4 +89,4 @@ echo "     cd vendor/bun && bun scripts/build.ts --profile=android-release \\"
 echo "       --build-dir=\$(pwd)/build/android"
 echo
 echo "  3. Re-link as libskal.so:"
-echo "     scripts/link-skal-so.sh"
+echo "     flutter/scripts/link-libskal-flutter.sh"

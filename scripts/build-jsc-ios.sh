@@ -2,10 +2,9 @@
 # Build JavaScriptCore (the JS engine bun embeds) for iOS arm64.
 #
 # Output: a static libJavaScriptCore.a + headers, ready to be linked into
-# libskal.dylib for the iOS device path (Phase 2-Device — see
-# IOS_DEVICE_TODO.md § B). The macOS Simulator path uses the existing
-# vtool re-stamp shortcut in scripts/link-skal-iossim.sh; this script
-# is the foundation for real iOS device builds.
+# libskal.dylib for the iOS device path. The macOS Simulator path uses
+# the existing vtool re-stamp shortcut in scripts/link-skal-iossim.sh;
+# this script is the foundation for real iOS device builds.
 #
 # CRITICAL: JIT is disabled at RUNTIME on iOS via JSC config flags
 # (g_jscConfig.useJIT / useDFGJIT / useFTLJIT — set false on iOS

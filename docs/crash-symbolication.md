@@ -5,8 +5,10 @@ the dylib's `__text` segment and not much else. This doc is the
 runbook for turning that into a source line.
 
 The unstripped sibling is the load-bearing part of every platform's
-link script — `link-skal-so.sh`, `link-skal-dylib.sh`,
-`link-skal-iossim.sh` all keep it next to the stripped output:
+link script — `flutter/scripts/link-libskal-flutter.sh` (Android),
+`flutter/scripts/link-libskal-flutter-mac.sh` (macOS),
+`scripts/link-skal-iossim.sh`, and `scripts/link-skal-ios.sh` all keep
+it next to the stripped output:
 
 ```
 build/skal-android/libskal.unstripped.so
@@ -129,9 +131,8 @@ xcrun atos \
 
 Crash log source: same `~/Library/Logs/DiagnosticReports/SkalIosApp-*.ips`
 files macOS Desktop uses — Simulator crashes land in the host machine's
-DiagnosticReports dir. Real iOS device crashes (post-Phase 2-Device,
-see `docs/ios-port.md`) come via `Window → Devices and Simulators →
-View Device Logs` in Xcode.
+DiagnosticReports dir. Real iOS device crashes come via `Window →
+Devices and Simulators → View Device Logs` in Xcode.
 
 The `usedImages` entry to look for is `libskal.dylib` from inside the
 embedded `.app` bundle (path includes `/Frameworks/libskal.dylib`).
@@ -156,9 +157,10 @@ pre-stamp dylib too if that's what you happen to have around.
 
 ## Verifying you have the right unstripped binary
 
-Every native lib produced by Skal embeds a build-id (Android: `--build-id=sha1`
-in `link-skal-so.sh`; macOS: linker default, computed from the input
-hashes). The crash log includes it; if your local unstripped's
+Every native lib produced by Skal embeds a build-id (Android:
+`--build-id=sha1` in `flutter/scripts/link-libskal-flutter.sh`;
+macOS: linker default, computed from the input hashes). The crash
+log includes it; if your local unstripped's
 build-id doesn't match, **don't trust the line numbers** — they'll
 either be wrong or `llvm-addr2line` will resolve to `??:0`.
 

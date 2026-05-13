@@ -2,25 +2,24 @@
 #define SKAL_H
 
 /*
- * Skal C entry surface — the iOS-side equivalent of the JNI exports
- * declared in patches/skal_entry.zig (`Java_com_skal_Skal_native*`).
+ * Skal C ABI — the surface dart:ffi (and any future C/C++/Swift
+ * embedder) talks to.
  *
- * Shape mirrors the JNI surface 1:1, with two adaptations for non-JVM
- * embedding:
- *   1. No JNIEnv / jclass parameters — straight C ABI, called from
- *      Kotlin/Native cinterop bindings.
- *   2. `acquireBridge` returns a raw pointer + length, not a
- *      DirectByteBuffer (Kotlin/Native exposes pointers as
- *      CPointer<ByteVar>).
- *   3. `evaluate` returns its result string via out parameters; caller
- *      must free with `skal_free_string` (no JNI owning the result
- *      string).
+ * Six entry points: create a runtime, evaluate JS source, acquire the
+ * shared bridge memory region, wake the JS worker for event dispatch,
+ * free result strings, dispose the runtime.
  *
- * Phase 2 of docs/ios-port.md will land the real implementation in
- * `skal_entry.zig` (gated to iOS targets, alongside the existing JNI
- * exports for JVM targets). Until then, `native/ios/skal_ios_stub.c`
- * provides this surface as a stub that returns sentinel values, just
- * to keep the cinterop pipeline link-clean.
+ * Semantics:
+ *   - `skal_acquire_bridge` returns a raw pointer + length to a 2 MiB
+ *     shared region. Both JS (via JSObjectMakeArrayBufferWithBytesNo
+ *     Copy) and the host (via Pointer<Uint8>.asTypedList on Dart, or
+ *     equivalent in other languages) view the same bytes.
+ *   - `skal_evaluate` is synchronous — blocks the calling thread
+ *     until the JS worker returns. Result + error indicator come
+ *     back via out parameters.
+ *
+ * Implementation lives in patches/skal_entry.zig (compiled into
+ * libskal alongside bun + JSC).
  */
 
 #include <stddef.h>
@@ -65,9 +64,9 @@ void skal_free_string(char* str);
  * out_ptr and out_len are required. */
 void skal_acquire_bridge(int64_t handle, void** out_ptr, size_t* out_len);
 
-/* Wakes the JS worker so it drains any events the Kotlin/Compose side
- * has written into the event ring. Called once per dispatched event;
- * cheap and lock-free. */
+/* Wakes the JS worker so it drains any events the host has written
+ * into the event ring. Called once per dispatched event; cheap and
+ * lock-free. */
 void skal_wake_js(int64_t handle);
 
 #ifdef __cplusplus

@@ -1,6 +1,6 @@
 // Solid universal-renderer adapter for Skal — DOM target.
 //
-// Parallel to renderer.js (which targets the bridge / Compose native).
+// Parallel to renderer.js (which targets the native Flutter host).
 // Same JSX tags (`<column>`, `<box>`, `<row>`, `<scrollColumn>`,
 // `<text>`, `<button>`), same prop names (`background`, `padding`,
 // `cornerRadius`, `opacity`, ...), but here we produce real DOM nodes
@@ -9,14 +9,14 @@
 // The whole point: `App.jsx` (and `Tweet`, and any future user code)
 // compiles to the SAME JSX. Vite swaps the `~renderer` alias between
 // renderer.js (native) and this file (web), so the same component
-// tree drives either Compose-on-native or DOM-in-browser.
+// tree drives either Flutter-on-native or DOM-in-browser.
 
 import { createRenderer } from 'solid-js/universal';
 
 // ──────────────────────────────────────────────────────────────────────
 // Tag → HTML element + per-tag baseline styling.
 //
-// Defaults match the Kotlin composables in SkalRoot.kt so an
+// Defaults match the Flutter widget builders in root.dart so an
 // un-styled <column> on web has the same shape as on native (fill
 // width, 16dp padding, 8dp gap). Without these defaults you'd see
 // every primitive collapse to a 0×0 container at first render.
@@ -25,6 +25,12 @@ import { createRenderer } from 'solid-js/universal';
 const TAG_TO_HTML = {
   column:       'div',
   scrollColumn: 'div',
+  // Web has no virtualization story for arbitrary DOM children — a
+  // <lazyColumn> just degrades to a regular scrollable div with all
+  // children eagerly mounted. The virtualization is a host-side
+  // optimization (Flutter ListView.builder); on web the browser's own
+  // scroll virtualization handles render culling at the GPU layer.
+  lazyColumn:   'div',
   row:          'div',
   box:          'div',
   text:         'span',
@@ -34,7 +40,7 @@ const TAG_TO_HTML = {
 // Baseline inline styles applied at createElement time. Each prop set
 // later via setProperty wins over these (last-style-wins in inline CSS).
 //
-// NOTE: `align-items: flex-start` on the flex columns matches Compose's
+// NOTE: `align-items: flex-start` on the flex columns matches the native
 // behavior where children of a Column are NOT auto-stretched to the
 // cross-axis (width). Each child uses its natural / wrap-content width
 // unless the dev applies fillMaxWidth (width="fill"). Without this,
@@ -70,8 +76,8 @@ function applyDefaults(el, tag) {
       s.flexDirection = 'row';
       s.boxSizing = 'border-box';
       // Native default has horizontalScroll — emulate it, but hide
-      // the scrollbar to match Compose's invisible-scrollbar behavior.
-      // (Compose's horizontalScroll exposes the gesture but doesn't
+      // the scrollbar to match the native invisible-scrollbar behavior.
+      // (native horizontal-scroll exposes the gesture but doesn't
       // paint a track; Firefox / WebKit need separate rules.)
       s.overflowX = 'auto';
       s.scrollbarWidth = 'none';            // Firefox
@@ -89,7 +95,7 @@ function applyDefaults(el, tag) {
       // native FontFamily.Monospace default for unstyled text.
       s.fontFamily = 'ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace';
       // Pre-line preserves user-provided newlines without collapsing
-      // multiple spaces (closer to Compose Text behavior).
+      // multiple spaces (closer to native Text behavior).
       s.whiteSpace = 'pre-line';
       break;
     case 'button':
@@ -143,7 +149,7 @@ function parseColor(v) {
     g = parseInt(s.slice(2, 4), 16);
     b = parseInt(s.slice(4, 6), 16);
   } else if (s.length === 8) {
-    // AARRGGBB — alpha first to match Compose's Color long encoding.
+    // AARRGGBB — alpha first to match Dart's Color(0xAARRGGBB) encoding.
     // Matches what renderer.js's parseColor produces on the native side.
     a = parseInt(s.slice(0, 2), 16);
     r = parseInt(s.slice(2, 4), 16);
@@ -171,7 +177,7 @@ function parseDim(v) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Font family enum — matches Kotlin's fontFamilyFor() mapping.
+// Font family enum — matches the native fontFamilyFor() mapping.
 // ──────────────────────────────────────────────────────────────────────
 
 const FONT_FAMILIES = {
@@ -188,7 +194,7 @@ const ALIGN_TO_JUSTIFY = ['flex-start', 'center', 'flex-end', 'space-between', '
 
 // ──────────────────────────────────────────────────────────────────────
 // Hot-prop transforms. Same six axes as the native graphicsLayer:
-// opacity, translation X/Y, scale X/Y, rotation Z. Compose-native uses
+// opacity, translation X/Y, scale X/Y, rotation Z. The native side uses
 // a GPU layer; the browser compositor does the equivalent for the
 // `transform` and `opacity` CSS properties when the element is layer-
 // promoted (the will-change hint forces this).

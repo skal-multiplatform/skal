@@ -42,7 +42,7 @@ BUN_DIR="${SKAL_ROOT}/vendor/bun"
 BUN_BUILD="${BUN_DIR}/build/ios-release"
 SKAL_BUILD="${SKAL_ROOT}/build/skal-ios-device"
 
-# Toolchain — see link-skal-dylib.sh's brew/xcrun rationale.
+# Toolchain — see link-skal-iossim.sh's brew/xcrun rationale.
 if ! command -v brew >/dev/null 2>&1; then
   echo "error: brew not found in PATH" >&2
   exit 1
@@ -71,7 +71,7 @@ fi
 
 # ── Extract link inputs from build.ninja ──────────────────────────────
 #
-# Same shape as link-skal-dylib.sh / link-skal-iossim.sh: capture the
+# Same shape as link-skal-iossim.sh: capture the
 # lines after `build bun-profile: link`, drop $-line-continuation
 # tokens, stop at the first `key = value` variable binding (ldflags),
 # drop the `|` implicit-input separator. The result is the exact same
@@ -109,9 +109,9 @@ echo "$(wc -l < "${INPUTS_FILE}" | tr -d ' ') link inputs extracted from build.n
 
 # ── Exported-symbols list ──────────────────────────────────────────────
 #
-# Same C ABI as iOS Simulator — Kotlin/Native cinterop binds the same
-# skal.def regardless of Simulator vs Device. No JNI surface (no JVM
-# on iOS). No __clear_cache (libSystem on real iOS device has it).
+# Same surface as iOS Simulator; only the binary architecture and
+# LC_BUILD_VERSION (IPHONEOS vs IOSSIMULATOR) differ.
+# No __clear_cache shim (libSystem on real iOS device has it).
 
 SKAL_SYMS="${SKAL_BUILD}/skal-exports.txt"
 cat > "${SKAL_SYMS}" <<'EOF'
@@ -180,9 +180,6 @@ xcrun vtool -show "${OUT}" | grep -A 5 "LC_BUILD_VERSION" || true
 echo
 echo "C ABI symbols (must all be present):"
 "${LLVM_BIN}/llvm-nm" -gU "${OUT}" 2>/dev/null | grep -E "^[0-9a-f]+ T _skal_" || echo "(none — link probably failed)"
-echo
-echo "JNI symbols (must NOT be present per § 0.5/V3):"
-"${LLVM_BIN}/llvm-nm" -gU "${OUT}" 2>/dev/null | grep -E "JNI_OnLoad|Java_com_skal" && echo "  ✗ JNI symbols leaked into iOS device binary" || echo "  ✓ none"
 echo
 echo "Next: Xcode's Embed Frameworks phase will sign this dylib"
 echo "with the Skal app's signing identity. For free-Apple-ID sideload"

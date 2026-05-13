@@ -36,8 +36,9 @@ export default defineConfig({
       name: 'SkalApp',
       fileName: () => 'skal-app.js',
     },
-    outDir: resolve(__dirname, '../android-app/app/src/main/assets'),
-    // Keep other assets (icon, etc.) intact.
+    outDir: resolve(__dirname, '../flutter/skal_flutter/assets'),
+    // Keep other assets intact — Flutter's pubspec.yaml lists the
+    // .js / .cjs / .cjs.jsc trio, so we mustn't wipe siblings.
     emptyOutDir: false,
   },
 });

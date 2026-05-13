@@ -111,24 +111,29 @@ plain IIFE because they want hot-reload-friendliness.
 
 ## Runtime path
 
-`MainActivity.onCreate` switches on `BuildConfig.DEBUG`:
+`flutter/skal_flutter/lib/main.dart` switches on `kReleaseMode`:
 
-```kotlin
-val initResult = if (BuildConfig.DEBUG) {
-    val source = assets.open("skal-app.js").bufferedReader().use { it.readText() }
-    skal.evaluate(source, "skal-app.js")
+```dart
+if (kReleaseMode) {
+  final cjsPath = await _extractBytecodeAssets();
+  final loader =
+      "(async()=>{await import(${_jsStringLiteral('file://$cjsPath')});"
+      "return 'skal-app loaded';})();";
+  result = skal.evaluate(loader, url: 'skal:loader');
 } else {
-    val cjsPath = extractAsset("skal-app.cjs")
-    extractAsset("skal-app.cjs.jsc")
-    skal.evaluateModuleAtPath(cjsPath)
+  final source = await rootBundle.loadString('assets/skal-app.js');
+  result = skal.evaluate(source, url: 'skal-app.js');
 }
 ```
 
-`extractAsset` copies `APK/assets/<name>` into `filesDir/<name>` and returns
-the absolute path. Required because bun's module loader works on real
-filesystem paths — APK assets aren't directly addressable by `node:fs`.
+`_extractBytecodeAssets` copies both `skal-app.cjs` and
+`skal-app.cjs.jsc` out of the APK ZIP into
+`getApplicationSupportDirectory()` and returns the absolute path to
+the `.cjs`. Required because bun's module loader works on real
+filesystem paths — APK assets aren't directly addressable by
+`node:fs`. Skip-if-exists makes this a no-op on warm relaunches.
 
-`Skal.evaluateModuleAtPath` builds a tiny async-IIFE bootstrap script:
+The async-IIFE bootstrap script:
 
 ```js
 (async () => {
@@ -137,7 +142,7 @@ filesystem paths — APK assets aren't directly addressable by `node:fs`.
 })();
 ```
 
-That script is passed to `nativeEvaluate` (which goes through
+That script is passed to `skal_evaluate` (which goes through
 `Bun__REPL__evaluate`). The dynamic `import()` triggers bun's module loader,
 which:
 
@@ -154,11 +159,11 @@ which:
 7. Bun calls the CJS wrapper function. The IIFE inside runs synchronously,
    mounts the Solid app, registers bridge globals.
 8. The async IIFE resolves; Zig's `EvalRequest.runOnVmThread` sees the
-   promise, calls `waitForPromise`, returns to Java.
+   promise, calls `waitForPromise`, returns to the caller.
 
-By the time `nativeEvaluate` returns, the app is fully mounted. The whole
-async dance is observably synchronous from the Java side because the worker
-thread waits for the promise before returning.
+By the time `skal_evaluate` returns, the app is fully mounted. The whole
+async dance is observably synchronous from the Dart side because the
+worker thread waits for the promise before returning.
 
 ## Why CJS, not ESM
 
@@ -268,8 +273,8 @@ adb shell run-as com.skal.bench rm files/skal-app.cjs.jsc
 | `android-app/.../assets/skal-app.js` | Vite IIFE — debug eval target |
 | `android-app/.../assets/skal-app.cjs` | bun-built CJS wrapper — release eval target |
 | `android-app/.../assets/skal-app.cjs.jsc` | bytecode for the .cjs |
-| `android-app/.../com/skal/Skal.java` | `evaluate` (debug) and `evaluateModuleAtPath` (release) |
-| `android-app/.../com/skal/bench/MainActivity.kt` | `BuildConfig.DEBUG` switch + asset extraction |
+| `flutter/skal_flutter/lib/skal_ffi.dart` | `Skal.evaluate(source)` — both debug and release call through this; the release loader IIFE just happens to be `await import('file://...')` |
+| `flutter/skal_flutter/lib/main.dart` | `kReleaseMode` switch + asset extraction |
 | `vendor/bun/src/jsc/bindings/ZigSourceProvider.cpp` | (bun internal) `extern "C"` bytecode generator + loader plumbing — what makes Layer 2 possible without us writing C++ |
 | `vendor/bun/src/jsc/ModuleLoader.zig` | (bun internal) auto-discovers adjacent `.jsc` files when source has `@bun-cjs` marker |
 
@@ -281,7 +286,7 @@ adb shell run-as com.skal.bench rm files/skal-app.cjs.jsc
 - A standalone `bun` host build with a custom `bytecode-emit` CLI subcommand.
   Same reason — `bun build --bytecode --format=cjs` from the user's
   installed bun (matching version) does the job.
-- A `nativeEvaluateWithBytecode(handle, source, bytecode)` JNI method.
+- A `skal_evaluate_with_bytecode(handle, source, bytecode)` C ABI.
   Replaced by the simpler `evaluateModuleAtPath` that goes through the
   existing eval path.
 - Build-time bytecode embedded in `libskal.so`. Possible (concatenate `.jsc`

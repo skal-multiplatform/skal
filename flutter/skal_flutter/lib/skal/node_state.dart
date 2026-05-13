@@ -52,7 +52,50 @@ class NodeState {
   /// per insert. Widgets read this list inside the cold-notifier
   /// listener (so subscriptions are right) and re-emit child SkalNode
   /// widgets in order, each keyed by id.
+  ///
+  /// MUTATIONS MUST GO THROUGH [appendChild] / [insertChildAt] /
+  /// [removeChildAt]. Those keep the parallel [_childIdx] map in sync
+  /// so [childIndexOf] is O(1) — the bridge's INSERT_BEFORE /
+  /// auto-detach paths call indexOf once per move, and an O(N) scan
+  /// per call becomes O(N²) cumulative on big reorders (e.g. sorting
+  /// a 5000-tweet list). Reads via index / iteration are unchanged.
   final List<int> children = <int>[];
+
+  /// id → position in [children]. Maintained by [appendChild],
+  /// [insertChildAt], [removeChildAt]. Lookup is O(1).
+  final Map<int, int> _childIdx = <int, int>{};
+
+  /// O(1) lookup of a child's position in [children]. Returns -1 if the
+  /// id is not a child of this node.
+  int childIndexOf(int id) => _childIdx[id] ?? -1;
+
+  /// Append [id] to [children]. O(1).
+  void appendChild(int id) {
+    _childIdx[id] = children.length;
+    children.add(id);
+  }
+
+  /// Insert [id] into [children] at [pos]. O(N − pos) — the tail
+  /// shifts (native memmove in Dart's `List<int>.insert`) and the
+  /// shifted entries are re-indexed in [_childIdx]. Typical UI inserts
+  /// are near the tail, so this is fast in practice.
+  void insertChildAt(int pos, int id) {
+    children.insert(pos, id);
+    for (int i = pos; i < children.length; i++) {
+      _childIdx[children[i]] = i;
+    }
+  }
+
+  /// Remove the child at [pos]. O(N − pos), same shape as
+  /// [insertChildAt].
+  void removeChildAt(int pos) {
+    final removedId = children[pos];
+    children.removeAt(pos);
+    _childIdx.remove(removedId);
+    for (int i = pos; i < children.length; i++) {
+      _childIdx[children[i]] = i;
+    }
+  }
 
   // ── Per-node single-value reactive fields (plain) ──────────────────
   String text = '';

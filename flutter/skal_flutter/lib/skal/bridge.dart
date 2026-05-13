@@ -213,36 +213,33 @@ class SkalBridge {
             // insertNode semantics (moving by re-inserting). The bridge
             // has to enforce the "appears in at most one parent" invariant
             // ourselves; without this, reorders leave the moving id
-            // duplicated in old + new parents.
+            // duplicated in old + new parents. childIndexOf is O(1) via
+            // the parallel _childIdx map.
             if (movingNode.parent != 0) {
               final oldParent = ns[movingNode.parent];
               if (oldParent != null) {
-                final oldChildren = oldParent.children;
-                // lastIndexOf because JS shrink-loops walk in reverse —
-                // the target is at the tail, so this is O(1) typically.
-                final oldIdx = oldChildren.lastIndexOf(b);
+                final oldIdx = oldParent.childIndexOf(b);
                 if (oldIdx >= 0) {
-                  oldChildren.removeAt(oldIdx);
+                  oldParent.removeChildAt(oldIdx);
                   oldParent.coldDirty = true;
                   touched.add(movingNode.parent);
                 }
               }
             }
-            final children = parentNode.children;
             final anchor = c;
             if (anchor == 0) {
-              children.add(b);
+              parentNode.appendChild(b);
             } else {
-              final idx = children.indexOf(anchor);
+              final idx = parentNode.childIndexOf(anchor);
               if (idx >= 0) {
-                children.insert(idx, b);
+                parentNode.insertChildAt(idx, b);
               } else {
                 // Anchor not yet a child of this parent — defensive
                 // fallback to append. Not observed in practice with
                 // Solid's universal renderer (which always inserts
                 // anchors before referring to them), but a misbehaving
                 // renderer would otherwise lose ops here.
-                children.add(b);
+                parentNode.appendChild(b);
               }
             }
             parentNode.coldDirty = true;
@@ -427,9 +424,9 @@ class SkalBridge {
     if (root.parent != 0) {
       final parent = ns[root.parent];
       if (parent != null) {
-        final idx = parent.children.lastIndexOf(id);
+        final idx = parent.childIndexOf(id);
         if (idx >= 0) {
-          parent.children.removeAt(idx);
+          parent.removeChildAt(idx);
           parent.coldDirty = true;
           _touched.add(root.parent);
         }

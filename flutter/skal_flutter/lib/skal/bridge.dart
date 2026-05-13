@@ -29,6 +29,7 @@
 //   • Touched set is a `Set<int>` — for small dirty counts a
 //     LinkedHashSet is fine.
 
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -59,6 +60,19 @@ class SkalBridge {
   /// When JS resets writePos to 0 (overflow path or end-of-batch), we
   /// detect the regression and snap this back to 0 too.
   int _lastDrainedWritePos = 0;
+
+  /// Heap-side overflow queue for events that didn't fit in the
+  /// 1 MiB event ring. The other three rings use JS-side spin-wait
+  /// because their producer (the bun worker) can safely block; the
+  /// event ring's producer is the Flutter UI thread, so blocking is
+  /// catastrophic. Instead: if the ring would wrap onto an undrained
+  /// event, append to this queue and flush on the next Ticker tick
+  /// (after JS has had a chance to drain). Bounded only by Dart heap.
+  ///
+  /// Pairs are stored as alternating ints — [kind, handlerId, kind,
+  /// handlerId, …] — so a single Queue<int> avoids per-pair object
+  /// allocation under stress.
+  final Queue<int> _eventOverflow = Queue<int>();
 
   /// One state per JS-created node, keyed by JS node id (dense small
   /// ints). Plain Map<int,NodeState> — primitive int keys avoid
@@ -108,6 +122,11 @@ class SkalBridge {
   /// Drain new ops from the ring. Cheap when nothing is pending —
   /// a single u64 load + compare.
   void pumpOps() {
+    // Flush any queued events first — they may carry a tap that
+    // triggers ops to drain in this same tick, so getting them into
+    // the ring before reading opSeq keeps the round-trip latency low.
+    if (_eventOverflow.isNotEmpty) _flushEventOverflow();
+
     final seq = _data.getInt64(hOpSeq, Endian.little);
     if (seq == _lastOpSeq) return;
 
@@ -441,16 +460,65 @@ class SkalBridge {
 
   /// Write an event record into the event ring and wake the JS worker.
   /// Called from a button's onPressed.
+  ///
+  /// If the ring is full (next write would wrap onto an undrained
+  /// event) the event is queued in `_eventOverflow` and will be flushed
+  /// on the next pumpOps tick — by then JS has had time to drain. The
+  /// UI thread never blocks on the JS side.
   void dispatchEvent(int handlerId, {int eventKind = evClick}) {
     if (handlerId == 0) return;
+
+    // If we've spilled to overflow, keep spilling so events stay in
+    // dispatch order. A drain will eventually clear both.
+    if (_eventOverflow.isNotEmpty) {
+      _eventOverflow.add(eventKind);
+      _eventOverflow.add(handlerId);
+      skal.wakeJs();
+      return;
+    }
+
     final pos = _data.getInt32(hEventWritePos, Endian.little);
+    final nextPos = (pos + 16) % kEventRingSize;
+    final readPos = _data.getInt32(hEventReadPos, Endian.little);
+    if (nextPos == readPos) {
+      // Ring full — JS hasn't drained recent events yet (likely a
+      // wedged worker or 18+ minutes of unprocessed input). Spill to
+      // the heap-side queue so the producer (this thread) doesn't lose
+      // the event or block.
+      _eventOverflow.add(eventKind);
+      _eventOverflow.add(handlerId);
+      skal.wakeJs();
+      return;
+    }
+
     final base = kEventRingOffset + pos;
     _data.setUint8(base, eventKind);
     _data.setInt32(base + 4, handlerId, Endian.little);
-    final newPos = (pos + 16) % kEventRingSize;
-    _data.setInt32(hEventWritePos, newPos, Endian.little);
+    _data.setInt32(hEventWritePos, nextPos, Endian.little);
     final seq = _data.getInt64(hEventSeq, Endian.little);
     _data.setInt64(hEventSeq, seq + 1, Endian.little);
     skal.wakeJs();
+  }
+
+  /// Drain queued overflow events into the bridge ring. Called from
+  /// pumpOps before the op-ring drain; the read side (JS) is woken on
+  /// each successful write, so events propagate immediately.
+  void _flushEventOverflow() {
+    while (_eventOverflow.isNotEmpty) {
+      final pos = _data.getInt32(hEventWritePos, Endian.little);
+      final nextPos = (pos + 16) % kEventRingSize;
+      final readPos = _data.getInt32(hEventReadPos, Endian.little);
+      if (nextPos == readPos) break; // ring still full; try again next tick
+
+      final eventKind = _eventOverflow.removeFirst();
+      final handlerId = _eventOverflow.removeFirst();
+      final base = kEventRingOffset + pos;
+      _data.setUint8(base, eventKind);
+      _data.setInt32(base + 4, handlerId, Endian.little);
+      _data.setInt32(hEventWritePos, nextPos, Endian.little);
+      final seq = _data.getInt64(hEventSeq, Endian.little);
+      _data.setInt64(hEventSeq, seq + 1, Endian.little);
+    }
+    if (_eventOverflow.isNotEmpty) skal.wakeJs();
   }
 }

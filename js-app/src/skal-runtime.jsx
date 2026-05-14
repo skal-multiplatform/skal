@@ -86,8 +86,46 @@ export function createSkalRef() {
       if (prop === '__skalBind' || typeof prop === 'symbol') {
         return target[prop];
       }
-      // String prop access → an invoker that bumps a callId, writes
-      // the ops, returns a Promise resolved by the event drain.
+      // String prop access. Two conventions:
+      //
+      //   `ref.foo$(cb)` — STREAM subscription. JSX writes `$` to
+      //     mark a method that returns a Dart-side Stream<T>.
+      //     Returns an unsubscribe function. Last arg = onValue
+      //     callback. Optional 2nd-to-last arg can be a {onError,
+      //     onDone} options object.
+      //
+      //   `ref.foo(...)`  — one-shot RPC. Returns a Promise.
+      //
+      // The `$` is a JSX-side disambiguator; the Dart-side method
+      // name strips it before dispatch. Codegen doesn't need to know
+      // which methods are streams — it walks every method and emits a
+      // dispatcher arm that returns whatever the controller's method
+      // returns. The bridge picks the right path based on the op
+      // (subscribe vs invoke) + the result type (Stream vs Future vs
+      // value).
+      if (typeof prop === 'string' && prop.endsWith('$') && prop.length > 1) {
+        const methodName = prop.slice(0, -1);
+        return (...args) => {
+          if (nodeId === 0) {
+            // Subscribe-time bind miss — eagerly throw so the dev
+            // sees the issue at the call site, not silently dropped.
+            throw new Error(
+              `skal ref: cannot call .${String(prop)}() before the host `
+              + `mounts. Move the call into a JSX event handler.`);
+          }
+          const cb = args[args.length - 1];
+          if (typeof cb !== 'function') {
+            throw new TypeError(
+              `skal ref: .${String(prop)}() requires a callback as `
+              + `its last argument (got ${typeof cb})`);
+          }
+          // Pop the callback off the arg list. The leading args are
+          // forwarded to Dart as the method's positional args.
+          const realArgs = args.slice(0, -1);
+          return B.subscribeStream(nodeId, methodName, realArgs, cb);
+        };
+      }
+      // One-shot RPC.
       return (...args) => {
         if (nodeId === 0) {
           // Ref not yet bound — would dispatch to nodeId=0 (the root

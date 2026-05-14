@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
+import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:skal_flutter/adapters/camera_factory.dart';
 import 'package:skal_flutter/adapters/ticker.dart';
@@ -33,6 +34,7 @@ Widget _build_QrImageView(NodeState n, SkalBridge bridge) {
     errorCorrectionLevel: n.getCustomPropU32('errorCorrectionLevel', QrErrorCorrectLevel.L),
     constrainErrorBounds: n.getCustomPropU32('constrainErrorBounds', 1) != 0,
     gapless: n.getCustomPropU32('gapless', 1) != 0,
+    embeddedImage: ((() { final s = n.getCustomPropStr('embeddedImage') ?? ''; if (s.isEmpty) return null; if (s.startsWith('http')) return NetworkImage(s); if (s.startsWith('file://')) return FileImage(File(s.substring(7))); if (s.startsWith('/')) return FileImage(File(s)); return AssetImage(s); })() as ImageProvider?),
     semanticsLabel: n.getCustomPropStr('semanticsLabel') ?? 'qr code',
     embeddedImageEmitsError: n.getCustomPropU32('embeddedImageEmitsError', 0) != 0,
     foregroundColor: Color(n.getCustomPropU32('foregroundColor', 0xFF000000)),
@@ -254,6 +256,8 @@ class _TickerHostState extends State<_TickerHost> {
         return ctl.describe(args[0] as String);
       case 'snapshot':
         return ctl.snapshot();
+      case 'ticks':
+        return ctl.ticks();
       default:
         return null;
     }

@@ -81,6 +81,10 @@ export const OP_BIND_CUSTOM_HANDLER = 0x1B;
 // __skal_drainEvents' EV_METHOD_REPLY branch.
 export const OP_INVOKE_METHOD       = 0x1C;
 export const OP_METHOD_ARG          = 0x1D;
+// Stream subscription: subscribe a Dart-side Stream<T>, then later
+// unsubscribe by callId. See wire.dart for the protocol details.
+export const OP_SUBSCRIBE_STREAM    = 0x1E;
+export const OP_UNSUBSCRIBE_STREAM  = 0x1F;
 // Hot-prop opcodes — distinct from OP_SET_PROP_F32 so the host's
 // switch on opcode dispatches them directly to their dedicated
 // notifier without going through the cold-prop machinery. See
@@ -128,6 +132,13 @@ export const EV_CHANGE        = 0x02;
 // reject}>` and consumes it on receipt. See OP_INVOKE_METHOD.
 export const EV_METHOD_REPLY  = 0x03;
 export const EV_METHOD_ERROR  = 0x04;
+// Stream emissions: one event per stream element (Value), one when
+// the stream completes (Done), one on error (Error). idSlot in the
+// event record carries the callId — same identifier used at subscribe
+// time, looked up in streamHandlers.
+export const EV_STREAM_VALUE  = 0x05;
+export const EV_STREAM_DONE   = 0x06;
+export const EV_STREAM_ERROR  = 0x07;
 
 // Event-arg types — encoded in byte 1 of the event record. See
 // flutter/skal_flutter/lib/skal/wire.dart's `eventArg*` constants.
@@ -145,6 +156,11 @@ export const EVENT_ARG_STR  = 0x04;
 // Used for object returns from RPC (XFile, Map<String,…>, anything
 // Dart's jsonEncode can serialize cleanly).
 export const EVENT_ARG_JSON = 0x05;
+// Tuple — payload is a JSON-encoded ARRAY; JS SPREADS the parsed
+// array on the bound handler. Used for multi-arg event callbacks
+// (`void Function(int, String)` etc.), distinct from EVENT_ARG_JSON
+// (single Map/Array arg) by spreading at call time.
+export const EVENT_ARG_TUPLE = 0x06;
 
 // ───────────────────────────────────────────────────────────────────────
 // Prop key namespace — must match wire.dart's prop* constants.
@@ -800,6 +816,10 @@ export function bindCustomHandler(nodeId, name, handlerId) {
 // ───────────────────────────────────────────────────────────────────────
 
 const pendingCalls = new Map();
+// Per-stream callback table — keyed by callId, same id-space as
+// pendingCalls (one nextCallId counter shared so the spaces don't
+// overlap). Value shape: { onValue, onError?, onDone? }.
+const streamHandlers = new Map();
 let nextCallId = 1;
 
 /**
@@ -850,6 +870,64 @@ export function invokeMethod(nodeId, methodName, args) {
   return new Promise((resolve, reject) => {
     pendingCalls.set(callId, { resolve, reject });
   });
+}
+
+/**
+ * Subscribe to a Dart-side `Stream<T>`. Emits OP_SUBSCRIBE_STREAM and
+ * registers the callback in `streamHandlers`. Returns an unsubscribe
+ * function — call it to send OP_UNSUBSCRIBE_STREAM and stop receiving
+ * values.
+ *
+ * Wire shape matches invokeMethod for the subscribe op + args; the
+ * difference is just the opcode (subscribe vs invoke). Dart's
+ * dispatcher returns the Stream as-is; bridge does the `.listen` and
+ * emits evStreamValue per element.
+ *
+ * @param {number} nodeId
+ * @param {string} methodName  Dart-side method name (NO `$` suffix —
+ *                             that's the JSX-side disambiguator).
+ * @param {Array} args         Positional args (same encoding as invoke)
+ * @param {Function} onValue   Called per emission with the decoded value
+ * @param {{onError?: Function, onDone?: Function}} [opts]
+ * @returns {Function}         Call to unsubscribe.
+ */
+export function subscribeStream(nodeId, methodName, args, onValue, opts) {
+  const h = _internName(methodName);
+  const callId = nextCallId++;
+  // Same arg-pack pattern as invokeMethod.
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i];
+    if (typeof v === 'number') {
+      if (Number.isInteger(v)) {
+        writeOp(OP_METHOD_ARG, callId, EVENT_ARG_I32, v | 0);
+      } else {
+        _f32buf[0] = v;
+        writeOp(OP_METHOD_ARG, callId, EVENT_ARG_F32, _u32view[0]);
+      }
+    } else if (typeof v === 'boolean') {
+      writeOp(OP_METHOD_ARG, callId, EVENT_ARG_BOOL, v ? 1 : 0);
+    } else if (typeof v === 'string') {
+      writeString(v);
+      const offset = _strOffset & 0xFFFFFF;
+      const len = _strLength & 0xFF;
+      writeOp(OP_METHOD_ARG, callId, EVENT_ARG_STR, (offset << 8) | len);
+    } else {
+      writeOp(OP_METHOD_ARG, callId, EVENT_ARG_VOID, 0);
+    }
+  }
+  writeOp(OP_SUBSCRIBE_STREAM, nodeId, h, callId);
+  scheduleCommit();
+  streamHandlers.set(callId, {
+    onValue,
+    onError: opts && opts.onError,
+    onDone: opts && opts.onDone,
+  });
+  return function unsubscribe() {
+    if (!streamHandlers.has(callId)) return;  // already cleaned up
+    streamHandlers.delete(callId);
+    writeOp(OP_UNSUBSCRIBE_STREAM, callId, 0, 0);
+    scheduleCommit();
+  };
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -946,6 +1024,13 @@ globalThis.__skal_drainEvents = function () {
       try { arg = JSON.parse(raw); }
       catch (_) { arg = raw; /* fall through to raw string */ }
       hasArg = true;
+    } else if (argType === EVENT_ARG_TUPLE) {
+      const raw = readReplyString(argOffset, argRaw);
+      try { arg = JSON.parse(raw); }
+      catch (_) { arg = []; }
+      hasArg = true;
+      // Note: handler invocation below SPREADS this array if it's
+      // actually an array — the regular-event branch checks for it.
     }
 
     if (eventKind === EV_METHOD_REPLY) {
@@ -976,13 +1061,53 @@ globalThis.__skal_drainEvents = function () {
           lastHandlerError = e && (e.stack || e.message || String(e)) || 'unknown';
         }
       }
+    } else if (eventKind === EV_STREAM_VALUE) {
+      // Stream element. Look up the active subscription's onValue,
+      // call with the decoded value. The subscription stays open until
+      // EV_STREAM_DONE or the dev unsubscribes.
+      const sub = streamHandlers.get(idSlot);
+      if (sub) {
+        try { sub.onValue(hasArg ? arg : undefined); }
+        catch (e) {
+          lastHandlerError = e && (e.stack || e.message || String(e)) || 'unknown';
+        }
+      }
+    } else if (eventKind === EV_STREAM_DONE) {
+      // Stream completed. Fire onDone if registered, then clean up.
+      const sub = streamHandlers.get(idSlot);
+      if (sub) {
+        streamHandlers.delete(idSlot);
+        try { if (sub.onDone) sub.onDone(); }
+        catch (e) {
+          lastHandlerError = e && (e.stack || e.message || String(e)) || 'unknown';
+        }
+      }
+    } else if (eventKind === EV_STREAM_ERROR) {
+      // Stream errored. Fire onError if registered (defaults to a
+      // console.warn-shaped log via lastHandlerError), clean up.
+      const sub = streamHandlers.get(idSlot);
+      if (sub) {
+        streamHandlers.delete(idSlot);
+        try {
+          if (sub.onError) sub.onError(new Error(
+            typeof arg === 'string' ? arg : 'skal stream error'));
+        } catch (e) {
+          lastHandlerError = e && (e.stack || e.message || String(e)) || 'unknown';
+        }
+      }
     } else {
       // Regular event — fire the bound JSX handler.
       const fn = handlers.get(idSlot);
       if (fn) {
         try {
-          if (hasArg) fn(arg);
-          else fn();
+          if (!hasArg) {
+            fn();
+          } else if (argType === EVENT_ARG_TUPLE && Array.isArray(arg)) {
+            // Multi-arg callback — spread the JSON-array payload.
+            fn(...arg);
+          } else {
+            fn(arg);
+          }
         } catch (e) {
           // Capture into a module global so we can read it via skalStatus()
           // — calling console.error here crashes Bun's ConsoleObject in the

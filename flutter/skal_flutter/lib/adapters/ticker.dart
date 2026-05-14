@@ -79,6 +79,23 @@ class TickController extends ChangeNotifier {
     };
   }
 
+  // Stream<int> — every tick (or every value change, including
+  // bump/reset) emits the current count. The codegen dispatcher
+  // returns this Stream as-is; the bridge does the `.listen` when
+  // the JSX side calls `ref.ticks$(cb)`. Subscribe / unsubscribe
+  // round-trips through the wire protocol's stream ops.
+  Stream<int> ticks() {
+    late StreamController<int> ctl;
+    void emit() {
+      if (!ctl.isClosed) ctl.add(_value);
+    }
+    ctl = StreamController<int>(
+      onListen: () => addListener(emit),
+      onCancel: () => removeListener(emit),
+    );
+    return ctl.stream;
+  }
+
   @override
   void dispose() {
     _timer?.cancel();

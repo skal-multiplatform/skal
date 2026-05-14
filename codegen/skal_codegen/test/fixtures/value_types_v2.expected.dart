@@ -41,7 +41,7 @@ Widget _build_Anchored(NodeState n, SkalBridge bridge) {
 
 Widget _build_Pic(NodeState n, SkalBridge bridge) {
   return Pic(
-    image: (() { final s = n.getCustomPropStr('image') ?? ''; if (s.startsWith('http')) return NetworkImage(s); if (s.startsWith('file://')) return FileImage(File(s.substring(7))); if (s.startsWith('/')) return FileImage(File(s)); return AssetImage(s); })(),
+    image: ((() { final s = n.getCustomPropStr('image') ?? ''; if (s.startsWith('http')) return NetworkImage(s); if (s.startsWith('file://')) return FileImage(File(s.substring(7))); if (s.startsWith('/')) return FileImage(File(s)); return AssetImage(s); })() as ImageProvider),
   );
 }
 

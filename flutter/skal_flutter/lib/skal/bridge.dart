@@ -30,6 +30,7 @@
 //     LinkedHashSet is fine.
 
 import 'dart:collection';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -104,6 +105,14 @@ class SkalBridge {
   /// args; the map stays tiny in practice + nothing strands across
   /// drains since invoke + args ship in the same op batch.
   final Map<int, List<Object?>> _pendingMethodArgs = <int, List<Object?>>{};
+
+  /// Active stream subscriptions, keyed by callId. opSubscribeStream
+  /// adds an entry; the stream's `onDone` / `onError` callbacks remove
+  /// it; opUnsubscribeStream cancels + removes. The bridge writes
+  /// evStreamValue events per emission; on done/error it writes the
+  /// terminal event and cleans up.
+  final Map<int, StreamSubscription<Object?>> _streamSubscriptions =
+      <int, StreamSubscription<Object?>>{};
 
   // ── Perf instrumentation (read by PerfHud) ───────────────────────
   int pumpAvgNs = 0;
@@ -459,7 +468,17 @@ class SkalBridge {
           }
           try {
             final result = dispatcher(methodName, args);
-            if (result is Future<Object?>) {
+            if (result is Stream<Object?>) {
+              // One-shot invoke can't return a stream — that's a
+              // subscribe-shaped operation. Tell the dev to use the
+              // $-suffixed JSX form (which emits opSubscribeStream
+              // instead). Cancel the inadvertent listen so we don't
+              // leak.
+              _writeMethodError(c,
+                  'skal RPC: $methodName returns Stream — use '
+                  '`ref.$methodName\$(cb)` to subscribe '
+                  '(callback last; returns an unsubscribe fn)');
+            } else if (result is Future<Object?>) {
               // Async — write the reply when the future resolves.
               // Capture callId in the closure; bridge can keep going.
               final callId = c;
@@ -474,6 +493,68 @@ class SkalBridge {
             }
           } catch (e) {
             _writeMethodError(c, 'skal RPC: $methodName threw: $e');
+          }
+          break;
+
+        case opSubscribeStream:
+          // a = nodeId, b = methodNameHash, c = callId. Args drain the
+          // same way as opInvokeMethod (via _pendingMethodArgs). The
+          // dispatcher MUST return a Stream<T>; we .listen and write
+          // each emission via evStreamValue + the same typed-arg
+          // encoding. Stream done/error fire terminal events.
+          final node = ns[a];
+          final methodName = _nameDict[b];
+          final args = _pendingMethodArgs.remove(c) ?? const <Object?>[];
+          if (node == null) {
+            _writeStreamError(c, 'skal stream: no such node id ($a)');
+            break;
+          }
+          if (methodName == null) {
+            _writeStreamError(c,
+                'skal stream: unknown method name hash '
+                '(0x${b.toRadixString(16)})');
+            break;
+          }
+          final dispatcher = node.methodDispatcher;
+          if (dispatcher == null) {
+            _writeStreamError(c,
+                'skal stream: no method dispatcher on node $a — host '
+                'not mounted yet');
+            break;
+          }
+          try {
+            final result = dispatcher(methodName, args);
+            if (result is! Stream<Object?>) {
+              _writeStreamError(c,
+                  'skal stream: $methodName did not return a Stream '
+                  '(got ${result.runtimeType}). Use `ref.$methodName()` '
+                  'for one-shot RPC instead of `.$methodName\$(cb)`.');
+              break;
+            }
+            final callId = c;
+            final sub = result.listen(
+              (value) => _writeStreamValue(callId, value),
+              onError: (e, _) => _writeStreamError(callId,
+                  'skal stream: $methodName errored: $e'),
+              onDone: () {
+                _writeStreamDone(callId);
+                _streamSubscriptions.remove(callId);
+              },
+              cancelOnError: false,
+            );
+            _streamSubscriptions[callId] = sub;
+          } catch (e) {
+            _writeStreamError(c, 'skal stream: $methodName threw: $e');
+          }
+          break;
+
+        case opUnsubscribeStream:
+          // a = callId. JS-initiated cancellation (e.g. dev called
+          // unsub() or component unmounted). Cancel the Dart-side
+          // subscription if it's still active.
+          final sub = _streamSubscriptions.remove(a);
+          if (sub != null) {
+            sub.cancel();
           }
           break;
 
@@ -772,6 +853,35 @@ class SkalBridge {
         argHeapOffset: offset);
   }
 
+  /// Dispatch a multi-arg callback. JS-side bound handler receives the
+  /// args SPREAD as positional params (`fn(a, b, c)`), not as a single
+  /// array. Used for `void Function(int, String)`-shaped callbacks
+  /// like list `onItemTap(index, payload)` or table `onSort(column,
+  /// direction)`.
+  ///
+  /// All args must be jsonEncode-able (primitives, Maps, Lists, classes
+  /// with toJson). Non-encodable values short-circuit to a void
+  /// dispatch — the JSX handler still fires, but with no args.
+  void dispatchEventTuple(int handlerId, List<Object?> args,
+      {int eventKind = evChange}) {
+    if (handlerId == 0) return;
+    String encoded;
+    try {
+      encoded = jsonEncode(args);
+    } catch (_) {
+      // jsonEncode threw — fall back to void dispatch so the handler
+      // still fires. Dev catches this in development.
+      dispatchEvent(handlerId, eventKind: eventKind);
+      return;
+    }
+    final (offset, length) = _writeReplyString(encoded);
+    dispatchEvent(handlerId,
+        eventKind: eventKind,
+        argType: eventArgTuple,
+        argValueI32: length,
+        argHeapOffset: offset);
+  }
+
   /// Bit-cast a double down to an f32 and return the bit pattern as
   /// a signed 32-bit int (matching the i32 storage slot in the event
   /// record). Uses ByteData rather than `(value as int)` so subnormal
@@ -842,6 +952,66 @@ class SkalBridge {
     final (offset, length) = _writeReplyString(message);
     dispatchEvent(callId,
         eventKind: evMethodError,
+        argType: eventArgStr,
+        argValueI32: length,
+        argHeapOffset: offset);
+  }
+
+  /// Write one stream element. Same payload-encoding shape as
+  /// _writeMethodReply, but eventKind = evStreamValue so JS routes
+  /// to streamHandlers[callId] (callback) instead of pendingCalls
+  /// (Promise).
+  void _writeStreamValue(int callId, Object? value) {
+    int argType;
+    int argValueI32 = 0;
+    int argHeapOffset = 0;
+    if (value == null) {
+      argType = eventArgVoid;
+    } else if (value is bool) {
+      argType = eventArgBool;
+      argValueI32 = value ? 1 : 0;
+    } else if (value is int) {
+      argType = eventArgI32;
+      argValueI32 = value;
+    } else if (value is double) {
+      argType = eventArgF32;
+      argValueI32 = _f32ToBits(value);
+    } else if (value is String) {
+      final (offset, length) = _writeReplyString(value);
+      argType = eventArgStr;
+      argValueI32 = length;
+      argHeapOffset = offset;
+    } else {
+      try {
+        final encoded = jsonEncode(value);
+        final (offset, length) = _writeReplyString(encoded);
+        argType = eventArgJson;
+        argValueI32 = length;
+        argHeapOffset = offset;
+      } catch (_) {
+        argType = eventArgVoid;
+      }
+    }
+    dispatchEvent(callId,
+        eventKind: evStreamValue,
+        argType: argType,
+        argValueI32: argValueI32,
+        argHeapOffset: argHeapOffset);
+  }
+
+  /// Write the stream's terminal "done" event. No payload; JS deletes
+  /// the streamHandlers entry on receipt.
+  void _writeStreamDone(int callId) {
+    dispatchEvent(callId, eventKind: evStreamDone);
+  }
+
+  /// Write a stream's terminal "error" event with a descriptive
+  /// message. JS routes this to the optional onError callback
+  /// (defaults to console.warn) and removes the subscription.
+  void _writeStreamError(int callId, String message) {
+    final (offset, length) = _writeReplyString(message);
+    dispatchEvent(callId,
+        eventKind: evStreamError,
         argType: eventArgStr,
         argValueI32: length,
         argHeapOffset: offset);

@@ -358,10 +358,11 @@ void main() {
 
       expect(
         result.generated.map((w) => w.className).toSet(),
-        {'Tappable', 'Refreshable', 'Form'},
+        {'Tappable', 'Refreshable', 'Form', 'TapList'},
       );
       expect(result.skipped, isEmpty,
-          reason: 'VoidCallback + ValueChanged<T> should not cause skips');
+          reason: 'VoidCallback + ValueChanged<T> + multi-arg fn should '
+              'not cause skips');
 
       final expected = File(expectedPath).readAsStringSync();
       expect(_normalize(result.source), _normalize(expected),

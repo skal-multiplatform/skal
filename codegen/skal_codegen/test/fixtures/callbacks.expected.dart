@@ -40,8 +40,16 @@ Widget _build_Form(NodeState n, SkalBridge bridge) {
   );
 }
 
+Widget _build_TapList(NodeState n, SkalBridge bridge) {
+  return TapList(
+    onItemTap: (index, payload) => bridge.dispatchEventTuple(n.getCustomHandler('onItemTap'), [index, payload]),
+    onReorder: (oldIndex, newIndex) => bridge.dispatchEventTuple(n.getCustomHandler('onReorder'), [oldIndex, newIndex]),
+  );
+}
+
 void registerAll() {
   SkalRegistry.registerWidget('tappable', _build_Tappable);
   SkalRegistry.registerWidget('refreshable', _build_Refreshable);
   SkalRegistry.registerWidget('form', _build_Form);
+  SkalRegistry.registerWidget('tapList', _build_TapList);
 }

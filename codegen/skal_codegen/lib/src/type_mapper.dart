@@ -427,14 +427,33 @@ PropEncoding? encodingFor({
   // fallback (most widgets accept any ImageProvider; the displayed
   // pixels are nothing).
   if (_isFlutterImageProvider(type)) {
+    // Nullability matters here. Returning null from the IIFE for
+    // empty string only makes sense if the param is `ImageProvider?`;
+    // for non-nullable `ImageProvider` we need to construct something
+    // (AssetImage('') with its runtime warning, or a transparent
+    // placeholder — we go with AssetImage('') so the dev sees a clear
+    // "you didn't set the prop" failure if it matters).
+    //
+    // The IIFE's branches return different concrete subtypes, so
+    // Dart's inference collapses the return type to their common
+    // supertype Object. Explicit cast pins it to the right nullable/
+    // non-nullable shape so it assigns to the param without complaint.
+    final isNullable = typeName.endsWith('?');
+    final castTo = isNullable ? 'ImageProvider?' : 'ImageProvider';
+    final nullBranch = isNullable
+        ? 'if (s.isEmpty) return null; '
+        // Non-nullable: skip the empty-check, AssetImage('') gets
+        // returned and Flutter warns at runtime.
+        : '';
     return PropEncoding(
-      readerExpression: '(() { '
+      readerExpression: '((() { '
           "final s = n.getCustomPropStr('$paramName') ?? ''; "
+          '$nullBranch'
           "if (s.startsWith('http')) return NetworkImage(s); "
           "if (s.startsWith('file://')) return FileImage(File(s.substring(7))); "
           "if (s.startsWith('/')) return FileImage(File(s)); "
           'return AssetImage(s); '
-          '})()',
+          '})() as $castTo)',
       dartTypeName: typeName,
       // FileImage uses dart:io.File. The generated file would need an
       // import for that.
@@ -510,6 +529,28 @@ PropEncoding? encodingFor({
     // ValueChanged<EnumX> / ValueChanged<List<T>> / etc — fall through
     // to the unsupported-type skip path. Enums could encode as i32
     // (their index); add when the first real-world need shows up.
+  }
+
+  // Multi-arg callback: `void Function(T1, T2, …)` — typically list
+  // tap callbacks like `void onItemTap(int index, String payload)`.
+  // Codegen emits a closure that calls bridge.dispatchEventTuple
+  // with the args list; JS-side drain JSON-decodes + spreads on the
+  // bound handler.
+  //
+  // Requirement: 2+ positional args, all jsonEncode-able. We don't
+  // try to validate "encodable" at codegen time — jsonEncode handles
+  // primitives, Lists, Maps, and toJson()-bearing classes; non-
+  // encodable values surface at runtime as a void dispatch fallback
+  // (the handler fires with no args).
+  if (_isMultiArgCallback(type)) {
+    final ft = type as FunctionType;
+    final paramNames =
+        ft.formalParameters.map((p) => p.name3 ?? '_').join(', ');
+    return PropEncoding(
+      readerExpression: '($paramNames) => bridge.dispatchEventTuple('
+          "n.getCustomHandler('$paramName'), [$paramNames])",
+      dartTypeName: typeName,
+    );
   }
 
   // Color — Flutter's `ui.Color` (or `material.Color`, same class).
@@ -668,6 +709,21 @@ DartType? _valueChangedTypeArg(DartType t) {
   final param = t.formalParameters.first;
   if (!param.isPositional) return null;
   return param.type;
+}
+
+/// `void Function(T1, T2, …)` with 2+ positional args. The
+/// single-arg case is `ValueChanged<T>`; the zero-arg is
+/// `VoidCallback`. This catches everything else.
+bool _isMultiArgCallback(DartType t) {
+  if (t is! FunctionType) return false;
+  if (t.returnType is! VoidType) return false;
+  if (t.formalParameters.length < 2) return false;
+  // Every arg must be positional (named args in event callbacks are
+  // rare and would complicate the spread on the JS side).
+  for (final p in t.formalParameters) {
+    if (!p.isPositional) return false;
+  }
+  return true;
 }
 
 /// Match Flutter's `VoidCallback` (defined in `dart:ui` as

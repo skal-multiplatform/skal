@@ -66,3 +66,16 @@ class Form extends StatelessWidget {
   @override
   Widget build(BuildContext context) => const Text('form');
 }
+
+/// Multi-arg callbacks — codegen routes through dispatchEventTuple,
+/// which JSON-encodes the arg list. JS-side drain spreads the array
+/// on the bound handler: `fn(...args)`.
+class TapList extends StatelessWidget {
+  final void Function(int index, String payload)? onItemTap;
+  final void Function(int oldIndex, int newIndex)? onReorder;
+
+  const TapList({super.key, this.onItemTap, this.onReorder});
+
+  @override
+  Widget build(BuildContext context) => const Text('list');
+}

@@ -95,6 +95,15 @@ const int opBindCustomHandler = 0x1B;
 // callId, drains them when the invoke arrives, then discards.
 const int opInvokeMethod      = 0x1C;
 const int opMethodArg         = 0x1D;
+// Stream subscription — `ref.foo$(cb)` on JSX maps to a Dart-side
+// `Stream<T>`-returning method. Wire shape mirrors opInvokeMethod:
+// (nodeId, methodNameHash, callId). Args ship via opMethodArg ops
+// BEFORE the subscribe (same as one-shot invokes). Dart `.listen`s
+// the stream, stores the subscription keyed by callId; JS keeps the
+// callback in its streamHandlers map. JS-initiated cancellation
+// sends opUnsubscribeStream(callId).
+const int opSubscribeStream   = 0x1E;
+const int opUnsubscribeStream = 0x1F;
 // Hot props — own opcodes so the drain dispatches them directly to
 // dedicated ValueNotifiers without the propsVersion bump. See
 // PROPS_PLAN.md §5.
@@ -168,6 +177,15 @@ const int evMethodReply  = 0x03;
 // Method-invocation failure. Same layout, but argType+argValueI32
 // encode an error code or string-heap ref. The Promise rejects.
 const int evMethodError  = 0x04;
+// Stream emission events. evStreamValue carries one element of a
+// subscribed Stream<T> (encoded via the standard argType + argValue
+// + argHeapOffset triple). evStreamDone fires when the stream
+// completes normally; evStreamError fires on stream error and carries
+// the error message via the reply heap. All three use the
+// handlerId/callId slot to identify the active subscription.
+const int evStreamValue  = 0x05;
+const int evStreamDone   = 0x06;
+const int evStreamError  = 0x07;
 
 // ── Event record layout (16 bytes per slot in the event ring) ────────
 //
@@ -208,6 +226,13 @@ const int eventArgStr  = 0x04;
 // jsonEncode can serialize). The codegen-emitted host adapter calls
 // jsonEncode for non-primitive returns; JS auto-parses on receipt.
 const int eventArgJson = 0x05;
+// Tuple — payload is a JSON-encoded ARRAY of positional args. JS
+// SPREADS the array on the bound handler: `fn(...args)`. Used for
+// multi-arg callbacks like `void Function(int, String)`. Distinct
+// from `eventArgJson` (where the parsed value is passed as a single
+// arg). The Dart side serializes the arg list with jsonEncode and
+// dispatches via `bridge.dispatchEventTuple(handlerId, [a, b, c])`.
+const int eventArgTuple = 0x06;
 
 // ── Prop key namespace ────────────────────────────────────────────────
 // Partitioned by tier so apps + future expansions don't collide. See

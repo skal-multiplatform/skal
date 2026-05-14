@@ -183,6 +183,10 @@ export default function App() {
   // _TickerHost dispatches to TickController methods on the Dart side.
   const ticker = createSkalRef();
   const [tickerLog, setTickerLog] = createSignal('— tap a button to RPC the Ticker —');
+  // Holds the unsubscribe function returned by `ticker.ticks$(cb)`,
+  // or null when not subscribed. Storing in a signal lets the
+  // sub/unsub button toggle state.
+  const [tickerUnsub, setTickerUnsub] = createSignal(null);
 
   // createMemo: derived signal, recomputed only when visibleTweets changes.
   // <For> below will diff the old vs new array using identity (default) and
@@ -307,6 +311,23 @@ export default function App() {
             setTickerLog('bogus(): unexpectedly resolved');
           } catch (e) {
             setTickerLog(`bogus() rejected: ${e.message}`);
+          }
+        }} />
+        {/* Stream subscription. `ticks$` (note the trailing $) tells
+            the runtime "this is a stream method"; we get an
+            unsubscribe function back. Each tick emission updates the
+            label below. Tap again to unsubscribe. */}
+        <Button label="sub/unsub" onClick={() => {
+          if (tickerUnsub()) {
+            tickerUnsub()();
+            setTickerUnsub(() => null);
+            setTickerLog('unsubscribed from ticks$');
+          } else {
+            const unsub = ticker.ticks$((v) => {
+              setTickerLog(`stream tick: ${v}`);
+            });
+            setTickerUnsub(() => unsub);
+            setTickerLog('subscribed to ticks$ — wait for emissions…');
           }
         }} />
       </Row>

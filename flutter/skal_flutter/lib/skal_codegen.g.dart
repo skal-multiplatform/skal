@@ -20,6 +20,7 @@ Widget _build_QrImageView(NodeState n, SkalBridge bridge) {
   return QrImageView(
     data: n.getCustomPropStr('data') ?? '',
     size: n.getCustomPropF32('size', 0.0),
+    padding: EdgeInsets.fromLTRB(n.getCustomPropF32('paddingLeft', 10.0), n.getCustomPropF32('paddingTop', 10.0), n.getCustomPropF32('paddingRight', 10.0), n.getCustomPropF32('paddingBottom', 10.0)),
     backgroundColor: Color(n.getCustomPropU32('backgroundColor', 0x00000000)),
     version: n.getCustomPropU32('version', QrVersions.auto),
     errorCorrectionLevel: n.getCustomPropU32('errorCorrectionLevel', QrErrorCorrectLevel.L),

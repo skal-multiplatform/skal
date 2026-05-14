@@ -19,12 +19,17 @@ class Banner extends StatelessWidget {
   final String message;
   final BannerStyle style;
   final Duration dismissAfter;
+  final EdgeInsets padding;
 
   const Banner({
     super.key,
     this.message = '',
     this.style = BannerStyle.info,
     this.dismissAfter = const Duration(milliseconds: 500),
+    // Asymmetric default so the snapshot test confirms each side
+    // gets its own value from constant evaluation rather than a
+    // single shared fallback.
+    this.padding = const EdgeInsets.fromLTRB(4, 8, 4, 8),
   });
 
   @override

@@ -21,6 +21,7 @@ Widget _build_Banner(NodeState n, SkalBridge bridge) {
     message: n.getCustomPropStr('message') ?? '',
     style: BannerStyle.values[n.getCustomPropU32('style', 0)],
     dismissAfter: Duration(milliseconds: n.getCustomPropU32('dismissAfter', 500)),
+    padding: EdgeInsets.fromLTRB(n.getCustomPropF32('paddingLeft', 4.0), n.getCustomPropF32('paddingTop', 8.0), n.getCustomPropF32('paddingRight', 4.0), n.getCustomPropF32('paddingBottom', 8.0)),
   );
 }
 

@@ -24,10 +24,13 @@
 //   Color       → Color(getCustomPropU32(name, 0xAARRGGBB))
 //   enum        → <EnumType>.values[getCustomPropU32(name, <defaultIndex>)]
 //   Duration    → Duration(milliseconds: getCustomPropU32(name, <defaultMs>))
+//   EdgeInsets  → EdgeInsets.fromLTRB(<4 f32 reads>, with side-named
+//                                     subprops: paddingLeft/Top/Right/Bottom
+//                                     for a param named `padding`)
 //
 // Anything else → null (the caller skips the whole widget with a
 // warning — falls back to a hand-written adapter for the long tail).
-// Later slices add EdgeInsets, Offset, etc.
+// Later slices add Offset, TextStyle, etc.
 
 // The new Element2 model is marked @experimental until the analyzer
 // team stabilizes it. The OLD Element API is deprecated. Either side
@@ -171,6 +174,52 @@ PropEncoding? encodingFor({
     );
   }
 
+  // EdgeInsets — Flutter's padding/margin value type. Maps to FOUR
+  // separate F32 props in the bridge (one per side) because a single-
+  // u32 encoding would lose precision and a single-string encoding
+  // would feel un-JSX-y at the call site.
+  //
+  // Sub-prop naming convention: <paramName><Side> with the side name
+  // capitalized. For a param `padding`, the JSX sub-props are
+  // `paddingLeft`, `paddingTop`, `paddingRight`, `paddingBottom`. For
+  // `margin`, `marginLeft` and so on. Symmetric across all wrapped
+  // widgets — a dev wrapping multiple widgets with EdgeInsets params
+  // gets the same naming everywhere.
+  //
+  // Generated reader uses `EdgeInsets.fromLTRB(...)` because that's
+  // the constructor whose parameter order matches our side iteration
+  // (left, top, right, bottom). Other EdgeInsets constructors
+  // (`.all`, `.symmetric`, `.only`) produce the same shape but their
+  // call-site form would be awkward to emit.
+  //
+  // Defaults: read each of left/top/right/bottom off the constant
+  // evaluation of the parameter's default expression. Works for
+  // `EdgeInsets.all(10.0)`, `EdgeInsets.fromLTRB(8, 16, 8, 16)`,
+  // `EdgeInsets.symmetric(horizontal: 4, vertical: 8)` — all flatten
+  // to four doubles on the constant value.
+  if (_isFlutterEdgeInsets(type)) {
+    final l =
+        defaultConstant?.getField('left')?.toDoubleValue() ?? 0.0;
+    final t =
+        defaultConstant?.getField('top')?.toDoubleValue() ?? 0.0;
+    final r =
+        defaultConstant?.getField('right')?.toDoubleValue() ?? 0.0;
+    final b =
+        defaultConstant?.getField('bottom')?.toDoubleValue() ?? 0.0;
+    final leftProp = '$paramName${_sidePropSuffix("Left")}';
+    final topProp = '$paramName${_sidePropSuffix("Top")}';
+    final rightProp = '$paramName${_sidePropSuffix("Right")}';
+    final bottomProp = '$paramName${_sidePropSuffix("Bottom")}';
+    return PropEncoding(
+      readerExpression: 'EdgeInsets.fromLTRB('
+          "n.getCustomPropF32('$leftProp', $l), "
+          "n.getCustomPropF32('$topProp', $t), "
+          "n.getCustomPropF32('$rightProp', $r), "
+          "n.getCustomPropF32('$bottomProp', $b))",
+      dartTypeName: typeName,
+    );
+  }
+
   // Color — Flutter's `ui.Color` (or `material.Color`, same class).
   // Wire encoding is 32-bit ARGB; adapter wraps in Color(...).
   //
@@ -222,6 +271,22 @@ bool _isEnum(DartType t) {
 bool _isDuration(DartType t) =>
     t.element3?.name3 == 'Duration' &&
     t.element3?.library2?.isDartCore == true;
+
+bool _isFlutterEdgeInsets(DartType t) {
+  // Matches Flutter's `EdgeInsets` (`package:flutter/painting.dart`).
+  // Like _isFlutterColor, match by name alone — gets the fake-Flutter
+  // shim too. EdgeInsets extends EdgeInsetsGeometry; we only handle
+  // the concrete EdgeInsets subclass for now (EdgeInsetsDirectional
+  // would need rtl-aware encoding).
+  return t.element3?.name3 == 'EdgeInsets';
+}
+
+/// Side-name suffix joined to a param name. `Left` stays `Left`; if
+/// the param name ALREADY ends in the side word ("paddingLeft"
+/// already → leave alone) we'd get `paddingLeftLeft` — not handled
+/// here since EdgeInsets params are conventionally named `padding`,
+/// `margin`, `insets`, never `paddingLeft`.
+String _sidePropSuffix(String capitalized) => capitalized;
 
 bool _isFlutterColor(DartType t) {
   // Flutter's Color lives in `dart:ui` (re-exported by flutter/material).

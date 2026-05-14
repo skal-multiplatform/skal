@@ -50,3 +50,30 @@ class Text extends Widget {
   @override
   String toString() => 'Text($data)';
 }
+
+/// Minimal EdgeInsets stand-in. Real Flutter's EdgeInsets exposes the
+/// same `left/top/right/bottom` final-double fields, plus three
+/// alternative constructors (`.all`, `.symmetric`, `.only`). The
+/// analyzer's constant evaluator flattens all of them to the same
+/// four-double shape, so the codegen logic that reads those fields
+/// works the same against this stub.
+class EdgeInsets {
+  final double left;
+  final double top;
+  final double right;
+  final double bottom;
+
+  const EdgeInsets.fromLTRB(this.left, this.top, this.right, this.bottom);
+
+  const EdgeInsets.all(double v)
+      : left = v,
+        top = v,
+        right = v,
+        bottom = v;
+
+  const EdgeInsets.symmetric({double horizontal = 0, double vertical = 0})
+      : left = horizontal,
+        top = vertical,
+        right = horizontal,
+        bottom = vertical;
+}

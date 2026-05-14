@@ -27,6 +27,8 @@
 //   EdgeInsets  → EdgeInsets.fromLTRB(<4 f32 reads>, with side-named
 //                                     subprops: paddingLeft/Top/Right/Bottom
 //                                     for a param named `padding`)
+//   Widget      → SkalNode(nodeId: <first JSX child>, ...) — the
+//                 widget renders the FIRST child node from JSX.
 //
 // Anything else → null (the caller skips the whole widget with a
 // warning — falls back to a hand-written adapter for the long tail).
@@ -57,9 +59,19 @@ class PropEncoding {
   /// "double"). Useful for generated comments / future inline doc.
   final String dartTypeName;
 
+  /// Extra `import` URIs the generated file needs to make
+  /// [readerExpression] compile. The generator dedupes + emits these
+  /// alongside the standard framework imports.
+  ///
+  /// Primitive encodings need nothing extra (the std imports already
+  /// cover them). Widget-child encoding needs SkalNode, which lives
+  /// in `package:skal_flutter/skal/root.dart`.
+  final List<String> requiredImports;
+
   const PropEncoding({
     required this.readerExpression,
     required this.dartTypeName,
+    this.requiredImports = const [],
   });
 }
 
@@ -174,6 +186,39 @@ PropEncoding? encodingFor({
     );
   }
 
+  // Widget — the param expects a child widget. JSX expresses these
+  // as child elements of the parent: `<Hero><Image src="…"/></Hero>`
+  // becomes "the Hero adapter receives the Image as its first child
+  // node via NodeState.childAt(0)".
+  //
+  // Encoding: read the first child node and instantiate it as a
+  // SkalNode. SkalNode is Skal's widget-tree-cell — wraps the bridge
+  // node id, subscribes to its `cold` notifier, builds the matching
+  // widget via _buildForType. Same mechanism the framework uses for
+  // every built-in widget's children.
+  //
+  // For non-nullable `Widget child` params the constructor demands a
+  // widget; if JSX provided no children we fall back to
+  // `SizedBox.shrink()` so the constructor still succeeds (the
+  // mis-use is visible as zero-sized empty space rather than a
+  // crash). For nullable `Widget? child` the same fallback works
+  // — passing a shrink widget is functionally equivalent to null
+  // for layout purposes, and keeps the generated code uniform.
+  //
+  // Multi-child params (`List<Widget> children`) are NOT handled
+  // yet — they need to gather every child node id, not just the
+  // first. Separate type-mapper branch in a follow-up commit.
+  if (_isFlutterWidget(type)) {
+    return PropEncoding(
+      readerExpression: 'n.childCount > 0'
+          ' ? SkalNode(nodeId: n.childAt(0), bridge: bridge, '
+          'key: ValueKey<int>(n.childAt(0)))'
+          ' : const SizedBox.shrink()',
+      dartTypeName: typeName,
+      requiredImports: const ['package:skal_flutter/skal/root.dart'],
+    );
+  }
+
   // EdgeInsets — Flutter's padding/margin value type. Maps to FOUR
   // separate F32 props in the bridge (one per side) because a single-
   // u32 encoding would lose precision and a single-string encoding
@@ -271,6 +316,38 @@ bool _isEnum(DartType t) {
 bool _isDuration(DartType t) =>
     t.element3?.name3 == 'Duration' &&
     t.element3?.library2?.isDartCore == true;
+
+/// Match Flutter's `Widget` (or any of its core subclasses used as
+/// type annotations: StatelessWidget, StatefulWidget, PreferredSizeWidget).
+/// We treat all of these as "render the first JSX child here" — the
+/// param's narrower type signals nothing the encoding needs to vary
+/// on, since SkalNode renders whatever's at the child node id.
+bool _isFlutterWidget(DartType t) {
+  final name = t.element3?.name3;
+  if (name == 'Widget' ||
+      name == 'StatelessWidget' ||
+      name == 'StatefulWidget' ||
+      name == 'PreferredSizeWidget') {
+    return true;
+  }
+  // Walk the supertype chain — a user-defined widget class (e.g.
+  // `class MyChip extends StatelessWidget`) is still a Widget.
+  final el = t.element3;
+  if (el is InterfaceElement2) {
+    var sup = el.supertype;
+    while (sup != null) {
+      final supName = sup.element3.name3;
+      if (supName == 'Widget' ||
+          supName == 'StatelessWidget' ||
+          supName == 'StatefulWidget' ||
+          supName == 'PreferredSizeWidget') {
+        return true;
+      }
+      sup = sup.element3.supertype;
+    }
+  }
+  return false;
+}
 
 bool _isFlutterEdgeInsets(DartType t) {
   // Matches Flutter's `EdgeInsets` (`package:flutter/painting.dart`).

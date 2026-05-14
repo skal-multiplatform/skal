@@ -112,6 +112,10 @@ GenerationResult generate({
   final widgets = <GeneratedWidget>[];
   final adapterBodies = <String>[];
   final registryCalls = <String>[];
+  // Extra imports an encoding needs beyond the standard framework
+  // imports (e.g. widget-child encoding wants SkalNode from root.dart).
+  // Deduped before emission.
+  final extraImports = <String>{};
 
   // Track which units contributed at least one GENERATED widget. Units
   // with no widgets (helper-only files in a multi-file scan) or only
@@ -129,6 +133,7 @@ GenerationResult generate({
       if (result.body != null) {
         adapterBodies.add(result.body!);
         contributingUnitIdx.add(i);
+        extraImports.addAll(result.requiredImports);
       }
       if (result.registryLine != null) {
         registryCalls.add(result.registryLine!);
@@ -160,8 +165,13 @@ GenerationResult generate({
     ..writeln("import 'package:flutter/material.dart';")
     ..writeln("import 'package:skal_flutter/skal/bridge.dart';")
     ..writeln("import 'package:skal_flutter/skal/node_state.dart';")
-    ..writeln("import 'package:skal_flutter/skal/registry.dart';")
-    ..writeln();
+    ..writeln("import 'package:skal_flutter/skal/registry.dart';");
+  // Conditional extra framework imports — one per encoding that
+  // requested it. Sorted for deterministic output across runs.
+  for (final imp in extraImports.toList()..sort()) {
+    buffer.writeln("import '$imp';");
+  }
+  buffer.writeln();
   // Dedupe imports: when multiple input files come from the same
   // pub-cache package, the CLI maps them all to a single `package:`
   // entry-point URI. Emitting that twice is a Dart compile error.
@@ -192,7 +202,16 @@ class _AdapterResult {
   final GeneratedWidget summary;
   final String? body;
   final String? registryLine;
-  _AdapterResult(this.summary, {this.body, this.registryLine});
+  /// Aggregated requiredImports from every encoding that contributed
+  /// to this adapter's body. Generator-level accumulator pulls these
+  /// up + dedupes across all adapters in the file.
+  final List<String> requiredImports;
+  _AdapterResult(
+    this.summary, {
+    this.body,
+    this.registryLine,
+    this.requiredImports = const [],
+  });
 }
 
 _AdapterResult _emitAdapter(ClassElement2 cls) {
@@ -224,6 +243,7 @@ _AdapterResult _emitAdapter(ClassElement2 cls) {
   // devs know what they can't drive from JSX.
   final lines = <String>[];
   final omittedOptionalParams = <String>[];
+  final requiredImports = <String>{};
   String? skipReason;
 
   for (final param in ctor.formalParameters) {
@@ -268,6 +288,7 @@ _AdapterResult _emitAdapter(ClassElement2 cls) {
       continue;
     }
     lines.add('    $name: ${encoding.readerExpression},');
+    requiredImports.addAll(encoding.requiredImports);
   }
 
   if (skipReason != null) {
@@ -292,6 +313,7 @@ _AdapterResult _emitAdapter(ClassElement2 cls) {
     body: body.toString(),
     registryLine:
         "SkalRegistry.registerWidget('$registryKey', _build_$className);",
+    requiredImports: requiredImports.toList(),
   );
 }
 

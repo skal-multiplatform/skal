@@ -129,6 +129,43 @@ void main() {
               'mini_pack.expected.dart');
     });
 
+    test('widget-child param emits SkalNode reader + extra import', () async {
+      // Wrapper has `required Widget child`, Tinted has `Widget?
+      // child` plus a primitive. Both should emit the same
+      // `n.childCount > 0 ? SkalNode(...) : SizedBox.shrink()`
+      // pattern, and the generated file should include the
+      // `package:skal_flutter/skal/root.dart` import for SkalNode.
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/widget_child.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/widget_child.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+
+      final result = generate(
+        units: [unitResult as ResolvedUnitResult],
+        sourceRelativeImports: ['widget_child.dart'],
+      );
+
+      expect(
+        result.generated.map((w) => w.className).toSet(),
+        {'Wrapper', 'Tinted'},
+      );
+      expect(result.skipped, isEmpty,
+          reason: 'Widget child params should NOT cause skips anymore');
+
+      final expected = File(expectedPath).readAsStringSync();
+      expect(_normalize(result.source), _normalize(expected),
+          reason: 'widget-child generator output does NOT match '
+              'widget_child.expected.dart');
+    });
+
     test('complex types: enum + Duration encoded correctly', () async {
       // Exercises the post-primitive type mapper:
       //   • enum BannerStyle → values[index] decode with int default

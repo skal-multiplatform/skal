@@ -257,8 +257,11 @@ class _HostMarkerEntry {
   final String wrappedWidgetName;
   final String factoryImport;
   final String factoryFnName;
+  /// Optional named-param name for the controller pass-through. Null
+  /// means positional (the default). See HostConfig.controllerProp.
+  final String? controllerProp;
   _HostMarkerEntry(this.jsxName, this.wrappedWidgetName, this.factoryImport,
-      this.factoryFnName);
+      this.factoryFnName, this.controllerProp);
 }
 
 /// Parse the marker file's `hosts:` section into raw entries. Each
@@ -283,7 +286,12 @@ List<_HostMarkerEntry> _readHostsFromMarker(String markerYaml) {
     final factoryImport = factory.substring(0, hash);
     final factoryFn = factory.substring(hash + 1);
     if (factoryImport.isEmpty || factoryFn.isEmpty) continue;
-    out.add(_HostMarkerEntry(jsxName, widget, factoryImport, factoryFn));
+    // Optional named-controller hint. Most viewport widgets take the
+    // controller positionally (default); a few (WebView,
+    // TextEditingController-driven forms) take it as `controller:`.
+    final controllerProp = value['controllerProp']?.toString();
+    out.add(_HostMarkerEntry(
+        jsxName, widget, factoryImport, factoryFn, controllerProp));
   }
   return out;
 }
@@ -356,6 +364,7 @@ Future<List<HostConfig>> _resolveHosts(
       factoryFn: factoryFn,
       factoryImport: e.factoryImport,
       wrappedWidgetImport: wrappedImport,
+      controllerProp: e.controllerProp,
     ));
   }
   return out;

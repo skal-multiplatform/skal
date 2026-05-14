@@ -301,6 +301,147 @@ PropEncoding? encodingFor({
     );
   }
 
+  // Offset — Flutter's `dart:ui` Offset (dx, dy). Two-prop expansion
+  // following the EdgeInsets pattern: `<paramName>X` + `<paramName>Y`.
+  // For a param named `position`, JSX sets `positionX={…} positionY={…}`.
+  if (_isFlutterOffset(type)) {
+    final dx = defaultConstant?.getField('dx')?.toDoubleValue() ?? 0.0;
+    final dy = defaultConstant?.getField('dy')?.toDoubleValue() ?? 0.0;
+    return PropEncoding(
+      readerExpression: 'Offset('
+          "n.getCustomPropF32('${paramName}X', $dx), "
+          "n.getCustomPropF32('${paramName}Y', $dy))",
+      dartTypeName: typeName,
+    );
+  }
+
+  // Alignment — Flutter's `painting` Alignment (x, y in [-1, 1]).
+  // Same two-prop expansion as Offset but with Alignment constructor.
+  // JSX: `alignmentX={…} alignmentY={…}` (or whatever the dev's param
+  // name is, e.g. `anchorX`/`anchorY` for `anchor`).
+  if (_isFlutterAlignment(type)) {
+    final ax = defaultConstant?.getField('x')?.toDoubleValue() ?? 0.0;
+    final ay = defaultConstant?.getField('y')?.toDoubleValue() ?? 0.0;
+    return PropEncoding(
+      readerExpression: 'Alignment('
+          "n.getCustomPropF32('${paramName}X', $ax), "
+          "n.getCustomPropF32('${paramName}Y', $ay))",
+      dartTypeName: typeName,
+    );
+  }
+
+  // BorderRadius — uniform-all-corners only for v1. Per-corner shapes
+  // (BorderRadius.only) would need 4-prop expansion plus a Radius
+  // constructor; defer until a real package needs it. The dev sets a
+  // single `<paramName>Radius` prop; codegen emits
+  // `BorderRadius.all(Radius.circular(r))`.
+  if (_isFlutterBorderRadius(type)) {
+    // Default extraction: BorderRadius stores the corners as topLeft /
+    // topRight / etc. — for the uniform case all four match. Read
+    // topLeft.x as the representative.
+    final r = defaultConstant
+            ?.getField('topLeft')
+            ?.getField('x')
+            ?.toDoubleValue() ??
+        0.0;
+    return PropEncoding(
+      readerExpression: 'BorderRadius.all(Radius.circular('
+          "n.getCustomPropF32('${paramName}Radius', $r)))",
+      dartTypeName: typeName,
+    );
+  }
+
+  // TextStyle — most commonly-tweaked fields, decomposed into sub-props.
+  // Mirrors the built-in <Text> widget's flat prop set so the
+  // mental model is the same. For a param named `style`:
+  //   styleFontSize, styleColor, styleLetterSpacing, styleHeight,
+  //   styleFontWeight (index 0..8 → w100..w900).
+  //
+  // Fields NOT covered (yet): fontFamily, fontStyle (italic),
+  // decoration, decorationColor, decorationStyle. Same pattern would
+  // extend; mechanical to add when packages need them.
+  if (_isFlutterTextStyle(type)) {
+    final fontSize =
+        defaultConstant?.getField('fontSize')?.toDoubleValue() ?? 14.0;
+    // FontWeight is a class with static-const instances; its `.index`
+    // field holds the values-list index (0..8 for w100..w900). Pull
+    // that for the default; the JSX side passes the index directly.
+    final fontWeightIdx =
+        defaultConstant?.getField('fontWeight')?.getField('index')?.toIntValue()
+            ?? 3;  // w400 = "normal"
+    // Color: same dual-extraction as the standalone Color encoder.
+    final colorDefault = defaultConstant?.getField('color');
+    final colorU32 = _colorObjAsU32(colorDefault);
+    final letterSpacing = defaultConstant
+            ?.getField('letterSpacing')
+            ?.toDoubleValue() ??
+        0.0;
+    final height =
+        defaultConstant?.getField('height')?.toDoubleValue() ?? 1.0;
+    return PropEncoding(
+      readerExpression: 'TextStyle('
+          "fontSize: n.getCustomPropF32('${paramName}FontSize', $fontSize), "
+          "color: Color(n.getCustomPropU32('${paramName}Color', $colorU32)), "
+          "fontWeight: FontWeight.values[n.getCustomPropU32"
+          "('${paramName}FontWeight', $fontWeightIdx)], "
+          "letterSpacing: n.getCustomPropF32"
+          "('${paramName}LetterSpacing', $letterSpacing), "
+          "height: n.getCustomPropF32('${paramName}Height', $height))",
+      dartTypeName: typeName,
+    );
+  }
+
+  // BoxDecoration — common fields only (color + uniform borderRadius).
+  // Full surface (Border with per-side widths, BoxShadow lists,
+  // Gradient, DecorationImage) is too rich for primitive expansion;
+  // dev wraps via a host pattern or manual adapter for those.
+  //
+  // Sub-props: <paramName>Color + <paramName>BorderRadius.
+  if (_isFlutterBoxDecoration(type)) {
+    final colorDefault = defaultConstant?.getField('color');
+    final colorU32 = _colorObjAsU32(colorDefault);
+    // borderRadius is itself a BorderRadius value — extract top-left.x
+    // as the uniform-radius default.
+    final brDefault = defaultConstant?.getField('borderRadius');
+    final radius = brDefault
+            ?.getField('topLeft')
+            ?.getField('x')
+            ?.toDoubleValue() ??
+        0.0;
+    return PropEncoding(
+      readerExpression: 'BoxDecoration('
+          "color: Color(n.getCustomPropU32('${paramName}Color', $colorU32)), "
+          "borderRadius: BorderRadius.all(Radius.circular("
+          "n.getCustomPropF32('${paramName}BorderRadius', $radius))))",
+      dartTypeName: typeName,
+    );
+  }
+
+  // ImageProvider — string-coercion convention. Single `<paramName>`
+  // prop, value is a URL/path string. The IIFE inside the encoding
+  // picks the right concrete subtype at runtime per prefix:
+  //   "http://" / "https://"  → NetworkImage
+  //   "file://" / starts "/"  → FileImage
+  //   anything else           → AssetImage  (assets/foo.png, etc.)
+  // Empty string returns a 1×1 transparent AssetImage as a safe
+  // fallback (most widgets accept any ImageProvider; the displayed
+  // pixels are nothing).
+  if (_isFlutterImageProvider(type)) {
+    return PropEncoding(
+      readerExpression: '(() { '
+          "final s = n.getCustomPropStr('$paramName') ?? ''; "
+          "if (s.startsWith('http')) return NetworkImage(s); "
+          "if (s.startsWith('file://')) return FileImage(File(s.substring(7))); "
+          "if (s.startsWith('/')) return FileImage(File(s)); "
+          'return AssetImage(s); '
+          '})()',
+      dartTypeName: typeName,
+      // FileImage uses dart:io.File. The generated file would need an
+      // import for that.
+      requiredImports: const ['dart:io'],
+    );
+  }
+
   // VoidCallback — Flutter's typedef `void Function()`. JSX-side
   // function-valued props auto-bind via the renderer's custom-handler
   // path (see js-app/src/renderer.js's `_setCustomProperty` —
@@ -468,6 +609,33 @@ bool _isFlutterWidgetList(DartType t) {
   return _isFlutterWidget(t.typeArguments.first);
 }
 
+bool _isFlutterOffset(DartType t) => t.element3?.name3 == 'Offset';
+bool _isFlutterAlignment(DartType t) => t.element3?.name3 == 'Alignment';
+bool _isFlutterBorderRadius(DartType t) =>
+    t.element3?.name3 == 'BorderRadius' ||
+    t.element3?.name3 == 'BorderRadiusGeometry';
+bool _isFlutterTextStyle(DartType t) => t.element3?.name3 == 'TextStyle';
+bool _isFlutterBoxDecoration(DartType t) =>
+    t.element3?.name3 == 'BoxDecoration';
+bool _isFlutterImageProvider(DartType t) {
+  // ImageProvider is generic (`ImageProvider<T>`); checking the base
+  // class name catches the type AND its subtypes (NetworkImage,
+  // AssetImage, etc.) — though codegen typically sees the abstract
+  // ImageProvider form when it's a constructor param type.
+  final name = t.element3?.name3;
+  if (name == 'ImageProvider') return true;
+  // Walk supertypes to catch direct subclasses used as param types.
+  final el = t.element3;
+  if (el is InterfaceElement2) {
+    var sup = el.supertype;
+    while (sup != null) {
+      if (sup.element3.name3 == 'ImageProvider') return true;
+      sup = sup.element3.supertype;
+    }
+  }
+  return false;
+}
+
 bool _isFlutterEdgeInsets(DartType t) {
   // Matches Flutter's `EdgeInsets` (`package:flutter/painting.dart`).
   // Like _isFlutterColor, match by name alone — gets the fake-Flutter
@@ -553,7 +721,14 @@ int _boolDefaultAsInt(String? defaultLiteral) {
 ///   `Colors.transparent`           → `0x00000000`
 ///   `Colors.red.shade400`          → `0xFFEF5350`
 ///   `Color.fromARGB(255, 30, 30, 30)` → `0xFF1E1E1E`
-String _colorDefaultAsU32(DartObject? defaultConstant) {
+String _colorDefaultAsU32(DartObject? defaultConstant) =>
+    _colorObjAsU32(defaultConstant);
+
+/// Internal sibling — same Color-to-u32 conversion, but the helper
+/// name reads more naturally when the input is a NESTED color object
+/// (e.g. extracting `defaultConstant.getField('color')` from a
+/// TextStyle's default). Same fallback semantics.
+String _colorObjAsU32(DartObject? defaultConstant) {
   const fallback = '0xFF000000';
   if (defaultConstant == null) return fallback;
 

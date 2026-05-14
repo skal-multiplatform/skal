@@ -251,6 +251,78 @@ void main() {
               'named_ctors.expected.dart');
     });
 
+    test('value types v2: TextStyle / BoxDecoration / BorderRadius / Offset / '
+        'Alignment / ImageProvider', () async {
+      // Each new value type expands into sub-props (TextStyle's
+      // styleFontSize, …) or a string-coercion IIFE (ImageProvider).
+      // The fixture exercises one widget per type so the snapshot
+      // captures all six emission shapes side-by-side.
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/value_types_v2.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/value_types_v2.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+
+      final result = generate(
+        units: [unitResult as ResolvedUnitResult],
+        sourceRelativeImports: ['value_types_v2.dart'],
+      );
+
+      expect(result.generated.map((w) => w.className).toSet(),
+          {'Styled', 'Card', 'Anchored', 'Pic'});
+      expect(result.skipped, isEmpty,
+          reason: 'all six value types should encode without skipping');
+
+      final expected = File(expectedPath).readAsStringSync();
+      expect(_normalize(result.source), _normalize(expected),
+          reason: 'v2 value-types output does NOT match '
+              'value_types_v2.expected.dart');
+    });
+
+    test('positional params: walked in order, emitted without name prefix',
+        () async {
+      // Two classes — Padded has a required positional `int` + optional
+      // named Widget child; Tagged has a required positional String +
+      // optional positional int.
+      //
+      // Expected: positional args appear FIRST in the constructor call,
+      // in declaration order, without `name:` prefixes. Named args
+      // follow with their prefixes (current behavior).
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/positional.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/positional.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+
+      final result = generate(
+        units: [unitResult as ResolvedUnitResult],
+        sourceRelativeImports: ['positional.dart'],
+      );
+
+      expect(result.generated.map((w) => w.className).toSet(),
+          {'Padded', 'Tagged'});
+      expect(result.skipped, isEmpty,
+          reason: 'encodable positional params should not skip');
+
+      final expected = File(expectedPath).readAsStringSync();
+      expect(_normalize(result.source), _normalize(expected),
+          reason: 'positional output does NOT match positional.expected.dart');
+    });
+
     test('callbacks: VoidCallback + ValueChanged<T> emit typed dispatch',
         () async {
       // Three classes covering every callback shape:

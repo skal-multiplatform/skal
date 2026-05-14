@@ -117,12 +117,24 @@ class HostConfig {
   /// to be in scope.
   final String wrappedWidgetImport;
 
+  /// How the wrapped widget receives the controller. Most "viewport"
+  /// widgets (CameraPreview, VideoPlayer) take it as the FIRST
+  /// POSITIONAL argument — that's the default. Some packages use a
+  /// NAMED argument instead (WebView's `controller:`, form-style
+  /// widgets' `textController:`); the dev declares the param name
+  /// in the marker file's `controllerProp:` field.
+  ///
+  ///   null  → positional (default): `WrappedWidget(controller)`
+  ///   "foo" → named:                `WrappedWidget(foo: controller)`
+  final String? controllerProp;
+
   HostConfig({
     required this.jsxName,
     required this.wrappedWidgetName,
     required this.factoryFn,
     required this.factoryImport,
     required this.wrappedWidgetImport,
+    this.controllerProp,
   });
 }
 
@@ -377,13 +389,17 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
   // Tracking [omittedOptionalParams] lets the CLI surface "12 props
   // mapped, 3 omitted (padding, embeddedImage, errorStateBuilder)" so
   // devs know what they can't drive from JSX.
-  final lines = <String>[];
   final omittedOptionalParams = <String>[];
   final requiredImports = <String>{};
   String? skipReason;
 
+  // Two separate lists: positional and named. Dart constructor call
+  // syntax requires positional args FIRST (in declaration order),
+  // then named args. Emitting in one list with positions interleaved
+  // would produce uncompilable code.
+  final positionalLines = <String>[];
+  final namedLines = <String>[];
   for (final param in ctor.formalParameters) {
-    if (param.isPositional) continue; // positional params not supported yet
     final name = param.name3;
     if (name == null || name.isEmpty) continue;
     if (name == 'key') continue; // skip Flutter's universal `Key? key`
@@ -409,23 +425,47 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
       defaultConstant: defaultConstant,
     );
     if (encoding == null) {
-      // Required = annotated `required this.foo` (no default, no nullable
-      // type). If the constructor demands it and we can't encode it,
-      // we have to skip the widget — the dev needs a hand-written
-      // adapter.
-      final isRequired = param.isRequiredNamed && defaultLiteral == null;
+      // Required = no default value. For positional params this is
+      // `Foo(this.x)`; for named it's `required this.x`. If the
+      // constructor demands it and we can't encode it, we have to
+      // skip the widget — the dev needs a hand-written adapter.
+      //
+      // For OPTIONAL POSITIONAL params with unsupported types we
+      // also skip — there's no safe omission rule that preserves
+      // the rest of the positional list's position semantics.
+      // (Conceivably we could omit a trailing optional positional,
+      // but the analyzer's iteration order makes that fragile.)
+      final isRequired = (param.isRequiredNamed && defaultLiteral == null) ||
+          param.isRequiredPositional;
       if (isRequired) {
         skipReason = "required param '$name' has unsupported type "
             "'${param.type.getDisplayString()}'";
         break;
       }
-      // Optional: silently omit. Track for CLI reporting.
+      if (param.isPositional) {
+        skipReason =
+            "optional positional param '$name' has unsupported type "
+            "'${param.type.getDisplayString()}' (positional omission "
+            "would shift later args)";
+        break;
+      }
+      // Optional named: silently omit. Track for CLI reporting.
       omittedOptionalParams.add(name);
       continue;
     }
-    lines.add('    $name: ${encoding.readerExpression},');
+    if (param.isPositional) {
+      // No `name:` prefix — positional args are matched by ORDER on
+      // the call site. The JSX-side prop still uses the param's
+      // declared name (which we passed to encodingFor as paramName),
+      // so the dev's API stays clean: `<Padding paddingLeft={...} />`
+      // sets the positional `padding` arg through its sub-props.
+      positionalLines.add('    ${encoding.readerExpression},');
+    } else {
+      namedLines.add('    $name: ${encoding.readerExpression},');
+    }
     requiredImports.addAll(encoding.requiredImports);
   }
+  final lines = [...positionalLines, ...namedLines];
 
   if (skipReason != null) {
     return _AdapterResult(
@@ -632,7 +672,9 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
     ..writeln('      );')
     ..writeln('    }')
     ..writeln('    if (_ctl == null) return const SizedBox.shrink();')
-    ..writeln('    return $wrappedName(_ctl as dynamic);')
+    ..writeln('    return $wrappedName(${host.controllerProp == null
+        ? "_ctl as dynamic"
+        : "${host.controllerProp}: _ctl as dynamic"});')
     ..writeln('  }')
     ..writeln('}')
     ..writeln()

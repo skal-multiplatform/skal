@@ -49,7 +49,16 @@ class Color {
 class TextStyle {
   final Color? color;
   final double? fontSize;
-  const TextStyle({this.color, this.fontSize});
+  final FontWeight? fontWeight;
+  final double? letterSpacing;
+  final double? height;
+  const TextStyle({
+    this.color,
+    this.fontSize,
+    this.fontWeight,
+    this.letterSpacing,
+    this.height,
+  });
 }
 
 class Text extends Widget {
@@ -87,6 +96,91 @@ class EdgeInsets {
         right = horizontal,
         bottom = vertical;
 }
+
+/// Stand-in for Flutter's `Offset` (dart:ui). Two-double value class —
+/// the codegen decomposes it into <paramName>X / <paramName>Y JSX
+/// sub-props.
+class Offset {
+  final double dx;
+  final double dy;
+  const Offset(this.dx, this.dy);
+}
+
+/// Stand-in for Flutter's `Alignment` (painting). Same two-double
+/// shape as Offset; coordinates are in [-1, 1].
+class Alignment {
+  final double x;
+  final double y;
+  const Alignment(this.x, this.y);
+}
+
+/// Stand-in for Flutter's `Radius` (used inside BorderRadius).
+class Radius {
+  final double x;
+  final double y;
+  const Radius.circular(double r) : x = r, y = r;
+}
+
+/// Stand-in for Flutter's `BorderRadius` — only the uniform-all-corners
+/// variant; codegen emits `BorderRadius.all(...)` exclusively.
+class BorderRadius {
+  final Radius topLeft;
+  final Radius topRight;
+  final Radius bottomLeft;
+  final Radius bottomRight;
+  const BorderRadius.all(Radius r)
+      : topLeft = r,
+        topRight = r,
+        bottomLeft = r,
+        bottomRight = r;
+}
+
+/// Stand-in for dart:ui's `FontWeight`. Static-const instances + a
+/// `.values` list, mirroring the real shape. Codegen treats it as an
+/// index lookup (`FontWeight.values[i]`).
+class FontWeight {
+  final int index;
+  const FontWeight._(this.index);
+  static const FontWeight w100 = FontWeight._(0);
+  static const FontWeight w200 = FontWeight._(1);
+  static const FontWeight w300 = FontWeight._(2);
+  static const FontWeight w400 = FontWeight._(3);
+  static const FontWeight w500 = FontWeight._(4);
+  static const FontWeight w600 = FontWeight._(5);
+  static const FontWeight w700 = FontWeight._(6);
+  static const FontWeight w800 = FontWeight._(7);
+  static const FontWeight w900 = FontWeight._(8);
+  static const List<FontWeight> values = <FontWeight>[
+    w100, w200, w300, w400, w500, w600, w700, w800, w900
+  ];
+}
+
+/// Stand-in for Flutter's `BoxDecoration` — color + uniform border
+/// radius only, mirroring the codegen's encoder.
+class BoxDecoration {
+  final Color? color;
+  final BorderRadius? borderRadius;
+  const BoxDecoration({this.color, this.borderRadius});
+}
+
+/// Stand-in for `ImageProvider` — abstract base. Subtypes (AssetImage,
+/// NetworkImage, FileImage) all derive from it.
+abstract class ImageProvider {
+  const ImageProvider();
+}
+class AssetImage extends ImageProvider {
+  final String name;
+  const AssetImage(this.name);
+}
+class NetworkImage extends ImageProvider {
+  final String url;
+  const NetworkImage(this.url);
+}
+// FileImage takes a `File` which is from `dart:io`; the codegen
+// emits the right import. The stub doesn't need to model it.
+
+/// Updated TextStyle stub matching the codegen's encoder field set.
+/// Replaces the smaller stub earlier in this file.
 
 /// Stand-in for any controller-style class — must have a `dispose()`
 /// method so the synthesized host adapter's lifecycle compiles

@@ -219,14 +219,25 @@ _AdapterResult _emitAdapter(ClassElement cls) {
     final name = param.name;
     if (name == 'key') continue; // skip Flutter's universal `Key? key`
 
-    // ParameterElement exposes the default-value expression as source
-    // text — exactly what we need to paste into the generated reader.
-    // null means no default; the type mapper synthesizes a fallback.
+    // ParameterElement exposes the default-value expression both as
+    // source text (for types we can paste verbatim — strings, numbers)
+    // AND as an evaluated constant value (for types we need to inspect
+    // — Color's `.value` int, future enums' index, etc.). The type
+    // mapper picks whichever it needs per-type.
+    //
+    // computeConstantValue() returns null when:
+    //   • The parameter has no default (we pass null literal too).
+    //   • The default isn't a constant expression (a non-const
+    //     factory call etc. — unusual for Widget constructors but
+    //     theoretically possible). The mapper falls back to defaults
+    //     in that case.
     final defaultLiteral = param.defaultValueCode;
+    final defaultConstant = param.computeConstantValue();
     final encoding = encodingFor(
       type: param.type,
       paramName: name,
       defaultLiteral: defaultLiteral,
+      defaultConstant: defaultConstant,
     );
     if (encoding == null) {
       // Required = annotated `required this.foo` (no default, no nullable

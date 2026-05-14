@@ -20,7 +20,7 @@ import 'mini_pack/panel.dart';
 Widget _build_Badge(NodeState n, SkalBridge bridge) {
   return Badge(
     text: n.getCustomPropStr('text') ?? 'New',
-    color: Color(n.getCustomPropU32('color', 0xFF000000)),
+    color: Color(n.getCustomPropU32('color', 0xFFFF0000)),
     count: n.getCustomPropU32('count', 0),
   );
 }

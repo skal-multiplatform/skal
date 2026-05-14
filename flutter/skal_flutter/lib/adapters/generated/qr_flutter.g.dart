@@ -20,7 +20,7 @@ Widget _build_QrImageView(NodeState n, SkalBridge bridge) {
   return QrImageView(
     data: n.getCustomPropStr('data') ?? '',
     size: n.getCustomPropF32('size', 0.0),
-    backgroundColor: Color(n.getCustomPropU32('backgroundColor', 0xFF000000)),
+    backgroundColor: Color(n.getCustomPropU32('backgroundColor', 0x00000000)),
     version: n.getCustomPropU32('version', QrVersions.auto),
     errorCorrectionLevel: n.getCustomPropU32('errorCorrectionLevel', QrErrorCorrectLevel.L),
     constrainErrorBounds: n.getCustomPropU32('constrainErrorBounds', 1) != 0,

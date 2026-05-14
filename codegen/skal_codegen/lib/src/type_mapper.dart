@@ -27,6 +27,7 @@
 // warning — falls back to a hand-written adapter for the long tail).
 // Later slices add Duration, EdgeInsets, enum, Offset, etc.
 
+import 'package:analyzer/dart/constant/value.dart';
 import 'package:analyzer/dart/element/type.dart';
 
 /// A single constructor parameter's bridge encoding.
@@ -63,6 +64,7 @@ PropEncoding? encodingFor({
   required DartType type,
   required String paramName,
   required String? defaultLiteral,
+  DartObject? defaultConstant,
 }) {
   final typeName = type.getDisplayString();
 
@@ -109,15 +111,24 @@ PropEncoding? encodingFor({
 
   // Color — Flutter's `ui.Color` (or `material.Color`, same class).
   // Wire encoding is 32-bit ARGB; adapter wraps in Color(...).
+  //
+  // To preserve the wrapped widget's BEHAVIOR when JSX omits the
+  // prop, we need the real ARGB value of the constructor's declared
+  // default, not a hard-coded fallback. The analyzer's constant
+  // evaluator gives us the [Color.value] int regardless of how the
+  // source spelled it (`Colors.transparent`, `Colors.red.shade400`,
+  // `const Color(0xFF1DA1F2)`, etc. — all evaluate to a Color
+  // instance whose `.value` is a 32-bit ARGB int).
+  //
+  // Without this, qr_flutter's `backgroundColor = Colors.transparent`
+  // would silently become opaque black in the generated adapter,
+  // hiding the QR pattern behind a black square. (This was the bug
+  // the qr_flutter integration surfaced.)
   if (_isFlutterColor(type)) {
-    // Default literals for Color are typically `const Color(0xAARRGGBB)`
-    // or `Colors.black`. Extracting the raw u32 from those is more
-    // work than it's worth — codegen emits 0xFF000000 (opaque black)
-    // as a safe-everywhere fallback. Devs who want a specific default
-    // can override via JSX prop or write a manual adapter.
+    final fallbackU32 = _colorDefaultAsU32(defaultConstant);
     return PropEncoding(
       readerExpression:
-          "Color(n.getCustomPropU32('$paramName', 0xFF000000))",
+          "Color(n.getCustomPropU32('$paramName', $fallbackU32))",
       dartTypeName: typeName,
     );
   }
@@ -157,4 +168,61 @@ int _boolDefaultAsInt(String? defaultLiteral) {
   final trimmed = defaultLiteral.trim();
   if (trimmed == 'true') return 1;
   return 0;
+}
+
+/// Extract the ARGB-u32 representation of a Color default value via
+/// constant evaluation. Returns the value formatted as a `0xAARRGGBB`
+/// hex literal that pastes directly into the generated source. Falls
+/// back to opaque black if the analyzer didn't give us a constant or
+/// the constant isn't a Color (e.g. a non-const default like
+/// `widget.themeData.primaryColor`, which can't be evaluated at
+/// codegen time and isn't a real-world default anyway).
+///
+/// Works for any expression the analyzer evaluates to a `Color`:
+///
+///   `const Color(0xFF1DA1F2)`      → `0xFF1DA1F2`
+///   `Colors.transparent`           → `0x00000000`
+///   `Colors.red.shade400`          → `0xFFEF5350`
+///   `Color.fromARGB(255, 30, 30, 30)` → `0xFF1E1E1E`
+String _colorDefaultAsU32(DartObject? defaultConstant) {
+  const fallback = '0xFF000000';
+  if (defaultConstant == null) return fallback;
+
+  // Two Flutter Color storage models exist depending on the SDK
+  // version the consumer is on:
+  //
+  //   Legacy (pre-wide-gamut Flutter): a single `value` int field
+  //       holding the ARGB-32 representation. `Color(0xFF1DA1F2).value`
+  //       is `0xFF1DA1F2`.
+  //
+  //   Modern (current Flutter, ~3.27+): four `a`/`r`/`g`/`b` double
+  //       fields in [0.0, 1.0], plus a `colorSpace` enum for wide-
+  //       gamut support. `value` exists but is null in the constant
+  //       evaluator's view of modern Color instances.
+  //
+  // Try the legacy path first (cheaper, more precise); fall back to
+  // the modern double-component reconstruction. The output is the
+  // same 32-bit ARGB int the bridge wire expects.
+  final legacy = defaultConstant.getField('value')?.toIntValue();
+  if (legacy != null) {
+    final masked = legacy & 0xFFFFFFFF;
+    return '0x${masked.toRadixString(16).toUpperCase().padLeft(8, '0')}';
+  }
+
+  final a = defaultConstant.getField('a')?.toDoubleValue();
+  final r = defaultConstant.getField('r')?.toDoubleValue();
+  final g = defaultConstant.getField('g')?.toDoubleValue();
+  final b = defaultConstant.getField('b')?.toDoubleValue();
+  if (a == null || r == null || g == null || b == null) return fallback;
+  int toByte(double c) {
+    final n = (c * 255.0).round();
+    if (n < 0) return 0;
+    if (n > 255) return 255;
+    return n;
+  }
+  final argb = (toByte(a) << 24) |
+      (toByte(r) << 16) |
+      (toByte(g) << 8) |
+      toByte(b);
+  return '0x${argb.toRadixString(16).toUpperCase().padLeft(8, '0')}';
 }

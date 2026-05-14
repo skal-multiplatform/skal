@@ -29,9 +29,10 @@
 //
 // Multiple inputs feed into a SINGLE generated file. Devs typically
 // point at one directory (a package's `lib/`) and get one combined
-// `registerAll()` listing every Widget the generator found. Package-
-// resolution shortcuts (`--package qr_flutter` → `~/.pub-cache/...`)
-// will land in a follow-up commit.
+// `registerAll()` listing every Widget the generator found. The
+// `--package <name>` shortcut resolves a name to its pub-cache lib/
+// via the consumer's `.dart_tool/package_config.json` — see the flag
+// docs further down in this header.
 //
 // Examples:
 //
@@ -55,12 +56,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:analyzer/dart/analysis/analysis_context.dart';
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/file_system/physical_file_system.dart';
 import 'package:path/path.dart' as p;
 
 import 'package:skal_codegen/src/generator.dart';
+import 'package:skal_codegen/src/package_resolver.dart';
 
 Future<void> main(List<String> args) async {
   exit(await _runMain(args));
@@ -140,7 +143,7 @@ Future<int> _runMain(List<String> args) async {
   // These go into `inputArgs` alongside any bare files/dirs the dev
   // passed, then the existing walk handles everything uniformly.
   for (final pkgName in packageNames) {
-    final libDir = _resolvePackageLibDir(pkgRoot, pkgName);
+    final libDir = resolvePackageLibDir(pkgRoot, pkgName);
     if (libDir == null) {
       stderr.writeln(
           'error: package "$pkgName" not found in $pkgRoot/.dart_tool/'
@@ -161,7 +164,7 @@ Future<int> _runMain(List<String> args) async {
       stderr.writeln('error: input not found: $abs');
       return 1;
     } else if (stat == FileSystemEntityType.directory) {
-      inputFiles.addAll(_walkDartFiles(abs));
+      inputFiles.addAll(walkDartFiles(abs));
     } else {
       inputFiles.add(abs);
     }
@@ -188,11 +191,34 @@ Future<int> _runMain(List<String> args) async {
   }
   final absOutput = p.normalize(p.absolute(outputPath));
 
+  // Single AnalysisContextCollection shared across the first run AND
+  // every watch-mode rebuild. Constructing this is the expensive part
+  // of one codegen pass — it parses the SDK summary, walks
+  // .dart_tool/package_config.json, and seeds the package resolver.
+  // Reusing the same context across iterations lets `analyzer` reuse
+  // its driver caches; each rebuild only re-resolves the files we
+  // mark as changed.
+  final collection = AnalysisContextCollection(
+    includedPaths: [pkgRoot],
+    resourceProvider: PhysicalResourceProvider.INSTANCE,
+  );
+  final ctx = collection.contexts.first;
+
   // Wrap the analyze+generate+write cycle in a closure so the watch
   // loop below can re-run it on file changes. Returns 0 on success,
   // 2 on analyzer failure (matches the old direct-return behavior).
-  Future<int> runOnce() async {
+  // [changedFiles] is empty for the first run; in watch mode it
+  // carries the file paths the OS watcher reported, so the analyzer
+  // re-reads only those.
+  Future<int> runOnce({Set<String> changedFiles = const {}}) async {
+    if (changedFiles.isNotEmpty) {
+      for (final f in changedFiles) {
+        ctx.changeFile(f);
+      }
+      await ctx.applyPendingFileChanges();
+    }
     return await _runCodegen(
+      ctx: ctx,
       pkgRoot: pkgRoot,
       inputFiles: inputFiles,
       absOutput: absOutput,
@@ -213,52 +239,55 @@ Future<int> _runMain(List<String> args) async {
   }
   stdout.writeln('  → watching ${watched.length} dir(s) for .dart changes…');
   Timer? debounce;
-  final controller = StreamController<void>();
+  // Accumulate paths across the debounce window so a single rebuild
+  // tells the analyzer about every file that changed.
+  final pendingChanges = <String>{};
+  final controller = StreamController<String>();
   for (final dir in watched) {
     Directory(dir).watch(events: FileSystemEvent.all).listen((ev) {
       if (!ev.path.endsWith('.dart')) return;
       if (ev.path.endsWith('.g.dart')) return;  // skip our own output
-      controller.add(null);
+      controller.add(p.normalize(p.absolute(ev.path)));
     });
   }
-  await for (final _ in controller.stream) {
+  await for (final path in controller.stream) {
+    pendingChanges.add(path);
     debounce?.cancel();
     debounce = Timer(const Duration(milliseconds: 100), () async {
-      stdout.writeln('  → input changed, regenerating…');
-      final c = await runOnce();
+      final changes = Set<String>.from(pendingChanges);
+      pendingChanges.clear();
+      stdout.writeln('  → input changed (${changes.length} file(s)), regenerating…');
+      final c = await runOnce(changedFiles: changes);
       if (c != 0) stderr.writeln('  → regenerate failed (code $c)');
     });
   }
   return 0;
 }
 
-/// One full codegen pass: spin up an analyzer context, resolve every
-/// input, generate, write `.g.dart` + `.json`, log the summary.
-/// Extracted from main() so watch mode can call it per file change.
+/// One full codegen pass: resolve every input via the supplied
+/// analyzer context, generate, write `.g.dart` + `.json`, log the
+/// summary. The caller passes the context so watch mode can reuse it
+/// across rebuilds.
+///
+/// The context is anchored at the consumer's project. We intentionally
+/// do NOT add pub-cache directories to includedPaths — each
+/// `includedPaths` entry gets its own analyzer context with its own
+/// package resolution, and pub-cache directories have no
+/// `.dart_tool/package_config.json`, so the resulting context can't
+/// resolve `package:flutter/…` imports inside those files.
+///
+/// Instead, we resolve ALL inputs through the CONSUMER's context
+/// (which has a populated package_config from `flutter pub get`).
+/// That context can resolve any file the consumer's pubspec
+/// transitively depends on — pub-cache files included — because the
+/// consumer's package_config maps qr_flutter's location and lists
+/// its dependencies.
 Future<int> _runCodegen({
+  required AnalysisContext ctx,
   required String pkgRoot,
   required List<String> inputFiles,
   required String absOutput,
 }) async {
-  // Single analyzer context anchored at the consumer's project. We
-  // intentionally do NOT add pub-cache directories to includedPaths —
-  // each `includedPaths` entry gets its own analyzer context with its
-  // own package resolution, and pub-cache directories have no
-  // `.dart_tool/package_config.json`, so the resulting context can't
-  // resolve `package:flutter/…` imports inside those files.
-  //
-  // Instead, we resolve ALL inputs through the CONSUMER's context
-  // (which has a populated package_config from `flutter pub get`).
-  // That context can resolve any file the consumer's pubspec
-  // transitively depends on — pub-cache files included — because the
-  // consumer's package_config maps qr_flutter's location and lists
-  // its dependencies.
-  final collection = AnalysisContextCollection(
-    includedPaths: [pkgRoot],
-    resourceProvider: PhysicalResourceProvider.INSTANCE,
-  );
-  final ctx = collection.contexts.first;
-
   // Resolve all inputs upfront so any analysis errors surface before
   // we open the output file for writing.
   final units = <ResolvedUnitResult>[];
@@ -351,75 +380,6 @@ Future<int> _runCodegen({
     }
   }
   return 0;
-}
-
-/// Resolve a package name to its lib/ directory on disk, via the
-/// consumer project's `.dart_tool/package_config.json`. Returns null
-/// if the package isn't listed (consumer hasn't run `flutter pub get`
-/// since adding it) or the file is missing.
-///
-/// package_config.json format (configVersion 2):
-///
-/// ```json
-/// {
-///   "configVersion": 2,
-///   "packages": [
-///     {
-///       "name":         "qr_flutter",
-///       "rootUri":      "file:///…/.pub-cache/hosted/pub.dev/qr_flutter-4.1.0",
-///       "packageUri":   "lib/",
-///       "languageVersion": "2.19"
-///     }
-///   ]
-/// }
-/// ```
-///
-/// We resolve `<rootUri>/<packageUri>` (file URI → filesystem path)
-/// and return the joined lib/ directory.
-String? _resolvePackageLibDir(String pkgRoot, String packageName) {
-  final cfgPath = p.join(pkgRoot, '.dart_tool', 'package_config.json');
-  final cfgFile = File(cfgPath);
-  if (!cfgFile.existsSync()) return null;
-
-  final Map<String, dynamic> cfg;
-  try {
-    cfg = jsonDecode(cfgFile.readAsStringSync()) as Map<String, dynamic>;
-  } on FormatException {
-    return null;
-  }
-  final pkgs = (cfg['packages'] as List?) ?? const [];
-  for (final entry in pkgs.cast<Map<String, dynamic>>()) {
-    if (entry['name'] != packageName) continue;
-    final rootUri = entry['rootUri'] as String?;
-    final packageUri = entry['packageUri'] as String?;
-    if (rootUri == null) return null;
-    // rootUri is typically an absolute `file://...` URI for pub-cache
-    // packages. For path-style deps (e.g. monorepo siblings) it can
-    // be a relative `../foo` URI that needs to be resolved against
-    // the package_config.json's parent dir.
-    final base = Uri.file(p.join(pkgRoot, '.dart_tool/'));
-    final resolved = base.resolve(rootUri);
-    final rootPath = resolved.toFilePath();
-    return p.normalize(p.join(rootPath, packageUri ?? 'lib/'));
-  }
-  return null;
-}
-
-/// Recursively find all `.dart` files under [dir], excluding generated
-/// (`*.g.dart`) files so a re-run doesn't re-process its own output.
-/// Hidden directories (those starting with `.`, e.g. `.dart_tool`)
-/// are also skipped — they hold tool caches we never want to scan.
-Iterable<String> _walkDartFiles(String dir) sync* {
-  for (final entity in Directory(dir).listSync(recursive: true, followLinks: false)) {
-    if (entity is! File) continue;
-    final path = entity.path;
-    if (!path.endsWith('.dart')) continue;
-    if (path.endsWith('.g.dart')) continue;
-    // Skip anything under a hidden directory at any depth.
-    final segments = p.split(p.relative(path, from: dir));
-    if (segments.any((s) => s.startsWith('.'))) continue;
-    yield p.normalize(p.absolute(path));
-  }
 }
 
 void _printUsage() {

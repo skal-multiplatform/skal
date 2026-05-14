@@ -71,9 +71,11 @@ class SkalBridge {
   /// event, append to this queue and flush on the next Ticker tick
   /// (after JS has had a chance to drain). Bounded only by Dart heap.
   ///
-  /// Pairs are stored as alternating ints — [kind, handlerId, kind,
-  /// handlerId, …] — so a single Queue<int> avoids per-pair object
-  /// allocation under stress.
+  /// Records are stored as 5 consecutive ints — [eventKind, argType,
+  /// handlerId, argValueI32, argHeapOffset, …repeat…] — mirroring the
+  /// in-ring event layout. A single Queue<int> avoids per-record
+  /// object allocation under stress. The argHeapOffset slot is 0 for
+  /// non-string events (kept uniform so the flush loop has one shape).
   final Queue<int> _eventOverflow = Queue<int>();
 
   /// One state per JS-created node, keyed by JS node id (dense small
@@ -414,13 +416,14 @@ class SkalBridge {
           break;
 
         case opMethodArg:
-          // a = callId, b = argType, c = argValueI32 (or packed
-          // offset+length for strings). Args accumulate in a callId-
-          // keyed buffer until the matching opInvokeMethod drains
-          // them. Order matters — positional args in declaration
-          // order on the controller method.
+          // a = callId, b = argType (low byte) | (length << 8) for
+          // strings, c = argValueI32 or string heap offset. Args
+          // accumulate in a callId-keyed buffer until the matching
+          // opInvokeMethod drains them. Order matters — positional
+          // args in declaration order on the controller method.
           final args = _pendingMethodArgs.putIfAbsent(a, () => []);
-          switch (b) {
+          final argType = b & 0xFF;
+          switch (argType) {
             case eventArgI32:
               args.add(c);
               break;
@@ -431,10 +434,12 @@ class SkalBridge {
               args.add(c != 0);
               break;
             case eventArgStr:
-              // Decode from the JS write heap. Format matches
-              // opSetCustomPropStr: high 24 bits = offset, low 8 = len.
-              final offset = (c >> 8) & 0xFFFFFF;
-              final length = c & 0xFF;
+              // String layout: b's upper 24 bits hold the length
+              // (max ~16M — bounded in practice by the JS string
+              // heap capacity, ~768 KiB), c holds the full 32-bit
+              // offset into the JS-write heap.
+              final length = (b >> 8) & 0xFFFFFF;
+              final offset = c;
               args.add(_readString(kStringHeapOff + offset, length));
               break;
             default:
@@ -770,11 +775,10 @@ class SkalBridge {
   }
 
   /// Reply-heap cursor — bumped on each [_writeReplyString] call.
-  /// Resets to 0 when an allocation would exceed capacity; assumes
-  /// JS has drained any prior events that reference earlier strings.
-  /// For the demo workload (sporadic RPC replies, error messages) this
-  /// invariant holds trivially — replies are read by the next event
-  /// drain after the write.
+  /// Resets to 0 when an allocation would exceed capacity AND JS's
+  /// read pointer (`hReplyHeapReadPos`) has caught up — see the
+  /// wraparound branch below. Until then, we spin-wait (the same
+  /// pattern the op ring + JS string heap use on overflow).
   int _replyHeapWritePos = 0;
 
   /// Write [s] into the reply heap (Dart-write, JS-read) as UTF-8.
@@ -782,9 +786,11 @@ class SkalBridge {
   /// Caller packs these into the event record's argValueI32 (length)
   /// and argHeapOffset (offset) slots.
   ///
-  /// Truncates to the heap capacity. A future pass could chunk into
-  /// multiple events for huge payloads; today's 256 KiB is plenty
-  /// for any single RPC reply.
+  /// Wraparound: when the write cursor reaches capacity we reset to 0,
+  /// but only AFTER JS has read past all in-flight references. JS
+  /// bumps `hReplyHeapReadPos` in the event drain whenever it consumes
+  /// a Str/Json event; this method spin-waits (rare path) until JS has
+  /// caught up before clobbering older bytes.
   (int offset, int length) _writeReplyString(String s) {
     final bytes = utf8.encode(s);
     final len = bytes.length;
@@ -799,10 +805,23 @@ class SkalBridge {
       return (0, kReplyHeapSize);
     }
     if (_replyHeapWritePos + len > kReplyHeapSize) {
-      // Wraparound — reset cursor. Safe as long as JS has drained
-      // prior reply-bearing events; for the current demo that's
-      // immediate (drain runs after each event seq bump).
+      // Wraparound. JS may still be sitting on undrained events that
+      // reference strings at offsets ∈ [readPos, writePos). Spin-wait
+      // until JS catches up (readPos == writePos) before clobbering.
+      // In practice this never fires in the demo workload — replies
+      // get drained the same frame they're produced. Under heavy
+      // stream emissions or burst RPC, the spin protects correctness
+      // at the cost of a ms or two.
+      final deadline = DateTime.now().millisecondsSinceEpoch + 50;
+      while (DateTime.now().millisecondsSinceEpoch < deadline) {
+        final readPos = _data.getInt32(hReplyHeapReadPos, Endian.little);
+        if (readPos >= _replyHeapWritePos) break;
+      }
       _replyHeapWritePos = 0;
+      // Mirror to header so JS sees the reset on its next drain (it
+      // compares its readPos against this to decide whether wraparound
+      // has happened).
+      _data.setInt32(hReplyHeapReadPos, 0, Endian.little);
     }
     final offset = _replyHeapWritePos;
     _data.buffer

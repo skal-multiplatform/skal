@@ -31,15 +31,19 @@ const HB_EVENT_SEQ        = 16;  // u64
 const HB_EVENT_WRITE_POS  = 24;  // u32
 const HB_EVENT_READ_POS   = 28;  // u32
 const HB_LAST_DRAINED_SEQ = 32;  // u64 — Dart bumps after each drain (JS spin-wait target)
+// JS bumps to the byte-offset it's drained up to in the reply heap.
+// Dart's _writeReplyString reads this before wrapping the write
+// cursor to 0 — without it, an in-flight str/json event referencing
+// offset X would point to bytes Dart just clobbered.
+const HB_REPLY_HEAP_READ_POS  = 40;  // u32
 const HB_REPLY_HEAP_WRITE_POS = 44;  // u32 — Dart bumps when writing to the reply heap
 
-// Reserved: bytes 40..43 hold Dart's drain checkpoint (u32). JS doesn't
-// read it today; the seq above is sufficient for spin-wait synchronization.
-
-const H_OP_WRITE_POS    = HB_OP_WRITE_POS    >> 2;
-const H_STR_WRITE_POS   = HB_STR_WRITE_POS   >> 2;
-const H_EVENT_WRITE_POS = HB_EVENT_WRITE_POS >> 2;
-const H_EVENT_READ_POS  = HB_EVENT_READ_POS  >> 2;
+const H_OP_WRITE_POS         = HB_OP_WRITE_POS         >> 2;
+const H_STR_WRITE_POS        = HB_STR_WRITE_POS        >> 2;
+const H_EVENT_WRITE_POS      = HB_EVENT_WRITE_POS      >> 2;
+const H_EVENT_READ_POS       = HB_EVENT_READ_POS       >> 2;
+const H_REPLY_HEAP_READ_POS  = HB_REPLY_HEAP_READ_POS  >> 2;
+const H_REPLY_HEAP_WRITE_POS = HB_REPLY_HEAP_WRITE_POS >> 2;
 
 const B_OP_SEQ            = HB_OP_SEQ            >> 3;
 const B_EVENT_SEQ         = HB_EVENT_SEQ         >> 3;
@@ -605,6 +609,32 @@ function rowFor(nodeId) {
  * cells are reset to their unset sentinels lazily when `rowFor` next
  * reclaims this row — no need to clear here.
  */
+// ── Cross-cutting per-node state (declared above the writer/subscribe
+// functions that populate them, so call sites read them after the
+// `const` initializers have run — no TDZ ambiguity even if a future
+// refactor invokes a writer during module init).
+
+// Custom-prop diff caches. Built-in props use the typed-array
+// diffCache* arrays above (one slot per (node, key) pair, addressed
+// by KEY_TO_SLOT). Custom props live in the open hash namespace and
+// can't take that compact form — we use per-node Maps keyed by name
+// hash instead. Same skip-on-no-change contract: a no-op rebuild that
+// re-sets every prop costs zero wire bytes for unchanged values.
+// Cleared in diffCacheReleaseNode.
+//
+// Three separate caches (U32 / F32 / Str) so the inner equality check
+// stays type-specific and inline-friendly — JIT inlines a typed === on
+// a hot Map.get cheaper than a tagged-union shape check.
+const _customCacheU32 = new Map();
+const _customCacheF32 = new Map();
+const _customCacheStr = new Map();
+
+// Per-node index of live stream callIds. diffCacheReleaseNode walks
+// this on unmount (via cancelStreamsForNode) to fire OP_UNSUBSCRIBE_STREAM
+// for each — otherwise every host unmount leaks one Dart-side listener
+// subscription + its closure on the JS heap.
+const _streamsByNode = new Map();
+
 export function diffCacheReleaseNode(nodeId) {
   const row = nodeIdToRow.get(nodeId);
   if (row !== undefined) {
@@ -616,6 +646,16 @@ export function diffCacheReleaseNode(nodeId) {
     const hotBase = row * HOT_PROPS_PER_NODE;
     diffHotF32.fill(NaN, hotBase, hotBase + HOT_PROPS_PER_NODE);
   }
+  // Drop per-node custom-prop rows so a recycled nodeId doesn't see
+  // stale name-hash → value mappings from its previous incarnation.
+  _customCacheU32.delete(nodeId);
+  _customCacheF32.delete(nodeId);
+  _customCacheStr.delete(nodeId);
+  // Stream subscriptions: same recycling concern, but the Dart side
+  // also needs to know to stop emitting. cancelStreamsForNode emits
+  // an OP_UNSUBSCRIBE_STREAM per live callId, so the Dart-side
+  // listener tears down before the next render frame.
+  cancelStreamsForNode(nodeId);
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -763,13 +803,37 @@ export function createCustomNode(nodeId, name) {
   writeOp(OP_CREATE_CUSTOM_NODE, nodeId, h, 0);
 }
 
+// ── Custom-prop diff cache helpers ──────────────────────────────────
+//
+// The cache Maps themselves (_customCacheU32 / F32 / Str) live up
+// near diffCacheReleaseNode — declared before any caller so there's
+// no TDZ ambiguity. This block just defines the per-node row getter
+// and the writer functions that consume the cache.
+
+function _customRow(map, nodeId) {
+  let row = map.get(nodeId);
+  if (row === undefined) {
+    row = new Map();
+    map.set(nodeId, row);
+  }
+  return row;
+}
+
 export function setCustomPropU32(nodeId, name, value) {
   const h = _internName(name);
-  writeOp(OP_SET_CUSTOM_PROP_U32, nodeId, h, value >>> 0);
+  const v = value >>> 0;
+  const row = _customRow(_customCacheU32, nodeId);
+  if (row.get(h) === v) { propSkipsCounter++; return; }
+  row.set(h, v);
+  writeOp(OP_SET_CUSTOM_PROP_U32, nodeId, h, v);
+  propWritesCounter++;
 }
 
 export function setCustomPropF32(nodeId, name, value) {
   const h = _internName(name);
+  const row = _customRow(_customCacheF32, nodeId);
+  if (row.get(h) === value) { propSkipsCounter++; return; }
+  row.set(h, value);
   // Float32 → u32 bit-pattern via aliased typed arrays (same trick as
   // the built-in setPropF32 just above). Mirror the variable names:
   // `_f32buf` is the Float32Array, `_u32view` is the Uint32Array view
@@ -778,6 +842,7 @@ export function setCustomPropF32(nodeId, name, value) {
   // the Dart side decodes back via _bitsToF32.
   _f32buf[0] = value;
   writeOp(OP_SET_CUSTOM_PROP_F32, nodeId, h, _u32view[0]);
+  propWritesCounter++;
 }
 
 // String values cap at 255 chars (8-bit length, packed alongside the
@@ -786,11 +851,16 @@ export function setCustomPropF32(nodeId, name, value) {
 // comment.
 export function setCustomPropStr(nodeId, name, value) {
   const h = _internName(name);
-  writeString(value == null ? '' : String(value));
+  const s = value == null ? '' : String(value);
+  const row = _customRow(_customCacheStr, nodeId);
+  if (row.get(h) === s) { propSkipsCounter++; return; }
+  row.set(h, s);
+  writeString(s);
   const offset = _strOffset & 0xFFFFFF;
   const len = _strLength & 0xFF;
   const packed = (offset << 8) | len;
   writeOp(OP_SET_CUSTOM_PROP_STR, nodeId, h, packed);
+  propWritesCounter++;
 }
 
 export function bindCustomHandler(nodeId, name, handlerId) {
@@ -831,12 +901,16 @@ let nextCallId = 1;
  * @param {string} methodName  e.g. 'takePicture', 'pause'.
  * @param {Array<number|boolean>} args  Positional args, in order.
  */
-export function invokeMethod(nodeId, methodName, args) {
-  const h = _internName(methodName);
-  const callId = nextCallId++;
-  // Emit OP_METHOD_ARG per arg BEFORE the invoke — Dart drains args
-  // keyed by callId, picks them up when OP_INVOKE_METHOD arrives.
-  // Order is preserved (ops execute in write order).
+// Pack `args` into one OP_METHOD_ARG per entry, in order, keyed by
+// callId. Shared by invokeMethod + subscribeStream because their
+// argument wire shape is identical — only the trailing op (INVOKE vs
+// SUBSCRIBE) differs. Centralizing keeps the type-dispatch + string-
+// encoding rules from drifting between the two paths.
+//
+// Order matters — Dart's dispatcher reads positional args in op-
+// arrival order. Unsupported JS types (object/array/null) land as
+// EVENT_ARG_VOID, which the Dart side maps to null in that arg slot.
+function _writeMethodArgs(callId, args) {
   for (let i = 0; i < args.length; i++) {
     const v = args[i];
     if (typeof v === 'number') {
@@ -850,21 +924,27 @@ export function invokeMethod(nodeId, methodName, args) {
     } else if (typeof v === 'boolean') {
       writeOp(OP_METHOD_ARG, callId, EVENT_ARG_BOOL, v ? 1 : 0);
     } else if (typeof v === 'string') {
-      // Write to the JS string heap, pack (offset, length) into the
-      // argValue slot. Length caps at 255 — for longer strings, the
-      // op would need an extension (multi-op chunking or a wider
-      // length field). 255 chars covers every realistic method arg
-      // (URLs, search terms, identifiers).
+      // Write to the JS string heap. Layout: argType in the low byte
+      // of word2, length in word2's upper 24 bits, offset (full 32
+      // bits) in word3. Length is therefore bounded only by the heap
+      // capacity (~768 KiB), not by the wire encoding — fine for any
+      // realistic RPC string arg.
       writeString(v);
-      const offset = _strOffset & 0xFFFFFF;
-      const len = _strLength & 0xFF;
-      writeOp(OP_METHOD_ARG, callId, EVENT_ARG_STR, (offset << 8) | len);
+      const offset = _strOffset >>> 0;
+      const lenAndType = EVENT_ARG_STR | ((_strLength & 0xFFFFFF) << 8);
+      writeOp(OP_METHOD_ARG, callId, lenAndType, offset);
     } else {
-      // Unsupported arg type (object, array, null) — pass void.
-      // Dart-side dispatcher receives null in that slot.
       writeOp(OP_METHOD_ARG, callId, EVENT_ARG_VOID, 0);
     }
   }
+}
+
+export function invokeMethod(nodeId, methodName, args) {
+  const h = _internName(methodName);
+  const callId = nextCallId++;
+  // Emit OP_METHOD_ARG per arg BEFORE the invoke — Dart drains args
+  // keyed by callId, picks them up when OP_INVOKE_METHOD arrives.
+  _writeMethodArgs(callId, args);
   writeOp(OP_INVOKE_METHOD, nodeId, h, callId);
   scheduleCommit();
   return new Promise((resolve, reject) => {
@@ -895,39 +975,58 @@ export function subscribeStream(nodeId, methodName, args, onValue, opts) {
   const h = _internName(methodName);
   const callId = nextCallId++;
   // Same arg-pack pattern as invokeMethod.
-  for (let i = 0; i < args.length; i++) {
-    const v = args[i];
-    if (typeof v === 'number') {
-      if (Number.isInteger(v)) {
-        writeOp(OP_METHOD_ARG, callId, EVENT_ARG_I32, v | 0);
-      } else {
-        _f32buf[0] = v;
-        writeOp(OP_METHOD_ARG, callId, EVENT_ARG_F32, _u32view[0]);
-      }
-    } else if (typeof v === 'boolean') {
-      writeOp(OP_METHOD_ARG, callId, EVENT_ARG_BOOL, v ? 1 : 0);
-    } else if (typeof v === 'string') {
-      writeString(v);
-      const offset = _strOffset & 0xFFFFFF;
-      const len = _strLength & 0xFF;
-      writeOp(OP_METHOD_ARG, callId, EVENT_ARG_STR, (offset << 8) | len);
-    } else {
-      writeOp(OP_METHOD_ARG, callId, EVENT_ARG_VOID, 0);
-    }
-  }
+  _writeMethodArgs(callId, args);
   writeOp(OP_SUBSCRIBE_STREAM, nodeId, h, callId);
   scheduleCommit();
   streamHandlers.set(callId, {
+    nodeId,
     onValue,
     onError: opts && opts.onError,
     onDone: opts && opts.onDone,
   });
+  // Index by nodeId so diffCacheReleaseNode can find and cancel all
+  // outstanding subscriptions when the host unmounts. Without this,
+  // each unmount leaks a Dart-side stream listener (and the JS-side
+  // callback closure it pins) until the next reload.
+  let nodeStreams = _streamsByNode.get(nodeId);
+  if (nodeStreams === undefined) {
+    nodeStreams = new Set();
+    _streamsByNode.set(nodeId, nodeStreams);
+  }
+  nodeStreams.add(callId);
   return function unsubscribe() {
     if (!streamHandlers.has(callId)) return;  // already cleaned up
     streamHandlers.delete(callId);
+    const idx = _streamsByNode.get(nodeId);
+    if (idx) {
+      idx.delete(callId);
+      if (idx.size === 0) _streamsByNode.delete(nodeId);
+    }
     writeOp(OP_UNSUBSCRIBE_STREAM, callId, 0, 0);
     scheduleCommit();
   };
+}
+
+// _streamsByNode (the per-node index of live stream callIds) is
+// declared above near diffCacheReleaseNode — both this function and
+// the writer in subscribeStream consume it.
+
+/**
+ * Cancel every outstanding stream subscription owned by `nodeId`. Called
+ * from diffCacheReleaseNode at host unmount. Idempotent — subsequent
+ * calls are no-ops once the node's index entry is gone.
+ */
+export function cancelStreamsForNode(nodeId) {
+  const idx = _streamsByNode.get(nodeId);
+  if (idx === undefined) return;
+  for (const callId of idx) {
+    if (streamHandlers.has(callId)) {
+      streamHandlers.delete(callId);
+      writeOp(OP_UNSUBSCRIBE_STREAM, callId, 0, 0);
+    }
+  }
+  _streamsByNode.delete(nodeId);
+  scheduleCommit();
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -977,6 +1076,16 @@ function readReplyString(offset, length) {
   );
 }
 
+/// Advance the JS-side reply-heap read cursor past a just-consumed
+/// (offset, length) span. Dart's _writeReplyString reads this header
+/// slot when it's about to wraparound (writePos + len > heapSize) to
+/// confirm no in-flight string event references bytes about to be
+/// clobbered. If Dart wraps, it resets BOTH cursors to 0 — our next
+/// bump starts fresh.
+function _advanceReplyReadCursor(offset, length) {
+  u32[H_REPLY_HEAP_READ_POS] = offset + length;
+}
+
 globalThis.__skal_drainEvents = function () {
   const seq = Atomics.load(seqArr, B_EVENT_SEQ);
   if (seq === lastEventSeq) return;
@@ -1019,16 +1128,19 @@ globalThis.__skal_drainEvents = function () {
       // argRaw is the byte length; argOffset is the reply-heap offset.
       arg = readReplyString(argOffset, argRaw);
       hasArg = true;
+      _advanceReplyReadCursor(argOffset, argRaw);
     } else if (argType === EVENT_ARG_JSON) {
       const raw = readReplyString(argOffset, argRaw);
       try { arg = JSON.parse(raw); }
       catch (_) { arg = raw; /* fall through to raw string */ }
       hasArg = true;
+      _advanceReplyReadCursor(argOffset, argRaw);
     } else if (argType === EVENT_ARG_TUPLE) {
       const raw = readReplyString(argOffset, argRaw);
       try { arg = JSON.parse(raw); }
       catch (_) { arg = []; }
       hasArg = true;
+      _advanceReplyReadCursor(argOffset, argRaw);
       // Note: handler invocation below SPREADS this array if it's
       // actually an array — the regular-event branch checks for it.
     }

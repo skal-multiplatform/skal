@@ -9,7 +9,7 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
@@ -26,21 +26,15 @@ Widget _build_Card(NodeState n, SkalBridge bridge) {
 }
 
 Widget _build_CardOutlined(NodeState n, SkalBridge bridge) {
-  return Card.outlined(
-    title: n.getCustomPropStr('title') ?? 'untitled',
-  );
+  return Card.outlined(title: n.getCustomPropStr('title') ?? 'untitled');
 }
 
 Widget _build_SheetElevated(NodeState n, SkalBridge bridge) {
-  return Sheet.elevated(
-    label: n.getCustomPropStr('label') ?? 'sheet',
-  );
+  return Sheet.elevated(label: n.getCustomPropStr('label') ?? 'sheet');
 }
 
 Widget _build_Link(NodeState n, SkalBridge bridge) {
-  return Link(
-    label: n.getCustomPropStr('label') ?? 'click me',
-  );
+  return Link(label: n.getCustomPropStr('label') ?? 'click me');
 }
 
 void registerAll() {

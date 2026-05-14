@@ -134,45 +134,39 @@ export function skalCodegen(opts) {
     resolvePath(process.cwd(), m)
   );
 
-  // Merge widgets across all manifests. Object spread = last-wins on
-  // collision; later entries in `manifests:` override earlier ones.
-  // We loop instead of reducing so we can WARN on actual collisions —
-  // silent shadow has bitten enough times to deserve a one-line
-  // surface.
-  const widgets = {};
-  for (const path of manifestPaths) {
-    const next = _readManifest(path);
-    for (const [name, regKey] of Object.entries(next)) {
-      if (Object.prototype.hasOwnProperty.call(widgets, name)) {
-        // Collision: same JSX symbol declared by an earlier manifest.
-        // Late wins (we overwrite), but the dev should know — the
-        // earlier wrap silently becomes dead code.
-        const prevRegKey = widgets[name];
-        if (prevRegKey !== regKey) {
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[skal-codegen] manifest collision: <${name}> declared in `
-            + `multiple manifests (was '${prevRegKey}', now '${regKey}' `
-            + `from ${path}). Later manifest wins; earlier wrap will `
-            + `not dispatch. To shadow intentionally, ignore this warning.`,
-          );
+  // Merge widgets across all manifests into a single map. Pulled out
+  // into a helper so the dev-server hot-reload path can call it on
+  // each manifest mtime change, not just at startup.
+  function _mergeManifests() {
+    const merged = {};
+    for (const path of manifestPaths) {
+      const next = _readManifest(path);
+      for (const [name, regKey] of Object.entries(next)) {
+        if (Object.prototype.hasOwnProperty.call(merged, name)) {
+          const prevRegKey = merged[name];
+          if (prevRegKey !== regKey) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[skal-codegen] manifest collision: <${name}> declared in `
+              + `multiple manifests (was '${prevRegKey}', now '${regKey}' `
+              + `from ${path}). Later manifest wins; earlier wrap will `
+              + `not dispatch. To shadow intentionally, ignore this warning.`,
+            );
+          }
         }
+        merged[name] = regKey;
       }
-      widgets[name] = regKey;
     }
+    return merged;
   }
 
-  // For the babel macro: `{ moduleName: { ClassName: 'tagName' } }`.
-  // Same shape the dev would type by hand for a manual module.
+  // Mutable across hot reloads: the virtual module's `load()` reads
+  // `widgets` each call so a re-merge after a file change is visible
+  // immediately. The startup read populates the macroModules fragment
+  // (whose shape is frozen into the babel config at vite-config-eval
+  // time — see the limitation note at the bottom of handleHotUpdate).
+  let widgets = _mergeManifests();
   const macroModules = { [moduleName]: { ...widgets } };
-
-  // For the virtual module: synthesize module source containing one
-  // `export const ClassName = …` per widget, each a throw-on-call
-  // stub. The babel macro strips real usages at build time, so the
-  // synthesized source is dead code in correctly-configured builds —
-  // the throw only fires if the macro misconfiguration goes
-  // undetected, in which case it surfaces a pointer to the fix.
-  const moduleSource = _synthesizeModule(widgets, moduleName);
 
   /** @type {import('vite').Plugin} */
   const vitePlugin = {
@@ -182,7 +176,10 @@ export function skalCodegen(opts) {
       return null;
     },
     load(id) {
-      if (id === virtualId) return moduleSource;
+      // Re-synthesize on every load — when handleHotUpdate invalidates
+      // the virtual module after a manifest change, the next load()
+      // call sees the freshly-merged widget set without restarting Vite.
+      if (id === virtualId) return _synthesizeModule(widgets, moduleName);
       return null;
     },
     // Re-read the manifest(s) on changes so `build_runner watch` +
@@ -192,6 +189,25 @@ export function skalCodegen(opts) {
     buildStart() {
       for (const p of manifestPaths) {
         if (existsSync(p)) this.addWatchFile(p);
+      }
+    },
+    // Dev-server hot reload: when one of our manifest files changes,
+    // re-merge them and invalidate the virtual module. Vite then
+    // refetches the module via `load()`, which now returns the
+    // re-synthesized source for the new widget set. The babel macro
+    // config is locked at vite-config-eval time, so this hot-reloads
+    // the IMPORT shape (re-emitted stub bodies) — net-new widgets
+    // also become available to dev imports without a restart, but
+    // JSX that uses them needs the dev to nudge the source file (the
+    // babel transform doesn't re-evaluate macro config across HMR).
+    // Existing imports of existing widgets reflect updates immediately.
+    handleHotUpdate({ file, server }) {
+      if (!manifestPaths.includes(file)) return;
+      widgets = _mergeManifests();
+      const mod = server.moduleGraph.getModuleById(virtualId);
+      if (mod) {
+        server.moduleGraph.invalidateModule(mod);
+        return [mod];
       }
     },
   };

@@ -77,8 +77,7 @@ void main() {
       // Compare against the expected fixture. Normalize trailing
       // whitespace so a stray editor-induced newline doesn't fail
       // the test for cosmetic reasons.
-      final expected = File(expectedPath).readAsStringSync();
-      expect(_normalize(result.source), _normalize(expected),
+      _expectSnapshot(result.source, expectedPath,
           reason: 'generator output does NOT match '
               'test/fixtures/fancy_text.expected.dart');
     });
@@ -124,10 +123,8 @@ void main() {
       expect(result.skipped, isEmpty,
           reason: 'helpers.dart contributes nothing but mustn\'t error');
 
-      final expected = File(p.join(pkgRoot,
-              'test/fixtures/mini_pack.expected.dart'))
-          .readAsStringSync();
-      expect(_normalize(result.source), _normalize(expected),
+      _expectSnapshot(result.source,
+          p.join(pkgRoot, 'test/fixtures/mini_pack.expected.dart'),
           reason: 'multi-file generator output does NOT match '
               'mini_pack.expected.dart');
     });
@@ -163,8 +160,7 @@ void main() {
       expect(result.skipped, isEmpty,
           reason: 'Widget child params should NOT cause skips anymore');
 
-      final expected = File(expectedPath).readAsStringSync();
-      expect(_normalize(result.source), _normalize(expected),
+      _expectSnapshot(result.source, expectedPath,
           reason: 'widget-child generator output does NOT match '
               'widget_child.expected.dart');
     });
@@ -202,8 +198,7 @@ void main() {
       expect(result.skipped, isEmpty,
           reason: 'List<Widget> children should NOT cause skips');
 
-      final expected = File(expectedPath).readAsStringSync();
-      expect(_normalize(result.source), _normalize(expected),
+      _expectSnapshot(result.source, expectedPath,
           reason: 'widget-list generator output does NOT match '
               'widget_list.expected.dart');
     });
@@ -245,8 +240,7 @@ void main() {
           reason: 'named-ctor handling should not produce skip warnings '
               '(redirecting ctors are silently filtered, not skipped)');
 
-      final expected = File(expectedPath).readAsStringSync();
-      expect(_normalize(result.source), _normalize(expected),
+      _expectSnapshot(result.source, expectedPath,
           reason: 'named-ctor generator output does NOT match '
               'named_ctors.expected.dart');
     });
@@ -287,8 +281,7 @@ void main() {
           {'Painted', 'Banner'});
       expect(result.skipped, isEmpty);
 
-      final expected = File(expectedPath).readAsStringSync();
-      expect(_normalize(result.source), _normalize(expected),
+      _expectSnapshot(result.source, expectedPath,
           reason: 'gradient generator output does NOT match '
               'gradient.expected.dart');
     });
@@ -322,8 +315,7 @@ void main() {
       expect(result.skipped, isEmpty,
           reason: 'all six value types should encode without skipping');
 
-      final expected = File(expectedPath).readAsStringSync();
-      expect(_normalize(result.source), _normalize(expected),
+      _expectSnapshot(result.source, expectedPath,
           reason: 'v2 value-types output does NOT match '
               'value_types_v2.expected.dart');
     });
@@ -360,8 +352,7 @@ void main() {
       expect(result.skipped, isEmpty,
           reason: 'encodable positional params should not skip');
 
-      final expected = File(expectedPath).readAsStringSync();
-      expect(_normalize(result.source), _normalize(expected),
+      _expectSnapshot(result.source, expectedPath,
           reason: 'positional output does NOT match positional.expected.dart');
     });
 
@@ -406,8 +397,7 @@ void main() {
           reason: 'VoidCallback + ValueChanged<T> + multi-arg fn should '
               'not cause skips');
 
-      final expected = File(expectedPath).readAsStringSync();
-      expect(_normalize(result.source), _normalize(expected),
+      _expectSnapshot(result.source, expectedPath,
           reason: 'callbacks generator output does NOT match '
               'callbacks.expected.dart');
     });
@@ -476,8 +466,7 @@ void main() {
       expect(result.skipped, isEmpty,
           reason: 'host emission with valid factories should not skip');
 
-      final expected = File(expectedPath).readAsStringSync();
-      expect(_normalize(result.source), _normalize(expected),
+      _expectSnapshot(result.source, expectedPath,
           reason: 'host generator output does NOT match '
               'host.expected.dart');
     });
@@ -512,8 +501,7 @@ void main() {
       expect(result.skipped, isEmpty,
           reason: 'enum + Duration should NOT skip the widget');
 
-      final expected = File(expectedPath).readAsStringSync();
-      expect(_normalize(result.source), _normalize(expected),
+      _expectSnapshot(result.source, expectedPath,
           reason: 'complex-types generator output does NOT match '
               'complex_types.expected.dart');
     });
@@ -525,3 +513,18 @@ void main() {
 /// shape of the generated code is what we're snapshotting.
 String _normalize(String s) =>
     s.split('\n').map((l) => l.trimRight()).join('\n').trimRight();
+
+/// Compare `actual` (the generator output) against the snapshot at
+/// `expectedPath`. When `SKAL_UPDATE_SNAPSHOTS=1` is set in the
+/// environment, the actual output OVERWRITES the snapshot file
+/// instead of asserting — used to regenerate fixtures after an
+/// encoder change. Returns silently in that mode so the test passes.
+void _expectSnapshot(String actual, String expectedPath,
+    {required String reason}) {
+  if (Platform.environment['SKAL_UPDATE_SNAPSHOTS'] == '1') {
+    File(expectedPath).writeAsStringSync(actual);
+    return;
+  }
+  final expected = File(expectedPath).readAsStringSync();
+  expect(_normalize(actual), _normalize(expected), reason: reason);
+}

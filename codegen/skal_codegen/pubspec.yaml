@@ -24,6 +24,12 @@ dependencies:
   # config block.
   yaml: ^3.1.0
   path: ^1.9.0
+  # dart_style: run the generated source through the same formatter
+  # `dart format` uses. Encoders emit single-line readerExpressions
+  # (TextStyle, BoxDecoration, IIFE chains) that exceed 200 chars
+  # straight; the formatter breaks them at idiomatic positions so the
+  # generated .g.dart file stays diffable + reviewable.
+  dart_style: ^3.0.0
 
 dev_dependencies:
   test: ^1.25.0

@@ -9,7 +9,7 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
@@ -21,27 +21,55 @@ import 'value_types_v2.dart';
 
 Widget _build_Styled(NodeState n, SkalBridge bridge) {
   return Styled(
-    style: TextStyle(fontSize: n.getCustomPropF32('styleFontSize', 14.0), color: Color(n.getCustomPropU32('styleColor', 0xFF000000)), fontWeight: FontWeight.values[n.getCustomPropU32('styleFontWeight', 3)], letterSpacing: n.getCustomPropF32('styleLetterSpacing', 0.5), height: n.getCustomPropF32('styleHeight', 1.2)),
+    style: TextStyle(
+      fontSize: n.getCustomPropF32('styleFontSize', 14.0),
+      color: Color(n.getCustomPropU32('styleColor', 0xFF000000)),
+      fontWeight: FontWeight.values[n.getCustomPropU32('styleFontWeight', 3)],
+      letterSpacing: n.getCustomPropF32('styleLetterSpacing', 0.5),
+      height: n.getCustomPropF32('styleHeight', 1.2),
+    ),
   );
 }
 
 Widget _build_Card(NodeState n, SkalBridge bridge) {
   return Card(
-    decoration: BoxDecoration(color: Color(n.getCustomPropU32('decorationColor', 0xFFEEEEEE)), borderRadius: BorderRadius.all(Radius.circular(n.getCustomPropF32('decorationBorderRadius', 8.0)))),
-    radius: BorderRadius.all(Radius.circular(n.getCustomPropF32('radiusRadius', 4.0))),
+    decoration: BoxDecoration(
+      color: Color(n.getCustomPropU32('decorationColor', 0xFFEEEEEE)),
+      borderRadius: BorderRadius.all(
+        Radius.circular(n.getCustomPropF32('decorationBorderRadius', 8.0)),
+      ),
+    ),
+    radius: BorderRadius.all(
+      Radius.circular(n.getCustomPropF32('radiusRadius', 4.0)),
+    ),
   );
 }
 
 Widget _build_Anchored(NodeState n, SkalBridge bridge) {
   return Anchored(
-    position: Offset(n.getCustomPropF32('positionX', 10.0), n.getCustomPropF32('positionY', 20.0)),
-    anchor: Alignment(n.getCustomPropF32('anchorX', 0.0), n.getCustomPropF32('anchorY', 0.0)),
+    position: Offset(
+      n.getCustomPropF32('positionX', 10.0),
+      n.getCustomPropF32('positionY', 20.0),
+    ),
+    anchor: Alignment(
+      n.getCustomPropF32('anchorX', 0.0),
+      n.getCustomPropF32('anchorY', 0.0),
+    ),
   );
 }
 
 Widget _build_Pic(NodeState n, SkalBridge bridge) {
   return Pic(
-    image: ((() { final s = n.getCustomPropStr('image') ?? ''; if (s.startsWith('http')) return NetworkImage(s); if (s.startsWith('file://')) return FileImage(File(s.substring(7))); if (s.startsWith('/')) return FileImage(File(s)); return AssetImage(s); })() as ImageProvider),
+    image:
+        ((() {
+              final s = n.getCustomPropStr('image') ?? '';
+              if (s.startsWith('http')) return NetworkImage(s);
+              if (s.startsWith('file://'))
+                return FileImage(File(s.substring(7)));
+              if (s.startsWith('/')) return FileImage(File(s));
+              return AssetImage(s);
+            })()
+            as ImageProvider),
   );
 }
 

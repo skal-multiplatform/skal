@@ -4,12 +4,17 @@
 // error. `flutter/skal_flutter/test/wire_test.dart` snapshots every
 // value so an inadvertent change fails CI.
 //
-// Layout of the 2 MiB shared region (acquired via skal_acquire_bridge):
+// Layout of the 6 MiB shared region (acquired via skal_acquire_bridge):
 //
-//   [Header 64B][Op ring 1 MiB][String heap 512 KiB][Event ring (rest)]
+//   [Header 64B]
+//   [Op ring          4 MiB ]  JS → Dart command stream
+//   [JS string heap   768 KiB] JS-write, Dart-read (prop strings)
+//   [Reply heap       256 KiB] Dart-write, JS-read (RPC replies)
+//   [Event ring       (rest, ~1 MiB)]  Dart → JS event stream
 //
-// The header carries the producer/consumer seq counters and write
-// positions for each ring. Ops are 16 bytes: u8 opcode + 3 u32 args.
+// The header carries the producer/consumer seq counters and write/
+// read positions for each ring (op ring, event ring, reply heap).
+// Ops are 16 bytes: u8 opcode + 3 u32 args.
 
 const int kRootNodeId = 1;
 
@@ -21,8 +26,8 @@ const int hEventSeq            = 16;   // u64 — Dart bumps after each event wr
 const int hEventWritePos       = 24;   // u32
 const int hEventReadPos        = 28;   // u32
 const int hLastDrainedSeq      = 32;   // u64 — Dart bumps after each drain (JS spin-wait target)
-const int hLastDrainedWritePos = 40;   // u32 — reserved slot; not currently read by either side
-const int hReplyHeapWritePos   = 44;   // u32 — Dart bumps after each reply-heap write
+const int hReplyHeapReadPos    = 40;   // u32 — JS bumps to the byte-offset it's read up to in the reply heap
+const int hReplyHeapWritePos   = 44;   // u32 — Dart bumps after each reply-heap write; the wraparound guard reads JS's hReplyHeapReadPos to ensure no in-flight string is overwritten
 
 const int kHeaderSize     = 64;
 const int kOpRingOffset   = kHeaderSize;

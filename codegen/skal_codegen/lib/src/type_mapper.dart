@@ -17,25 +17,50 @@
 //
 // Supported types:
 //
-//   String      → getCustomPropStr(name) ?? '<default>'
-//   int         → getCustomPropU32(name, <default>)
-//   double      → getCustomPropF32(name, <default>)
-//   bool        → getCustomPropU32(name, 0) != 0       (and ? 1 : 0 for default)
-//   Color       → Color(getCustomPropU32(name, 0xAARRGGBB))
-//   enum        → <EnumType>.values[getCustomPropU32(name, <defaultIndex>)]
-//   Duration    → Duration(milliseconds: getCustomPropU32(name, <defaultMs>))
-//   EdgeInsets  → EdgeInsets.fromLTRB(<4 f32 reads>, with side-named
-//                                     subprops: paddingLeft/Top/Right/Bottom
-//                                     for a param named `padding`)
-//   Widget      → SkalNode(nodeId: <first JSX child>, ...) — the
-//                 widget renders the FIRST child node from JSX.
-//   List<Widget>→ List.generate(n.childCount, (i) => SkalNode(...)) —
-//                 EVERY JSX child becomes one element. Unlocks multi-
-//                 child wrappers like Wrap, Stack, Flow, StaggeredGrid.
+//   Primitives
+//     String        → getCustomPropStr(name) ?? '<default>'
+//     int           → getCustomPropU32(name, <default>)
+//     double        → getCustomPropF32(name, <default>)
+//     bool          → getCustomPropU32(name, 0) != 0
 //
-// Anything else → null (the caller skips the whole widget with a
-// warning — falls back to a hand-written adapter for the long tail).
-// Later slices add Offset, TextStyle, etc.
+//   Enum-like
+//     <enum>        → <EnumType>.values[getCustomPropU32(name, <idx>)]
+//     Color         → Color(getCustomPropU32(name, 0xAARRGGBB))
+//     Duration      → Duration(milliseconds: getCustomPropU32(name, <ms>))
+//
+//   Multi-prop value types (encoded as <paramName><suffix> sub-props)
+//     EdgeInsets    → fromLTRB(4 f32 reads: paddingLeft/Top/Right/Bottom)
+//     Offset        → Offset(dx, dy) from <name>X / <name>Y f32 reads
+//     Alignment     → Alignment(x, y) from <name>X / <name>Y f32 reads
+//     BorderRadius  → BorderRadius.all(Radius.circular(<name>))
+//                                    [single f32, uniform corner radius]
+//     TextStyle     → fontSize / color / fontWeight / letterSpacing /
+//                     height from <name>FontSize / <name>Color / …
+//     BoxDecoration → color + uniform borderRadius
+//     ImageProvider → string-coercion: <name>="http://..." | "file://..."
+//                     | "..." → NetworkImage | FileImage | AssetImage
+//
+//   Composite value types (JSON-object JSX prop)
+//     Gradient      → _skalParseGradient(jsonDecode(<name>))
+//                     [Linear/Radial/Sweep; full alignment + color stops]
+//
+//   Widget composition
+//     Widget        → SkalNode(nodeId: <first JSX child>) — renders the
+//                     FIRST child node from JSX
+//     List<Widget>  → List.generate(n.childCount, (i) => SkalNode(...))
+//                     — EVERY JSX child becomes one element
+//
+//   Callbacks
+//     VoidCallback        → () => bridge.dispatchEvent(<handlerId>)
+//     ValueChanged<int>   → (v) => bridge.dispatchEventInt(<id>, v)
+//     ValueChanged<double>→ (v) => bridge.dispatchEventDouble(<id>, v)
+//     ValueChanged<bool>  → (v) => bridge.dispatchEventBool(<id>, v)
+//     ValueChanged<String>→ (v) => bridge.dispatchEventString(<id>, v)
+//     void Function(A, B) → multi-arg via EVENT_ARG_TUPLE
+//
+// Anything else → null (caller skips the whole widget with a warning —
+// fall back to a hand-written adapter, or use the host pattern for
+// controller-driven widgets). Each new type is a ~30 min branch here.
 
 // The new Element2 model is marked @experimental until the analyzer
 // team stabilizes it. The OLD Element API is deprecated. Either side
@@ -298,10 +323,12 @@ PropEncoding? encodingFor({
         defaultConstant?.getField('right')?.toDoubleValue() ?? 0.0;
     final b =
         defaultConstant?.getField('bottom')?.toDoubleValue() ?? 0.0;
-    final leftProp = '$paramName${_sidePropSuffix("Left")}';
-    final topProp = '$paramName${_sidePropSuffix("Top")}';
-    final rightProp = '$paramName${_sidePropSuffix("Right")}';
-    final bottomProp = '$paramName${_sidePropSuffix("Bottom")}';
+    // Side-name suffixes joined to a param name. For a param named
+    // `padding`, JSX writes `paddingLeft={…} paddingTop={…}` etc.
+    final leftProp = '${paramName}Left';
+    final topProp = '${paramName}Top';
+    final rightProp = '${paramName}Right';
+    final bottomProp = '${paramName}Bottom';
     return PropEncoding(
       readerExpression: 'EdgeInsets.fromLTRB('
           "n.getCustomPropF32('$leftProp', $l), "
@@ -434,9 +461,13 @@ PropEncoding? encodingFor({
   //   "http://" / "https://"  → NetworkImage
   //   "file://" / starts "/"  → FileImage
   //   anything else           → AssetImage  (assets/foo.png, etc.)
-  // Empty string returns a 1×1 transparent AssetImage as a safe
-  // fallback (most widgets accept any ImageProvider; the displayed
-  // pixels are nothing).
+  // Empty-string handling depends on the param's nullability:
+  //   nullable     `ImageProvider?` → returns null
+  //   non-nullable `ImageProvider`  → returns AssetImage('') and lets
+  //                                   Flutter surface its standard
+  //                                   "asset not found" warning at
+  //                                   runtime (more useful than a
+  //                                   silent placeholder).
   // Gradient (Linear/Radial/Sweep) — JSON-object JSX prop. The
   // renderer's _setCustomProperty (js-app/src/renderer.js) JSON-
   // stringifies non-null object/array prop values; the Dart side
@@ -831,13 +862,6 @@ bool _isFlutterEdgeInsets(DartType t) {
   // would need rtl-aware encoding).
   return t.element3?.name3 == 'EdgeInsets';
 }
-
-/// Side-name suffix joined to a param name. `Left` stays `Left`; if
-/// the param name ALREADY ends in the side word ("paddingLeft"
-/// already → leave alone) we'd get `paddingLeftLeft` — not handled
-/// here since EdgeInsets params are conventionally named `padding`,
-/// `margin`, `insets`, never `paddingLeft`.
-String _sidePropSuffix(String capitalized) => capitalized;
 
 /// If [t] is `ValueChanged<X>` (or `void Function(X)?`, the de-aliased
 /// form), return the type argument `X`. Otherwise null.

@@ -9,7 +9,7 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
@@ -22,8 +22,15 @@ Widget _build_Banner(NodeState n, SkalBridge bridge) {
   return Banner(
     message: n.getCustomPropStr('message') ?? '',
     style: BannerStyle.values[n.getCustomPropU32('style', 0)],
-    dismissAfter: Duration(milliseconds: n.getCustomPropU32('dismissAfter', 500)),
-    padding: EdgeInsets.fromLTRB(n.getCustomPropF32('paddingLeft', 4.0), n.getCustomPropF32('paddingTop', 8.0), n.getCustomPropF32('paddingRight', 4.0), n.getCustomPropF32('paddingBottom', 8.0)),
+    dismissAfter: Duration(
+      milliseconds: n.getCustomPropU32('dismissAfter', 500),
+    ),
+    padding: EdgeInsets.fromLTRB(
+      n.getCustomPropF32('paddingLeft', 4.0),
+      n.getCustomPropF32('paddingTop', 8.0),
+      n.getCustomPropF32('paddingRight', 4.0),
+      n.getCustomPropF32('paddingBottom', 8.0),
+    ),
   );
 }
 

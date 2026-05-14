@@ -14,10 +14,11 @@ const skalJsxPlugin = require('./babel-plugin-skal-jsx.cjs');
 //     Stickers in this demo)
 //   • build_runner (lib/skal_codegen.json — for third-party pub
 //     packages listed in lib/skal_codegen.yaml: qr_flutter, shimmer)
-// All widgets surface through one virtual module `skal-codegen-generated`,
-// so JSX has a single import source regardless of where the underlying
-// adapter was generated. See vite-plugin-skal-codegen.js for the
-// merge semantics (last-wins on key collision, by array order).
+// All widgets surface through one virtual module `skal-flutter`
+// (the plugin's default; override via `moduleName:`), so JSX has a
+// single import source regardless of where the underlying adapter was
+// generated. See vite-plugin-skal-codegen.js for the merge semantics
+// (last-wins on key collision, by array order).
 const codegen = skalCodegen({
   manifests: [
     '../flutter/skal_flutter/lib/adapters/generated/skal_adapters.json',
@@ -52,9 +53,9 @@ export default defineConfig({
   },
   plugins: [
     // Virtual module + manifest watcher for codegen-wrapped widgets.
-    // Synthesizes `skal-codegen-generated` from skal_codegen.json so JSX
-    // can `import { QrImageView } from 'skal-codegen-generated'` without
-    // any hand-written stub.
+    // Synthesizes `skal-flutter` from skal_codegen.json so JSX can
+    // `import { QrImageView } from 'skal-flutter'` without any
+    // hand-written stub.
     codegen.vitePlugin,
     solid({
       solid: {
@@ -71,7 +72,7 @@ export default defineConfig({
             // side SkalRegistry registration key (see greeting.dart's
             // `SkalRegistry.registerWidget('greeting', …)`).
             modules: {
-              // ALL custom-widget imports flow through skal-codegen-generated
+              // ALL custom-widget imports flow through `skal-flutter`
               // now — both local CLI-emitted (Greeting, Stickers) and
               // build_runner pub-package (QrImageView, ShimmerFromColors).
               // Single source of truth; the JS side doesn't care which

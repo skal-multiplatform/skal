@@ -111,7 +111,7 @@ class TickView extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: controller,
-      builder: (_, __) => Container(
+      builder: (_, _) => Container(
         decoration: BoxDecoration(
           color: controller.isPaused()
               ? const Color(0xFFFFE8B0)

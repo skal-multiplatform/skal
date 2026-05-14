@@ -9,7 +9,7 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
@@ -34,16 +34,24 @@ Widget _build_Refreshable(NodeState n, SkalBridge bridge) {
 
 Widget _build_Form(NodeState n, SkalBridge bridge) {
   return Form(
-    onSwitch: (v) => bridge.dispatchEventBool(n.getCustomHandler('onSwitch'), v),
-    onSlide: (v) => bridge.dispatchEventDouble(n.getCustomHandler('onSlide'), v),
+    onSwitch: (v) =>
+        bridge.dispatchEventBool(n.getCustomHandler('onSwitch'), v),
+    onSlide: (v) =>
+        bridge.dispatchEventDouble(n.getCustomHandler('onSlide'), v),
     onPick: (v) => bridge.dispatchEventInt(n.getCustomHandler('onPick'), v),
   );
 }
 
 Widget _build_TapList(NodeState n, SkalBridge bridge) {
   return TapList(
-    onItemTap: (index, payload) => bridge.dispatchEventTuple(n.getCustomHandler('onItemTap'), [index, payload]),
-    onReorder: (oldIndex, newIndex) => bridge.dispatchEventTuple(n.getCustomHandler('onReorder'), [oldIndex, newIndex]),
+    onItemTap: (index, payload) => bridge.dispatchEventTuple(
+      n.getCustomHandler('onItemTap'),
+      [index, payload],
+    ),
+    onReorder: (oldIndex, newIndex) => bridge.dispatchEventTuple(
+      n.getCustomHandler('onReorder'),
+      [oldIndex, newIndex],
+    ),
   );
 }
 

@@ -9,7 +9,7 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
@@ -21,14 +21,28 @@ import 'widget_list.dart';
 
 Widget _build_Grid(NodeState n, SkalBridge bridge) {
   return Grid(
-    children: List.generate(n.childCount, (i) => SkalNode(nodeId: n.childAt(i), bridge: bridge, key: ValueKey<int>(n.childAt(i)))),
+    children: List.generate(
+      n.childCount,
+      (i) => SkalNode(
+        nodeId: n.childAt(i),
+        bridge: bridge,
+        key: ValueKey<int>(n.childAt(i)),
+      ),
+    ),
     columns: n.getCustomPropU32('columns', 2),
   );
 }
 
 Widget _build_LayerStack(NodeState n, SkalBridge bridge) {
   return LayerStack(
-    layers: List.generate(n.childCount, (i) => SkalNode(nodeId: n.childAt(i), bridge: bridge, key: ValueKey<int>(n.childAt(i)))),
+    layers: List.generate(
+      n.childCount,
+      (i) => SkalNode(
+        nodeId: n.childAt(i),
+        bridge: bridge,
+        key: ValueKey<int>(n.childAt(i)),
+      ),
+    ),
     background: Color(n.getCustomPropU32('background', 0xFF000000)),
   );
 }

@@ -9,7 +9,7 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
@@ -22,15 +22,24 @@ import 'gradient.dart';
 Alignment _skalParseAlignment(dynamic v, {Alignment def = Alignment.center}) {
   if (v is String) {
     switch (v) {
-      case 'topLeft':      return Alignment.topLeft;
-      case 'topCenter':    return Alignment.topCenter;
-      case 'topRight':     return Alignment.topRight;
-      case 'centerLeft':   return Alignment.centerLeft;
-      case 'center':       return Alignment.center;
-      case 'centerRight':  return Alignment.centerRight;
-      case 'bottomLeft':   return Alignment.bottomLeft;
-      case 'bottomCenter': return Alignment.bottomCenter;
-      case 'bottomRight':  return Alignment.bottomRight;
+      case 'topLeft':
+        return Alignment.topLeft;
+      case 'topCenter':
+        return Alignment.topCenter;
+      case 'topRight':
+        return Alignment.topRight;
+      case 'centerLeft':
+        return Alignment.centerLeft;
+      case 'center':
+        return Alignment.center;
+      case 'centerRight':
+        return Alignment.centerRight;
+      case 'bottomLeft':
+        return Alignment.bottomLeft;
+      case 'bottomCenter':
+        return Alignment.bottomCenter;
+      case 'bottomRight':
+        return Alignment.bottomRight;
     }
   }
   if (v is List && v.length == 2) {
@@ -54,7 +63,9 @@ Gradient? _skalParseGradient(String? json) {
   final m = jsonDecode(json) as Map<String, dynamic>;
   final colors = (m['colors'] as List).map(_skalParseColor).toList();
   final stops = (m['stops'] as List?)
-      ?.cast<num>().map((n) => n.toDouble()).toList();
+      ?.cast<num>()
+      .map((n) => n.toDouble())
+      .toList();
   switch (m['type']) {
     case 'radial':
       return RadialGradient(
@@ -71,7 +82,7 @@ Gradient? _skalParseGradient(String? json) {
         endAngle: (m['endAngle'] as num?)?.toDouble() ?? 6.283185307,
         center: _skalParseAlignment(m['center'], def: Alignment.center),
       );
-    default:  // 'linear' or missing
+    default: // 'linear' or missing
       return LinearGradient(
         colors: colors,
         stops: stops,
@@ -82,9 +93,7 @@ Gradient? _skalParseGradient(String? json) {
 }
 
 Widget _build_Painted(NodeState n, SkalBridge bridge) {
-  return Painted(
-    gradient: _skalParseGradient(n.getCustomPropStr('gradient')),
-  );
+  return Painted(gradient: _skalParseGradient(n.getCustomPropStr('gradient')));
 }
 
 Widget _build_Banner(NodeState n, SkalBridge bridge) {

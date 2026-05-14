@@ -9,7 +9,7 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
@@ -22,7 +22,13 @@ import 'positional.dart';
 Widget _build_Padded(NodeState n, SkalBridge bridge) {
   return Padded(
     n.getCustomPropU32('padding', 0),
-    child: n.childCount > 0 ? SkalNode(nodeId: n.childAt(0), bridge: bridge, key: ValueKey<int>(n.childAt(0))) : const SizedBox.shrink(),
+    child: n.childCount > 0
+        ? SkalNode(
+            nodeId: n.childAt(0),
+            bridge: bridge,
+            key: ValueKey<int>(n.childAt(0)),
+          )
+        : const SizedBox.shrink(),
   );
 }
 

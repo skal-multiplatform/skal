@@ -67,6 +67,7 @@
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/element/element2.dart';
 import 'package:analyzer/dart/element/type.dart';
+import 'package:dart_style/dart_style.dart';
 import 'package:path/path.dart' as p;
 
 import 'type_mapper.dart';
@@ -275,6 +276,9 @@ GenerationResult generate({
     if (result.body != null) {
       adapterBodies.add(result.body!);
       extraImports.addAll(result.requiredImports);
+      for (final e in result.requiredHelpers.entries) {
+        extraHelpers[e.key] = e.value;
+      }
     }
     if (result.registryLine != null) {
       registryCalls.add(result.registryLine!);
@@ -315,9 +319,16 @@ GenerationResult generate({
     //   • unused_import — unlikely (we filter to contributing units)
     //     but cheap to suppress for resilience against future changes
     //     to that filtering logic.
+    //   • deprecated_member_use — a wrapped package may use APIs the
+    //     SDK has deprecated (e.g. `Color.value`, `withOpacity`). The
+    //     dev didn't choose those calls — the codegen mirrors what the
+    //     package's constructor declares as defaults. Suppressing here
+    //     so the consumer's `dart analyze` stays green when wrapping
+    //     a package that hasn't migrated yet.
     ..writeln('//')
     ..writeln('// ignore_for_file: non_constant_identifier_names, '
-        'sort_child_properties_last, unused_import')
+        'sort_child_properties_last, unused_import, '
+        'deprecated_member_use')
     ..writeln()
     ..writeln("import 'package:flutter/material.dart';")
     ..writeln("import 'package:skal_flutter/skal/bridge.dart';")
@@ -365,7 +376,22 @@ GenerationResult generate({
   }
   buffer.writeln('}');
 
-  return GenerationResult(buffer.toString(), widgets);
+  // Run the formatter so emitted readerExpressions (TextStyle,
+  // BoxDecoration, IIFE chains) that come through as single 200+ char
+  // lines get broken at idiomatic positions. If formatting fails (the
+  // generated source has a syntax error, e.g. an unexpected type
+  // signature from a never-seen package), fall back to the raw source
+  // — better to emit reviewable-with-effort code than to crash codegen.
+  final raw = buffer.toString();
+  String formatted;
+  try {
+    formatted = DartFormatter(
+      languageVersion: DartFormatter.latestLanguageVersion,
+    ).format(raw);
+  } on FormatterException {
+    formatted = raw;
+  }
+  return GenerationResult(formatted, widgets);
 }
 
 class _AdapterResult {
@@ -591,6 +617,7 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
     host.wrappedWidgetImport,
     host.factoryImport,
   };
+  final hostRequiredHelpers = <String, String>{};
 
   for (final param in host.factoryFn.formalParameters) {
     if (param.isPositional) continue;
@@ -622,6 +649,9 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
     factoryCallArgs.add('        $name: widget.$name,');
     propReaders.add('    $name: ${encoding.readerExpression},');
     hostRequiredImports.addAll(encoding.requiredImports);
+    for (final e in encoding.requiredHelpers.entries) {
+      hostRequiredHelpers[e.key] = e.value;
+    }
   }
 
   // Detect Future<T> return type — if async, the host's initState
@@ -742,6 +772,7 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
     registryLine:
         "SkalRegistry.registerWidget('$registryKey', _build_$jsxName);",
     requiredImports: hostRequiredImports.toList(),
+    requiredHelpers: hostRequiredHelpers,
   );
 }
 
@@ -802,13 +833,13 @@ List<String> _collectControllerMethods(DartType controllerType) {
     // we return the future (bridge unwraps + encodes T).
     final callExpr = 'ctl.$name(${argCasts.join(", ")})';
     if (returnInfo.isVoid) {
-      out.writeln(
+      out.add(
         '      case \'$name\':\n'
         '        $callExpr;\n'
         '        return null;\n'
       );
     } else {
-      out.writeln(
+      out.add(
         '      case \'$name\':\n'
         '        return $callExpr;\n'
       );
@@ -817,29 +848,35 @@ List<String> _collectControllerMethods(DartType controllerType) {
   return out;
 }
 
-/// Convenience: same as List<String>.add(line + '\n') but reads better
-/// inline. Just sugar to keep _collectControllerMethods compact.
-extension on List<String> {
-  void writeln(String s) => add(s);
-}
-
 class _RpcReturnInfo {
   final bool isVoid;
   const _RpcReturnInfo(this.isVoid);
 }
 
 /// Determine how the bridge should encode a controller method's
-/// return type. Returns null only for type signatures the bridge
-/// truly can't carry — control-flow types (Stream, Iterable<T>) or
-/// recursive Dart-only objects. For everything else we encode:
+/// return type. Always returns a non-null record today — the bridge
+/// has a graceful fallback for every shape it sees. The only
+/// `_RpcReturnInfo` field is `isVoid`, which gates whether the
+/// generated `case` arm emits `return null` after the call or
+/// `return <call>`. Encoding the actual value happens at runtime in
+/// `_writeMethodReply`:
 ///
 ///   void / Future<void>  → eventArgVoid
 ///   int / double / bool  → primitive arg types
 ///   String               → eventArgStr via reply heap
 ///   {Map, List, Object}  → eventArgJson via reply heap + jsonEncode
+///   anything jsonEncode  → falls through to void at runtime; the dev
+///   chokes on              sees the Promise resolve with `undefined`
+///                          and learns to add `toJson()` (or use a
+///                          simpler shape).
 ///
-/// The catch-all `_RpcReturnInfo(false)` for non-void return types
-/// trusts the bridge's _writeMethodReply to handle the actual encoding.
+/// `Stream<T>` returns are NOT routed through here — they're picked
+/// up by the JSX `$`-suffix syntax (`ref.foo$(cb)`), which sends an
+/// OP_SUBSCRIBE_STREAM instead of OP_INVOKE_METHOD. The dispatcher
+/// returns the Stream as-is; the bridge does `.listen` and emits
+/// per-element via the event ring. Function signature is kept
+/// nullable for symmetry with future "truly unsupported" return
+/// types (e.g. Iterable that's neither List nor JSON-encodable).
 _RpcReturnInfo? _classifyRpcReturn(DartType t) {
   // Unwrap Future<X> — the bridge's RPC dispatch awaits async methods
   // transparently. Future<void> counts as void.

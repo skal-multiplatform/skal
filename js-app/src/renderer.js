@@ -197,6 +197,18 @@ function parseDim(v) {
  *   the fractional part). That's fine: a fractional value in JSX is
  *   always meant for a double param.
  */
+// Returns true for values that JSON.stringify into something
+// meaningful for the Dart-side parsers — plain `{}` object literals
+// and arrays. Rejects class instances, Map, Set, Date, RegExp,
+// TypedArrays, etc. The check is structural (prototype = Object's, or
+// the rare null-prototype object created via Object.create(null)) so
+// it survives realms and bundlers that strip the `Object` global.
+function _isJsonShaped(value) {
+  if (Array.isArray(value)) return true;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 function _setCustomProperty(node, name, value) {
   if (value == null) return;
   // `ref={someRef}` — bind the SkalRef's nodeId so subsequent
@@ -216,10 +228,15 @@ function _setCustomProperty(node, name, value) {
   // jsonDecode + a type-specific helper (e.g. _skalParseGradient).
   //
   // Excludes Refs (handled above) and primitives (number/string/
-  // boolean → their existing typed paths). Arrays follow the same
-  // rule — they JSON-stringify cleanly + are typically inside a
-  // larger object value anyway.
-  if (t === 'object' && !value.__skalBind) {
+  // boolean → their existing typed paths). Restricts to JSON-shaped
+  // values — plain Object literals + Arrays. Map/Set/Date/RegExp/
+  // typed arrays all pass `typeof === 'object'` but produce garbage
+  // through JSON.stringify (Map → '{}', Set → '{}', etc.); rather
+  // than silently writing nonsense to the wire we fall through to
+  // the no-op branch so the dev notices the unwrapped value didn't
+  // land. Future encodings (Map → object pair list, etc.) can add
+  // explicit branches.
+  if (t === 'object' && _isJsonShaped(value)) {
     B.setCustomPropStr(node.id, name, JSON.stringify(value));
     B.scheduleCommit();
     return;

@@ -716,7 +716,13 @@ export function setCustomPropU32(nodeId, name, value) {
 
 export function setCustomPropF32(nodeId, name, value) {
   const h = _internName(name);
-  _f32view[0] = value;
+  // Float32 → u32 bit-pattern via aliased typed arrays (same trick as
+  // the built-in setPropF32 just above). Mirror the variable names:
+  // `_f32buf` is the Float32Array, `_u32view` is the Uint32Array view
+  // over the same backing buffer. Writing the float, reading the u32
+  // gives the IEEE-754 bit pattern that the wire passes verbatim and
+  // the Dart side decodes back via _bitsToF32.
+  _f32buf[0] = value;
   writeOp(OP_SET_CUSTOM_PROP_F32, nodeId, h, _u32view[0]);
 }
 

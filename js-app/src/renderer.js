@@ -167,13 +167,35 @@ function parseDim(v) {
  * does), so we dispatch by JS value type:
  *
  *   • function  → name-keyed handler binding (onClick → "onClick", etc.)
- *   • number    → setCustomPropF32 if there's a decimal, else U32
+ *   • number    → see below
  *   • string    → setCustomPropStr (max 255 bytes)
  *   • boolean   → setCustomPropU32 with 0/1
  *   • null/undef → skipped (mirrors built-in setProperty behavior:
  *                  "leave as previous")
  *
  * Adapters read these back via NodeState.getCustomPropF32(name, fb) etc.
+ *
+ * The numeric path — the hairy one:
+ *
+ *   JS has no float/int distinction at the value level. `200.0` and
+ *   `200` are identical. But the bridge's `setCustomPropU32` and
+ *   `setCustomPropF32` ops write to DIFFERENT maps on the Dart side,
+ *   and adapters read from EXACTLY ONE map based on their declared
+ *   param type. Mismatch reads as zero/null and the prop silently
+ *   doesn't take effect.
+ *
+ *   We can't always-F32 either: u32 ARGB color values (e.g. 0xFF1DA1F2)
+ *   exceed f32's 24-bit mantissa precision, so a Color round-tripped
+ *   through F32 comes back wrong.
+ *
+ *   Correct fix: for integer-valued numbers, write to BOTH maps. The
+ *   adapter then reads whichever one matches its param type (U32 for
+ *   `int`/`Color`, F32 for `double`). Costs one extra 16-byte op per
+ *   integer prop write — negligible at typical UI prop rates.
+ *
+ *   Fractional values can ONLY be F32 (writing 3.14 to U32 would lose
+ *   the fractional part). That's fine: a fractional value in JSX is
+ *   always meant for a double param.
  */
 function _setCustomProperty(node, name, value) {
   if (value == null) return;
@@ -185,12 +207,14 @@ function _setCustomProperty(node, name, value) {
     return;
   }
   if (t === 'number') {
-    // Integer fast-path: avoid the F32 → bits → F32 round-trip when
-    // the value is a whole integer that fits in u32. Most custom-prop
-    // numbers (counts, enum indices, hex colors) are integral.
     if (Number.isInteger(value) && value >= 0 && value <= 0xFFFFFFFF) {
+      // Integer fits in u32 — write to BOTH maps so adapters for `int`
+      // or `Color` params read U32 (full precision) AND adapters for
+      // `double` params read F32 (with the obvious round-trip).
       B.setCustomPropU32(node.id, name, value | 0);
+      B.setCustomPropF32(node.id, name, value);
     } else {
+      // Fractional, negative, or > u32 max — can only be F32.
       B.setCustomPropF32(node.id, name, value);
     }
     B.scheduleCommit();

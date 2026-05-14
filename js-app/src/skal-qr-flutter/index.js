@@ -19,20 +19,11 @@
 // package alongside a pub.dev `skal_qr_flutter` adapter. For the
 // demo it sits in the tree.
 //
-// PROPS QUIRK — temporary, fixed in a follow-up:
-//
-//   `size` in qr_flutter is `double?`. The bridge's JS-side number
-//   dispatch puts integer-looking JSX values onto the U32 wire path,
-//   but the generator emits `getCustomPropF32('size', 0.0)` for
-//   double params. Mismatched: <QrImageView size={200}> stores u32,
-//   adapter reads f32, gets 0.0 fallback, renders zero-sized.
-//
-//   Workaround: pass an explicit float, `size={200.0}`. The JSX-side
-//   `.0` forces JS to treat it as a float, which lands on the F32 wire
-//   path and the adapter reads it correctly.
-//
-//   The real fix (next commit): always use F32 for numeric custom
-//   props on the JS side, generator emits `.toInt()` for int params.
+// Numeric props (`size`, etc.) accept integer or float values from
+// JSX — the renderer writes integer-valued numbers to both the U32
+// and F32 wire paths so the adapter reads whichever matches its
+// declared param type. `<QrImageView size={200}>` and `size={200.0}`
+// both work.
 
 function makeMissingMacroComponent(name) {
   return function _skalMissingMacro() {

@@ -49,6 +49,12 @@ dependencies:
   # and skip the parser.
   path_provider: ^2.1.4
 
+  # qr_flutter — third-party QR-code rendering widget. Wrapped via
+  # skal_codegen as a real-package smoke test of the custom-widget
+  # path: install the package, point codegen at its QrImageView
+  # source, get a registry adapter, use <QrImageView> from JSX.
+  qr_flutter: ^4.1.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

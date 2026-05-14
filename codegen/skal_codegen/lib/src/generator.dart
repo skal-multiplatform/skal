@@ -66,7 +66,20 @@ class GeneratedWidget {
   final String registryKey;
   final String? skipReason; // null = generated; non-null = skipped
 
-  GeneratedWidget(this.className, this.registryKey, {this.skipReason});
+  /// Names of optional constructor params that were unsupported and
+  /// thus OMITTED from the generated adapter (the constructor's own
+  /// default takes effect). Only populated when [skipReason] is null
+  /// — a skipped widget has no per-param breakdown. Useful for the
+  /// CLI to tell the dev "QrImageView: 12 props mapped, 3 omitted
+  /// (padding, embeddedImage, errorStateBuilder)".
+  final List<String> omittedOptionalParams;
+
+  GeneratedWidget(
+    this.className,
+    this.registryKey, {
+    this.skipReason,
+    this.omittedOptionalParams = const [],
+  });
 }
 
 class GenerationResult {
@@ -140,9 +153,15 @@ GenerationResult generate({
     ..writeln("import 'package:skal_flutter/skal/node_state.dart';")
     ..writeln("import 'package:skal_flutter/skal/registry.dart';")
     ..writeln();
+  // Dedupe imports: when multiple input files come from the same
+  // pub-cache package, the CLI maps them all to a single `package:`
+  // entry-point URI. Emitting that twice is a Dart compile error.
+  final emittedImports = <String>{};
   for (var i = 0; i < sourceRelativeImports.length; i++) {
     if (!contributingUnitIdx.contains(i)) continue;
-    buffer.writeln("import '${sourceRelativeImports[i]}';");
+    final imp = sourceRelativeImports[i];
+    if (!emittedImports.add(imp)) continue;
+    buffer.writeln("import '$imp';");
   }
   buffer.writeln();
 
@@ -178,9 +197,21 @@ _AdapterResult _emitAdapter(ClassElement cls) {
         'no default constructor on $className — codegen MVP requires one'),
   );
 
-  // Walk named parameters; collect (name, encoding) pairs OR a skip
-  // reason if any required param has no encoding.
+  // Walk named parameters. Three outcomes per param:
+  //
+  //   • Supported type → emit a `name: <reader>` line.
+  //   • Unsupported, but optional (has a default or is nullable) →
+  //     SILENTLY omit. The constructor's own default takes effect.
+  //     The dev's JSX can't set this prop, but the widget still works
+  //     with sensible defaults from the original Flutter source.
+  //   • Unsupported AND required → can't construct the widget without
+  //     this param. Skip the whole widget with a clear reason.
+  //
+  // Tracking [omittedOptionalParams] lets the CLI surface "12 props
+  // mapped, 3 omitted (padding, embeddedImage, errorStateBuilder)" so
+  // devs know what they can't drive from JSX.
   final lines = <String>[];
+  final omittedOptionalParams = <String>[];
   String? skipReason;
 
   for (final param in ctor.parameters) {
@@ -198,9 +229,19 @@ _AdapterResult _emitAdapter(ClassElement cls) {
       defaultLiteral: defaultLiteral,
     );
     if (encoding == null) {
-      skipReason = "param '$name' has unsupported type "
-          "'${param.type.getDisplayString()}'";
-      break;
+      // Required = annotated `required this.foo` (no default, no nullable
+      // type). If the constructor demands it and we can't encode it,
+      // we have to skip the widget — the dev needs a hand-written
+      // adapter.
+      final isRequired = param.isRequiredNamed && defaultLiteral == null;
+      if (isRequired) {
+        skipReason = "required param '$name' has unsupported type "
+            "'${param.type.getDisplayString()}'";
+        break;
+      }
+      // Optional: silently omit. Track for CLI reporting.
+      omittedOptionalParams.add(name);
+      continue;
     }
     lines.add('    $name: ${encoding.readerExpression},');
   }
@@ -219,7 +260,11 @@ _AdapterResult _emitAdapter(ClassElement cls) {
     ..write('}');
 
   return _AdapterResult(
-    GeneratedWidget(className, registryKey),
+    GeneratedWidget(
+      className,
+      registryKey,
+      omittedOptionalParams: omittedOptionalParams,
+    ),
     body: body.toString(),
     registryLine:
         "SkalRegistry.registerWidget('$registryKey', _build_$className);",
@@ -244,6 +289,13 @@ List<ClassElement> _topLevelWidgetClasses(ResolvedUnitResult unit) {
   for (final u in unit.libraryElement.units) {
     for (final cls in u.classes) {
       if (cls.isAbstract) continue;
+      // Skip Dart-private classes (leading underscore). These are
+      // implementation details — they can't be constructed from
+      // outside their library, and codegen-emitted adapters live in
+      // a separate library so they couldn't reference them anyway.
+      // qr_flutter's `_QrContentView` is the motivating case.
+      final name = cls.name;
+      if (name == null || name.startsWith('_')) continue;
       if (!_extendsWidget(cls)) continue;
       found.add(cls);
     }

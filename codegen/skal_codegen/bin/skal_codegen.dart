@@ -10,6 +10,13 @@
 //                  prior codegen output).
 //     -o, --out    Output path for the generated adapter file
 //                  (default: <first-input-dir>/generated/skal_adapters.g.dart)
+//     -r, --root   Project root for type resolution. Defaults to the
+//                  current working directory. Must contain a
+//                  `pubspec.yaml` AND a `.dart_tool/package_config.json`
+//                  (i.e. you must have run `flutter pub get` first).
+//                  Required when wrapping a pub-cache package whose
+//                  own directory has no `.dart_tool/` — point this at
+//                  the CONSUMING project's root.
 //
 // Multiple inputs feed into a SINGLE generated file. Devs typically
 // point at one directory (a package's `lib/`) and get one combined
@@ -47,6 +54,7 @@ Future<int> main(List<String> args) async {
 
   final inputArgs = <String>[];
   String? outputPath;
+  String? rootOverride;
   for (var i = 0; i < args.length; i++) {
     final a = args[i];
     if (a == '-o' || a == '--out') {
@@ -55,6 +63,12 @@ Future<int> main(List<String> args) async {
         return 1;
       }
       outputPath = args[++i];
+    } else if (a == '-r' || a == '--root') {
+      if (i + 1 >= args.length) {
+        stderr.writeln('error: $a requires a path argument');
+        return 1;
+      }
+      rootOverride = args[++i];
     } else if (a.startsWith('-')) {
       stderr.writeln('error: unknown flag $a');
       _printUsage();
@@ -91,15 +105,24 @@ Future<int> main(List<String> args) async {
   }
   inputFiles.sort();
 
-  // Anchor the analyzer at the package containing the first input.
-  // All inputs must live under the same pubspec — codegen across
-  // multiple packages in one invocation isn't supported (and isn't
-  // a real use case).
-  final pkgRoot = _findPackageRoot(inputFiles.first);
+  // Anchor the analyzer at the CONSUMING project, not at the input
+  // file's nearest pubspec. Inputs can live in pub-cache (when wrapping
+  // third-party packages), and pub-cache directories don't have
+  // `.dart_tool/package_config.json` — analyzer can't resolve
+  // `package:flutter/…` from there.
+  //
+  // Order of resolution:
+  //   1. Explicit --root override
+  //   2. Current working directory if it looks like a Flutter project
+  //      (has both pubspec.yaml AND .dart_tool/package_config.json)
+  //   3. Walk up from the first input as a last-resort fallback
+  //      (useful when the dev's input IS inside their own project)
+  final pkgRoot = _resolvePackageRoot(rootOverride, inputFiles.first);
   if (pkgRoot == null) {
     stderr.writeln(
-        'error: no pubspec.yaml found in ${inputFiles.first} or any '
-        'ancestor — codegen needs a package root to resolve imports');
+        'error: could not determine a project root. Pass --root <path> to '
+        'a directory with pubspec.yaml + .dart_tool/package_config.json '
+        '(i.e. a Flutter project where `flutter pub get` has been run).');
     return 1;
   }
 
@@ -109,27 +132,57 @@ Future<int> main(List<String> args) async {
       'skal_adapters.g.dart');
   final absOutput = p.normalize(p.absolute(outputPath));
 
+  // Single analyzer context anchored at the consumer's project. We
+  // intentionally do NOT add pub-cache directories to includedPaths —
+  // each `includedPaths` entry gets its own analyzer context with its
+  // own package resolution, and pub-cache directories have no
+  // `.dart_tool/package_config.json`, so the resulting context can't
+  // resolve `package:flutter/…` imports inside those files.
+  //
+  // Instead, we resolve ALL inputs through the CONSUMER's context
+  // (which has a populated package_config from `flutter pub get`).
+  // That context can resolve any file the consumer's pubspec
+  // transitively depends on — pub-cache files included — because the
+  // consumer's package_config maps qr_flutter's location and lists
+  // its dependencies.
   final collection = AnalysisContextCollection(
     includedPaths: [pkgRoot],
     resourceProvider: PhysicalResourceProvider.INSTANCE,
   );
+  final ctx = collection.contexts.first;
 
   // Resolve all inputs upfront so any analysis errors surface before
   // we open the output file for writing.
   final units = <ResolvedUnitResult>[];
   final relImports = <String>[];
   for (final input in inputFiles) {
-    final ctx = collection.contextFor(input);
     final unitResult = await ctx.currentSession.getResolvedUnit(input);
     if (unitResult is! ResolvedUnitResult) {
       stderr.writeln('error: analyzer failed to resolve $input');
       return 2;
     }
     units.add(unitResult);
-    // Relative path from generated-file → input. With output in
-    // <pkg>/lib/generated/ and input under <pkg>/lib/widgets/, this
-    // yields `../widgets/foo.dart`.
-    relImports.add(p.relative(input, from: p.dirname(absOutput)));
+    // Decide how to import the source from the generated file:
+    //
+    //   • If the analyzer resolved it via a `package:` URI (pub-cache
+    //     third-party packages always come back this way), import the
+    //     package's CANONICAL entry-point — `package:qr_flutter/qr_flutter.dart`
+    //     for any file in qr_flutter. That gives us not just the widget
+    //     class but also the package's transitive re-exports
+    //     (`QrVersions`, `QrErrorCorrectLevel`, etc.), which are
+    //     referenced as default values in the constructor and need to
+    //     be in scope at the generated adapter's call site.
+    //
+    //   • Otherwise (input is a local file inside the consumer's
+    //     project), use a path relative to the generated file. That's
+    //     the natural form for in-tree widgets.
+    final srcUri = unitResult.libraryElement.source.uri;
+    if (srcUri.scheme == 'package' && srcUri.pathSegments.isNotEmpty) {
+      final pkg = srcUri.pathSegments.first;
+      relImports.add('package:$pkg/$pkg.dart');
+    } else {
+      relImports.add(p.relative(input, from: p.dirname(absOutput)));
+    }
   }
 
   final result = generate(
@@ -145,7 +198,11 @@ Future<int> main(List<String> args) async {
       'Generated ${result.generated.length} widget(s) from '
       '${inputFiles.length} file(s) → $absOutput');
   for (final w in result.generated) {
-    stdout.writeln('  • ${w.className} → ${w.registryKey}');
+    stdout.write('  • ${w.className} → ${w.registryKey}');
+    if (w.omittedOptionalParams.isNotEmpty) {
+      stdout.write('  (omitted: ${w.omittedOptionalParams.join(", ")})');
+    }
+    stdout.writeln();
   }
   if (result.skipped.isNotEmpty) {
     stdout.writeln('Skipped ${result.skipped.length} widget(s):');
@@ -181,14 +238,38 @@ void _printUsage() {
   stderr.writeln('  <input dir>/generated/skal_adapters.g.dart');
 }
 
-/// Walk up from [startFile] looking for the nearest `pubspec.yaml`.
-/// Returns null if none found before reaching the filesystem root.
-String? _findPackageRoot(String startFile) {
+/// Pick the directory the analyzer should anchor at to resolve
+/// `package:` URIs. Order:
+///
+///   1. [rootOverride] from `--root` if given (validated for existence)
+///   2. Current working directory if it has BOTH `pubspec.yaml` AND
+///      `.dart_tool/package_config.json` — the dev ran codegen from
+///      inside their consuming project (the common case)
+///   3. Walk up from [startFile] looking for the nearest `pubspec.yaml`
+///      as a last-resort fallback (works when input is inside the
+///      consuming project rather than in pub-cache)
+String? _resolvePackageRoot(String? rootOverride, String startFile) {
+  if (rootOverride != null) {
+    final abs = p.normalize(p.absolute(rootOverride));
+    if (Directory(abs).existsSync()) return abs;
+    stderr.writeln('error: --root path does not exist: $abs');
+    return null;
+  }
+
+  final cwd = Directory.current.path;
+  if (File(p.join(cwd, 'pubspec.yaml')).existsSync() &&
+      File(p.join(cwd, '.dart_tool', 'package_config.json')).existsSync()) {
+    return cwd;
+  }
+
+  // Walk up from input. Works when input is a sibling within the
+  // dev's own project. Fails (returns null) for pub-cache inputs
+  // when there's no .dart_tool above — the dev would need --root.
   var dir = p.dirname(startFile);
   while (true) {
     if (File(p.join(dir, 'pubspec.yaml')).existsSync()) return dir;
     final parent = p.dirname(dir);
-    if (parent == dir) return null; // reached filesystem root
+    if (parent == dir) return null;
     dir = parent;
   }
 }

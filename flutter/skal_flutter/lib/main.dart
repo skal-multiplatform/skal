@@ -30,6 +30,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'adapters/generated/skal_adapters.g.dart' as generated_adapters;
+import 'adapters/generated/qr_flutter.g.dart' as qr_gen;
 import 'skal/bridge.dart';
 import 'skal/root.dart';
 import 'skal_ffi.dart';
@@ -58,6 +59,11 @@ void main() async {
   //     lib/adapters/greeting_widget.dart \
   //     -o lib/adapters/generated/skal_adapters.g.dart
   generated_adapters.registerAll();
+  // qr_flutter — third-party package, wrapped via codegen. Run:
+  //   dart run ../../codegen/skal_codegen/bin/skal_codegen.dart \
+  //     ~/.pub-cache/hosted/pub.dev/qr_flutter-X.Y.Z/lib/src/qr_image_view.dart \
+  //     -o lib/adapters/generated/qr_flutter.g.dart
+  qr_gen.registerAll();
 
   // ── 1. Create the bun runtime ───────────────────────────────────────
   final tCreate0 = bootClock.elapsedMicroseconds;

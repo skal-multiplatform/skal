@@ -35,6 +35,11 @@ export default defineConfig({
       // npm publications; here we keep both halves in-tree for the
       // demo + Slice 1 validation.
       'skal-greeting': resolve(__dirname, 'src/skal-greeting/index.js'),
+      // Third-party `qr_flutter` package wrapped via skal_codegen.
+      // Dart side: lib/adapters/generated/qr_flutter.g.dart (generated
+      // from ~/.pub-cache/...qr_flutter.../qr_image_view.dart). JS side:
+      // this module provides the capitalized symbols + JSDoc types.
+      'skal-qr-flutter': resolve(__dirname, 'src/skal-qr-flutter/index.js'),
     },
   },
   plugins: [
@@ -54,6 +59,7 @@ export default defineConfig({
             // `SkalRegistry.registerWidget('greeting', …)`).
             modules: {
               'skal-greeting': { Greeting: 'greeting' },
+              'skal-qr-flutter': { QrImageView: 'qrImageView' },
             },
           }],
         ],

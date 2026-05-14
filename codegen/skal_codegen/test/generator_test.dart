@@ -28,6 +28,8 @@ import 'dart:io';
 
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
+// ignore_for_file: experimental_member_use
+import 'package:analyzer/dart/element/element2.dart';
 import 'package:analyzer/file_system/physical_file_system.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -247,6 +249,122 @@ void main() {
       expect(_normalize(result.source), _normalize(expected),
           reason: 'named-ctor generator output does NOT match '
               'named_ctors.expected.dart');
+    });
+
+    test('callbacks: VoidCallback + ValueChanged<T> emit typed dispatch',
+        () async {
+      // Three classes covering every callback shape:
+      //
+      //   • Tappable    — VoidCallback alias       → dispatchEvent()
+      //   • Refreshable — raw void Function()?     → dispatchEvent()
+      //   • Form        — ValueChanged<bool>       → dispatchEventBool()
+      //                   ValueChanged<double>     → dispatchEventDouble()
+      //                   ValueChanged<int>        → dispatchEventInt()
+      //
+      // The JS-side renderer's `_setCustomProperty` auto-binds
+      // function-valued JSX props via newHandlerId+bindCustomHandler.
+      // Bridge writes the typed payload into bytes 8-11 of the event
+      // record; JS's __skal_drainEvents decodes per argType and
+      // forwards the value to the bound JSX function.
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/callbacks.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/callbacks.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+
+      final result = generate(
+        units: [unitResult as ResolvedUnitResult],
+        sourceRelativeImports: ['callbacks.dart'],
+      );
+
+      expect(
+        result.generated.map((w) => w.className).toSet(),
+        {'Tappable', 'Refreshable', 'Form'},
+      );
+      expect(result.skipped, isEmpty,
+          reason: 'VoidCallback + ValueChanged<T> should not cause skips');
+
+      final expected = File(expectedPath).readAsStringSync();
+      expect(_normalize(result.source), _normalize(expected),
+          reason: 'callbacks generator output does NOT match '
+              'callbacks.expected.dart');
+    });
+
+    test('host pattern: sync + async factories emit StatefulWidget wrappers',
+        () async {
+      // Loads test/fixtures/host.dart which exports two factories
+      // (sync + async) returning a FakeController. The host fixture
+      // emission should produce:
+      //   1. `_FakeSyncHost` StatefulWidget + State + `_build_FakeSync`
+      //      (NO `await` on the factory call)
+      //   2. `_FakeAsyncHost` ditto WITH `await` injected
+      //   3. registerAll() with two SkalRegistry.registerWidget calls
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/host.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/host.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+
+      // Find each factory function on the resolved unit.
+      ExecutableElement2? syncFactory;
+      ExecutableElement2? asyncFactory;
+      for (final fn in (unitResult as ResolvedUnitResult)
+          .libraryElement2
+          .topLevelFunctions) {
+        if (fn.name3 == 'makeFakeViewerSync') syncFactory = fn;
+        if (fn.name3 == 'makeFakeViewerAsync') asyncFactory = fn;
+      }
+      expect(syncFactory, isNotNull);
+      expect(asyncFactory, isNotNull);
+
+      final hosts = [
+        HostConfig(
+          jsxName: 'FakeSync',
+          wrappedWidgetName: 'FakeViewer',
+          factoryFn: syncFactory!,
+          factoryImport: 'host.dart',
+          wrappedWidgetImport: '_fake_flutter.dart',
+        ),
+        HostConfig(
+          jsxName: 'FakeAsync',
+          wrappedWidgetName: 'FakeViewer',
+          factoryFn: asyncFactory!,
+          factoryImport: 'host.dart',
+          wrappedWidgetImport: '_fake_flutter.dart',
+        ),
+      ];
+
+      final result = generate(
+        units: const [],
+        sourceRelativeImports: const [],
+        hosts: hosts,
+      );
+
+      expect(
+        result.generated.map((w) => w.className).toList(),
+        ['FakeSync', 'FakeAsync'],
+      );
+      expect(result.skipped, isEmpty,
+          reason: 'host emission with valid factories should not skip');
+
+      final expected = File(expectedPath).readAsStringSync();
+      expect(_normalize(result.source), _normalize(expected),
+          reason: 'host generator output does NOT match '
+              'host.expected.dart');
     });
 
     test('complex types: enum + Duration encoded correctly', () async {

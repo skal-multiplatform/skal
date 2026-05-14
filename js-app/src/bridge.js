@@ -108,6 +108,13 @@ export const WT_CUSTOM                = 8;
 export const EV_CLICK  = 0x01;
 export const EV_CHANGE = 0x02;
 
+// Event-arg types — encoded in byte 1 of the event record. See
+// flutter/skal_flutter/lib/skal/wire.dart's `eventArg*` constants.
+export const EVENT_ARG_VOID = 0x00;
+export const EVENT_ARG_I32  = 0x01;
+export const EVENT_ARG_F32  = 0x02;
+export const EVENT_ARG_BOOL = 0x03;
+
 // ───────────────────────────────────────────────────────────────────────
 // Prop key namespace — must match wire.dart's prop* constants.
 // Partitioned by tier; see PROPS_PLAN.md §6.
@@ -770,6 +777,12 @@ const EVENT_RING_BASE32 = EVENT_RING_OFFSET >> 2;
 const EVENT_RING_END32  = (EVENT_RING_OFFSET + EVENT_RING_BYTES) >> 2;
 const EVENT_SAFETY      = (EVENT_RING_BYTES / 16) | 0;
 
+// Float-decode scratch — single u32 ↔ f32 reinterpret without
+// allocating per event. Same instance for every drain.
+const _f32DecodeBuf = new ArrayBuffer(4);
+const _f32DecodeF32 = new Float32Array(_f32DecodeBuf);
+const _f32DecodeU32 = new Uint32Array(_f32DecodeBuf);
+
 globalThis.__skal_drainEvents = function () {
   const seq = Atomics.load(seqArr, B_EVENT_SEQ);
   if (seq === lastEventSeq) return;
@@ -781,10 +794,37 @@ globalThis.__skal_drainEvents = function () {
 
   let safety = EVENT_SAFETY;
   while (readPos32 !== writePos32 && safety-- > 0) {
+    // Word 0 packs eventKind (byte 0) + argType (byte 1). Word 1 is
+    // handlerId. Word 2 holds the typed arg payload. See
+    // wire.dart's "Event record layout" comment.
+    const word0    = u32[readPos32 + 0];
+    const argType  = (word0 >>> 8) & 0xFF;
     const handlerId = u32[readPos32 + 1];
+    const argRaw   = u32[readPos32 + 2];
     const fn = handlers.get(handlerId);
     if (fn) {
-      try { fn(); } catch (e) {
+      // Decode the arg per its declared type. VOID → no arg passed
+      // (legacy onClick / onTap handlers expect zero-arg invocation).
+      // I32 / BOOL → integer (raw u32 interpreted as int; bool maps
+      // 0/1 → false/true). F32 → reinterpret the u32 bits as a
+      // 32-bit float via the shared scratch buffer.
+      let arg;
+      let argCount = 0;
+      if (argType === EVENT_ARG_I32) {
+        arg = argRaw | 0;  // signed reinterpret
+        argCount = 1;
+      } else if (argType === EVENT_ARG_F32) {
+        _f32DecodeU32[0] = argRaw;
+        arg = _f32DecodeF32[0];
+        argCount = 1;
+      } else if (argType === EVENT_ARG_BOOL) {
+        arg = argRaw !== 0;
+        argCount = 1;
+      }
+      try {
+        if (argCount === 0) fn();
+        else fn(arg);
+      } catch (e) {
         // Capture into a module global so we can read it via skalStatus()
         // — calling console.error here crashes Bun's ConsoleObject in the
         // embedded environment (no stdio wired up yet).

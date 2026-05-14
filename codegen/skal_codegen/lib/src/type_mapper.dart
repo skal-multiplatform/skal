@@ -97,10 +97,21 @@ PropEncoding? encodingFor({
 }) {
   final typeName = type.getDisplayString();
 
-  // String — getCustomPropStr returns String? so we coalesce to the
-  // default. The default expression IS already a Dart string literal
-  // ('Hello'), so it pastes in unchanged.
+  // String — getCustomPropStr returns String?. For non-nullable
+  // String, coalesce to the declared default (or '' if no default).
+  // For nullable String?, pass the bridge's null through verbatim so
+  // the dev's factory can distinguish "JSX didn't set this prop"
+  // from "JSX set this prop to empty string".
   if (_isCoreString(type)) {
+    final isNullable = typeName.endsWith('?');
+    if (isNullable) {
+      // String? — fall through unchanged. `?? null` would be a lint
+      // warning, so just return the raw nullable read.
+      return PropEncoding(
+        readerExpression: "n.getCustomPropStr('$paramName')",
+        dartTypeName: typeName,
+      );
+    }
     final fallback = defaultLiteral ?? "''";
     return PropEncoding(
       readerExpression: "n.getCustomPropStr('$paramName') ?? $fallback",
@@ -290,6 +301,69 @@ PropEncoding? encodingFor({
     );
   }
 
+  // VoidCallback — Flutter's typedef `void Function()`. JSX-side
+  // function-valued props auto-bind via the renderer's custom-handler
+  // path (see js-app/src/renderer.js's `_setCustomProperty` —
+  // typeof value === 'function' → newHandlerId + bindCustomHandler).
+  // The host has zero plumbing to do; the encoding here is the
+  // glue between "Dart constructor wants a () → void" and "the
+  // bridge stored a handler id under this name". We emit a closure
+  // that dispatches the event through the bridge.
+  //
+  // The closure captures the BRIDGE, not the handler id. Reading the
+  // handler id at call time means the JSX side can swap out the
+  // bound function (e.g. via a reactive signal) without the Dart
+  // adapter caring — the next dispatch reads whichever id was last
+  // bound. If the JSX side never bound a handler, the id reads as
+  // 0 and `dispatchEvent(0)` is a documented no-op.
+  if (_isVoidCallback(type)) {
+    return PropEncoding(
+      readerExpression: "() => bridge.dispatchEvent("
+          "n.getCustomHandler('$paramName'))",
+      dartTypeName: typeName,
+    );
+  }
+
+  // ValueChanged<T> — Flutter's typedef `void Function(T value)`. The
+  // generated closure dispatches a typed event via the bridge's
+  // dispatchEventInt/Double/Bool helpers, which carry the payload in
+  // bytes 8-11 of the 16-byte event record (see wire.dart's "Event
+  // record layout"). Supported T: int, double, bool. String / enum
+  // / list payloads are deferred — the event ring is producer-only
+  // for Dart, so we can't write into the shared string heap from
+  // here.
+  //
+  // Real-world unlock: Switch.onChanged (bool), Slider.onChanged
+  // (double), TextField.onChanged (String — deferred), Checkbox,
+  // RadioButton, etc.
+  final valueChangedT = _valueChangedTypeArg(type);
+  if (valueChangedT != null) {
+    if (_isCoreInt(valueChangedT)) {
+      return PropEncoding(
+        readerExpression: "(v) => bridge.dispatchEventInt("
+            "n.getCustomHandler('$paramName'), v)",
+        dartTypeName: typeName,
+      );
+    }
+    if (_isCoreDouble(valueChangedT)) {
+      return PropEncoding(
+        readerExpression: "(v) => bridge.dispatchEventDouble("
+            "n.getCustomHandler('$paramName'), v)",
+        dartTypeName: typeName,
+      );
+    }
+    if (_isCoreBool(valueChangedT)) {
+      return PropEncoding(
+        readerExpression: "(v) => bridge.dispatchEventBool("
+            "n.getCustomHandler('$paramName'), v)",
+        dartTypeName: typeName,
+      );
+    }
+    // ValueChanged<String> / ValueChanged<EnumX> / ValueChanged<List<T>>
+    // — fall through to the unsupported-type skip path. The dev gets
+    // a clear "skipped because of <type>" message in the build log.
+  }
+
   // Color — Flutter's `ui.Color` (or `material.Color`, same class).
   // Wire encoding is 32-bit ARGB; adapter wraps in Color(...).
   //
@@ -402,6 +476,41 @@ bool _isFlutterEdgeInsets(DartType t) {
 /// here since EdgeInsets params are conventionally named `padding`,
 /// `margin`, `insets`, never `paddingLeft`.
 String _sidePropSuffix(String capitalized) => capitalized;
+
+/// If [t] is `ValueChanged<X>` (or `void Function(X)?`, the de-aliased
+/// form), return the type argument `X`. Otherwise null.
+///
+/// `ValueChanged<T>` is dart:ui's `typedef ValueChanged<T> = void
+/// Function(T value);`. The analyzer presents the typedef instantiation
+/// as a FunctionType with one positional param + void return — same
+/// shape as a raw `void Function(T)`. We don't try to distinguish the
+/// typedef-aliased form from the explicit one (they're equivalent at
+/// the call site).
+DartType? _valueChangedTypeArg(DartType t) {
+  if (t is! FunctionType) return null;
+  if (t.returnType is! VoidType) return null;
+  if (t.formalParameters.length != 1) return null;
+  final param = t.formalParameters.first;
+  if (!param.isPositional) return null;
+  return param.type;
+}
+
+/// Match Flutter's `VoidCallback` (defined in `dart:ui` as
+/// `typedef VoidCallback = void Function();`) AND raw `void
+/// Function()` parameter types that happen to spell out the same
+/// signature without the typedef.
+///
+/// Both forms appear in real Flutter APIs. The analyzer represents
+/// the typedef as an alias over the underlying FunctionType — we
+/// don't care which form the source used, only the signature shape:
+/// no positional args, no named args, void return.
+bool _isVoidCallback(DartType t) {
+  if (t is! FunctionType) return false;
+  if (t.formalParameters.isNotEmpty) return false;
+  // Return must be `void`. The return-type's element3 is null for
+  // the special `void` type — that's the cleanest discriminator.
+  return t.returnType is VoidType;
+}
 
 bool _isFlutterColor(DartType t) {
   // Flutter's Color lives in `dart:ui` (re-exported by flutter/material).

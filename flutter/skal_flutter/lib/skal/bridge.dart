@@ -555,14 +555,23 @@ class SkalBridge {
   /// event) the event is queued in `_eventOverflow` and will be flushed
   /// on the next pumpOps tick — by then JS has had time to drain. The
   /// UI thread never blocks on the JS side.
-  void dispatchEvent(int handlerId, {int eventKind = evClick}) {
+  void dispatchEvent(
+    int handlerId, {
+    int eventKind = evClick,
+    int argType = eventArgVoid,
+    int argValueI32 = 0,
+  }) {
     if (handlerId == 0) return;
 
     // If we've spilled to overflow, keep spilling so events stay in
-    // dispatch order. A drain will eventually clear both.
+    // dispatch order. A drain will eventually clear both. Overflow
+    // queue layout is 4 ints per event: kind, argType, handlerId,
+    // argValue. Keeps the typed payload alongside its handler.
     if (_eventOverflow.isNotEmpty) {
       _eventOverflow.add(eventKind);
+      _eventOverflow.add(argType);
       _eventOverflow.add(handlerId);
+      _eventOverflow.add(argValueI32);
       skal.wakeJs();
       return;
     }
@@ -576,23 +585,67 @@ class SkalBridge {
       // the heap-side queue so the producer (this thread) doesn't lose
       // the event or block.
       _eventOverflow.add(eventKind);
+      _eventOverflow.add(argType);
       _eventOverflow.add(handlerId);
+      _eventOverflow.add(argValueI32);
       skal.wakeJs();
       return;
     }
 
     final base = kEventRingOffset + pos;
-    _data.setUint8(base, eventKind);
+    _data.setUint8(base + 0, eventKind);
+    _data.setUint8(base + 1, argType);
     _data.setInt32(base + 4, handlerId, Endian.little);
+    _data.setInt32(base + 8, argValueI32, Endian.little);
     _data.setInt32(hEventWritePos, nextPos, Endian.little);
     final seq = _data.getInt64(hEventSeq, Endian.little);
     _data.setInt64(hEventSeq, seq + 1, Endian.little);
     skal.wakeJs();
   }
 
+  /// Convenience: dispatch a `ValueChanged<double>` callback with a
+  /// floating-point argument. Encodes the f32 bit pattern as i32 so
+  /// it survives the wire. JS side decodes via `Float32Array` view
+  /// over the same word.
+  void dispatchEventDouble(int handlerId, double value,
+      {int eventKind = evChange}) {
+    final bits = _f32ToBits(value);
+    dispatchEvent(handlerId,
+        eventKind: eventKind, argType: eventArgF32, argValueI32: bits);
+  }
+
+  /// Convenience: dispatch a `ValueChanged<bool>` callback.
+  void dispatchEventBool(int handlerId, bool value,
+      {int eventKind = evChange}) {
+    dispatchEvent(handlerId,
+        eventKind: eventKind,
+        argType: eventArgBool,
+        argValueI32: value ? 1 : 0);
+  }
+
+  /// Convenience: dispatch a `ValueChanged<int>` callback.
+  void dispatchEventInt(int handlerId, int value,
+      {int eventKind = evChange}) {
+    dispatchEvent(handlerId,
+        eventKind: eventKind, argType: eventArgI32, argValueI32: value);
+  }
+
+  /// Bit-cast a double down to an f32 and return the bit pattern as
+  /// a signed 32-bit int (matching the i32 storage slot in the event
+  /// record). Uses ByteData rather than `(value as int)` so subnormal
+  /// values + NaN bit patterns round-trip cleanly.
+  static int _f32ToBits(double value) {
+    final bd = ByteData(4);
+    bd.setFloat32(0, value, Endian.little);
+    return bd.getInt32(0, Endian.little);
+  }
+
   /// Drain queued overflow events into the bridge ring. Called from
   /// pumpOps before the op-ring drain; the read side (JS) is woken on
   /// each successful write, so events propagate immediately.
+  ///
+  /// Overflow queue layout matches the event-record layout: each event
+  /// is 4 consecutive ints — kind, argType, handlerId, argValueI32.
   void _flushEventOverflow() {
     while (_eventOverflow.isNotEmpty) {
       final pos = _data.getInt32(hEventWritePos, Endian.little);
@@ -601,10 +654,14 @@ class SkalBridge {
       if (nextPos == readPos) break; // ring still full; try again next tick
 
       final eventKind = _eventOverflow.removeFirst();
+      final argType = _eventOverflow.removeFirst();
       final handlerId = _eventOverflow.removeFirst();
+      final argValueI32 = _eventOverflow.removeFirst();
       final base = kEventRingOffset + pos;
-      _data.setUint8(base, eventKind);
+      _data.setUint8(base + 0, eventKind);
+      _data.setUint8(base + 1, argType);
       _data.setInt32(base + 4, handlerId, Endian.little);
+      _data.setInt32(base + 8, argValueI32, Endian.little);
       _data.setInt32(hEventWritePos, nextPos, Endian.little);
       final seq = _data.getInt64(hEventSeq, Endian.little);
       _data.setInt64(hEventSeq, seq + 1, Endian.little);

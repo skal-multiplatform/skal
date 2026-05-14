@@ -27,6 +27,14 @@ Widget _build_Greeting(NodeState n, SkalBridge bridge) {
   );
 }
 
+Widget _build_Counter(NodeState n, SkalBridge bridge) {
+  return Counter(
+    initial: n.getCustomPropU32('initial', 0),
+    onChanged: (v) => bridge.dispatchEventInt(n.getCustomHandler('onChanged'), v),
+    onReset: () => bridge.dispatchEvent(n.getCustomHandler('onReset')),
+  );
+}
+
 Widget _build_Stickers(NodeState n, SkalBridge bridge) {
   return Stickers(
     children: List.generate(n.childCount, (i) => SkalNode(nodeId: n.childAt(i), bridge: bridge, key: ValueKey<int>(n.childAt(i)))),
@@ -38,5 +46,6 @@ Widget _build_Stickers(NodeState n, SkalBridge bridge) {
 
 void registerAll() {
   SkalRegistry.registerWidget('greeting', _build_Greeting);
+  SkalRegistry.registerWidget('counter', _build_Counter);
   SkalRegistry.registerWidget('stickers', _build_Stickers);
 }

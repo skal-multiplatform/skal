@@ -68,6 +68,8 @@ import 'dart:io';
 
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
+import 'package:analyzer/dart/element/element2.dart';
+import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/file_system/physical_file_system.dart';
 import 'package:build/build.dart';
 import 'package:path/path.dart' as p;
@@ -109,7 +111,8 @@ class _SkalAdapterBuilder implements Builder {
     // Read the marker file the dev created to opt in.
     final markerYaml = await buildStep.readAsString(buildStep.inputId);
     final packages = _readPackagesFromMarker(markerYaml);
-    if (packages.isEmpty) {
+    final hostEntries = _readHostsFromMarker(markerYaml);
+    if (packages.isEmpty && hostEntries.isEmpty) {
       log.info('skal_codegen: ${buildStep.inputId.path} has no '
           '`packages:` list — emitting empty registerAll()');
       await buildStep.writeAsString(outputAsset,
@@ -177,14 +180,22 @@ class _SkalAdapterBuilder implements Builder {
           p.relative(unit.path, from: p.dirname(outputAbsPath))
     ];
 
+    // Resolve host configs — each maps a JSX symbol → controller-
+    // owning StatefulWidget the generator synthesizes. Done after
+    // the analyzer context is up so factory-function resolution can
+    // share the same package_config-anchored context.
+    final hosts = await _resolveHosts(collection, pkgRoot, hostEntries);
+
     final result = generate(
       units: allUnits,
       sourceRelativeImports: relImports,
+      hosts: hosts,
     );
 
     await buildStep.writeAsString(outputAsset, result.source);
     log.info('skal_codegen: ${result.generated.length} widget(s) from '
-        '${packages.length} package(s) → ${outputAsset.path}');
+        '${packages.length} package(s) + ${hosts.length} host(s) → '
+        '${outputAsset.path}');
 
     // Emit the JSON manifest. vite-plugin-skal-codegen.js reads this
     // at build time to materialize the JSX-side `skal-codegen-generated`
@@ -228,6 +239,159 @@ List<String> _readPackagesFromMarker(String markerYaml) {
   final pkgs = parsed['packages'];
   if (pkgs is! YamlList) return const [];
   return pkgs.cast<String>().toList();
+}
+
+/// One entry in the marker file's `hosts:` map — declared by the
+/// dev to ask codegen for a stateful-controller adapter pattern
+/// (StatefulWidget wrapper around a controller-owning factory)
+/// instead of a pure prop-encoding adapter.
+///
+/// Sample YAML:
+///
+///   hosts:
+///     Camera:                                             # ← key = jsxName
+///       widget: CameraPreview                             # ← wrappedWidgetName
+///       factory: package:skal_flutter/adapters/camera_factory.dart#createCamera
+///                ↑ importUri                              ↑ factoryFnName
+class _HostMarkerEntry {
+  final String jsxName;
+  final String wrappedWidgetName;
+  final String factoryImport;
+  final String factoryFnName;
+  _HostMarkerEntry(this.jsxName, this.wrappedWidgetName, this.factoryImport,
+      this.factoryFnName);
+}
+
+/// Parse the marker file's `hosts:` section into raw entries. Each
+/// entry still needs analyzer resolution (factory function lookup)
+/// before it becomes a [HostConfig] the generator can consume.
+List<_HostMarkerEntry> _readHostsFromMarker(String markerYaml) {
+  final parsed = loadYaml(markerYaml);
+  if (parsed is! YamlMap) return const [];
+  final hosts = parsed['hosts'];
+  if (hosts is! YamlMap) return const [];
+  final out = <_HostMarkerEntry>[];
+  for (final entry in hosts.entries) {
+    final jsxName = entry.key.toString();
+    final value = entry.value;
+    if (value is! YamlMap) continue;
+    final widget = value['widget']?.toString();
+    final factory = value['factory']?.toString();
+    if (widget == null || factory == null) continue;
+    // Split on the `#` separator: `pkg:foo.dart#fnName`.
+    final hash = factory.indexOf('#');
+    if (hash < 0) continue;
+    final factoryImport = factory.substring(0, hash);
+    final factoryFn = factory.substring(hash + 1);
+    if (factoryImport.isEmpty || factoryFn.isEmpty) continue;
+    out.add(_HostMarkerEntry(jsxName, widget, factoryImport, factoryFn));
+  }
+  return out;
+}
+
+/// Walk the analyzer context for each marker-file host entry,
+/// resolving its factory function. Returns one [HostConfig] per
+/// successfully-resolved entry; entries whose factory function
+/// can't be found get a warning + skip.
+Future<List<HostConfig>> _resolveHosts(
+  AnalysisContextCollection collection,
+  String pkgRoot,
+  List<_HostMarkerEntry> entries,
+) async {
+  final ctx = collection.contexts.first;
+  final out = <HostConfig>[];
+  for (final e in entries) {
+    // Resolve the factory import URI to a filesystem path. The URI
+    // is a `package:` form; we need a file path the analyzer can
+    // resolve via getResolvedUnit.
+    final filePath =
+        _resolvePackageUriToPath(pkgRoot, Uri.parse(e.factoryImport));
+    if (filePath == null) {
+      log.warning('skal_codegen: host "${e.jsxName}" — couldn\'t resolve '
+          'factory import ${e.factoryImport}. Skipping.');
+      continue;
+    }
+    final unit = await ctx.currentSession.getResolvedUnit(filePath);
+    if (unit is! ResolvedUnitResult) {
+      log.warning('skal_codegen: host "${e.jsxName}" — analyzer couldn\'t '
+          'resolve $filePath. Skipping.');
+      continue;
+    }
+    // Find the top-level function with the declared name.
+    ExecutableElement2? factoryFn;
+    for (final fn in unit.libraryElement2.topLevelFunctions) {
+      if (fn.name3 == e.factoryFnName) {
+        factoryFn = fn;
+        break;
+      }
+    }
+    if (factoryFn == null) {
+      log.warning('skal_codegen: host "${e.jsxName}" — no top-level '
+          'function `${e.factoryFnName}` in ${e.factoryImport}. Skipping.');
+      continue;
+    }
+    // Wrapped widget import. Two strategies, in order:
+    //
+    //   1. Derive from the factory's return type. The controller's
+    //      package usually re-exports the widget (e.g. camera's
+    //      barrel `package:camera/camera.dart` exports both
+    //      CameraController AND CameraPreview). This is the strongest
+    //      signal — no traversal of import graphs needed.
+    //
+    //   2. Fallback: the factory's own file. Works when the dev's
+    //      factory file imports the wrapped widget directly.
+    //
+    // A v2 could let devs declare `widgetImport:` explicitly to
+    // cover the edge cases (different package, narrow `src/` URI).
+    final wrappedImport = _deriveWrappedWidgetImport(factoryFn) ??
+        e.factoryImport;
+    out.add(HostConfig(
+      jsxName: e.jsxName,
+      wrappedWidgetName: e.wrappedWidgetName,
+      factoryFn: factoryFn,
+      factoryImport: e.factoryImport,
+      wrappedWidgetImport: wrappedImport,
+    ));
+  }
+  return out;
+}
+
+/// Resolve a `package:foo/bar.dart` URI to an absolute filesystem
+/// path, via the consumer's `.dart_tool/package_config.json`.
+String? _resolvePackageUriToPath(String pkgRoot, Uri pkgUri) {
+  if (pkgUri.scheme != 'package' || pkgUri.pathSegments.isEmpty) return null;
+  final pkgName = pkgUri.pathSegments.first;
+  final libDir = _resolvePackageLibDir(pkgRoot, pkgName);
+  if (libDir == null) return null;
+  // Everything after the package name is the path inside lib/.
+  final rest = pkgUri.pathSegments.skip(1).join('/');
+  return p.normalize(p.join(libDir, rest));
+}
+
+/// Derive the wrapped-widget's canonical import URI from the
+/// factory function's return type. The controller's library
+/// (`package:camera/src/camera_controller.dart` for camera) usually
+/// has a sibling barrel (`package:camera/camera.dart`) that re-
+/// exports BOTH the controller AND the widget that takes it. We
+/// derive the barrel from the first path segment of the controller's
+/// library URI.
+///
+/// Returns null when the factory's return type isn't from a `package:`
+/// URI (caller falls back to the factory file itself in that case).
+String? _deriveWrappedWidgetImport(ExecutableElement2 factoryFn) {
+  // Unwrap Future<T> → T to get the controller's actual type.
+  var t = factoryFn.returnType;
+  if (t.element3?.name3 == 'Future') {
+    if (t is InterfaceType && t.typeArguments.length == 1) {
+      t = t.typeArguments.first;
+    }
+  }
+  final lib = t.element3?.library2;
+  if (lib == null) return null;
+  final uri = lib.uri;
+  if (uri.scheme != 'package' || uri.pathSegments.isEmpty) return null;
+  final pkg = uri.pathSegments.first;
+  return 'package:$pkg/$pkg.dart';
 }
 
 /// Resolve a wrapped-package's lib/ on disk, via

@@ -66,9 +66,65 @@
 
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/element/element2.dart';
+import 'package:analyzer/dart/element/type.dart';
 import 'package:path/path.dart' as p;
 
 import 'type_mapper.dart';
+
+/// A "host adapter" config — the marker file declares one of these
+/// per JSX symbol that should be backed by a stateful, controller-
+/// owning Dart wrapper rather than a pure props-in-widget-out adapter.
+///
+/// Used for widgets whose constructor REQUIRES a runtime-constructed
+/// controller (CameraController, VideoPlayerController, animation
+/// controllers, etc.) — primitives over the bridge can't represent
+/// those objects, so codegen synthesizes a StatefulWidget that:
+///
+///   1. Receives ordinary primitive props from JSX.
+///   2. Calls a dev-provided factory function in `initState` to
+///      create the controller (sync or async).
+///   3. Holds it in State until `dispose()`.
+///   4. Disposes the controller cleanly on unmount.
+///   5. Renders the underlying widget once the controller is ready.
+///
+/// One YAML entry → one synthesized `<JsxName>` JSX symbol → one
+/// generated `_<JsxName>Host` StatefulWidget under the hood.
+class HostConfig {
+  /// JSX-facing symbol name (the key in `hosts:` in the marker file).
+  /// E.g. `Camera`, which lowers to the registry key `camera` and
+  /// renders the synthesized `_CameraHost` StatefulWidget.
+  final String jsxName;
+
+  /// The class name of the underlying Widget the host wraps —
+  /// resolved by the analyzer below (must be available in the same
+  /// scope as the generated adapter, typically via the wrapped pub
+  /// package's canonical import).
+  final String wrappedWidgetName;
+
+  /// The dev's factory function (returns the controller). Either a
+  /// plain `Foo` or a `Future<Foo>` — codegen detects which and
+  /// emits `await` accordingly.
+  final ExecutableElement2 factoryFn;
+
+  /// Import URI for the factory function — emitted as an `import`
+  /// in the generated file so the synthesized `_CameraHost` can call
+  /// it. Typically a `package:` URI pointing at a file in the
+  /// consumer's project.
+  final String factoryImport;
+
+  /// Import URI for the wrapped Widget class — the synthesized
+  /// `_CameraHost.build()` constructs it directly, so the import has
+  /// to be in scope.
+  final String wrappedWidgetImport;
+
+  HostConfig({
+    required this.jsxName,
+    required this.wrappedWidgetName,
+    required this.factoryFn,
+    required this.factoryImport,
+    required this.wrappedWidgetImport,
+  });
+}
 
 /// One Widget class the generator considered, with the result of that
 /// consideration: emitted code OR a skip reason. Returned alongside
@@ -113,9 +169,15 @@ class GenerationResult {
 /// list of import paths to inline into the generated file's header —
 /// typically one per input unit, relative to where the generated file
 /// will be written.
+///
+/// [hosts], if non-empty, declares "host adapters" — synthesized
+/// StatefulWidget wrappers that own a controller-typed object for
+/// each entry, instead of the usual props-in/widget-out adapter. See
+/// [HostConfig] for the full rationale + the emission shape.
 GenerationResult generate({
   required List<ResolvedUnitResult> units,
   required List<String> sourceRelativeImports,
+  List<HostConfig> hosts = const [],
 }) {
   final widgets = <GeneratedWidget>[];
   final adapterBodies = <String>[];
@@ -132,10 +194,21 @@ GenerationResult generate({
   // consumer's project.
   final contributingUnitIdx = <int>{};
 
+  // Classes that have a host config attached. The regular widget walk
+  // SKIPS these — otherwise we'd emit a broken `_build_CameraPreview`
+  // (the codegen can't encode CameraController) alongside the
+  // synthesized `_build_Camera` host. Whoever declared the host owns
+  // how the underlying widget gets constructed.
+  final hostedWidgetNames = {for (final h in hosts) h.wrappedWidgetName};
+
   for (var i = 0; i < units.length; i++) {
     final unit = units[i];
     final classes = _topLevelWidgetClasses(unit);
     for (final cls in classes) {
+      // Host targets bypass the regular emission. See [hosts] in
+      // generate()'s contract: the synthesized host below replaces
+      // any auto-generated adapter for the same class.
+      if (hostedWidgetNames.contains(cls.name3)) continue;
       final ctors = _eligibleConstructors(cls);
       if (ctors.isEmpty) {
         // Class has no usable constructor (all private, or somehow
@@ -160,6 +233,30 @@ GenerationResult generate({
           registryCalls.add(result.registryLine!);
         }
       }
+    }
+  }
+
+  // ── Host adapters ─────────────────────────────────────────────────
+  //
+  // For each declared HostConfig, emit a private StatefulWidget that
+  // owns a controller-typed object, plus the `_build_<JsxName>`
+  // function the registry calls. The host wraps the underlying widget
+  // (cls.name3 == h.wrappedWidgetName) without trying to encode the
+  // controller across the bridge.
+  //
+  // Each host config contributes TWO imports to the generated file:
+  // the wrapped widget's package (so we can construct it) and the
+  // factory function's file (so we can call it). Both go through
+  // [extraImports] for deduplication.
+  for (final host in hosts) {
+    final result = _emitHostAdapter(host);
+    widgets.add(result.summary);
+    if (result.body != null) {
+      adapterBodies.add(result.body!);
+      extraImports.addAll(result.requiredImports);
+    }
+    if (result.registryLine != null) {
+      registryCalls.add(result.registryLine!);
     }
   }
 
@@ -360,6 +457,166 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
         "SkalRegistry.registerWidget('$registryKey', _build_$synthesizedName);",
     requiredImports: requiredImports.toList(),
   );
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Host adapter emission
+// ───────────────────────────────────────────────────────────────────────
+
+/// Emit a host adapter for [host]. Produces three artefacts joined in
+/// one body string:
+///
+///   1. `class _<JsxName>Host extends StatefulWidget` — the public
+///      Widget subclass that the registry's `_build_*` function
+///      returns. Carries the JSX-side props as `final` fields, one per
+///      factory-function parameter.
+///   2. `class _<JsxName>HostState extends State<_<JsxName>Host>` —
+///      owns the controller via a nullable field, calls the factory
+///      in `initState`, awaits it if `Future<T>`, disposes the
+///      controller on unmount. Render path: SizedBox.shrink while
+///      pending, error widget if the factory throws, the wrapped
+///      widget once ready.
+///   3. `Widget _build_<JsxName>(NodeState, SkalBridge)` — the
+///      registry entry point that reads custom props off NodeState and
+///      hands them to the StatefulWidget's constructor.
+///
+/// The wrapped widget is constructed positionally: `WrappedWidget(_ctl!)`.
+/// Most "controller-driven viewport" widgets follow this convention
+/// (CameraPreview, VideoPlayer). Widgets that take the controller via
+/// a named param would need a follow-up extension to HostConfig.
+_AdapterResult _emitHostAdapter(HostConfig host) {
+  final jsxName = host.jsxName;
+  final registryKey = _camelCase(jsxName);
+  final wrappedName = host.wrappedWidgetName;
+
+  // Walk the factory function's named params. Each one becomes a
+  // `final` field on the host StatefulWidget AND a JSX prop the
+  // registry adapter reads off NodeState.
+  final fields = <String>[];          // `final String? cameraName;`
+  final ctorParams = <String>[];      // `this.cameraName,`
+  final factoryCallArgs = <String>[]; // `cameraName: widget.cameraName,`
+  final propReaders = <String>[];     // `cameraName: n.getCustomPropStr(...) ?? null,`
+  final hostRequiredImports = <String>{
+    host.wrappedWidgetImport,
+    host.factoryImport,
+  };
+
+  for (final param in host.factoryFn.formalParameters) {
+    if (param.isPositional) continue;
+    final name = param.name3;
+    if (name == null || name.isEmpty) continue;
+
+    final defaultLiteral = param.defaultValueCode;
+    final defaultConstant = param.computeConstantValue();
+    final encoding = encodingFor(
+      type: param.type,
+      paramName: name,
+      defaultLiteral: defaultLiteral,
+      defaultConstant: defaultConstant,
+    );
+    if (encoding == null) {
+      // Unsupported factory param type — skip the whole host with a
+      // skip reason. The dev needs to use a simpler factory signature
+      // or wait for the type to gain encoding support.
+      return _AdapterResult(GeneratedWidget(
+        jsxName,
+        registryKey,
+        skipReason: "factory param '$name' has unsupported type "
+            "'${param.type.getDisplayString()}'",
+      ));
+    }
+    final typeStr = param.type.getDisplayString();
+    fields.add('  final $typeStr $name;');
+    ctorParams.add('    this.$name${defaultLiteral != null ? " = $defaultLiteral" : ""},');
+    factoryCallArgs.add('        $name: widget.$name,');
+    propReaders.add('    $name: ${encoding.readerExpression},');
+    hostRequiredImports.addAll(encoding.requiredImports);
+  }
+
+  // Detect Future<T> return type — if async, the host's initState
+  // awaits the factory; if sync, it just calls it directly. Both
+  // paths set the controller field via setState in mounted-check.
+  final isAsync = _isFuture(host.factoryFn.returnType);
+  final factoryName = host.factoryFn.name3 ?? '';
+
+  final body = StringBuffer()
+    ..writeln('class _${jsxName}Host extends StatefulWidget {')
+    ..writeAll(fields.map((l) => '$l\n'))
+    ..writeln()
+    ..writeln('  const _${jsxName}Host({')
+    ..writeAll(ctorParams.map((l) => '$l\n'))
+    ..writeln('  });')
+    ..writeln()
+    ..writeln('  @override')
+    ..writeln('  State<_${jsxName}Host> createState() => _${jsxName}HostState();')
+    ..writeln('}')
+    ..writeln()
+    ..writeln('class _${jsxName}HostState extends State<_${jsxName}Host> {')
+    ..writeln('  Object? _ctl;')
+    ..writeln('  Object? _err;')
+    ..writeln()
+    ..writeln('  @override')
+    ..writeln('  void initState() {')
+    ..writeln('    super.initState();')
+    ..writeln('    _init();')
+    ..writeln('  }')
+    ..writeln()
+    ..writeln('  Future<void> _init() async {')
+    ..writeln('    try {')
+    ..writeln('      ${isAsync ? "final c = await" : "final c ="} $factoryName(')
+    ..writeAll(factoryCallArgs.map((l) => '$l\n'))
+    ..writeln('      );')
+    ..writeln('      if (!mounted) {')
+    ..writeln('        (c as dynamic).dispose();')
+    ..writeln('        return;')
+    ..writeln('      }')
+    ..writeln('      setState(() => _ctl = c);')
+    ..writeln('    } catch (e) {')
+    ..writeln('      if (mounted) setState(() => _err = e);')
+    ..writeln('    }')
+    ..writeln('  }')
+    ..writeln()
+    ..writeln('  @override')
+    ..writeln('  void dispose() {')
+    ..writeln('    if (_ctl != null) (_ctl as dynamic).dispose();')
+    ..writeln('    super.dispose();')
+    ..writeln('  }')
+    ..writeln()
+    ..writeln('  @override')
+    ..writeln('  Widget build(BuildContext context) {')
+    ..writeln('    if (_err != null) {')
+    ..writeln('      return Container(')
+    ..writeln('        color: const Color(0xFFFFE0E0),')
+    ..writeln('        padding: const EdgeInsets.all(8),')
+    ..writeln("        child: Text('$jsxName error: \$_err'),")
+    ..writeln('      );')
+    ..writeln('    }')
+    ..writeln('    if (_ctl == null) return const SizedBox.shrink();')
+    ..writeln('    return $wrappedName(_ctl as dynamic);')
+    ..writeln('  }')
+    ..writeln('}')
+    ..writeln()
+    ..writeln('Widget _build_$jsxName(NodeState n, SkalBridge bridge) {')
+    ..writeln('  return _${jsxName}Host(')
+    ..writeAll(propReaders.map((l) => '$l\n'))
+    ..writeln('  );')
+    ..write('}');
+
+  return _AdapterResult(
+    GeneratedWidget(jsxName, registryKey),
+    body: body.toString(),
+    registryLine:
+        "SkalRegistry.registerWidget('$registryKey', _build_$jsxName);",
+    requiredImports: hostRequiredImports.toList(),
+  );
+}
+
+/// True when [t] is `Future<X>` for any X.
+bool _isFuture(DartType t) {
+  if (t is! InterfaceType) return false;
+  if (t.element3.name3 != 'Future') return false;
+  final lib = t.element3.library2;
+  return lib.isDartAsync;
 }
 
 // ───────────────────────────────────────────────────────────────────────

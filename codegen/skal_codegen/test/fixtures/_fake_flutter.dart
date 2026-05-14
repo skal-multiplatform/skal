@@ -15,6 +15,16 @@
 
 class Key {}
 
+/// Stand-in for dart:ui's `VoidCallback = void Function()`. The
+/// codegen recognizes both this typedef alias AND raw `void Function()`
+/// param types as equivalent — see `_isVoidCallback` in type_mapper.dart.
+typedef VoidCallback = void Function();
+
+/// Stand-in for dart:ui's `ValueChanged<T> = void Function(T value)`.
+/// Same equivalence as VoidCallback: codegen accepts both this alias
+/// AND raw `void Function(T)`. See `_valueChangedTypeArg`.
+typedef ValueChanged<T> = void Function(T value);
+
 class Widget {
   const Widget();
 }
@@ -76,4 +86,27 @@ class EdgeInsets {
         top = vertical,
         right = horizontal,
         bottom = vertical;
+}
+
+/// Stand-in for any controller-style class — must have a `dispose()`
+/// method so the synthesized host adapter's lifecycle compiles
+/// against the fake. Real Flutter controllers (CameraController,
+/// VideoPlayerController, ChangeNotifier-derived things) all expose
+/// this shape.
+class FakeController {
+  final int initial;
+  const FakeController({this.initial = 0});
+  void dispose() {}
+}
+
+/// Stand-in for a controller-driven viewport widget. Takes the
+/// controller as its first POSITIONAL parameter — the host pattern's
+/// canonical convention. Real Flutter analogues: CameraPreview,
+/// VideoPlayer, both `Foo(this.controller, {...})`.
+class FakeViewer extends StatelessWidget {
+  final FakeController controller;
+  const FakeViewer(this.controller, {Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) => const Text('viewer');
 }

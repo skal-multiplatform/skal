@@ -132,6 +132,27 @@ const int wtCustom               = 8;
 const int evClick  = 0x01;
 const int evChange = 0x02;
 
+// ── Event record layout (16 bytes per slot in the event ring) ────────
+//
+//   byte 0: eventKind (evClick / evChange / …)
+//   byte 1: argType   (eventArgVoid / I32 / F32 / Bool)
+//   bytes 2-3: reserved
+//   bytes 4-7: handlerId (i32)
+//   bytes 8-11: argValueI32   — for I32/Bool: the int value
+//                              — for F32:     the float's u32 bit pattern
+//   bytes 12-15: reserved (Level 3 will use these for callId)
+//
+// JS-side reads at u32-aligned positions: word0 has kind+argType, word1
+// has handlerId, word2 has the argValue. See bridge.js's
+// __skal_drainEvents.
+const int eventArgVoid = 0x00;  // void Function() — no payload
+const int eventArgI32  = 0x01;  // covers ValueChanged<int>
+const int eventArgF32  = 0x02;  // covers ValueChanged<double>
+const int eventArgBool = 0x03;  // 0/1, covers ValueChanged<bool>
+// (String values deferred — events can't write to the string heap
+// today since Dart is the producer, not JS. Plumbing for that is
+// part of the bidirectional-RPC slice.)
+
 // ── Prop key namespace ────────────────────────────────────────────────
 // Partitioned by tier so apps + future expansions don't collide. See
 // PROPS_PLAN.md §6.

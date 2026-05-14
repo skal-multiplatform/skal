@@ -71,6 +71,62 @@ class Greeting extends StatelessWidget {
   }
 }
 
+/// A stateful counter that fires typed + void callbacks back to JSX.
+/// Exercises the codegen's callback path end-to-end:
+///
+///   `<Counter onChanged={(n) => …} onReset={() => …} initial={5} />`
+///
+/// Generated adapter wires:
+///   • initial → JSX int prop, read via getCustomPropU32
+///   • onChanged → ValueChanged<int>, emits dispatchEventInt(handlerId, n)
+///   • onReset   → VoidCallback,     emits dispatchEvent(handlerId)
+///
+/// Two buttons inside the widget bump or reset the count, calling
+/// the respective Dart callbacks. The codegen handles the JSX bind.
+class Counter extends StatefulWidget {
+  final int initial;
+  final ValueChanged<int>? onChanged;
+  final VoidCallback? onReset;
+
+  const Counter({
+    super.key,
+    this.initial = 0,
+    this.onChanged,
+    this.onReset,
+  });
+
+  @override
+  State<Counter> createState() => _CounterState();
+}
+
+class _CounterState extends State<Counter> {
+  late int _count = widget.initial;
+
+  void _bump(int delta) {
+    setState(() => _count += delta);
+    widget.onChanged?.call(_count);
+  }
+
+  void _reset() {
+    setState(() => _count = widget.initial);
+    widget.onReset?.call();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        TextButton(onPressed: () => _bump(-1), child: const Text('−')),
+        Text('count: $_count',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        TextButton(onPressed: () => _bump(1), child: const Text('+')),
+        TextButton(onPressed: _reset, child: const Text('reset')),
+      ],
+    );
+  }
+}
+
 /// A vertically-stacked group of children sitting on a colored card.
 /// Exercises the codegen's `List<Widget> children` encoding — every
 /// JSX child element becomes one row inside the column.

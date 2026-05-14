@@ -15,6 +15,8 @@ import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
+import 'package:camera/camera.dart';
+import 'package:skal_flutter/adapters/camera_factory.dart';
 import 'package:skal_flutter/skal/root.dart';
 
 import 'package:qr_flutter/qr_flutter.dart';
@@ -48,7 +50,74 @@ Widget _build_ShimmerFromColors(NodeState n, SkalBridge bridge) {
   );
 }
 
+class _CameraHost extends StatefulWidget {
+  final String? cameraName;
+  final int resolutionIndex;
+
+  const _CameraHost({
+    this.cameraName,
+    this.resolutionIndex = 1,
+  });
+
+  @override
+  State<_CameraHost> createState() => _CameraHostState();
+}
+
+class _CameraHostState extends State<_CameraHost> {
+  Object? _ctl;
+  Object? _err;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      final c = await createCamera(
+        cameraName: widget.cameraName,
+        resolutionIndex: widget.resolutionIndex,
+      );
+      if (!mounted) {
+        (c as dynamic).dispose();
+        return;
+      }
+      setState(() => _ctl = c);
+    } catch (e) {
+      if (mounted) setState(() => _err = e);
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_ctl != null) (_ctl as dynamic).dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_err != null) {
+      return Container(
+        color: const Color(0xFFFFE0E0),
+        padding: const EdgeInsets.all(8),
+        child: Text('Camera error: $_err'),
+      );
+    }
+    if (_ctl == null) return const SizedBox.shrink();
+    return CameraPreview(_ctl as dynamic);
+  }
+}
+
+Widget _build_Camera(NodeState n, SkalBridge bridge) {
+  return _CameraHost(
+    cameraName: n.getCustomPropStr('cameraName'),
+    resolutionIndex: n.getCustomPropU32('resolutionIndex', 1),
+  );
+}
+
 void registerAll() {
   SkalRegistry.registerWidget('qrImageView', _build_QrImageView);
   SkalRegistry.registerWidget('shimmerFromColors', _build_ShimmerFromColors);
+  SkalRegistry.registerWidget('camera', _build_Camera);
 }

@@ -63,6 +63,14 @@ dependencies:
   # category we've added in this branch.
   shimmer: ^3.0.0
 
+  # camera — first stateful widget wrapped via codegen's HOST
+  # pattern. CameraPreview takes a CameraController (stateful, async-
+  # initialized, plugin-channel backed) which can't be encoded over
+  # the bridge directly. The host pattern declares a factory function
+  # the codegen wraps in a synthesized StatefulWidget that owns the
+  # controller's lifecycle. See lib/skal_codegen.yaml hosts: section.
+  camera: ^0.11.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

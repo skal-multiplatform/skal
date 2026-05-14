@@ -359,9 +359,16 @@ PropEncoding? encodingFor({
         dartTypeName: typeName,
       );
     }
-    // ValueChanged<String> / ValueChanged<EnumX> / ValueChanged<List<T>>
-    // — fall through to the unsupported-type skip path. The dev gets
-    // a clear "skipped because of <type>" message in the build log.
+    if (_isCoreString(valueChangedT)) {
+      return PropEncoding(
+        readerExpression: "(v) => bridge.dispatchEventStr("
+            "n.getCustomHandler('$paramName'), v)",
+        dartTypeName: typeName,
+      );
+    }
+    // ValueChanged<EnumX> / ValueChanged<List<T>> / etc — fall through
+    // to the unsupported-type skip path. Enums could encode as i32
+    // (their index); add when the first real-world need shows up.
   }
 
   // Color — Flutter's `ui.Color` (or `material.Color`, same class).

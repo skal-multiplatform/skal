@@ -14,8 +14,13 @@ const HEADER_SIZE = 64;
 export const OP_RING_OFFSET = HEADER_SIZE;
 export const OP_RING_SIZE = 4 * 1024 * 1024;
 export const STRING_HEAP_OFFSET = OP_RING_OFFSET + OP_RING_SIZE;
-export const STRING_HEAP_SIZE = 1024 * 1024;
-export const EVENT_RING_OFFSET = STRING_HEAP_OFFSET + STRING_HEAP_SIZE;
+export const STRING_HEAP_SIZE = 768 * 1024;   // trimmed 25% to make room for reply heap
+// Dart-write-only reply heap. JS reads strings from here when an
+// event arrives with eventArgStr / eventArgJson and the offset is
+// in the reply-heap range (≥ REPLY_HEAP_OFFSET). See readReplyString.
+export const REPLY_HEAP_OFFSET = STRING_HEAP_OFFSET + STRING_HEAP_SIZE;
+export const REPLY_HEAP_SIZE   = 256 * 1024;
+export const EVENT_RING_OFFSET = REPLY_HEAP_OFFSET + REPLY_HEAP_SIZE;
 const STRING_HEAP_END = STRING_HEAP_OFFSET + STRING_HEAP_SIZE;
 
 // Header layout — byte offsets, then derived u32 / BigInt64 indices.
@@ -26,6 +31,7 @@ const HB_EVENT_SEQ        = 16;  // u64
 const HB_EVENT_WRITE_POS  = 24;  // u32
 const HB_EVENT_READ_POS   = 28;  // u32
 const HB_LAST_DRAINED_SEQ = 32;  // u64 — Dart bumps after each drain (JS spin-wait target)
+const HB_REPLY_HEAP_WRITE_POS = 44;  // u32 — Dart bumps when writing to the reply heap
 
 // Reserved: bytes 40..43 hold Dart's drain checkpoint (u32). JS doesn't
 // read it today; the seq above is sufficient for spin-wait synchronization.
@@ -129,6 +135,16 @@ export const EVENT_ARG_VOID = 0x00;
 export const EVENT_ARG_I32  = 0x01;
 export const EVENT_ARG_F32  = 0x02;
 export const EVENT_ARG_BOOL = 0x03;
+// String — payload is (heapOffset << 8) | length, packed in the
+// 32-bit argValue slot. For JS → Dart args (OP_METHOD_ARG, typed
+// callbacks), the heap is the JS write heap at STRING_HEAP_OFFSET.
+// For Dart → JS replies (RPC return values, error messages), the
+// heap is the REPLY heap at REPLY_HEAP_OFFSET — JS reads only.
+export const EVENT_ARG_STR  = 0x04;
+// JSON — same payload as EVENT_ARG_STR but JS.parses on receipt.
+// Used for object returns from RPC (XFile, Map<String,…>, anything
+// Dart's jsonEncode can serialize cleanly).
+export const EVENT_ARG_JSON = 0x05;
 
 // ───────────────────────────────────────────────────────────────────────
 // Prop key namespace — must match wire.dart's prop* constants.
@@ -813,9 +829,19 @@ export function invokeMethod(nodeId, methodName, args) {
       }
     } else if (typeof v === 'boolean') {
       writeOp(OP_METHOD_ARG, callId, EVENT_ARG_BOOL, v ? 1 : 0);
+    } else if (typeof v === 'string') {
+      // Write to the JS string heap, pack (offset, length) into the
+      // argValue slot. Length caps at 255 — for longer strings, the
+      // op would need an extension (multi-op chunking or a wider
+      // length field). 255 chars covers every realistic method arg
+      // (URLs, search terms, identifiers).
+      writeString(v);
+      const offset = _strOffset & 0xFFFFFF;
+      const len = _strLength & 0xFF;
+      writeOp(OP_METHOD_ARG, callId, EVENT_ARG_STR, (offset << 8) | len);
     } else {
-      // Unsupported arg type — pass void; Dart side gets null in
-      // that slot. Strings + objects need follow-up plumbing.
+      // Unsupported arg type (object, array, null) — pass void.
+      // Dart-side dispatcher receives null in that slot.
       writeOp(OP_METHOD_ARG, callId, EVENT_ARG_VOID, 0);
     }
   }
@@ -858,6 +884,21 @@ const _f32DecodeBuf = new ArrayBuffer(4);
 const _f32DecodeF32 = new Float32Array(_f32DecodeBuf);
 const _f32DecodeU32 = new Uint32Array(_f32DecodeBuf);
 
+// UTF-8 decoder for reply-heap strings + JSON payloads. Shared across
+// drains; calling .decode on a fresh subarray is allocation-light.
+const _replyTextDecoder = new TextDecoder('utf-8');
+
+/// Read `length` UTF-8 bytes starting at `offset` (byte offset into
+/// the reply heap, NOT absolute). Used by the event drain when an
+/// event arrives with eventArgStr / eventArgJson — Dart-produced
+/// strings always live in the reply heap at REPLY_HEAP_OFFSET.
+function readReplyString(offset, length) {
+  if (length === 0) return '';
+  return _replyTextDecoder.decode(
+    u8.subarray(REPLY_HEAP_OFFSET + offset, REPLY_HEAP_OFFSET + offset + length),
+  );
+}
+
 globalThis.__skal_drainEvents = function () {
   const seq = Atomics.load(seqArr, B_EVENT_SEQ);
   if (seq === lastEventSeq) return;
@@ -871,16 +912,19 @@ globalThis.__skal_drainEvents = function () {
   while (readPos32 !== writePos32 && safety-- > 0) {
     // Word 0 packs eventKind (byte 0) + argType (byte 1). Word 1 is
     // handlerId (or callId, for method replies). Word 2 holds the
-    // typed arg payload. See wire.dart's "Event record layout".
+    // typed arg payload (length for str/json). Word 3 holds the
+    // heap offset (str/json only; reserved otherwise). See wire.dart.
     const word0     = u32[readPos32 + 0];
     const eventKind = word0 & 0xFF;
     const argType   = (word0 >>> 8) & 0xFF;
     const idSlot    = u32[readPos32 + 1];
     const argRaw    = u32[readPos32 + 2];
+    const argOffset = u32[readPos32 + 3];
 
     // Decode the typed arg once — same shape for regular events AND
-    // method replies. Three primitives + void. F32 reinterprets the
-    // u32 bits via the shared scratch ArrayBuffer.
+    // method replies. Five primitives + void. F32 reinterprets the
+    // u32 bits via the shared scratch ArrayBuffer; STR/JSON read
+    // bytes from the reply heap (Dart-produced strings live there).
     let arg = undefined;
     let hasArg = false;
     if (argType === EVENT_ARG_I32) {
@@ -892,6 +936,15 @@ globalThis.__skal_drainEvents = function () {
       hasArg = true;
     } else if (argType === EVENT_ARG_BOOL) {
       arg = argRaw !== 0;
+      hasArg = true;
+    } else if (argType === EVENT_ARG_STR) {
+      // argRaw is the byte length; argOffset is the reply-heap offset.
+      arg = readReplyString(argOffset, argRaw);
+      hasArg = true;
+    } else if (argType === EVENT_ARG_JSON) {
+      const raw = readReplyString(argOffset, argRaw);
+      try { arg = JSON.parse(raw); }
+      catch (_) { arg = raw; /* fall through to raw string */ }
       hasArg = true;
     }
 
@@ -908,14 +961,17 @@ globalThis.__skal_drainEvents = function () {
         }
       }
     } else if (eventKind === EV_METHOD_ERROR) {
-      // RPC error — reject the pending Promise. Payload is a status
-      // code (0=no node, 1=unknown method, 2=no dispatcher, 3=async
-      // rejected, 4=sync threw). See bridge.dart's _writeMethodError.
+      // RPC error — reject the pending Promise. Dart's _writeMethodError
+      // now sends a descriptive string in `arg`; fall back to a generic
+      // message if the legacy status-code path triggered somehow.
       const pending = pendingCalls.get(idSlot);
       if (pending) {
         pendingCalls.delete(idSlot);
         try {
-          pending.reject(new Error(`skal RPC error (status ${arg})`));
+          const msg = (typeof arg === 'string')
+            ? arg
+            : `skal RPC error (status ${arg})`;
+          pending.reject(new Error(msg));
         } catch (e) {
           lastHandlerError = e && (e.stack || e.message || String(e)) || 'unknown';
         }

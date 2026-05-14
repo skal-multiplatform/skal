@@ -405,9 +405,10 @@ class SkalBridge {
           break;
 
         case opMethodArg:
-          // a = callId, b = argType, c = argValueI32. Args accumulate
-          // in a callId-keyed buffer until the matching opInvokeMethod
-          // drains them. Order matters — positional args in declaration
+          // a = callId, b = argType, c = argValueI32 (or packed
+          // offset+length for strings). Args accumulate in a callId-
+          // keyed buffer until the matching opInvokeMethod drains
+          // them. Order matters — positional args in declaration
           // order on the controller method.
           final args = _pendingMethodArgs.putIfAbsent(a, () => []);
           switch (b) {
@@ -419,6 +420,13 @@ class SkalBridge {
               break;
             case eventArgBool:
               args.add(c != 0);
+              break;
+            case eventArgStr:
+              // Decode from the JS write heap. Format matches
+              // opSetCustomPropStr: high 24 bits = offset, low 8 = len.
+              final offset = (c >> 8) & 0xFFFFFF;
+              final length = c & 0xFF;
+              args.add(_readString(kStringHeapOff + offset, length));
               break;
             default:
               args.add(null);
@@ -434,16 +442,19 @@ class SkalBridge {
           final methodName = _nameDict[b];
           final args = _pendingMethodArgs.remove(c) ?? const <Object?>[];
           if (node == null) {
-            _writeMethodError(c, 0); // 0 = no such node
+            _writeMethodError(c, 'skal RPC: no such node id ($a)');
             break;
           }
           if (methodName == null) {
-            _writeMethodError(c, 1); // 1 = unknown method name hash
+            _writeMethodError(c,
+                'skal RPC: unknown method name hash (0x${b.toRadixString(16)})');
             break;
           }
           final dispatcher = node.methodDispatcher;
           if (dispatcher == null) {
-            _writeMethodError(c, 2); // 2 = no dispatcher (host not mounted)
+            _writeMethodError(c,
+                'skal RPC: no method dispatcher on node $a — host not '
+                'mounted yet, or this widget isn\'t a host-pattern target');
             break;
           }
           try {
@@ -452,15 +463,17 @@ class SkalBridge {
               // Async — write the reply when the future resolves.
               // Capture callId in the closure; bridge can keep going.
               final callId = c;
+              final mName = methodName;
               result.then(
                 (value) => _writeMethodReply(callId, value),
-                onError: (e, _) => _writeMethodError(callId, 3),
+                onError: (e, _) => _writeMethodError(callId,
+                    'skal RPC: $mName threw (async): $e'),
               );
             } else {
               _writeMethodReply(c, result);
             }
-          } catch (_) {
-            _writeMethodError(c, 4); // 4 = synchronous throw
+          } catch (e) {
+            _writeMethodError(c, 'skal RPC: $methodName threw: $e');
           }
           break;
 
@@ -626,18 +639,22 @@ class SkalBridge {
     int eventKind = evClick,
     int argType = eventArgVoid,
     int argValueI32 = 0,
+    int argHeapOffset = 0,
   }) {
     if (handlerId == 0) return;
 
     // If we've spilled to overflow, keep spilling so events stay in
     // dispatch order. A drain will eventually clear both. Overflow
-    // queue layout is 4 ints per event: kind, argType, handlerId,
-    // argValue. Keeps the typed payload alongside its handler.
+    // queue layout is 5 ints per event: kind, argType, handlerId,
+    // argValue, argHeapOffset. The heap-offset slot is unused for
+    // non-string events (just stored as 0) — kept uniform so the
+    // flush loop has one shape to handle.
     if (_eventOverflow.isNotEmpty) {
       _eventOverflow.add(eventKind);
       _eventOverflow.add(argType);
       _eventOverflow.add(handlerId);
       _eventOverflow.add(argValueI32);
+      _eventOverflow.add(argHeapOffset);
       skal.wakeJs();
       return;
     }
@@ -654,6 +671,7 @@ class SkalBridge {
       _eventOverflow.add(argType);
       _eventOverflow.add(handlerId);
       _eventOverflow.add(argValueI32);
+      _eventOverflow.add(argHeapOffset);
       skal.wakeJs();
       return;
     }
@@ -663,10 +681,55 @@ class SkalBridge {
     _data.setUint8(base + 1, argType);
     _data.setInt32(base + 4, handlerId, Endian.little);
     _data.setInt32(base + 8, argValueI32, Endian.little);
+    _data.setInt32(base + 12, argHeapOffset, Endian.little);
     _data.setInt32(hEventWritePos, nextPos, Endian.little);
     final seq = _data.getInt64(hEventSeq, Endian.little);
     _data.setInt64(hEventSeq, seq + 1, Endian.little);
     skal.wakeJs();
+  }
+
+  /// Reply-heap cursor — bumped on each [_writeReplyString] call.
+  /// Resets to 0 when an allocation would exceed capacity; assumes
+  /// JS has drained any prior events that reference earlier strings.
+  /// For the demo workload (sporadic RPC replies, error messages) this
+  /// invariant holds trivially — replies are read by the next event
+  /// drain after the write.
+  int _replyHeapWritePos = 0;
+
+  /// Write [s] into the reply heap (Dart-write, JS-read) as UTF-8.
+  /// Returns the byte offset (into the reply heap) + the byte length.
+  /// Caller packs these into the event record's argValueI32 (length)
+  /// and argHeapOffset (offset) slots.
+  ///
+  /// Truncates to the heap capacity. A future pass could chunk into
+  /// multiple events for huge payloads; today's 256 KiB is plenty
+  /// for any single RPC reply.
+  (int offset, int length) _writeReplyString(String s) {
+    final bytes = utf8.encode(s);
+    final len = bytes.length;
+    if (len > kReplyHeapSize) {
+      // String alone exceeds the heap — rare; truncate.
+      final truncated = bytes.sublist(0, kReplyHeapSize);
+      _data.buffer
+          .asUint8List(kReplyHeapOff, kReplyHeapSize)
+          .setRange(0, kReplyHeapSize, truncated);
+      _replyHeapWritePos = kReplyHeapSize;
+      _data.setInt32(hReplyHeapWritePos, _replyHeapWritePos, Endian.little);
+      return (0, kReplyHeapSize);
+    }
+    if (_replyHeapWritePos + len > kReplyHeapSize) {
+      // Wraparound — reset cursor. Safe as long as JS has drained
+      // prior reply-bearing events; for the current demo that's
+      // immediate (drain runs after each event seq bump).
+      _replyHeapWritePos = 0;
+    }
+    final offset = _replyHeapWritePos;
+    _data.buffer
+        .asUint8List(kReplyHeapOff + offset, len)
+        .setRange(0, len, bytes);
+    _replyHeapWritePos += len;
+    _data.setInt32(hReplyHeapWritePos, _replyHeapWritePos, Endian.little);
+    return (offset, len);
   }
 
   /// Convenience: dispatch a `ValueChanged<double>` callback with a
@@ -696,6 +759,19 @@ class SkalBridge {
         eventKind: eventKind, argType: eventArgI32, argValueI32: value);
   }
 
+  /// Convenience: dispatch a `ValueChanged<String>` callback. Writes
+  /// the string to the reply heap (Dart-produced strings always go
+  /// there) and packs (length, offset) into the event record.
+  void dispatchEventStr(int handlerId, String value,
+      {int eventKind = evChange}) {
+    final (offset, length) = _writeReplyString(value);
+    dispatchEvent(handlerId,
+        eventKind: eventKind,
+        argType: eventArgStr,
+        argValueI32: length,
+        argHeapOffset: offset);
+  }
+
   /// Bit-cast a double down to an f32 and return the bit pattern as
   /// a signed 32-bit int (matching the i32 storage slot in the event
   /// record). Uses ByteData rather than `(value as int)` so subnormal
@@ -707,21 +783,23 @@ class SkalBridge {
   }
 
   /// Write a method-invocation reply into the event ring. Encodes
-  /// the result value via the same argType discriminator the typed-
-  /// callback path uses (see eventArg* in wire.dart). The "handlerId"
+  /// the result value via the argType discriminator. The "handlerId"
   /// slot carries the callId so JS can route to the right Promise.
   ///
-  /// Supported result types: null/void (eventArgVoid), int, double,
-  /// bool. Other types (String, Object, List<T>) write a void reply
-  /// and the JSX-side Promise resolves with `undefined` — the value
-  /// won't round-trip. Plumbing for those needs producer-side string
-  /// heap + flat-object serialization (future slice).
+  /// Supported result types:
+  ///   • null / void          → eventArgVoid, Promise resolves with undefined
+  ///   • bool                 → eventArgBool
+  ///   • int                  → eventArgI32
+  ///   • double               → eventArgF32 (bit-cast)
+  ///   • String               → eventArgStr, written to reply heap
+  ///   • everything else      → eventArgJson, jsonEncode'd to reply heap
+  ///                            (JS receives the parsed object)
   void _writeMethodReply(int callId, Object? result) {
     int argType;
-    int argValueI32;
+    int argValueI32 = 0;
+    int argHeapOffset = 0;
     if (result == null) {
       argType = eventArgVoid;
-      argValueI32 = 0;
     } else if (result is bool) {
       argType = eventArgBool;
       argValueI32 = result ? 1 : 0;
@@ -731,37 +809,42 @@ class SkalBridge {
     } else if (result is double) {
       argType = eventArgF32;
       argValueI32 = _f32ToBits(result);
+    } else if (result is String) {
+      final (offset, length) = _writeReplyString(result);
+      argType = eventArgStr;
+      argValueI32 = length;
+      argHeapOffset = offset;
     } else {
-      // Unsupported result type — treat as void. (Logging here would
-      // spam the console for every value-returning method that uses
-      // a complex type; the dev catches this in development by seeing
-      // their Promise resolve with `undefined`.)
-      argType = eventArgVoid;
-      argValueI32 = 0;
+      // Try JSON. Anything Dart's jsonEncode can handle (Map, List,
+      // any class with toJson(), nested combinations) works — JS
+      // auto-parses on receipt. For non-jsonable objects (closures,
+      // streams), jsonEncode throws; we catch and fall back to void.
+      try {
+        final encoded = jsonEncode(result);
+        final (offset, length) = _writeReplyString(encoded);
+        argType = eventArgJson;
+        argValueI32 = length;
+        argHeapOffset = offset;
+      } catch (_) {
+        argType = eventArgVoid;
+      }
     }
-    // Same wire layout as dispatchEvent — only the eventKind differs.
-    // The "handlerId" slot is reinterpreted as callId on the JS side
-    // when eventKind is evMethodReply.
     dispatchEvent(callId,
         eventKind: evMethodReply,
         argType: argType,
-        argValueI32: argValueI32);
+        argValueI32: argValueI32,
+        argHeapOffset: argHeapOffset);
   }
 
-  /// Write a method-invocation error reply. Same shape as a regular
-  /// reply but with eventKind = evMethodError so JS rejects the
-  /// Promise. The error payload is a u32 status code for now:
-  ///
-  ///   0 = no such node id
-  ///   1 = unknown method name hash
-  ///   2 = no method dispatcher registered (host not mounted yet)
-  ///   3 = async dispatcher rejected
-  ///   4 = sync dispatcher threw
-  void _writeMethodError(int callId, int statusCode) {
+  /// Write a method-invocation error reply with a descriptive message.
+  /// JS rejects the matching Promise with `new Error(message)`.
+  void _writeMethodError(int callId, String message) {
+    final (offset, length) = _writeReplyString(message);
     dispatchEvent(callId,
         eventKind: evMethodError,
-        argType: eventArgI32,
-        argValueI32: statusCode);
+        argType: eventArgStr,
+        argValueI32: length,
+        argHeapOffset: offset);
   }
 
   /// Drain queued overflow events into the bridge ring. Called from
@@ -769,7 +852,8 @@ class SkalBridge {
   /// each successful write, so events propagate immediately.
   ///
   /// Overflow queue layout matches the event-record layout: each event
-  /// is 4 consecutive ints — kind, argType, handlerId, argValueI32.
+  /// is 5 consecutive ints — kind, argType, handlerId, argValueI32,
+  /// argHeapOffset.
   void _flushEventOverflow() {
     while (_eventOverflow.isNotEmpty) {
       final pos = _data.getInt32(hEventWritePos, Endian.little);
@@ -781,11 +865,13 @@ class SkalBridge {
       final argType = _eventOverflow.removeFirst();
       final handlerId = _eventOverflow.removeFirst();
       final argValueI32 = _eventOverflow.removeFirst();
+      final argHeapOffset = _eventOverflow.removeFirst();
       final base = kEventRingOffset + pos;
       _data.setUint8(base + 0, eventKind);
       _data.setUint8(base + 1, argType);
       _data.setInt32(base + 4, handlerId, Endian.little);
       _data.setInt32(base + 8, argValueI32, Endian.little);
+      _data.setInt32(base + 12, argHeapOffset, Endian.little);
       _data.setInt32(hEventWritePos, nextPos, Endian.little);
       final seq = _data.getInt64(hEventSeq, Endian.little);
       _data.setInt64(hEventSeq, seq + 1, Endian.little);

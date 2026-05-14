@@ -22,14 +22,26 @@ const int hEventWritePos       = 24;   // u32
 const int hEventReadPos        = 28;   // u32
 const int hLastDrainedSeq      = 32;   // u64 — Dart bumps after each drain (JS spin-wait target)
 const int hLastDrainedWritePos = 40;   // u32 — reserved slot; not currently read by either side
+const int hReplyHeapWritePos   = 44;   // u32 — Dart bumps after each reply-heap write
 
 const int kHeaderSize     = 64;
 const int kOpRingOffset   = kHeaderSize;
 const int kOpRingSize     = 4 * 1024 * 1024;
+// JS write-only string heap. Bump-allocated; resets when JS commits
+// + the UI thread has drained past the high-water mark.
 const int kStringHeapOff  = kOpRingOffset + kOpRingSize;
-const int kStringHeapSize = 1024 * 1024;
+const int kStringHeapSize = 768 * 1024;   // was 1 MiB; trimmed 25% for reply heap
+// Dart-side reply heap — JS reads only. Carries:
+//   • String return values from RPC method invocations
+//   • JSON-encoded object returns (XFile-style)
+//   • String error messages (replaces the status-code shorthand)
+// Bump-allocated by Dart; resets when the cursor approaches capacity
+// AND the JS event-ring read position has caught up (so any in-flight
+// string references in undrained events stay valid).
+const int kReplyHeapOff   = kStringHeapOff + kStringHeapSize;
+const int kReplyHeapSize  = 256 * 1024;
 const int kBridgeSize     = 6 * 1024 * 1024;
-const int kEventRingOffset = kStringHeapOff + kStringHeapSize;
+const int kEventRingOffset = kReplyHeapOff + kReplyHeapSize;
 const int kEventRingSize   = kBridgeSize - kEventRingOffset;
 
 // ── Opcodes (1 byte; reader masks the low byte of the u32 opcode word) ─
@@ -160,23 +172,42 @@ const int evMethodError  = 0x04;
 // ── Event record layout (16 bytes per slot in the event ring) ────────
 //
 //   byte 0: eventKind (evClick / evChange / …)
-//   byte 1: argType   (eventArgVoid / I32 / F32 / Bool)
+//   byte 1: argType   (eventArgVoid / I32 / F32 / Bool / Str / Json)
 //   bytes 2-3: reserved
-//   bytes 4-7: handlerId (i32)
-//   bytes 8-11: argValueI32   — for I32/Bool: the int value
-//                              — for F32:     the float's u32 bit pattern
-//   bytes 12-15: reserved (Level 3 will use these for callId)
+//   bytes 4-7: handlerId / callId (i32) — discriminated by eventKind
+//   bytes 8-11: argValueI32
+//      • I32 / Bool  → the int value
+//      • F32         → the float's u32 bit pattern
+//      • Str / Json  → the string LENGTH in UTF-8 bytes
+//      • Void        → 0
+//   bytes 12-15: argHeapOffset (i32)
+//      • Str / Json  → byte offset into the heap. For Dart-produced
+//                      events (replies, error messages) this is offset
+//                      into the REPLY heap (kReplyHeapOff). All other
+//                      argTypes leave this slot at 0.
+//      • everything else → reserved / 0
 //
 // JS-side reads at u32-aligned positions: word0 has kind+argType, word1
-// has handlerId, word2 has the argValue. See bridge.js's
-// __skal_drainEvents.
+// has handlerId/callId, word2 has the argValue (or length for strings),
+// word3 has the heap offset for string-shaped payloads.
 const int eventArgVoid = 0x00;  // void Function() — no payload
 const int eventArgI32  = 0x01;  // covers ValueChanged<int>
 const int eventArgF32  = 0x02;  // covers ValueChanged<double>
 const int eventArgBool = 0x03;  // 0/1, covers ValueChanged<bool>
-// (String values deferred — events can't write to the string heap
-// today since Dart is the producer, not JS. Plumbing for that is
-// part of the bidirectional-RPC slice.)
+// String — payload is (heapOffset << 8) | length, same packing the
+// existing opSetCustomPropStr / opSetPropStr ops use. For JS-side
+// producers (OP_METHOD_ARG carrying a String arg) the heap is the
+// regular JS write heap at kStringHeapOff. For Dart-side producers
+// (event-ring strings shipped via dispatchEvent / method replies)
+// the heap is the REPLY heap at kReplyHeapOff — JS-read-only,
+// Dart-write-only. See readReplyString on the JS side.
+const int eventArgStr  = 0x04;
+// JSON — same packing as eventArgStr (heap offset + length), but the
+// receiver JSON.parses the payload before forwarding. Used for object
+// returns from RPC methods (XFile, Map<String, …>, anything Dart's
+// jsonEncode can serialize). The codegen-emitted host adapter calls
+// jsonEncode for non-primitive returns; JS auto-parses on receipt.
+const int eventArgJson = 0x05;
 
 // ── Prop key namespace ────────────────────────────────────────────────
 // Partitioned by tier so apps + future expansions don't collide. See

@@ -119,15 +119,21 @@ class _CameraHostState extends State<_CameraHost> {
       case 'resumePreview':
         ctl.resumePreview();
         return null;
+      case 'takePicture':
+        return ctl.takePicture();
       case 'stopImageStream':
         ctl.stopImageStream();
         return null;
+      case 'stopVideoRecording':
+        return ctl.stopVideoRecording();
       case 'pauseVideoRecording':
         ctl.pauseVideoRecording();
         return null;
       case 'resumeVideoRecording':
         ctl.resumeVideoRecording();
         return null;
+      case 'buildPreview':
+        return ctl.buildPreview();
       case 'getMaxZoomLevel':
         return ctl.getMaxZoomLevel();
       case 'getMinZoomLevel':
@@ -244,6 +250,10 @@ class _TickerHostState extends State<_TickerHost> {
       case 'bump':
         ctl.bump(args[0] as int);
         return null;
+      case 'describe':
+        return ctl.describe(args[0] as String);
+      case 'snapshot':
+        return ctl.snapshot();
       default:
         return null;
     }

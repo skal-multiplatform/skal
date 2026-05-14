@@ -282,6 +282,29 @@ export default function App() {
           const paused = await ticker.isPaused();
           setTickerLog(`getValue() → ${v}, isPaused() → ${paused}`);
         }} />
+        {/* String arg + String return — round-trips via the reply heap. */}
+        <Button label="describe" onClick={async () => {
+          const s = await ticker.describe('hello from JSX');
+          setTickerLog(`describe() → ${s}`);
+        }} />
+        {/* JSON object return — Dart's snapshot() returns Map; bridge
+            JSON-encodes; JS auto-parses. Receive a real object on JSX side. */}
+        <Button label="snapshot" onClick={async () => {
+          const snap = await ticker.snapshot();
+          setTickerLog(
+            `snapshot() → value=${snap.value} paused=${snap.paused} ts=${snap.timestamp}`,
+          );
+        }} />
+        {/* Force-fail RPC — calls a method that doesn't exist on the
+            controller. Promise rejects with the Dart-side error string. */}
+        <Button label="bogus" onClick={async () => {
+          try {
+            await ticker.totallyMadeUp();
+            setTickerLog('bogus(): unexpectedly resolved');
+          } catch (e) {
+            setTickerLog(`bogus() rejected: ${e.message}`);
+          }
+        }} />
       </Row>
       <Text label={tickerLog()} fontSize={14} color="#FF333333" />
       {/* Multi-child custom widget — Stickers takes `List<Widget>

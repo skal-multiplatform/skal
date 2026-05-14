@@ -79,6 +79,8 @@ class _FakeSyncHostState extends State<_FakeSyncHost> {
         return ctl.getValue();
       case 'ping':
         return ctl.ping();
+      case 'describe':
+        return ctl.describe(args[0] as String);
       default:
         return null;
     }
@@ -165,6 +167,8 @@ class _FakeAsyncHostState extends State<_FakeAsyncHost> {
         return ctl.getValue();
       case 'ping':
         return ctl.ping();
+      case 'describe':
+        return ctl.describe(args[0] as String);
       default:
         return null;
     }

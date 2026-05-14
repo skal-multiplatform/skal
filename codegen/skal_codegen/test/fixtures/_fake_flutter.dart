@@ -109,6 +109,10 @@ class FakeController {
   void reset() { _value = 0; }
   int getValue() => _value;
   Future<bool> ping() async => true;
+  // String args + returns. Exercises both directions of the string
+  // bridge: JS → Dart via OP_METHOD_ARG with eventArgStr, Dart → JS
+  // via _writeMethodReply emitting eventArgStr (reply heap).
+  String describe(String prefix) => '$prefix: value=$_value';
 
   // NOT RPC-eligible — host owns the lifecycle. Codegen filters this
   // out by name.

@@ -692,6 +692,7 @@ List<String> _collectControllerMethods(DartType controllerType) {
       if (_isRpcInt(t)) cast = 'args[$i] as int';
       else if (_isRpcDouble(t)) cast = 'args[$i] as double';
       else if (_isRpcBool(t)) cast = 'args[$i] as bool';
+      else if (_isRpcString(t)) cast = 'args[$i] as String';
       if (cast == null) { argsOk = false; break; }
       argCasts.add(cast);
       i++;
@@ -735,8 +736,17 @@ class _RpcReturnInfo {
 }
 
 /// Determine how the bridge should encode a controller method's
-/// return type. Returns null for unencodable returns (Object, custom
-/// classes, String, lists, …) — the method is then skipped.
+/// return type. Returns null only for type signatures the bridge
+/// truly can't carry — control-flow types (Stream, Iterable<T>) or
+/// recursive Dart-only objects. For everything else we encode:
+///
+///   void / Future<void>  → eventArgVoid
+///   int / double / bool  → primitive arg types
+///   String               → eventArgStr via reply heap
+///   {Map, List, Object}  → eventArgJson via reply heap + jsonEncode
+///
+/// The catch-all `_RpcReturnInfo(false)` for non-void return types
+/// trusts the bridge's _writeMethodReply to handle the actual encoding.
 _RpcReturnInfo? _classifyRpcReturn(DartType t) {
   // Unwrap Future<X> — the bridge's RPC dispatch awaits async methods
   // transparently. Future<void> counts as void.
@@ -745,10 +755,16 @@ _RpcReturnInfo? _classifyRpcReturn(DartType t) {
     inner = t.typeArguments.first;
   }
   if (inner is VoidType) return const _RpcReturnInfo(true);
-  if (_isRpcInt(inner) || _isRpcDouble(inner) || _isRpcBool(inner)) {
+  if (_isRpcInt(inner) || _isRpcDouble(inner) || _isRpcBool(inner) ||
+      _isRpcString(inner)) {
     return const _RpcReturnInfo(false);
   }
-  return null;
+  // Anything else (Map, List, custom class) — encode as JSON in the
+  // bridge. jsonEncode handles toJson()-bearing classes + nested
+  // primitive maps/lists out of the box. Non-encodable types fall
+  // back to void at runtime; the dev sees Promise resolving with
+  // undefined and learns to add toJson() (or use a simpler shape).
+  return const _RpcReturnInfo(false);
 }
 
 bool _isRpcInt(DartType t) =>
@@ -757,6 +773,8 @@ bool _isRpcDouble(DartType t) =>
     t.element3?.name3 == 'double' && t.element3?.library2?.isDartCore == true;
 bool _isRpcBool(DartType t) =>
     t.element3?.name3 == 'bool' && t.element3?.library2?.isDartCore == true;
+bool _isRpcString(DartType t) =>
+    t.element3?.name3 == 'String' && t.element3?.library2?.isDartCore == true;
 
 /// True when [t] is `Future<X>` for any X.
 bool _isFuture(DartType t) {

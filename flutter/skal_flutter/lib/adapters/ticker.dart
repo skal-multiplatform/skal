@@ -49,7 +49,8 @@ class TickController extends ChangeNotifier {
   }
 
   // RPC-eligible methods. Each becomes a `case` in the codegen-emitted
-  // host dispatcher. Public, non-static, primitive args + returns.
+  // host dispatcher. Public, non-static, encodable args + returns
+  // (primitives, String, jsonEncode-able objects).
   void pause() { _paused = true; }
   void resume() { _paused = false; }
   void reset() {
@@ -61,6 +62,21 @@ class TickController extends ChangeNotifier {
   void bump(int delta) {
     _value += delta;
     notifyListeners();
+  }
+  // String arg + String return — exercises both directions of the
+  // string bridge via the reply heap (Dart → JS) and the JS string
+  // heap (JS → Dart).
+  String describe(String tag) {
+    return '$tag: ticks=$_value, paused=$_paused';
+  }
+  // Object return — encoded as JSON, parsed automatically on the
+  // JSX side. The dev's onClick handler receives a real JS object.
+  Map<String, Object?> snapshot() {
+    return {
+      'value': _value,
+      'paused': _paused,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
   }
 
   @override

@@ -686,36 +686,28 @@ bool _isDuration(DartType t) =>
     t.element3?.name3 == 'Duration' &&
     t.element3?.library2?.isDartCore == true;
 
-/// Match Flutter's `Widget` (or any of its core subclasses used as
-/// type annotations: StatelessWidget, StatefulWidget, PreferredSizeWidget).
-/// We treat all of these as "render the first JSX child here" — the
-/// param's narrower type signals nothing the encoding needs to vary
-/// on, since SkalNode renders whatever's at the child node id.
+/// Match Flutter's `Widget` (or its top-level abstract subclasses:
+/// StatelessWidget, StatefulWidget, PreferredSizeWidget) used as
+/// type annotations. Returns false for NARROWER widget subclasses
+/// (e.g. `Text source`, `List<SourceAttribution> attributions`,
+/// `BaseOverlayImage`).
+///
+/// Why strict-match instead of walking the supertype chain: `SkalNode`
+/// — the runtime cell we emit at each child slot — `extends Widget`,
+/// not Text / Container / SourceAttribution / etc. Assigning SkalNode
+/// to a `Text source` param is a static type error. So if the widget's
+/// API asks for a specific Widget subtype, the codegen can't satisfy it
+/// with SkalNode + JSX children, and we'd rather fall through to the
+/// "unsupported type → skip with a clear message" branch than emit
+/// code that doesn't compile. The dev wraps that param manually via the
+/// host pattern (or sees the skip and chooses to use a hand-written
+/// adapter for the surrounding widget).
 bool _isFlutterWidget(DartType t) {
   final name = t.element3?.name3;
-  if (name == 'Widget' ||
+  return name == 'Widget' ||
       name == 'StatelessWidget' ||
       name == 'StatefulWidget' ||
-      name == 'PreferredSizeWidget') {
-    return true;
-  }
-  // Walk the supertype chain — a user-defined widget class (e.g.
-  // `class MyChip extends StatelessWidget`) is still a Widget.
-  final el = t.element3;
-  if (el is InterfaceElement2) {
-    var sup = el.supertype;
-    while (sup != null) {
-      final supName = sup.element3.name3;
-      if (supName == 'Widget' ||
-          supName == 'StatelessWidget' ||
-          supName == 'StatefulWidget' ||
-          supName == 'PreferredSizeWidget') {
-        return true;
-      }
-      sup = sup.element3.supertype;
-    }
-  }
-  return false;
+      name == 'PreferredSizeWidget';
 }
 
 /// Match `List<Widget>` (or List of any Widget subclass —

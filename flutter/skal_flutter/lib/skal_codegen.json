@@ -1,6 +1,7 @@
 {
   "widgets": {
     "QrImageView": "qrImageView",
+    "Shimmer": "shimmer",
     "ShimmerFromColors": "shimmerFromColors",
     "Camera": "camera",
     "Ticker": "ticker"

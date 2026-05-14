@@ -220,6 +220,16 @@ GenerationResult generate({
   // how the underlying widget gets constructed.
   final hostedWidgetNames = {for (final h in hosts) h.wrappedWidgetName};
 
+  // Track classes we've already emitted an adapter for, so a class
+  // that's surfaced by multiple input units (the `part of` case in
+  // packages like flutter_map, where retina_mode.dart, wms_tile_layer_
+  // options.dart, etc. all `part of 'tile_layer.dart'`) doesn't get a
+  // duplicate `_build_TileLayer` per part-file. `libraryElement2.classes`
+  // returns library-scoped classes, and every part-file in the same
+  // library reports the same set — without this dedup, walking N
+  // part-files emits N copies of every class in that library.
+  final emittedClassIds = <int>{};
+
   for (var i = 0; i < units.length; i++) {
     final unit = units[i];
     final classes = _topLevelWidgetClasses(unit);
@@ -228,6 +238,9 @@ GenerationResult generate({
       // generate()'s contract: the synthesized host below replaces
       // any auto-generated adapter for the same class.
       if (hostedWidgetNames.contains(cls.name3)) continue;
+      // Skip if another unit (e.g. a part-file in the same library)
+      // already produced an adapter for this exact class element.
+      if (!emittedClassIds.add(identityHashCode(cls))) continue;
       final ctors = _eligibleConstructors(cls);
       if (ctors.isEmpty) {
         // Class has no usable constructor (all private, or somehow

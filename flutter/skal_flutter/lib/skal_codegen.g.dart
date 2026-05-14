@@ -9,12 +9,13 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
+import 'dart:convert';
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:skal_flutter/adapters/camera_factory.dart';
@@ -24,26 +25,141 @@ import 'package:skal_flutter/skal/root.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shimmer/shimmer.dart';
 
+Alignment _skalParseAlignment(dynamic v, {Alignment def = Alignment.center}) {
+  if (v is String) {
+    switch (v) {
+      case 'topLeft':
+        return Alignment.topLeft;
+      case 'topCenter':
+        return Alignment.topCenter;
+      case 'topRight':
+        return Alignment.topRight;
+      case 'centerLeft':
+        return Alignment.centerLeft;
+      case 'center':
+        return Alignment.center;
+      case 'centerRight':
+        return Alignment.centerRight;
+      case 'bottomLeft':
+        return Alignment.bottomLeft;
+      case 'bottomCenter':
+        return Alignment.bottomCenter;
+      case 'bottomRight':
+        return Alignment.bottomRight;
+    }
+  }
+  if (v is List && v.length == 2) {
+    return Alignment((v[0] as num).toDouble(), (v[1] as num).toDouble());
+  }
+  return def;
+}
+
+Color _skalParseColor(dynamic v) {
+  if (v is int) return Color(v);
+  if (v is String) {
+    var s = v.startsWith('#') ? v.substring(1) : v;
+    if (s.length == 6) s = 'FF$s';
+    return Color(int.parse(s, radix: 16));
+  }
+  return const Color(0xFF000000);
+}
+
+Gradient? _skalParseGradient(String? json) {
+  if (json == null || json.isEmpty) return null;
+  final m = jsonDecode(json) as Map<String, dynamic>;
+  final colors = (m['colors'] as List).map(_skalParseColor).toList();
+  final stops = (m['stops'] as List?)
+      ?.cast<num>()
+      .map((n) => n.toDouble())
+      .toList();
+  switch (m['type']) {
+    case 'radial':
+      return RadialGradient(
+        colors: colors,
+        stops: stops,
+        radius: (m['radius'] as num?)?.toDouble() ?? 0.5,
+        center: _skalParseAlignment(m['center'], def: Alignment.center),
+      );
+    case 'sweep':
+      return SweepGradient(
+        colors: colors,
+        stops: stops,
+        startAngle: (m['startAngle'] as num?)?.toDouble() ?? 0.0,
+        endAngle: (m['endAngle'] as num?)?.toDouble() ?? 6.283185307,
+        center: _skalParseAlignment(m['center'], def: Alignment.center),
+      );
+    default: // 'linear' or missing
+      return LinearGradient(
+        colors: colors,
+        stops: stops,
+        begin: _skalParseAlignment(m['begin'], def: Alignment.centerLeft),
+        end: _skalParseAlignment(m['end'], def: Alignment.centerRight),
+      );
+  }
+}
+
 Widget _build_QrImageView(NodeState n, SkalBridge bridge) {
   return QrImageView(
     data: n.getCustomPropStr('data') ?? '',
     size: n.getCustomPropF32('size', 0.0),
-    padding: EdgeInsets.fromLTRB(n.getCustomPropF32('paddingLeft', 10.0), n.getCustomPropF32('paddingTop', 10.0), n.getCustomPropF32('paddingRight', 10.0), n.getCustomPropF32('paddingBottom', 10.0)),
+    padding: EdgeInsets.fromLTRB(
+      n.getCustomPropF32('paddingLeft', 10.0),
+      n.getCustomPropF32('paddingTop', 10.0),
+      n.getCustomPropF32('paddingRight', 10.0),
+      n.getCustomPropF32('paddingBottom', 10.0),
+    ),
     backgroundColor: Color(n.getCustomPropU32('backgroundColor', 0x00000000)),
     version: n.getCustomPropU32('version', QrVersions.auto),
-    errorCorrectionLevel: n.getCustomPropU32('errorCorrectionLevel', QrErrorCorrectLevel.L),
+    errorCorrectionLevel: n.getCustomPropU32(
+      'errorCorrectionLevel',
+      QrErrorCorrectLevel.L,
+    ),
     constrainErrorBounds: n.getCustomPropU32('constrainErrorBounds', 1) != 0,
     gapless: n.getCustomPropU32('gapless', 1) != 0,
-    embeddedImage: ((() { final s = n.getCustomPropStr('embeddedImage') ?? ''; if (s.isEmpty) return null; if (s.startsWith('http')) return NetworkImage(s); if (s.startsWith('file://')) return FileImage(File(s.substring(7))); if (s.startsWith('/')) return FileImage(File(s)); return AssetImage(s); })() as ImageProvider?),
+    embeddedImage:
+        ((() {
+              final s = n.getCustomPropStr('embeddedImage') ?? '';
+              if (s.isEmpty) return null;
+              if (s.startsWith('http')) return NetworkImage(s);
+              if (s.startsWith('file://'))
+                return FileImage(File(s.substring(7)));
+              if (s.startsWith('/')) return FileImage(File(s));
+              return AssetImage(s);
+            })()
+            as ImageProvider?),
     semanticsLabel: n.getCustomPropStr('semanticsLabel') ?? 'qr code',
-    embeddedImageEmitsError: n.getCustomPropU32('embeddedImageEmitsError', 0) != 0,
+    embeddedImageEmitsError:
+        n.getCustomPropU32('embeddedImageEmitsError', 0) != 0,
     foregroundColor: Color(n.getCustomPropU32('foregroundColor', 0xFF000000)),
+  );
+}
+
+Widget _build_Shimmer(NodeState n, SkalBridge bridge) {
+  return Shimmer(
+    child: n.childCount > 0
+        ? SkalNode(
+            nodeId: n.childAt(0),
+            bridge: bridge,
+            key: ValueKey<int>(n.childAt(0)),
+          )
+        : const SizedBox.shrink(),
+    gradient: (_skalParseGradient(n.getCustomPropStr('gradient')) as Gradient),
+    direction: ShimmerDirection.values[n.getCustomPropU32('direction', 0)],
+    period: Duration(milliseconds: n.getCustomPropU32('period', 1500)),
+    loop: n.getCustomPropU32('loop', 0),
+    enabled: n.getCustomPropU32('enabled', 1) != 0,
   );
 }
 
 Widget _build_ShimmerFromColors(NodeState n, SkalBridge bridge) {
   return Shimmer.fromColors(
-    child: n.childCount > 0 ? SkalNode(nodeId: n.childAt(0), bridge: bridge, key: ValueKey<int>(n.childAt(0))) : const SizedBox.shrink(),
+    child: n.childCount > 0
+        ? SkalNode(
+            nodeId: n.childAt(0),
+            bridge: bridge,
+            key: ValueKey<int>(n.childAt(0)),
+          )
+        : const SizedBox.shrink(),
     baseColor: Color(n.getCustomPropU32('baseColor', 0xFF000000)),
     highlightColor: Color(n.getCustomPropU32('highlightColor', 0xFF000000)),
     period: Duration(milliseconds: n.getCustomPropU32('period', 1500)),
@@ -287,6 +403,7 @@ Widget _build_Ticker(NodeState n, SkalBridge bridge) {
 
 void registerAll() {
   SkalRegistry.registerWidget('qrImageView', _build_QrImageView);
+  SkalRegistry.registerWidget('shimmer', _build_Shimmer);
   SkalRegistry.registerWidget('shimmerFromColors', _build_ShimmerFromColors);
   SkalRegistry.registerWidget('camera', _build_Camera);
   SkalRegistry.registerWidget('ticker', _build_Ticker);

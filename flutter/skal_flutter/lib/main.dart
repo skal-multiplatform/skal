@@ -29,7 +29,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
-import 'adapters/greeting.dart' as greeting_adapter;
+import 'adapters/generated/skal_adapters.g.dart' as generated_adapters;
 import 'skal/bridge.dart';
 import 'skal/root.dart';
 import 'skal_ffi.dart';
@@ -49,7 +49,15 @@ void main() async {
   // runApp(). Order is "registrations win on collision" — later
   // registrations override earlier, so codegen output runs first and
   // hand-written manual adapters run after to shadow as needed.
-  greeting_adapter.registerAll();
+  //
+  // `generated_adapters.registerAll()` was emitted by
+  // `codegen/skal_codegen` from `lib/adapters/greeting_widget.dart`.
+  // Re-run codegen any time you change a wrapped widget's constructor:
+  //
+  //   dart run ../../codegen/skal_codegen/bin/skal_codegen.dart \
+  //     lib/adapters/greeting_widget.dart \
+  //     -o lib/adapters/generated/skal_adapters.g.dart
+  generated_adapters.registerAll();
 
   // ── 1. Create the bun runtime ───────────────────────────────────────
   final tCreate0 = bootClock.elapsedMicroseconds;

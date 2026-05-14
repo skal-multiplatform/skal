@@ -51,6 +51,7 @@
 // for the full rationale.
 // ignore_for_file: experimental_member_use
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -71,6 +72,7 @@ Future<int> main(List<String> args) async {
   final packageNames = <String>[];
   String? outputPath;
   String? rootOverride;
+  var watch = false;
   for (var i = 0; i < args.length; i++) {
     final a = args[i];
     if (a == '-o' || a == '--out') {
@@ -91,6 +93,8 @@ Future<int> main(List<String> args) async {
         return 1;
       }
       packageNames.add(args[++i]);
+    } else if (a == '-w' || a == '--watch') {
+      watch = true;
     } else if (a.startsWith('-')) {
       stderr.writeln('error: unknown flag $a');
       _printUsage();
@@ -177,6 +181,58 @@ Future<int> main(List<String> args) async {
   }
   final absOutput = p.normalize(p.absolute(outputPath));
 
+  // Wrap the analyze+generate+write cycle in a closure so the watch
+  // loop below can re-run it on file changes. Returns 0 on success,
+  // 2 on analyzer failure (matches the old direct-return behavior).
+  Future<int> runOnce() async {
+    return await _runCodegen(
+      pkgRoot: pkgRoot,
+      inputFiles: inputFiles,
+      absOutput: absOutput,
+    );
+  }
+
+  final code = await runOnce();
+  if (!watch) return code;
+
+  // ── Watch mode ─────────────────────────────────────────────────────
+  //
+  // Re-run the codegen whenever any input file (or sibling .dart file
+  // in its parent directory) changes. Debounce 100ms to coalesce the
+  // multi-event saves editors do (atomic-rename, ctime bump, etc.).
+  final watched = <String>{};
+  for (final f in inputFiles) {
+    watched.add(p.dirname(f));
+  }
+  stdout.writeln('  → watching ${watched.length} dir(s) for .dart changes…');
+  Timer? debounce;
+  final controller = StreamController<void>();
+  for (final dir in watched) {
+    Directory(dir).watch(events: FileSystemEvent.all).listen((ev) {
+      if (!ev.path.endsWith('.dart')) return;
+      if (ev.path.endsWith('.g.dart')) return;  // skip our own output
+      controller.add(null);
+    });
+  }
+  await for (final _ in controller.stream) {
+    debounce?.cancel();
+    debounce = Timer(const Duration(milliseconds: 100), () async {
+      stdout.writeln('  → input changed, regenerating…');
+      final c = await runOnce();
+      if (c != 0) stderr.writeln('  → regenerate failed (code $c)');
+    });
+  }
+  return 0;
+}
+
+/// One full codegen pass: spin up an analyzer context, resolve every
+/// input, generate, write `.g.dart` + `.json`, log the summary.
+/// Extracted from main() so watch mode can call it per file change.
+Future<int> _runCodegen({
+  required String pkgRoot,
+  required List<String> inputFiles,
+  required String absOutput,
+}) async {
   // Single analyzer context anchored at the consumer's project. We
   // intentionally do NOT add pub-cache directories to includedPaths —
   // each `includedPaths` entry gets its own analyzer context with its

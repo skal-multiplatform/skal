@@ -135,13 +135,32 @@ export function skalCodegen(opts) {
   );
 
   // Merge widgets across all manifests. Object spread = last-wins on
-  // collision; document this in the JSDoc so devs deliberately order
-  // their manifests for override behavior (e.g. local CLI manifest
-  // AFTER pub-package manifest to shadow on registry-key collision).
-  const widgets = manifestPaths.reduce(
-    (acc, p) => ({ ...acc, ..._readManifest(p) }),
-    {},
-  );
+  // collision; later entries in `manifests:` override earlier ones.
+  // We loop instead of reducing so we can WARN on actual collisions —
+  // silent shadow has bitten enough times to deserve a one-line
+  // surface.
+  const widgets = {};
+  for (const path of manifestPaths) {
+    const next = _readManifest(path);
+    for (const [name, regKey] of Object.entries(next)) {
+      if (Object.prototype.hasOwnProperty.call(widgets, name)) {
+        // Collision: same JSX symbol declared by an earlier manifest.
+        // Late wins (we overwrite), but the dev should know — the
+        // earlier wrap silently becomes dead code.
+        const prevRegKey = widgets[name];
+        if (prevRegKey !== regKey) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[skal-codegen] manifest collision: <${name}> declared in `
+            + `multiple manifests (was '${prevRegKey}', now '${regKey}' `
+            + `from ${path}). Later manifest wins; earlier wrap will `
+            + `not dispatch. To shadow intentionally, ignore this warning.`,
+          );
+        }
+      }
+      widgets[name] = regKey;
+    }
+  }
 
   // For the babel macro: `{ moduleName: { ClassName: 'tagName' } }`.
   // Same shape the dev would type by hand for a manual module.

@@ -367,6 +367,25 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
   final ctorName = ctor.name3 ?? '';
   final isDefaultCtor = ctorName.isEmpty || ctorName == 'new';
 
+  // Generic widgets — `class Foo<T> extends StatelessWidget` — need
+  // a concrete type argument that codegen can't pick on its own.
+  // Most generic Flutter widgets (Consumer, Selector, AnimatedBuilder)
+  // also take a `Widget Function(BuildContext, T, …)` builder, which
+  // we couldn't encode anyway. Skip with a clear reason so the build
+  // log surfaces what got filtered.
+  if (cls.typeParameters2.isNotEmpty) {
+    final typeParamNames =
+        cls.typeParameters2.map((t) => t.name3 ?? '?').join(', ');
+    return _AdapterResult(GeneratedWidget(
+      className,
+      _camelCase(className),
+      skipReason: 'generic widget class (type params: <$typeParamNames>) '
+          '— codegen can\'t pick concrete type arguments. Wrap manually '
+          'with a non-generic Dart subclass that fixes the type, then '
+          'add THAT class to your codegen scope.',
+    ));
+  }
+
   // JSX-facing symbol. Default ctor: keep the class name (`Shimmer`).
   // Named ctor: concatenate PascalCased (`ShimmerFromColors`). This
   // double-counts a class with both a default AND a named ctor — they
@@ -861,6 +880,9 @@ List<ClassElement2> _topLevelWidgetClasses(ResolvedUnitResult unit) {
     final name = cls.name3;
     if (name == null || name.startsWith('_')) continue;
     if (!_extendsWidget(cls)) continue;
+    // Generic widget classes pass through here; _emitAdapter sets a
+    // skipReason for them so the dev sees the skip in the build log
+    // instead of an opaque silent omission.
     found.add(cls);
   }
   return found;

@@ -1,0 +1,21 @@
+# build.yaml — declares the skal_codegen Builder so build_runner can
+# find it when consumers depend on this package.
+#
+# Builder factory: `skalBuilder` in `lib/builder.dart`. Consumers opt
+# in by creating a marker file `lib/skal_codegen.yaml` containing
+# their `packages:` list — see lib/builder.dart's docstring for the
+# consumer-side workflow.
+
+builders:
+  skalBuilder:
+    import: "package:skal_codegen/builder.dart"
+    builder_factories: ["skalBuilder"]
+    # Marker-file pattern: input `<anything>skal_codegen.yaml`, output
+    # `<anything>skal_codegen.g.dart` alongside.
+    build_extensions:
+      "skal_codegen.yaml":
+        - "skal_codegen.g.dart"
+    # Auto-run when consumers add us as a dev_dependency.
+    auto_apply: dependents
+    # Write directly to the consumer's source tree, not the build cache.
+    build_to: source

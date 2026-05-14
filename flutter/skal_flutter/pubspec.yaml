@@ -66,6 +66,17 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+  # build_runner — standard Dart code-gen runner. `dart run build_runner
+  # build` triggers skal_codegen (and any other registered builders).
+  build_runner: ^2.4.0
+
+  # skal_codegen — local path dep until published. Registers a Builder
+  # that reads `lib/skal_codegen.yaml` (the marker file) and emits a
+  # combined adapter at `lib/skal_codegen.g.dart`. See
+  # codegen/skal_codegen/lib/builder.dart for the consumer workflow.
+  skal_codegen:
+    path: ../../codegen/skal_codegen
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 

@@ -16,6 +16,13 @@ dependencies:
   # Same library `freezed`, `json_serializable`, `riverpod_generator`
   # use — well-trodden territory.
   analyzer: ^7.0.0
+  # build: the public Builder API. We register a SkalAdapterBuilder
+  # in build.yaml so `dart run build_runner build` triggers codegen
+  # the same way it triggers freezed / json_serializable / etc.
+  build: ^2.4.0
+  # yaml: parse the consumer's pubspec.yaml to read its `skal_codegen:`
+  # config block.
+  yaml: ^3.1.0
   path: ^1.9.0
 
 dev_dependencies:

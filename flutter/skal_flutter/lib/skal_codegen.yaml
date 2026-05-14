@@ -1,0 +1,11 @@
+# Marker file consumed by skal_codegen's build_runner Builder.
+#
+# Lists pub.dev packages whose Widget classes should be wrapped as
+# Skal custom widgets. Each package gets walked by the codegen
+# (lib/ recursive), Widget classes detected, adapters emitted into
+# the single output file `lib/skal_codegen.g.dart`.
+#
+# Re-run `dart run build_runner build` after editing this file.
+
+packages:
+  - qr_flutter

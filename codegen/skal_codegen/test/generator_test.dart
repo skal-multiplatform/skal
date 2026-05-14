@@ -251,6 +251,48 @@ void main() {
               'named_ctors.expected.dart');
     });
 
+    test('Gradient: emits parser helpers + reads JSON-encoded prop',
+        () async {
+      // Two classes — Painted (nullable Gradient?) + Banner (required
+      // non-nullable). Codegen should emit:
+      //
+      //   • Three helper functions ONCE at the top of the file:
+      //     _skalParseGradient, _skalParseColor, _skalParseAlignment
+      //   • Two adapters, each with `_skalParseGradient(getCustomPropStr(...))`
+      //     as the prop reader (shared helpers, deduplicated)
+      //   • `import 'dart:convert';` for jsonDecode
+      //
+      // The renderer's side of this contract — JSON-stringifying JSX
+      // object prop values — is exercised end-to-end by the demo, not
+      // by this snapshot test.
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/gradient.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/gradient.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+
+      final result = generate(
+        units: [unitResult as ResolvedUnitResult],
+        sourceRelativeImports: ['gradient.dart'],
+      );
+
+      expect(result.generated.map((w) => w.className).toSet(),
+          {'Painted', 'Banner'});
+      expect(result.skipped, isEmpty);
+
+      final expected = File(expectedPath).readAsStringSync();
+      expect(_normalize(result.source), _normalize(expected),
+          reason: 'gradient generator output does NOT match '
+              'gradient.expected.dart');
+    });
+
     test('value types v2: TextStyle / BoxDecoration / BorderRadius / Offset / '
         'Alignment / ImageProvider', () async {
       // Each new value type expands into sub-props (TextStyle's

@@ -107,11 +107,22 @@ class Offset {
 }
 
 /// Stand-in for Flutter's `Alignment` (painting). Same two-double
-/// shape as Offset; coordinates are in [-1, 1].
+/// shape as Offset; coordinates are in [-1, 1]. Static-const presets
+/// match the real Flutter API; the Gradient helpers' switch on string
+/// names assumes these exist.
 class Alignment {
   final double x;
   final double y;
   const Alignment(this.x, this.y);
+  static const Alignment topLeft      = Alignment(-1, -1);
+  static const Alignment topCenter    = Alignment(0, -1);
+  static const Alignment topRight     = Alignment(1, -1);
+  static const Alignment centerLeft   = Alignment(-1, 0);
+  static const Alignment center       = Alignment(0, 0);
+  static const Alignment centerRight  = Alignment(1, 0);
+  static const Alignment bottomLeft   = Alignment(-1, 1);
+  static const Alignment bottomCenter = Alignment(0, 1);
+  static const Alignment bottomRight  = Alignment(1, 1);
 }
 
 /// Stand-in for Flutter's `Radius` (used inside BorderRadius).
@@ -161,6 +172,55 @@ class BoxDecoration {
   final Color? color;
   final BorderRadius? borderRadius;
   const BoxDecoration({this.color, this.borderRadius});
+}
+
+/// Stand-in for Flutter's `Gradient` (painting) — abstract base with
+/// three concrete subtypes. Codegen detects `Gradient` (or a subtype)
+/// in a constructor param and emits the `_skalParseGradient(json)`
+/// helper call.
+abstract class Gradient {
+  const Gradient();
+}
+
+class LinearGradient extends Gradient {
+  final List<Color> colors;
+  final List<double>? stops;
+  final Alignment begin;
+  final Alignment end;
+  const LinearGradient({
+    required this.colors,
+    this.stops,
+    this.begin = Alignment.centerLeft,
+    this.end = Alignment.centerRight,
+  });
+}
+
+class RadialGradient extends Gradient {
+  final List<Color> colors;
+  final List<double>? stops;
+  final Alignment center;
+  final double radius;
+  const RadialGradient({
+    required this.colors,
+    this.stops,
+    this.center = Alignment.center,
+    this.radius = 0.5,
+  });
+}
+
+class SweepGradient extends Gradient {
+  final List<Color> colors;
+  final List<double>? stops;
+  final Alignment center;
+  final double startAngle;
+  final double endAngle;
+  const SweepGradient({
+    required this.colors,
+    this.stops,
+    this.center = Alignment.center,
+    this.startAngle = 0.0,
+    this.endAngle = 6.283185307,
+  });
 }
 
 /// Stand-in for `ImageProvider` — abstract base. Subtypes (AssetImage,

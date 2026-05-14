@@ -209,6 +209,21 @@ function _setCustomProperty(node, name, value) {
     return;
   }
   const t = typeof value;
+  // Plain-object or array prop values → JSON-stringify, send as a
+  // string. Lets codegen-emitted Dart parsers reconstruct complex
+  // value types (Gradient, BoxShadow lists, per-side Border, etc.)
+  // from a single JSX object literal. The Dart side parses with
+  // jsonDecode + a type-specific helper (e.g. _skalParseGradient).
+  //
+  // Excludes Refs (handled above) and primitives (number/string/
+  // boolean → their existing typed paths). Arrays follow the same
+  // rule — they JSON-stringify cleanly + are typically inside a
+  // larger object value anyway.
+  if (t === 'object' && !value.__skalBind) {
+    B.setCustomPropStr(node.id, name, JSON.stringify(value));
+    B.scheduleCommit();
+    return;
+  }
   if (t === 'function') {
     const handlerId = B.newHandlerId(value);
     B.bindCustomHandler(node.id, name, handlerId);

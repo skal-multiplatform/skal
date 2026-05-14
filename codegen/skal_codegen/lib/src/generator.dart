@@ -199,6 +199,12 @@ GenerationResult generate({
   // Deduped before emission.
   final extraImports = <String>{};
 
+  // Top-level helper functions (e.g. `_skalParseGradient`) requested
+  // by individual encoders. Keyed by helper name for cross-call-site
+  // deduplication — emitted once per file regardless of how many
+  // adapters reference the same type.
+  final extraHelpers = <String, String>{};
+
   // Track which units contributed at least one GENERATED widget. Units
   // with no widgets (helper-only files in a multi-file scan) or only
   // skipped widgets don't need to be imported by the generated file —
@@ -240,6 +246,9 @@ GenerationResult generate({
           adapterBodies.add(result.body!);
           contributingUnitIdx.add(i);
           extraImports.addAll(result.requiredImports);
+          for (final e in result.requiredHelpers.entries) {
+            extraHelpers[e.key] = e.value;
+          }
         }
         if (result.registryLine != null) {
           registryCalls.add(result.registryLine!);
@@ -332,6 +341,19 @@ GenerationResult generate({
   }
   buffer.writeln();
 
+  // Shared helpers (emitted once per file, deduplicated by name).
+  // Encoders that need a runtime parser (e.g. _skalParseGradient for
+  // Gradient, _skalParseColor for Color-in-JSON contexts) register
+  // their helper source via PropEncoding.requiredHelpers; this block
+  // emits each one before any adapter body that calls it.
+  if (extraHelpers.isNotEmpty) {
+    final sortedKeys = extraHelpers.keys.toList()..sort();
+    for (final k in sortedKeys) {
+      buffer.writeln(extraHelpers[k]);
+      buffer.writeln();
+    }
+  }
+
   for (final body in adapterBodies) {
     buffer.writeln(body);
     buffer.writeln();
@@ -354,11 +376,16 @@ class _AdapterResult {
   /// to this adapter's body. Generator-level accumulator pulls these
   /// up + dedupes across all adapters in the file.
   final List<String> requiredImports;
+  /// Aggregated requiredHelpers — parallel to requiredImports. Each
+  /// key/value is a (helper-name → helper-source) pair the generator
+  /// emits once per file.
+  final Map<String, String> requiredHelpers;
   _AdapterResult(
     this.summary, {
     this.body,
     this.registryLine,
     this.requiredImports = const [],
+    this.requiredHelpers = const {},
   });
 }
 
@@ -410,6 +437,7 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
   // devs know what they can't drive from JSX.
   final omittedOptionalParams = <String>[];
   final requiredImports = <String>{};
+  final requiredHelpers = <String, String>{};
   String? skipReason;
 
   // Two separate lists: positional and named. Dart constructor call
@@ -483,6 +511,9 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
       namedLines.add('    $name: ${encoding.readerExpression},');
     }
     requiredImports.addAll(encoding.requiredImports);
+    for (final e in encoding.requiredHelpers.entries) {
+      requiredHelpers[e.key] = e.value;
+    }
   }
   final lines = [...positionalLines, ...namedLines];
 
@@ -515,6 +546,7 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
     registryLine:
         "SkalRegistry.registerWidget('$registryKey', _build_$synthesizedName);",
     requiredImports: requiredImports.toList(),
+    requiredHelpers: requiredHelpers,
   );
 }
 

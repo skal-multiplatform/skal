@@ -71,10 +71,21 @@ class PropEncoding {
   /// in `package:skal_flutter/skal/root.dart`.
   final List<String> requiredImports;
 
+  /// Top-level helper functions the encoding needs in scope. The
+  /// generator deduplicates by key and emits each value (a Dart code
+  /// snippet) exactly once at the top of the file, after imports.
+  /// Used by encoders that emit a CALL to a helper function rather
+  /// than inlining the full expression (e.g. `_skalParseGradient(json)`).
+  ///
+  /// Keys: stable helper name (used for dedup across call sites).
+  /// Values: the helper's full source, including its function signature.
+  final Map<String, String> requiredHelpers;
+
   const PropEncoding({
     required this.readerExpression,
     required this.dartTypeName,
     this.requiredImports = const [],
+    this.requiredHelpers = const {},
   });
 }
 
@@ -426,6 +437,45 @@ PropEncoding? encodingFor({
   // Empty string returns a 1×1 transparent AssetImage as a safe
   // fallback (most widgets accept any ImageProvider; the displayed
   // pixels are nothing).
+  // Gradient (Linear/Radial/Sweep) — JSON-object JSX prop. The
+  // renderer's _setCustomProperty (js-app/src/renderer.js) JSON-
+  // stringifies non-null object/array prop values; the Dart side
+  // receives a string + parses it via the emitted helper.
+  //
+  // JSX shape:
+  //
+  //   <Container gradient={{
+  //     type: 'linear',         // or 'radial' | 'sweep' (default: linear)
+  //     colors: ['#FF0000', '#0000FF'],
+  //     stops: [0.0, 1.0],       // optional
+  //     begin: 'topLeft',        // string preset or [x, y]; default centerLeft
+  //     end:   'bottomRight',    // for radial: `center` + `radius`
+  //   }} />
+  //
+  // Each detection causes the parser helpers to land at the top of
+  // the file once (deduped via requiredHelpers).
+  if (_isFlutterGradient(type)) {
+    // The helper returns `Gradient?` (nullable on missing JSON). For
+    // a required Gradient param we cast — at runtime null throws,
+    // which is the right behavior (the dev forgot to set the prop
+    // on a widget that needs one). For Gradient? params no cast
+    // needed; the nullable return assigns directly.
+    final isNullable = typeName.endsWith('?');
+    final expr = isNullable
+        ? "_skalParseGradient(n.getCustomPropStr('$paramName'))"
+        : "(_skalParseGradient(n.getCustomPropStr('$paramName')) as Gradient)";
+    return PropEncoding(
+      readerExpression: expr,
+      dartTypeName: typeName,
+      requiredImports: const ['dart:convert'],
+      requiredHelpers: const {
+        '_skalParseGradient': _gradientHelperSource,
+        '_skalParseColor':    _gradientColorHelperSource,
+        '_skalParseAlignment': _gradientAlignmentHelperSource,
+      },
+    );
+  }
+
   if (_isFlutterImageProvider(type)) {
     // Nullability matters here. Returning null from the IIFE for
     // empty string only makes sense if the param is `ImageProvider?`;
@@ -658,6 +708,102 @@ bool _isFlutterBorderRadius(DartType t) =>
 bool _isFlutterTextStyle(DartType t) => t.element3?.name3 == 'TextStyle';
 bool _isFlutterBoxDecoration(DartType t) =>
     t.element3?.name3 == 'BoxDecoration';
+bool _isFlutterGradient(DartType t) {
+  final name = t.element3?.name3;
+  if (name == 'Gradient' ||
+      name == 'LinearGradient' ||
+      name == 'RadialGradient' ||
+      name == 'SweepGradient') {
+    return true;
+  }
+  // Catch subtypes — most packages don't extend Gradient themselves,
+  // but if they did we'd still want to recognize the assignability.
+  final el = t.element3;
+  if (el is InterfaceElement2) {
+    var sup = el.supertype;
+    while (sup != null) {
+      if (sup.element3.name3 == 'Gradient') return true;
+      sup = sup.element3.supertype;
+    }
+  }
+  return false;
+}
+
+/// Source for `_skalParseGradient` — emitted once per generated file
+/// when any encoder requests a Gradient parse. Switches on `m['type']`,
+/// constructs the right concrete subtype, defaults to LinearGradient
+/// on missing/unknown type. Returns null on empty input so nullable
+/// params (`Gradient?`) get a clean null instead of a zero-color
+/// LinearGradient at runtime.
+const String _gradientHelperSource = '''
+Gradient? _skalParseGradient(String? json) {
+  if (json == null || json.isEmpty) return null;
+  final m = jsonDecode(json) as Map<String, dynamic>;
+  final colors = (m['colors'] as List).map(_skalParseColor).toList();
+  final stops = (m['stops'] as List?)
+      ?.cast<num>().map((n) => n.toDouble()).toList();
+  switch (m['type']) {
+    case 'radial':
+      return RadialGradient(
+        colors: colors,
+        stops: stops,
+        radius: (m['radius'] as num?)?.toDouble() ?? 0.5,
+        center: _skalParseAlignment(m['center'], def: Alignment.center),
+      );
+    case 'sweep':
+      return SweepGradient(
+        colors: colors,
+        stops: stops,
+        startAngle: (m['startAngle'] as num?)?.toDouble() ?? 0.0,
+        endAngle: (m['endAngle'] as num?)?.toDouble() ?? 6.283185307,
+        center: _skalParseAlignment(m['center'], def: Alignment.center),
+      );
+    default:  // 'linear' or missing
+      return LinearGradient(
+        colors: colors,
+        stops: stops,
+        begin: _skalParseAlignment(m['begin'], def: Alignment.centerLeft),
+        end: _skalParseAlignment(m['end'], def: Alignment.centerRight),
+      );
+  }
+}''';
+
+/// Helper for parsing Color from JSON. Accepts an int (raw ARGB) or a
+/// hex string (with or without `#`, 6 or 8 chars).
+const String _gradientColorHelperSource = '''
+Color _skalParseColor(dynamic v) {
+  if (v is int) return Color(v);
+  if (v is String) {
+    var s = v.startsWith('#') ? v.substring(1) : v;
+    if (s.length == 6) s = 'FF\$s';
+    return Color(int.parse(s, radix: 16));
+  }
+  return const Color(0xFF000000);
+}''';
+
+/// Helper for parsing Alignment from JSON. Accepts named presets
+/// ('topLeft', 'center', etc.) or a two-element [x, y] array.
+const String _gradientAlignmentHelperSource = '''
+Alignment _skalParseAlignment(dynamic v, {Alignment def = Alignment.center}) {
+  if (v is String) {
+    switch (v) {
+      case 'topLeft':      return Alignment.topLeft;
+      case 'topCenter':    return Alignment.topCenter;
+      case 'topRight':     return Alignment.topRight;
+      case 'centerLeft':   return Alignment.centerLeft;
+      case 'center':       return Alignment.center;
+      case 'centerRight':  return Alignment.centerRight;
+      case 'bottomLeft':   return Alignment.bottomLeft;
+      case 'bottomCenter': return Alignment.bottomCenter;
+      case 'bottomRight':  return Alignment.bottomRight;
+    }
+  }
+  if (v is List && v.length == 2) {
+    return Alignment((v[0] as num).toDouble(), (v[1] as num).toDouble());
+  }
+  return def;
+}''';
+
 bool _isFlutterImageProvider(DartType t) {
   // ImageProvider is generic (`ImageProvider<T>`); checking the base
   // class name catches the type AND its subtypes (NetworkImage,

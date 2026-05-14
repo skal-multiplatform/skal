@@ -32,29 +32,21 @@ A focused pass landed most of the original §1/§2/§3 list:
 - ✅ Concurrent-RPC stress — demo button fires 1000 parallel calls
 - ✅ Integration test — opt-in via `SKAL_INTEGRATION=1`, spawns the
   real `build_runner build` against the demo project
+- ✅ **Gradient** (Linear / Radial / Sweep) — JSON-object JSX prop
+  channel + Dart-side parser helpers (`_skalParseGradient` +
+  `_skalParseColor` + `_skalParseAlignment`, deduplicated across
+  call sites). Also: renderer now JSON-stringifies ANY plain-object
+  prop value — the foundation for future complex value types
+  (BoxShadow list, per-side Border, etc. — same pattern, new
+  encoder branch).
 
-10 generator snapshot tests + 5 CLI tests + 8 Vite plugin tests +
+11 generator snapshot tests + 5 CLI tests + 8 Vite plugin tests +
 1 opt-in integration test. `dart analyze lib/ bin/` clean across all
 packages.
 
 ---
 
 ## Still open
-
-### Gradient (Linear/Radial/Sweep)
-Variable-length `List<Color>` doesn't fit the existing primitive-
-expansion pattern. Would unlock `Shimmer`'s default ctor + many
-decoration-heavy widgets.
-
-Possible shape: a `gradient` JSX prop accepting either an array
-literal `[colors: [...], stops: [...]]` (JSON-encoded, decoded
-Dart-side into a Gradient) or sub-props (`gradientStartColor`,
-`gradientEndColor` for the common 2-color case). The latter is
-simpler + matches the value-type pattern; the former generalizes.
-
-Probably ~half day. Lower priority than it sounds — most decoration
-gradient needs are 2-color, handleable via a manual escape-hatch
-widget that takes `startColor` + `endColor` props.
 
 ### Other deferred items
 - **Hot-reload of generated code.** Codegen runs in ~1s; incremental
@@ -75,15 +67,19 @@ widget that takes `startColor` + `endColor` props.
 
 ## What I'd actually do next
 
-The architecture is at a natural endpoint. Three reasonable next
-moves, depending on goals:
+The architecture is now at a natural endpoint. Every type-encoder
+shape in the original blocker list has landed (or has a concrete
+escape hatch). Two reasonable next moves:
 
 1. **Stop here + merge.** The remaining items are mechanical
    extensions handleable as pub packages reveal needs.
 
-2. **Land Gradient.** Closes the last visible §1 gap. Half day.
-
-3. **Wrap a substantial real-world pub package** (e.g.
+2. **Wrap a substantial real-world pub package** (e.g.
    `flutter_map`, `syncfusion_flutter_charts`, a state-management
    library) to surface the next batch of unsupported types empirically.
    This drives priorities better than guessing.
+
+The JSON-object prop channel added for Gradient is reusable: any
+future complex value type that jsonEncode-able fits the same pattern.
+Just add a type-mapper predicate + helper source. No renderer or
+wire changes.

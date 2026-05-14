@@ -361,7 +361,22 @@ export default function App() {
           walks NodeState.childCount to produce one SkalNode per JSX
           child. Three Greeting children below → three rows in the
           rendered column. End-to-end proof of the List<Widget> path. */}
-      <Stickers background={0xFFFFE082} gap={6} padding={10}>
+      <Stickers
+        gap={6}
+        padding={10}
+        // Object-valued JSX prop — the renderer JSON-stringifies it,
+        // the codegen-emitted `_skalParseGradient` decodes on the
+        // Dart side and constructs a LinearGradient. First demo
+        // through the "complex value type via JSON" channel; same
+        // path will carry BoxShadow lists, per-side Border, etc.
+        gradient={{
+          type: 'linear',
+          colors: ['#FFFFE082', '#FFB0F0D0', '#FFB0E0FF'],
+          stops: [0, 0.5, 1],
+          begin: 'topLeft',
+          end: 'bottomRight',
+        }}
+      >
         <Greeting name="multi-child A" color="#FF6B4F00" fontSize={14} />
         <Greeting name="multi-child B" color="#FF6B4F00" fontSize={14} />
         <Greeting name="multi-child C" color="#FF6B4F00" fontSize={14} />

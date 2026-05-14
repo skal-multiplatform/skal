@@ -151,6 +151,7 @@ class _CounterState extends State<Counter> {
 class Stickers extends StatelessWidget {
   final List<Widget> children;
   final Color background;
+  final Gradient? gradient;
   final double gap;
   final double padding;
 
@@ -158,6 +159,7 @@ class Stickers extends StatelessWidget {
     super.key,
     this.children = const [],
     this.background = const Color(0xFFFFE082),
+    this.gradient,
     this.gap = 8.0,
     this.padding = 12.0,
   });
@@ -174,7 +176,11 @@ class Stickers extends StatelessWidget {
     }
     return Container(
       decoration: BoxDecoration(
-        color: background,
+        // Gradient takes precedence over solid color when both are
+        // set — same precedence Flutter's own BoxDecoration uses
+        // (gradient overrides color visually).
+        color: gradient == null ? background : null,
+        gradient: gradient,
         borderRadius: BorderRadius.circular(12),
       ),
       padding: EdgeInsets.all(padding),

@@ -2,6 +2,7 @@ import { createSignal, createMemo, For } from 'solid-js';
 import { Container, Column, Row, Text, Button, ListView } from 'skal';
 import { Greeting } from 'skal-greeting';
 import { QrImageView } from 'skal-qr-flutter';
+import { Shimmer } from 'skal-shimmer';
 
 const TWEET_LINES = [
   "Just shipped a new feature, feeling great about how it turned out 🚀",
@@ -167,6 +168,14 @@ export default function App() {
           SkalRegistry, rendered through the wtCustom dispatch in
           root.dart. Validates the substrate end-to-end. */}
       <Greeting name="Skal" color="#FF1DA1F2" fontSize={20} />
+      {/* Shimmer (third-party, hand-written escape-hatch adapter)
+          wrapping a real widget child. Demonstrates the widget-child
+          flow end-to-end: JSX child → bridge node → SkalNode reader
+          → real Flutter tree. The shimmering animation runs on the
+          Greeting widget below. */}
+      <Shimmer baseColor={0xFFBDBDBD} highlightColor={0xFFE0E0E0} period={1500}>
+        <Greeting name="loading…" color="#FF333333" fontSize={28} />
+      </Shimmer>
       {/* Real third-party Flutter package wrapped via skal_codegen.
           The QrImageView adapter at
           flutter/skal_flutter/lib/adapters/generated/qr_flutter.g.dart

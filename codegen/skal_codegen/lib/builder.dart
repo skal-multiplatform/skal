@@ -167,6 +167,16 @@ class _SkalAdapterBuilder implements Builder {
     await buildStep.writeAsString(outputAsset, result.source);
     log.info('skal_codegen: ${result.generated.length} widget(s) from '
         '${packages.length} package(s) → ${outputAsset.path}');
+    // Surface every skipped widget. Each one is a place where the dev
+    // either needs a 5-line manual adapter (most common) or has to
+    // wait for the codegen to grow support for the offending type.
+    // The Builder log goes through build_runner's stderr; warnings
+    // show up in the colored `[WARNING]` section of `build` output.
+    for (final w in result.skipped) {
+      log.warning(
+          'skal_codegen: skipped ${w.className} — ${w.skipReason}. '
+          'Write a manual SkalRegistry.registerWidget call to wrap it.');
+    }
   }
 }
 

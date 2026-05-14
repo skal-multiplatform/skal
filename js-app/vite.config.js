@@ -40,6 +40,12 @@ export default defineConfig({
       // from ~/.pub-cache/...qr_flutter.../qr_image_view.dart). JS side:
       // this module provides the capitalized symbols + JSDoc types.
       'skal-qr-flutter': resolve(__dirname, 'src/skal-qr-flutter/index.js'),
+      // Shimmer — hand-written Dart adapter (Shimmer's default
+      // constructor takes a Gradient which codegen can't yet
+      // encode), JS-side module of the usual shape. Demonstrates
+      // the manual escape hatch pattern alongside the codegen
+      // happy path.
+      'skal-shimmer': resolve(__dirname, 'src/skal-shimmer/index.js'),
     },
   },
   plugins: [
@@ -60,6 +66,7 @@ export default defineConfig({
             modules: {
               'skal-greeting': { Greeting: 'greeting' },
               'skal-qr-flutter': { QrImageView: 'qrImageView' },
+              'skal-shimmer': { Shimmer: 'shimmer' },
             },
           }],
         ],

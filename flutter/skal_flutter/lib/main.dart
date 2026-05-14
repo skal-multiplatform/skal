@@ -30,6 +30,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'adapters/generated/skal_adapters.g.dart' as local_gen;
+import 'adapters/shimmer_manual.dart' as shimmer_manual;
 import 'skal_codegen.g.dart' as packages_gen;
 import 'skal/bridge.dart';
 import 'skal/root.dart';
@@ -69,6 +70,15 @@ void main() async {
   // emits a single combined adapter at `lib/skal_codegen.g.dart`.
   // Add a package by listing it in skal_codegen.yaml and re-running.
   packages_gen.registerAll();
+
+  // Manual escape-hatch adapters — wrap widgets the codegen had to
+  // skip (e.g. ones whose default constructor takes a complex type
+  // codegen doesn't yet encode, OR ones whose ergonomic surface is
+  // on a NAMED constructor like Shimmer.fromColors). These call the
+  // same SkalRegistry API the generated adapters use. Registered
+  // after the generated ones so they can shadow generated entries
+  // when a widget name collides.
+  shimmer_manual.registerAll();
 
   // ── 1. Create the bun runtime ───────────────────────────────────────
   final tCreate0 = bootClock.elapsedMicroseconds;

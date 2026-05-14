@@ -55,6 +55,14 @@ dependencies:
   # source, get a registry adapter, use <QrImageView> from JSX.
   qr_flutter: ^4.1.0
 
+  # shimmer — third-party "shimmering loading placeholder" widget.
+  # Second smoke-test target for the codegen: validates the
+  # Widget-child encoding (Shimmer takes `child: Widget`), the
+  # Color encoding (base + highlight), and the Duration encoding
+  # (period). Together those types span every supported value
+  # category we've added in this branch.
+  shimmer: ^3.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

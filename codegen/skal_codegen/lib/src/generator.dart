@@ -330,6 +330,17 @@ _AdapterResult _emitAdapter(ClassElement2 cls) {
 /// files). No more two-level `units.first.classes` walk — the new
 /// API exposes the library-level view directly.
 List<ClassElement2> _topLevelWidgetClasses(ResolvedUnitResult unit) {
+  // Skip "example-app" files: ones with a top-level `void main()`
+  // function. Some packages bundle example apps inside `lib/` (e.g.
+  // shimmer's `lib/main.dart`) — those files contain MyApp /
+  // MyHomePage classes the package itself never exposes as a public
+  // widget API. Wrapping them is always a mistake. The void-main
+  // check is a precise filter: real library files don't declare a
+  // `main` function.
+  for (final fn in unit.libraryElement2.topLevelFunctions) {
+    if (fn.name3 == 'main') return const [];
+  }
+
   final found = <ClassElement2>[];
   for (final cls in unit.libraryElement2.classes) {
     if (cls.isAbstract) continue;

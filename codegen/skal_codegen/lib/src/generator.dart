@@ -52,8 +52,12 @@
 //     SkalRegistry.registerWidget('<camelCaseName>', _build_<ClassName>);
 //   }
 
+// See type_mapper.dart for the rationale on the experimental warning
+// suppression.
+// ignore_for_file: experimental_member_use
+
 import 'package:analyzer/dart/analysis/results.dart';
-import 'package:analyzer/dart/element/element.dart';
+import 'package:analyzer/dart/element/element2.dart';
 import 'package:path/path.dart' as p;
 
 import 'type_mapper.dart';
@@ -191,13 +195,16 @@ class _AdapterResult {
   _AdapterResult(this.summary, {this.body, this.registryLine});
 }
 
-_AdapterResult _emitAdapter(ClassElement cls) {
-  final className = cls.name ?? '';
+_AdapterResult _emitAdapter(ClassElement2 cls) {
+  final className = cls.name3 ?? '';
   final registryKey = _camelCase(className);
 
-  // Find the default (unnamed) constructor.
-  final ctor = cls.constructors.firstWhere(
-    (c) => c.name == '' || c.name == 'new',
+  // Find the default (unnamed) constructor. In the Element2 model
+  // it's `constructors2` (returning ConstructorElement2 instances);
+  // the unnamed constructor's `name3` is the empty string, same as
+  // the old API.
+  final ctor = cls.constructors2.firstWhere(
+    (c) => c.name3 == '' || c.name3 == 'new',
     orElse: () => throw StateError(
         'no default constructor on $className — codegen MVP requires one'),
   );
@@ -219,16 +226,17 @@ _AdapterResult _emitAdapter(ClassElement cls) {
   final omittedOptionalParams = <String>[];
   String? skipReason;
 
-  for (final param in ctor.parameters) {
+  for (final param in ctor.formalParameters) {
     if (param.isPositional) continue; // positional params not supported yet
-    final name = param.name;
+    final name = param.name3;
+    if (name == null || name.isEmpty) continue;
     if (name == 'key') continue; // skip Flutter's universal `Key? key`
 
-    // ParameterElement exposes the default-value expression both as
-    // source text (for types we can paste verbatim — strings, numbers)
-    // AND as an evaluated constant value (for types we need to inspect
-    // — Color's `.value` int, future enums' index, etc.). The type
-    // mapper picks whichever it needs per-type.
+    // FormalParameterElement exposes the default-value expression
+    // both as source text (for types we can paste verbatim — strings,
+    // numbers) AND as an evaluated constant value (for types we need
+    // to inspect — Color's `.value` int, future enums' index, etc.).
+    // The type mapper picks whichever it needs per-type.
     //
     // computeConstantValue() returns null when:
     //   • The parameter has no default (we pass null literal too).
@@ -295,42 +303,47 @@ _AdapterResult _emitAdapter(ClassElement cls) {
 /// (or indirect) subclasses of Widget. Skips abstract classes since
 /// they can't be constructed.
 ///
-/// Note: `classes` lives on [CompilationUnitElement], not on
-/// [LibraryElement] itself. A library's "defining unit" is the file
-/// the library directive lives in; `part` files are siblings in
-/// [LibraryElement.units]. We walk every unit so a `part`-style
-/// package layout still finds all its Widgets.
-List<ClassElement> _topLevelWidgetClasses(ResolvedUnitResult unit) {
-  final found = <ClassElement>[];
-  for (final u in unit.libraryElement.units) {
-    for (final cls in u.classes) {
-      if (cls.isAbstract) continue;
-      // Skip Dart-private classes (leading underscore). These are
-      // implementation details — they can't be constructed from
-      // outside their library, and codegen-emitted adapters live in
-      // a separate library so they couldn't reference them anyway.
-      // qr_flutter's `_QrContentView` is the motivating case.
-      final name = cls.name;
-      if (name == null || name.startsWith('_')) continue;
-      if (!_extendsWidget(cls)) continue;
-      found.add(cls);
-    }
+/// Element2 model note: `libraryElement2.classes` flat-returns every
+/// class declared in the library (across all its fragments / `part`
+/// files). No more two-level `units.first.classes` walk — the new
+/// API exposes the library-level view directly.
+List<ClassElement2> _topLevelWidgetClasses(ResolvedUnitResult unit) {
+  final found = <ClassElement2>[];
+  for (final cls in unit.libraryElement2.classes) {
+    if (cls.isAbstract) continue;
+    // Skip Dart-private classes (leading underscore). These are
+    // implementation details — they can't be constructed from
+    // outside their library, and codegen-emitted adapters live in
+    // a separate library so they couldn't reference them anyway.
+    // qr_flutter's `_QrContentView` is the motivating case.
+    final name = cls.name3;
+    if (name == null || name.startsWith('_')) continue;
+    if (!_extendsWidget(cls)) continue;
+    found.add(cls);
   }
   return found;
 }
 
-bool _extendsWidget(ClassElement cls) {
+bool _extendsWidget(ClassElement2 cls) {
+  // Walk the supertype chain looking for Widget / StatelessWidget /
+  // StatefulWidget. `allSupertypes` would also work (returns the
+  // complete transitive supertype set), but a direct walk via
+  // `.supertype` is cheaper and matches the chain order we care
+  // about (this class's parent, then grandparent, etc.).
+  //
+  // In the Element2 model, `InterfaceType.element3` returns an
+  // InterfaceElement2 (non-nullable) — no `is` check needed to
+  // navigate to the next supertype.
   var t = cls.supertype;
   while (t != null) {
-    final name = t.element.name;
+    final el = t.element3;
+    final name = el.name3;
     if (name == 'Widget' ||
         name == 'StatelessWidget' ||
         name == 'StatefulWidget') {
       return true;
     }
-    t = t.element is ClassElement
-        ? (t.element as ClassElement).supertype
-        : null;
+    t = el.supertype;
   }
   return false;
 }

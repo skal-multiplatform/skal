@@ -29,8 +29,16 @@
 // warning — falls back to a hand-written adapter for the long tail).
 // Later slices add EdgeInsets, Offset, etc.
 
+// The new Element2 model is marked @experimental until the analyzer
+// team stabilizes it. The OLD Element API is deprecated. Either side
+// produces analyzer warnings; we prefer the new API (it's the future,
+// and stabilization is just dropping the @experimental marker, not a
+// new code change), and suppress its `experimental_member_use`
+// warnings at file scope.
+// ignore_for_file: experimental_member_use
+
 import 'package:analyzer/dart/constant/value.dart';
-import 'package:analyzer/dart/element/element.dart';
+import 'package:analyzer/dart/element/element2.dart';
 import 'package:analyzer/dart/element/type.dart';
 
 /// A single constructor parameter's bridge encoding.
@@ -193,27 +201,27 @@ PropEncoding? encodingFor({
 }
 
 bool _isCoreString(DartType t) =>
-    t.element?.name == 'String' && t.element?.library?.isDartCore == true;
+    t.element3?.name3 == 'String' && t.element3?.library2?.isDartCore == true;
 
 bool _isCoreInt(DartType t) =>
-    t.element?.name == 'int' && t.element?.library?.isDartCore == true;
+    t.element3?.name3 == 'int' && t.element3?.library2?.isDartCore == true;
 
 bool _isCoreDouble(DartType t) =>
-    t.element?.name == 'double' && t.element?.library?.isDartCore == true;
+    t.element3?.name3 == 'double' && t.element3?.library2?.isDartCore == true;
 
 bool _isCoreBool(DartType t) =>
-    t.element?.name == 'bool' && t.element?.library?.isDartCore == true;
+    t.element3?.name3 == 'bool' && t.element3?.library2?.isDartCore == true;
 
 bool _isEnum(DartType t) {
-  // Analyzer represents Dart enums with EnumElement (a subtype of
-  // ClassElement). Matching purely by element kind, not by name —
-  // any enum type qualifies regardless of where it's declared.
-  return t.element is EnumElement;
+  // Analyzer represents Dart enums with EnumElement2 (a subtype of
+  // InterfaceElement2). Matching purely by element kind, not by
+  // name — any enum type qualifies regardless of where it's declared.
+  return t.element3 is EnumElement2;
 }
 
 bool _isDuration(DartType t) =>
-    t.element?.name == 'Duration' &&
-    t.element?.library?.isDartCore == true;
+    t.element3?.name3 == 'Duration' &&
+    t.element3?.library2?.isDartCore == true;
 
 bool _isFlutterColor(DartType t) {
   // Flutter's Color lives in `dart:ui` (re-exported by flutter/material).
@@ -223,7 +231,7 @@ bool _isFlutterColor(DartType t) {
   // constructor arg. This deliberate looseness also lets the test
   // suite use a self-contained fake-Flutter without a real Flutter
   // dev_dependency (see test/fixtures/_fake_flutter.dart).
-  return t.element?.name == 'Color';
+  return t.element3?.name3 == 'Color';
 }
 
 /// Map a bool default-value expression to its int-on-the-wire form.

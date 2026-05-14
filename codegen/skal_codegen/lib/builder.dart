@@ -57,6 +57,11 @@
 //   • Every build regenerates from scratch — no incremental.
 //     Acceptable: an analyzer pass over a single package takes ~1s.
 
+// `libraryElement2` is marked @experimental until the analyzer's new
+// element model stabilizes. See codegen/skal_codegen/lib/src/type_mapper.dart
+// for the full rationale.
+// ignore_for_file: experimental_member_use
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -146,10 +151,10 @@ class _SkalAdapterBuilder implements Builder {
     final outputAbsPath = p.join(pkgRoot, outputAsset.path);
     final relImports = [
       for (final unit in allUnits)
-        if (unit.libraryElement.source.uri.scheme == 'package' &&
-            unit.libraryElement.source.uri.pathSegments.isNotEmpty)
-          'package:${unit.libraryElement.source.uri.pathSegments.first}/'
-              '${unit.libraryElement.source.uri.pathSegments.first}.dart'
+        if (unit.libraryElement2.uri.scheme == 'package' &&
+            unit.libraryElement2.uri.pathSegments.isNotEmpty)
+          'package:${unit.libraryElement2.uri.pathSegments.first}/'
+              '${unit.libraryElement2.uri.pathSegments.first}.dart'
         else
           p.relative(unit.path, from: p.dirname(outputAbsPath))
     ];

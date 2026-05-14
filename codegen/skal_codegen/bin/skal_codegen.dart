@@ -46,6 +46,11 @@
 //     • Slider → slider
 //     • Toggle → toggle
 
+// `libraryElement2` is marked @experimental until the analyzer's new
+// element model stabilizes. See codegen/skal_codegen/lib/src/type_mapper.dart
+// for the full rationale.
+// ignore_for_file: experimental_member_use
+
 import 'dart:convert';
 import 'dart:io';
 
@@ -216,7 +221,7 @@ Future<int> main(List<String> args) async {
     //   • Otherwise (input is a local file inside the consumer's
     //     project), use a path relative to the generated file. That's
     //     the natural form for in-tree widgets.
-    final srcUri = unitResult.libraryElement.source.uri;
+    final srcUri = unitResult.libraryElement2.uri;
     if (srcUri.scheme == 'package' && srcUri.pathSegments.isNotEmpty) {
       final pkg = srcUri.pathSegments.first;
       relImports.add('package:$pkg/$pkg.dart');

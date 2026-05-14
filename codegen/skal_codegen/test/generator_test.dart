@@ -79,6 +79,55 @@ void main() {
           reason: 'generator output does NOT match '
               'test/fixtures/fancy_text.expected.dart');
     });
+
+    test('mini_pack: multi-file scan emits one combined adapter', () async {
+      // Three input files: two Widget classes (Badge, Panel) + one
+      // helpers-only file. The generator should:
+      //   1. Walk all three.
+      //   2. Emit one `_build_*` per Widget (Badge, Panel) — two total.
+      //   3. Skip the helpers file silently (no Widget classes inside).
+      //   4. Produce ONE registerAll() with both registrations.
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final packDir = p.join(pkgRoot, 'test/fixtures/mini_pack');
+      final inputs = [
+        p.join(packDir, 'badge.dart'),
+        p.join(packDir, 'helpers.dart'),
+        p.join(packDir, 'panel.dart'),
+      ]..sort(); // mirror CLI's deterministic ordering
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+
+      final units = <ResolvedUnitResult>[];
+      final relImports = <String>[];
+      for (final input in inputs) {
+        final ctx = collection.contextFor(input);
+        final r = await ctx.currentSession.getResolvedUnit(input);
+        expect(r, isA<ResolvedUnitResult>());
+        units.add(r as ResolvedUnitResult);
+        // Relative path the generator should emit as the import — from
+        // the (hypothetical) output location alongside the fixtures.
+        relImports.add('mini_pack/${p.basename(input)}');
+      }
+
+      final result = generate(
+        units: units,
+        sourceRelativeImports: relImports,
+      );
+
+      expect(result.generated.map((w) => w.className), ['Badge', 'Panel']);
+      expect(result.skipped, isEmpty,
+          reason: 'helpers.dart contributes nothing but mustn\'t error');
+
+      final expected = File(p.join(pkgRoot,
+              'test/fixtures/mini_pack.expected.dart'))
+          .readAsStringSync();
+      expect(_normalize(result.source), _normalize(expected),
+          reason: 'multi-file generator output does NOT match '
+              'mini_pack.expected.dart');
+    });
   });
 }
 

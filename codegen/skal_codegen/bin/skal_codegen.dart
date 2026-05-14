@@ -2,22 +2,33 @@
 //
 // Usage:
 //
-//   dart run skal_codegen <input.dart> [-o <output.dart>]
+//   dart run skal_codegen <input...> [-o <output.dart>]
 //
-//     <input.dart>  Dart file containing Widget classes to wrap
-//     -o, --out     Output path for the generated adapter file
-//                   (default: lib/generated/skal_adapters.g.dart, relative
-//                   to the directory containing <input.dart>)
+//     <input...>   One or more Dart files OR directories. Each
+//                  directory is walked recursively for `*.dart`
+//                  files (excluding `*.g.dart` to avoid pulling in
+//                  prior codegen output).
+//     -o, --out    Output path for the generated adapter file
+//                  (default: <first-input-dir>/generated/skal_adapters.g.dart)
 //
-// For Slice 2 MVP, processes ONE input file. Multi-file + package-
-// level scanning (`dart run skal_codegen add <package>`) comes in
-// Slice 2's later commits along with build_runner integration.
+// Multiple inputs feed into a SINGLE generated file. Devs typically
+// point at one directory (a package's `lib/`) and get one combined
+// `registerAll()` listing every Widget the generator found. Package-
+// resolution shortcuts (`--package qr_flutter` → `~/.pub-cache/...`)
+// will land in a follow-up commit.
 //
-// Example:
+// Examples:
 //
 //   $ dart run skal_codegen test/fixtures/fancy_text.dart -o /tmp/out.dart
 //   Generated 1 widget(s) → /tmp/out.dart
 //     • FancyText → fancyText
+//
+//   $ dart run skal_codegen lib/widgets/ -o lib/generated/skal_adapters.g.dart
+//   Generated 4 widget(s) → lib/generated/skal_adapters.g.dart
+//     • Badge → badge
+//     • Panel → panel
+//     • Slider → slider
+//     • Toggle → toggle
 
 import 'dart:io';
 
@@ -34,7 +45,7 @@ Future<int> main(List<String> args) async {
     return args.isEmpty ? 1 : 0;
   }
 
-  String? inputPath;
+  final inputArgs = <String>[];
   String? outputPath;
   for (var i = 0; i < args.length; i++) {
     final a = args[i];
@@ -48,60 +59,82 @@ Future<int> main(List<String> args) async {
       stderr.writeln('error: unknown flag $a');
       _printUsage();
       return 1;
-    } else if (inputPath == null) {
-      inputPath = a;
     } else {
-      stderr.writeln(
-          'error: multiple input files not supported yet — got $a after $inputPath');
-      return 1;
+      inputArgs.add(a);
     }
   }
 
-  if (inputPath == null) {
+  if (inputArgs.isEmpty) {
     _printUsage();
     return 1;
   }
 
-  final absInput = p.normalize(p.absolute(inputPath));
-  if (!File(absInput).existsSync()) {
-    stderr.writeln('error: input file not found: $absInput');
+  // Expand each input arg (file or directory) into a flat list of
+  // absolute `.dart` file paths. Sorted so the output's import order
+  // is deterministic across runs / machines.
+  final inputFiles = <String>[];
+  for (final arg in inputArgs) {
+    final abs = p.normalize(p.absolute(arg));
+    final stat = FileSystemEntity.typeSync(abs);
+    if (stat == FileSystemEntityType.notFound) {
+      stderr.writeln('error: input not found: $abs');
+      return 1;
+    } else if (stat == FileSystemEntityType.directory) {
+      inputFiles.addAll(_walkDartFiles(abs));
+    } else {
+      inputFiles.add(abs);
+    }
+  }
+  if (inputFiles.isEmpty) {
+    stderr.writeln('error: no .dart files found in inputs');
     return 1;
   }
+  inputFiles.sort();
 
-  // Find a package root to anchor the analyzer context. We walk up
-  // from the input looking for a pubspec.yaml; that directory is the
-  // root analyzer needs for type resolution.
-  final pkgRoot = _findPackageRoot(absInput);
+  // Anchor the analyzer at the package containing the first input.
+  // All inputs must live under the same pubspec — codegen across
+  // multiple packages in one invocation isn't supported (and isn't
+  // a real use case).
+  final pkgRoot = _findPackageRoot(inputFiles.first);
   if (pkgRoot == null) {
     stderr.writeln(
-        'error: no pubspec.yaml found in $absInput or any ancestor — '
-        'codegen needs a package root to resolve imports');
+        'error: no pubspec.yaml found in ${inputFiles.first} or any '
+        'ancestor — codegen needs a package root to resolve imports');
     return 1;
   }
 
-  outputPath ??= p.join(p.dirname(absInput), 'generated/skal_adapters.g.dart');
+  // Default output: under the same package root as the first input,
+  // in lib/generated/. Devs typically override this per-package.
+  outputPath ??= p.join(p.dirname(inputFiles.first), 'generated',
+      'skal_adapters.g.dart');
   final absOutput = p.normalize(p.absolute(outputPath));
 
   final collection = AnalysisContextCollection(
     includedPaths: [pkgRoot],
     resourceProvider: PhysicalResourceProvider.INSTANCE,
   );
-  final ctx = collection.contextFor(absInput);
-  final unitResult = await ctx.currentSession.getResolvedUnit(absInput);
-  if (unitResult is! ResolvedUnitResult) {
-    stderr.writeln('error: analyzer failed to resolve $absInput');
-    return 2;
+
+  // Resolve all inputs upfront so any analysis errors surface before
+  // we open the output file for writing.
+  final units = <ResolvedUnitResult>[];
+  final relImports = <String>[];
+  for (final input in inputFiles) {
+    final ctx = collection.contextFor(input);
+    final unitResult = await ctx.currentSession.getResolvedUnit(input);
+    if (unitResult is! ResolvedUnitResult) {
+      stderr.writeln('error: analyzer failed to resolve $input');
+      return 2;
+    }
+    units.add(unitResult);
+    // Relative path from generated-file → input. With output in
+    // <pkg>/lib/generated/ and input under <pkg>/lib/widgets/, this
+    // yields `../widgets/foo.dart`.
+    relImports.add(p.relative(input, from: p.dirname(absOutput)));
   }
 
-  // Relative import from the generated file back to the input source.
-  // If the output is `<pkgRoot>/lib/generated/skal_adapters.g.dart` and
-  // input is `<pkgRoot>/test/fixtures/fancy_text.dart`, this comes out
-  // as `../../test/fixtures/fancy_text.dart`.
-  final relImport = p.relative(absInput, from: p.dirname(absOutput));
-
   final result = generate(
-    units: [unitResult],
-    sourceRelativeImports: [relImport],
+    units: units,
+    sourceRelativeImports: relImports,
   );
 
   // Ensure the output directory exists, then write.
@@ -109,7 +142,8 @@ Future<int> main(List<String> args) async {
   File(absOutput).writeAsStringSync(result.source);
 
   stdout.writeln(
-      'Generated ${result.generated.length} widget(s) → $absOutput');
+      'Generated ${result.generated.length} widget(s) from '
+      '${inputFiles.length} file(s) → $absOutput');
   for (final w in result.generated) {
     stdout.writeln('  • ${w.className} → ${w.registryKey}');
   }
@@ -120,6 +154,23 @@ Future<int> main(List<String> args) async {
     }
   }
   return 0;
+}
+
+/// Recursively find all `.dart` files under [dir], excluding generated
+/// (`*.g.dart`) files so a re-run doesn't re-process its own output.
+/// Hidden directories (those starting with `.`, e.g. `.dart_tool`)
+/// are also skipped — they hold tool caches we never want to scan.
+Iterable<String> _walkDartFiles(String dir) sync* {
+  for (final entity in Directory(dir).listSync(recursive: true, followLinks: false)) {
+    if (entity is! File) continue;
+    final path = entity.path;
+    if (!path.endsWith('.dart')) continue;
+    if (path.endsWith('.g.dart')) continue;
+    // Skip anything under a hidden directory at any depth.
+    final segments = p.split(p.relative(path, from: dir));
+    if (segments.any((s) => s.startsWith('.'))) continue;
+    yield p.normalize(p.absolute(path));
+  }
 }
 
 void _printUsage() {

@@ -96,13 +96,23 @@ GenerationResult generate({
   final adapterBodies = <String>[];
   final registryCalls = <String>[];
 
+  // Track which units contributed at least one GENERATED widget. Units
+  // with no widgets (helper-only files in a multi-file scan) or only
+  // skipped widgets don't need to be imported by the generated file —
+  // emitting unused imports just produces dead lint warnings in the
+  // consumer's project.
+  final contributingUnitIdx = <int>{};
+
   for (var i = 0; i < units.length; i++) {
     final unit = units[i];
     final classes = _topLevelWidgetClasses(unit);
     for (final cls in classes) {
       final result = _emitAdapter(cls);
       widgets.add(result.summary);
-      if (result.body != null) adapterBodies.add(result.body!);
+      if (result.body != null) {
+        adapterBodies.add(result.body!);
+        contributingUnitIdx.add(i);
+      }
       if (result.registryLine != null) {
         registryCalls.add(result.registryLine!);
       }
@@ -130,8 +140,9 @@ GenerationResult generate({
     ..writeln("import 'package:skal_flutter/skal/node_state.dart';")
     ..writeln("import 'package:skal_flutter/skal/registry.dart';")
     ..writeln();
-  for (final imp in sourceRelativeImports) {
-    buffer.writeln("import '$imp';");
+  for (var i = 0; i < sourceRelativeImports.length; i++) {
+    if (!contributingUnitIdx.contains(i)) continue;
+    buffer.writeln("import '${sourceRelativeImports[i]}';");
   }
   buffer.writeln();
 

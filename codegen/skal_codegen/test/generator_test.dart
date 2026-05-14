@@ -128,6 +128,42 @@ void main() {
           reason: 'multi-file generator output does NOT match '
               'mini_pack.expected.dart');
     });
+
+    test('complex types: enum + Duration encoded correctly', () async {
+      // Exercises the post-primitive type mapper:
+      //   • enum BannerStyle → values[index] decode with int default
+      //     pulled from constant evaluation
+      //   • Duration → ms-encoded u32, default reconstructed via
+      //     analyzer's toDurationValue()
+      //   • String alongside, to confirm primitive encoding still works
+      //     when interleaved with complex types in the same widget.
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/complex_types.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/complex_types.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+
+      final result = generate(
+        units: [unitResult as ResolvedUnitResult],
+        sourceRelativeImports: ['complex_types.dart'],
+      );
+
+      expect(result.generated.map((w) => w.className), ['Banner']);
+      expect(result.skipped, isEmpty,
+          reason: 'enum + Duration should NOT skip the widget');
+
+      final expected = File(expectedPath).readAsStringSync();
+      expect(_normalize(result.source), _normalize(expected),
+          reason: 'complex-types generator output does NOT match '
+              'complex_types.expected.dart');
+    });
   });
 }
 

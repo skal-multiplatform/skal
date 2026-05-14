@@ -15,19 +15,22 @@
 // [PropEncoding] records and stitches them into the final adapter
 // source. Keeps the "Dart type → encoding" logic isolated + testable.
 //
-// Supported types (Slice 2 MVP):
+// Supported types:
 //
 //   String      → getCustomPropStr(name) ?? '<default>'
 //   int         → getCustomPropU32(name, <default>)
 //   double      → getCustomPropF32(name, <default>)
 //   bool        → getCustomPropU32(name, 0) != 0       (and ? 1 : 0 for default)
 //   Color       → Color(getCustomPropU32(name, 0xAARRGGBB))
+//   enum        → <EnumType>.values[getCustomPropU32(name, <defaultIndex>)]
+//   Duration    → Duration(milliseconds: getCustomPropU32(name, <defaultMs>))
 //
 // Anything else → null (the caller skips the whole widget with a
 // warning — falls back to a hand-written adapter for the long tail).
-// Later slices add Duration, EdgeInsets, enum, Offset, etc.
+// Later slices add EdgeInsets, Offset, etc.
 
 import 'package:analyzer/dart/constant/value.dart';
+import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 
 /// A single constructor parameter's bridge encoding.
@@ -109,6 +112,57 @@ PropEncoding? encodingFor({
     );
   }
 
+  // Enum — Dart's `enum Foo { a, b, c }` types. Wire encoding is the
+  // u32 enum index; reader rebuilds via `EnumType.values[index]`.
+  //
+  // The enum type itself must be in scope at the generated adapter's
+  // call site. For widgets imported via `package:foo/foo.dart`, that
+  // import typically re-exports the enum too (most packages export
+  // their full API). For widgets in the consumer's own lib/, the
+  // file-relative import already pulls in the enum.
+  //
+  // Default value: extracted from the analyzer's constant evaluation.
+  // `BoxFit.cover` evaluates to a DartObject whose `index` field is
+  // the int we want. If the param has no default, fall back to index 0
+  // (the enum's first value).
+  if (_isEnum(type)) {
+    final defaultIndex =
+        defaultConstant?.getField('index')?.toIntValue() ?? 0;
+    // Strip nullable suffix from the type name for `Foo.values` access
+    // — `BoxFit?.values` wouldn't parse.
+    final cleanTypeName = typeName.endsWith('?')
+        ? typeName.substring(0, typeName.length - 1)
+        : typeName;
+    return PropEncoding(
+      readerExpression:
+          "$cleanTypeName.values[n.getCustomPropU32('$paramName', $defaultIndex)]",
+      dartTypeName: typeName,
+    );
+  }
+
+  // Duration — dart:core's value type. Wire encoding is u32 milliseconds
+  // (rather than microseconds) because that's the granularity Flutter
+  // animations actually use, AND u32 millis caps at ~50 days which is
+  // plenty for any UI value. Microseconds would cap at ~71 minutes,
+  // limiting long-running animation durations.
+  //
+  // Default extraction: Duration stores microseconds in a private field
+  // named `_duration`. analyzer's DartObject doesn't expose a typed
+  // `toDurationValue()` (that's reserved for built-in types it special-
+  // cases — bool/int/double/String/etc.). For user-shaped types like
+  // Duration we read the field directly. Divide by 1000 to get
+  // milliseconds for the wire.
+  if (_isDuration(type)) {
+    final micros =
+        defaultConstant?.getField('_duration')?.toIntValue() ?? 0;
+    final defaultMs = micros ~/ 1000;
+    return PropEncoding(
+      readerExpression:
+          "Duration(milliseconds: n.getCustomPropU32('$paramName', $defaultMs))",
+      dartTypeName: typeName,
+    );
+  }
+
   // Color — Flutter's `ui.Color` (or `material.Color`, same class).
   // Wire encoding is 32-bit ARGB; adapter wraps in Color(...).
   //
@@ -149,6 +203,17 @@ bool _isCoreDouble(DartType t) =>
 
 bool _isCoreBool(DartType t) =>
     t.element?.name == 'bool' && t.element?.library?.isDartCore == true;
+
+bool _isEnum(DartType t) {
+  // Analyzer represents Dart enums with EnumElement (a subtype of
+  // ClassElement). Matching purely by element kind, not by name —
+  // any enum type qualifies regardless of where it's declared.
+  return t.element is EnumElement;
+}
+
+bool _isDuration(DartType t) =>
+    t.element?.name == 'Duration' &&
+    t.element?.library?.isDartCore == true;
 
 bool _isFlutterColor(DartType t) {
   // Flutter's Color lives in `dart:ui` (re-exported by flutter/material).

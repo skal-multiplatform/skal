@@ -17,6 +17,7 @@ import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
 import 'package:camera/camera.dart';
 import 'package:skal_flutter/adapters/camera_factory.dart';
+import 'package:skal_flutter/adapters/ticker.dart';
 import 'package:skal_flutter/skal/root.dart';
 
 import 'package:qr_flutter/qr_flutter.dart';
@@ -51,10 +52,12 @@ Widget _build_ShimmerFromColors(NodeState n, SkalBridge bridge) {
 }
 
 class _CameraHost extends StatefulWidget {
+  final NodeState n;
   final String? cameraName;
   final int resolutionIndex;
 
   const _CameraHost({
+    required this.n,
     this.cameraName,
     this.resolutionIndex = 1,
   });
@@ -70,6 +73,7 @@ class _CameraHostState extends State<_CameraHost> {
   @override
   void initState() {
     super.initState();
+    widget.n.methodDispatcher = _dispatch;
     _init();
   }
 
@@ -91,8 +95,62 @@ class _CameraHostState extends State<_CameraHost> {
 
   @override
   void dispose() {
+    widget.n.methodDispatcher = null;
     if (_ctl != null) (_ctl as dynamic).dispose();
     super.dispose();
+  }
+
+  Object? _dispatch(String method, List<Object?> args) {
+    if (_ctl == null) return null;
+    final ctl = _ctl as CameraController;
+    switch (method) {
+      case 'debugCheckIsDisposed':
+        ctl.debugCheckIsDisposed();
+        return null;
+      case 'initialize':
+        ctl.initialize();
+        return null;
+      case 'prepareForVideoRecording':
+        ctl.prepareForVideoRecording();
+        return null;
+      case 'pausePreview':
+        ctl.pausePreview();
+        return null;
+      case 'resumePreview':
+        ctl.resumePreview();
+        return null;
+      case 'stopImageStream':
+        ctl.stopImageStream();
+        return null;
+      case 'pauseVideoRecording':
+        ctl.pauseVideoRecording();
+        return null;
+      case 'resumeVideoRecording':
+        ctl.resumeVideoRecording();
+        return null;
+      case 'getMaxZoomLevel':
+        return ctl.getMaxZoomLevel();
+      case 'getMinZoomLevel':
+        return ctl.getMinZoomLevel();
+      case 'setZoomLevel':
+        ctl.setZoomLevel(args[0] as double);
+        return null;
+      case 'getMinExposureOffset':
+        return ctl.getMinExposureOffset();
+      case 'getMaxExposureOffset':
+        return ctl.getMaxExposureOffset();
+      case 'getExposureOffsetStepSize':
+        return ctl.getExposureOffsetStepSize();
+      case 'setExposureOffset':
+        return ctl.setExposureOffset(args[0] as double);
+      case 'unlockCaptureOrientation':
+        ctl.unlockCaptureOrientation();
+        return null;
+      case 'supportsImageStreaming':
+        return ctl.supportsImageStreaming();
+      default:
+        return null;
+    }
   }
 
   @override
@@ -111,8 +169,105 @@ class _CameraHostState extends State<_CameraHost> {
 
 Widget _build_Camera(NodeState n, SkalBridge bridge) {
   return _CameraHost(
+    n: n,
     cameraName: n.getCustomPropStr('cameraName'),
     resolutionIndex: n.getCustomPropU32('resolutionIndex', 1),
+  );
+}
+
+class _TickerHost extends StatefulWidget {
+  final NodeState n;
+  final int intervalMs;
+  final bool startPaused;
+
+  const _TickerHost({
+    required this.n,
+    this.intervalMs = 1000,
+    this.startPaused = false,
+  });
+
+  @override
+  State<_TickerHost> createState() => _TickerHostState();
+}
+
+class _TickerHostState extends State<_TickerHost> {
+  Object? _ctl;
+  Object? _err;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.n.methodDispatcher = _dispatch;
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      final c = createTicker(
+        intervalMs: widget.intervalMs,
+        startPaused: widget.startPaused,
+      );
+      if (!mounted) {
+        (c as dynamic).dispose();
+        return;
+      }
+      setState(() => _ctl = c);
+    } catch (e) {
+      if (mounted) setState(() => _err = e);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.n.methodDispatcher = null;
+    if (_ctl != null) (_ctl as dynamic).dispose();
+    super.dispose();
+  }
+
+  Object? _dispatch(String method, List<Object?> args) {
+    if (_ctl == null) return null;
+    final ctl = _ctl as TickController;
+    switch (method) {
+      case 'pause':
+        ctl.pause();
+        return null;
+      case 'resume':
+        ctl.resume();
+        return null;
+      case 'reset':
+        ctl.reset();
+        return null;
+      case 'getValue':
+        return ctl.getValue();
+      case 'isPaused':
+        return ctl.isPaused();
+      case 'bump':
+        ctl.bump(args[0] as int);
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_err != null) {
+      return Container(
+        color: const Color(0xFFFFE0E0),
+        padding: const EdgeInsets.all(8),
+        child: Text('Ticker error: $_err'),
+      );
+    }
+    if (_ctl == null) return const SizedBox.shrink();
+    return TickView(_ctl as dynamic);
+  }
+}
+
+Widget _build_Ticker(NodeState n, SkalBridge bridge) {
+  return _TickerHost(
+    n: n,
+    intervalMs: n.getCustomPropU32('intervalMs', 1000),
+    startPaused: n.getCustomPropU32('startPaused', 0) != 0,
   );
 }
 
@@ -120,4 +275,5 @@ void registerAll() {
   SkalRegistry.registerWidget('qrImageView', _build_QrImageView);
   SkalRegistry.registerWidget('shimmerFromColors', _build_ShimmerFromColors);
   SkalRegistry.registerWidget('camera', _build_Camera);
+  SkalRegistry.registerWidget('ticker', _build_Ticker);
 }

@@ -93,9 +93,25 @@ class EdgeInsets {
 /// against the fake. Real Flutter controllers (CameraController,
 /// VideoPlayerController, ChangeNotifier-derived things) all expose
 /// this shape.
+///
+/// Methods on this class also exercise the codegen's JS → Dart RPC
+/// dispatch path: each is auto-discovered as a callable surface from
+/// the JSX side via `await ref.method(args)`. Filter rules in
+/// `_collectControllerMethods` keep us from exposing dispose() or
+/// inherited Object methods.
 class FakeController {
-  final int initial;
-  const FakeController({this.initial = 0});
+  int _value;
+  FakeController({int initial = 0}) : _value = initial;
+
+  // RPC-eligible methods — codegen wires these into the host's
+  // dispatcher switch:
+  void bump(int delta) { _value += delta; }
+  void reset() { _value = 0; }
+  int getValue() => _value;
+  Future<bool> ping() async => true;
+
+  // NOT RPC-eligible — host owns the lifecycle. Codegen filters this
+  // out by name.
   void dispose() {}
 }
 

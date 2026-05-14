@@ -199,6 +199,15 @@ function parseDim(v) {
  */
 function _setCustomProperty(node, name, value) {
   if (value == null) return;
+  // `ref={someRef}` — bind the SkalRef's nodeId so subsequent
+  // `await ref.method()` calls know which host to RPC. SkalRefs
+  // expose a hidden `__skalBind` setter that the runtime detects
+  // here. Falls through silently for plain object/array values that
+  // happen to land on a `ref` prop — those have no encoding today.
+  if (name === 'ref' && value && typeof value.__skalBind === 'function') {
+    value.__skalBind(node.id);
+    return;
+  }
   const t = typeof value;
   if (t === 'function') {
     const handlerId = B.newHandlerId(value);

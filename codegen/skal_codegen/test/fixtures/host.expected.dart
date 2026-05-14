@@ -20,9 +20,11 @@ import 'host.dart';
 
 
 class _FakeSyncHost extends StatefulWidget {
+  final NodeState n;
   final int initial;
 
   const _FakeSyncHost({
+    required this.n,
     this.initial = 0,
   });
 
@@ -37,6 +39,7 @@ class _FakeSyncHostState extends State<_FakeSyncHost> {
   @override
   void initState() {
     super.initState();
+    widget.n.methodDispatcher = _dispatch;
     _init();
   }
 
@@ -57,8 +60,28 @@ class _FakeSyncHostState extends State<_FakeSyncHost> {
 
   @override
   void dispose() {
+    widget.n.methodDispatcher = null;
     if (_ctl != null) (_ctl as dynamic).dispose();
     super.dispose();
+  }
+
+  Object? _dispatch(String method, List<Object?> args) {
+    if (_ctl == null) return null;
+    final ctl = _ctl as FakeController;
+    switch (method) {
+      case 'bump':
+        ctl.bump(args[0] as int);
+        return null;
+      case 'reset':
+        ctl.reset();
+        return null;
+      case 'getValue':
+        return ctl.getValue();
+      case 'ping':
+        return ctl.ping();
+      default:
+        return null;
+    }
   }
 
   @override
@@ -77,14 +100,17 @@ class _FakeSyncHostState extends State<_FakeSyncHost> {
 
 Widget _build_FakeSync(NodeState n, SkalBridge bridge) {
   return _FakeSyncHost(
+    n: n,
     initial: n.getCustomPropU32('initial', 0),
   );
 }
 
 class _FakeAsyncHost extends StatefulWidget {
+  final NodeState n;
   final int initial;
 
   const _FakeAsyncHost({
+    required this.n,
     this.initial = 7,
   });
 
@@ -99,6 +125,7 @@ class _FakeAsyncHostState extends State<_FakeAsyncHost> {
   @override
   void initState() {
     super.initState();
+    widget.n.methodDispatcher = _dispatch;
     _init();
   }
 
@@ -119,8 +146,28 @@ class _FakeAsyncHostState extends State<_FakeAsyncHost> {
 
   @override
   void dispose() {
+    widget.n.methodDispatcher = null;
     if (_ctl != null) (_ctl as dynamic).dispose();
     super.dispose();
+  }
+
+  Object? _dispatch(String method, List<Object?> args) {
+    if (_ctl == null) return null;
+    final ctl = _ctl as FakeController;
+    switch (method) {
+      case 'bump':
+        ctl.bump(args[0] as int);
+        return null;
+      case 'reset':
+        ctl.reset();
+        return null;
+      case 'getValue':
+        return ctl.getValue();
+      case 'ping':
+        return ctl.ping();
+      default:
+        return null;
+    }
   }
 
   @override
@@ -139,6 +186,7 @@ class _FakeAsyncHostState extends State<_FakeAsyncHost> {
 
 Widget _build_FakeAsync(NodeState n, SkalBridge bridge) {
   return _FakeAsyncHost(
+    n: n,
     initial: n.getCustomPropU32('initial', 7),
   );
 }

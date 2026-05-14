@@ -99,6 +99,12 @@ class SkalBridge {
   /// implement on both sides.
   final Map<int, String> _nameDict = <int, String>{};
 
+  /// Args accumulated by opMethodArg, keyed by callId, drained when
+  /// the matching opInvokeMethod arrives. Most call sites have 0-1
+  /// args; the map stays tiny in practice + nothing strands across
+  /// drains since invoke + args ship in the same op batch.
+  final Map<int, List<Object?>> _pendingMethodArgs = <int, List<Object?>>{};
+
   // ── Perf instrumentation (read by PerfHud) ───────────────────────
   int pumpAvgNs = 0;
   int pumpPeakNs = 0;
@@ -398,6 +404,66 @@ class SkalBridge {
           }
           break;
 
+        case opMethodArg:
+          // a = callId, b = argType, c = argValueI32. Args accumulate
+          // in a callId-keyed buffer until the matching opInvokeMethod
+          // drains them. Order matters — positional args in declaration
+          // order on the controller method.
+          final args = _pendingMethodArgs.putIfAbsent(a, () => []);
+          switch (b) {
+            case eventArgI32:
+              args.add(c);
+              break;
+            case eventArgF32:
+              args.add(_bitsToF32(c));
+              break;
+            case eventArgBool:
+              args.add(c != 0);
+              break;
+            default:
+              args.add(null);
+          }
+          break;
+
+        case opInvokeMethod:
+          // a = nodeId, b = methodNameHash, c = callId. Drain the
+          // pending arg list (or empty for 0-arg methods), look up
+          // the node's dispatcher, invoke. Write reply or error to
+          // the event ring under callId.
+          final node = ns[a];
+          final methodName = _nameDict[b];
+          final args = _pendingMethodArgs.remove(c) ?? const <Object?>[];
+          if (node == null) {
+            _writeMethodError(c, 0); // 0 = no such node
+            break;
+          }
+          if (methodName == null) {
+            _writeMethodError(c, 1); // 1 = unknown method name hash
+            break;
+          }
+          final dispatcher = node.methodDispatcher;
+          if (dispatcher == null) {
+            _writeMethodError(c, 2); // 2 = no dispatcher (host not mounted)
+            break;
+          }
+          try {
+            final result = dispatcher(methodName, args);
+            if (result is Future<Object?>) {
+              // Async — write the reply when the future resolves.
+              // Capture callId in the closure; bridge can keep going.
+              final callId = c;
+              result.then(
+                (value) => _writeMethodReply(callId, value),
+                onError: (e, _) => _writeMethodError(callId, 3),
+              );
+            } else {
+              _writeMethodReply(c, result);
+            }
+          } catch (_) {
+            _writeMethodError(c, 4); // 4 = synchronous throw
+          }
+          break;
+
         // ── Hot props ───────────────────────────────────────────────
         // Mutate the plain field, flag hotDirty, add to touched. End-of-
         // drain coalesces N hot-prop writes on the same node into ONE
@@ -638,6 +704,64 @@ class SkalBridge {
     final bd = ByteData(4);
     bd.setFloat32(0, value, Endian.little);
     return bd.getInt32(0, Endian.little);
+  }
+
+  /// Write a method-invocation reply into the event ring. Encodes
+  /// the result value via the same argType discriminator the typed-
+  /// callback path uses (see eventArg* in wire.dart). The "handlerId"
+  /// slot carries the callId so JS can route to the right Promise.
+  ///
+  /// Supported result types: null/void (eventArgVoid), int, double,
+  /// bool. Other types (String, Object, List<T>) write a void reply
+  /// and the JSX-side Promise resolves with `undefined` — the value
+  /// won't round-trip. Plumbing for those needs producer-side string
+  /// heap + flat-object serialization (future slice).
+  void _writeMethodReply(int callId, Object? result) {
+    int argType;
+    int argValueI32;
+    if (result == null) {
+      argType = eventArgVoid;
+      argValueI32 = 0;
+    } else if (result is bool) {
+      argType = eventArgBool;
+      argValueI32 = result ? 1 : 0;
+    } else if (result is int) {
+      argType = eventArgI32;
+      argValueI32 = result;
+    } else if (result is double) {
+      argType = eventArgF32;
+      argValueI32 = _f32ToBits(result);
+    } else {
+      // Unsupported result type — treat as void. (Logging here would
+      // spam the console for every value-returning method that uses
+      // a complex type; the dev catches this in development by seeing
+      // their Promise resolve with `undefined`.)
+      argType = eventArgVoid;
+      argValueI32 = 0;
+    }
+    // Same wire layout as dispatchEvent — only the eventKind differs.
+    // The "handlerId" slot is reinterpreted as callId on the JS side
+    // when eventKind is evMethodReply.
+    dispatchEvent(callId,
+        eventKind: evMethodReply,
+        argType: argType,
+        argValueI32: argValueI32);
+  }
+
+  /// Write a method-invocation error reply. Same shape as a regular
+  /// reply but with eventKind = evMethodError so JS rejects the
+  /// Promise. The error payload is a u32 status code for now:
+  ///
+  ///   0 = no such node id
+  ///   1 = unknown method name hash
+  ///   2 = no method dispatcher registered (host not mounted yet)
+  ///   3 = async dispatcher rejected
+  ///   4 = sync dispatcher threw
+  void _writeMethodError(int callId, int statusCode) {
+    dispatchEvent(callId,
+        eventKind: evMethodError,
+        argType: eventArgI32,
+        argValueI32: statusCode);
   }
 
   /// Drain queued overflow events into the bridge ring. Called from

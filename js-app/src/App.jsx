@@ -1,5 +1,6 @@
 import { createSignal, createMemo, For } from 'solid-js';
 import { Container, Column, Row, Text, Button, ListView } from 'skal';
+import { createSkalRef } from './skal-runtime.jsx';
 // Auto-discovered from BOTH manifests the codegen pipeline emits:
 //   • lib/adapters/generated/skal_adapters.json (local CLI; Greeting +
 //     Stickers in this demo — widgets the dev writes themselves)
@@ -30,6 +31,12 @@ import {
   // `createCamera`, dispose on unmount). The JSX-facing surface is
   // pure-prop — same as any other widget.
   Camera,
+  // Ticker — host-pattern widget with JS → Dart imperative RPC. Owns
+  // a TickController (Timer-driven counter) on the Dart side; the
+  // synthesized host adapter registers a methodDispatcher on its
+  // NodeState that routes JSX `ref.pause()` / `ref.getValue()` calls
+  // to the controller. See createSkalRef in skal-runtime.jsx.
+  Ticker,
 } from 'skal-codegen-generated';
 
 const TWEET_LINES = [
@@ -166,6 +173,13 @@ export default function App() {
   //   JS drain decodes → reactively updates this signal → re-render.
   const [counterLog, setCounterLog] = createSignal('— waiting for counter events —');
 
+  // Imperative ref for the Ticker host. JSX-side calls
+  // `ticker.pause()`, `ticker.getValue()` (returns Promise<number>),
+  // etc. The Proxy emits OP_INVOKE_METHOD; the codegen-generated
+  // _TickerHost dispatches to TickController methods on the Dart side.
+  const ticker = createSkalRef();
+  const [tickerLog, setTickerLog] = createSignal('— tap a button to RPC the Ticker —');
+
   // createMemo: derived signal, recomputed only when visibleTweets changes.
   // <For> below will diff the old vs new array using identity (default) and
   // emit only the minimum add/remove ops to the bridge.
@@ -239,6 +253,37 @@ export default function App() {
         onReset={() => setCounterLog('onReset()')}
       />
       <Text label={counterLog()} fontSize={14} color="#FF333333" />
+      {/* Ticker — host pattern + JS → Dart imperative RPC. Dart side
+          runs a Timer-driven counter; JSX side has a ref Proxy that
+          dispatches `ref.pause()`, `ref.getValue()`, etc. across the
+          bridge. Awaiting the value returns a Promise resolved by the
+          codegen-emitted EV_METHOD_REPLY decode path. */}
+      <Ticker ref={ticker} intervalMs={500} />
+      <Row gap={6}>
+        <Button label="pause" onClick={async () => {
+          await ticker.pause();
+          setTickerLog('pause() ✓');
+        }} />
+        <Button label="resume" onClick={async () => {
+          await ticker.resume();
+          setTickerLog('resume() ✓');
+        }} />
+        <Button label="reset" onClick={async () => {
+          await ticker.reset();
+          setTickerLog('reset() ✓');
+        }} />
+        <Button label="+10" onClick={async () => {
+          await ticker.bump(10);
+          const v = await ticker.getValue();
+          setTickerLog(`bump(10), now getValue() → ${v}`);
+        }} />
+        <Button label="read" onClick={async () => {
+          const v = await ticker.getValue();
+          const paused = await ticker.isPaused();
+          setTickerLog(`getValue() → ${v}, isPaused() → ${paused}`);
+        }} />
+      </Row>
+      <Text label={tickerLog()} fontSize={14} color="#FF333333" />
       {/* Multi-child custom widget — Stickers takes `List<Widget>
           children` on the Dart side, and the codegen-emitted reader
           walks NodeState.childCount to produce one SkalNode per JSX

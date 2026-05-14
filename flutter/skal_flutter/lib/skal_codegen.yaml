@@ -35,3 +35,13 @@ hosts:
     # parameters → JSX props, infers async/sync from the return type,
     # wraps a StatefulWidget around the call.
     factory: package:skal_flutter/adapters/camera_factory.dart#createCamera
+
+  # Local stateful-widget host — Ticker. Same host-pattern machinery as
+  # Camera, but the controller (TickController) is plain-Dart with no
+  # plugin dependencies, so it actually renders + ticks on macOS.
+  # Exposes pause/resume/reset/getValue/isPaused/bump as JSX-side RPC
+  # methods via the imperative ref API (see js-app/src/App.jsx for the
+  # consumer side).
+  Ticker:
+    widget: TickView
+    factory: package:skal_flutter/adapters/ticker.dart#createTicker

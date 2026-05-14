@@ -539,11 +539,27 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
   final isAsync = _isFuture(host.factoryFn.returnType);
   final factoryName = host.factoryFn.name3 ?? '';
 
+  // Walk the controller's class methods to build the JS → Dart RPC
+  // dispatch switch. The controller's type is the factory's return
+  // type (unwrapped from Future if async). Each eligible method
+  // becomes one `case '<name>':` arm. See _collectControllerMethods.
+  final controllerType = isAsync
+      ? (host.factoryFn.returnType as InterfaceType).typeArguments.first
+      : host.factoryFn.returnType;
+  final controllerName = controllerType.element3?.name3 ?? 'Object';
+  final dispatchCases = _collectControllerMethods(controllerType);
+
   final body = StringBuffer()
     ..writeln('class _${jsxName}Host extends StatefulWidget {')
+    // First field: the NodeState. State.initState() registers the
+    // methodDispatcher on it; State.dispose() clears it. Carrying
+    // NodeState through the widget keeps the bridge-side state
+    // anchored across rebuilds.
+    ..writeln('  final NodeState n;')
     ..writeAll(fields.map((l) => '$l\n'))
     ..writeln()
     ..writeln('  const _${jsxName}Host({')
+    ..writeln('    required this.n,')
     ..writeAll(ctorParams.map((l) => '$l\n'))
     ..writeln('  });')
     ..writeln()
@@ -558,6 +574,11 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
     ..writeln('  @override')
     ..writeln('  void initState() {')
     ..writeln('    super.initState();')
+    // Register the dispatcher BEFORE _init() — even before the
+    // controller exists, JSX-side invokes need a target. The
+    // dispatcher itself bails early if _ctl is null (host still
+    // initializing); the bridge surfaces that as `null` to JS.
+    ..writeln('    widget.n.methodDispatcher = _dispatch;')
     ..writeln('    _init();')
     ..writeln('  }')
     ..writeln()
@@ -578,8 +599,27 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
     ..writeln()
     ..writeln('  @override')
     ..writeln('  void dispose() {')
+    ..writeln('    widget.n.methodDispatcher = null;')
     ..writeln('    if (_ctl != null) (_ctl as dynamic).dispose();')
     ..writeln('    super.dispose();')
+    ..writeln('  }')
+    ..writeln()
+    // Method dispatcher — switch on method name + invoke on the
+    // typed controller. If _ctl is null (still initializing), all
+    // invocations return null (which the bridge encodes as void).
+    // Default arm returns null too — JS resolves with undefined for
+    // unknown methods rather than throwing.
+    ..writeln('  Object? _dispatch(String method, List<Object?> args) {')
+    ..writeln('    if (_ctl == null) return null;')
+    ..writeln('    final ctl = _ctl as $controllerName;')
+    ..writeln('    switch (method) {');
+  for (final c in dispatchCases) {
+    body.write(c);
+  }
+  body
+    ..writeln('      default:')
+    ..writeln('        return null;')
+    ..writeln('    }')
     ..writeln('  }')
     ..writeln()
     ..writeln('  @override')
@@ -598,6 +638,7 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
     ..writeln()
     ..writeln('Widget _build_$jsxName(NodeState n, SkalBridge bridge) {')
     ..writeln('  return _${jsxName}Host(')
+    ..writeln('    n: n,')
     ..writeAll(propReaders.map((l) => '$l\n'))
     ..writeln('  );')
     ..write('}');
@@ -610,6 +651,112 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
     requiredImports: hostRequiredImports.toList(),
   );
 }
+
+/// Walk a controller class's own (non-inherited) methods and emit one
+/// `case '<methodName>':` arm per RPC-eligible method. Each arm casts
+/// args to the right types, invokes the controller method, and
+/// returns the result (for void methods: returns null after the call).
+///
+/// Eligibility rules:
+///   • Public (name doesn't start with `_`)
+///   • Not static, not a getter/setter
+///   • Not `dispose` (the host manages it)
+///   • Every positional/named arg is `int`, `double`, or `bool`
+///   • Return type is `void`, `Future<void>`, `int`, `double`, `bool`,
+///     or `Future<` thereof
+///
+/// Methods that fail eligibility are silently skipped — they'd just
+/// fall through to the dispatcher's default arm, returning null, which
+/// JS resolves as `undefined`. The dev knows what controller methods
+/// they care about; not every controller method needs JSX exposure.
+List<String> _collectControllerMethods(DartType controllerType) {
+  if (controllerType is! InterfaceType) return const [];
+  final el = controllerType.element3;
+  if (el is! ClassElement2) return const [];
+  final out = <String>[];
+  for (final m in el.methods2) {
+    if (m.isStatic) continue;
+    final name = m.name3 ?? '';
+    if (name.isEmpty || name.startsWith('_')) continue;
+    if (name == 'dispose') continue;
+    // Args must all be encodable as i32 / f32 / bool. Positional only
+    // — named args complicate the JS invocation surface and aren't
+    // common on controller-method APIs.
+    final argCasts = <String>[];
+    var argsOk = true;
+    var i = 0;
+    for (final param in m.formalParameters) {
+      if (!param.isPositional) { argsOk = false; break; }
+      final t = param.type;
+      String? cast;
+      if (_isRpcInt(t)) cast = 'args[$i] as int';
+      else if (_isRpcDouble(t)) cast = 'args[$i] as double';
+      else if (_isRpcBool(t)) cast = 'args[$i] as bool';
+      if (cast == null) { argsOk = false; break; }
+      argCasts.add(cast);
+      i++;
+    }
+    if (!argsOk) continue;
+
+    // Return type must be void / primitive / Future<{void|primitive}>.
+    final rt = m.returnType;
+    final returnInfo = _classifyRpcReturn(rt);
+    if (returnInfo == null) continue;
+
+    // Build the case body. For async methods that return Future<void>
+    // we still RETURN the future (the bridge awaits it). For Future<T>
+    // we return the future (bridge unwraps + encodes T).
+    final callExpr = 'ctl.$name(${argCasts.join(", ")})';
+    if (returnInfo.isVoid) {
+      out.writeln(
+        '      case \'$name\':\n'
+        '        $callExpr;\n'
+        '        return null;\n'
+      );
+    } else {
+      out.writeln(
+        '      case \'$name\':\n'
+        '        return $callExpr;\n'
+      );
+    }
+  }
+  return out;
+}
+
+/// Convenience: same as List<String>.add(line + '\n') but reads better
+/// inline. Just sugar to keep _collectControllerMethods compact.
+extension on List<String> {
+  void writeln(String s) => add(s);
+}
+
+class _RpcReturnInfo {
+  final bool isVoid;
+  const _RpcReturnInfo(this.isVoid);
+}
+
+/// Determine how the bridge should encode a controller method's
+/// return type. Returns null for unencodable returns (Object, custom
+/// classes, String, lists, …) — the method is then skipped.
+_RpcReturnInfo? _classifyRpcReturn(DartType t) {
+  // Unwrap Future<X> — the bridge's RPC dispatch awaits async methods
+  // transparently. Future<void> counts as void.
+  DartType inner = t;
+  if (_isFuture(t) && (t as InterfaceType).typeArguments.length == 1) {
+    inner = t.typeArguments.first;
+  }
+  if (inner is VoidType) return const _RpcReturnInfo(true);
+  if (_isRpcInt(inner) || _isRpcDouble(inner) || _isRpcBool(inner)) {
+    return const _RpcReturnInfo(false);
+  }
+  return null;
+}
+
+bool _isRpcInt(DartType t) =>
+    t.element3?.name3 == 'int' && t.element3?.library2?.isDartCore == true;
+bool _isRpcDouble(DartType t) =>
+    t.element3?.name3 == 'double' && t.element3?.library2?.isDartCore == true;
+bool _isRpcBool(DartType t) =>
+    t.element3?.name3 == 'bool' && t.element3?.library2?.isDartCore == true;
 
 /// True when [t] is `Future<X>` for any X.
 bool _isFuture(DartType t) {

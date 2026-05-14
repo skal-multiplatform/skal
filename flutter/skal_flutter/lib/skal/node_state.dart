@@ -27,10 +27,28 @@
 // drain fires the appropriate notifier once per touched node. N prop
 // writes on the same node → 1 fan-out.
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'indexed_child_list.dart';
 import 'wire.dart';
+
+/// Dispatcher for JS → Dart RPC method invocations. Receives the
+/// method name + the decoded args list (in declaration order — ints
+/// stay ints, f32s become doubles, bools become bools). Returns
+/// either the result directly (for sync methods) or a Future that
+/// resolves to it (for async). The bridge encodes the result into
+/// an EV_METHOD_REPLY event addressed back to JS by callId.
+///
+/// Type signature is intentionally untyped: a single dispatcher per
+/// node demultiplexes ALL the node's exposed methods. Codegen emits
+/// a switch on methodName that calls the right controller method
+/// with the right typed args.
+typedef SkalMethodDispatcher = FutureOr<Object?> Function(
+  String methodName,
+  List<Object?> args,
+);
 
 /// ChangeNotifier with a public `notify()` — Flutter's default
 /// `notifyListeners` is @protected. One-line subclass so the bridge's
@@ -198,6 +216,18 @@ class NodeState {
   void setCustomHandler(String name, int handlerId) {
     (_customHandlers ??= <String, int>{})[name] = handlerId;
   }
+
+  /// Dispatcher for JS → Dart RPC method invocations on this node.
+  /// The synthesized host adapter (see codegen's `_emitHostAdapter`)
+  /// registers a closure that knows the controller's method surface.
+  /// Bridge looks this up when an opInvokeMethod arrives and calls
+  /// `dispatcher(methodName, args)`; the result (or its Future) is
+  /// written back to JS via the event ring as evMethodReply.
+  ///
+  /// Null until the host's State.initState() registers it — invokes
+  /// before then surface as `EV_METHOD_ERROR` ("no method dispatcher
+  /// registered").
+  SkalMethodDispatcher? methodDispatcher;
 
   /// Iterate every (name, value) pair written by the bridge for this
   /// custom node. Useful for adapters that want to inspect their full

@@ -69,7 +69,6 @@ import 'dart:io';
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/element/element2.dart';
-import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/file_system/physical_file_system.dart';
 import 'package:build/build.dart';
 import 'package:path/path.dart' as p;
@@ -330,21 +329,27 @@ Future<List<HostConfig>> _resolveHosts(
           'function `${e.factoryFnName}` in ${e.factoryImport}. Skipping.');
       continue;
     }
-    // Wrapped widget import. Two strategies, in order:
+    // Wrapped widget import. Strategy: walk every library the factory
+    // imports, look at its export namespace for a class matching the
+    // declared widget name. Whichever library exports it gets used as
+    // the import in the generated host adapter.
     //
-    //   1. Derive from the factory's return type. The controller's
-    //      package usually re-exports the widget (e.g. camera's
-    //      barrel `package:camera/camera.dart` exports both
-    //      CameraController AND CameraPreview). This is the strongest
-    //      signal — no traversal of import graphs needed.
+    // Two cases this covers:
     //
-    //   2. Fallback: the factory's own file. Works when the dev's
-    //      factory file imports the wrapped widget directly.
+    //   • Pub package with a barrel — camera's factory imports
+    //     `package:camera/camera.dart`, which re-exports BOTH
+    //     CameraController AND CameraPreview. We use the barrel
+    //     directly (the only file we need to import for both).
     //
-    // A v2 could let devs declare `widgetImport:` explicitly to
-    // cover the edge cases (different package, narrow `src/` URI).
-    final wrappedImport = _deriveWrappedWidgetImport(factoryFn) ??
-        e.factoryImport;
+    //   • Local package, controller + widget in the same file — the
+    //     ticker's factory imports the file containing both, finds
+    //     the widget class there, uses the same file URI.
+    //
+    // Falls back to the factory's own file if no other library
+    // exports the widget name. Last resort: a no-such-class compile
+    // error surfaces a clear message to the dev.
+    final wrappedImport =
+        _findWidgetImport(unit, e.wrappedWidgetName) ?? e.factoryImport;
     out.add(HostConfig(
       jsxName: e.jsxName,
       wrappedWidgetName: e.wrappedWidgetName,
@@ -368,30 +373,54 @@ String? _resolvePackageUriToPath(String pkgRoot, Uri pkgUri) {
   return p.normalize(p.join(libDir, rest));
 }
 
-/// Derive the wrapped-widget's canonical import URI from the
-/// factory function's return type. The controller's library
-/// (`package:camera/src/camera_controller.dart` for camera) usually
-/// has a sibling barrel (`package:camera/camera.dart`) that re-
-/// exports BOTH the controller AND the widget that takes it. We
-/// derive the barrel from the first path segment of the controller's
-/// library URI.
+/// Walk the factory's import graph looking for a library that exports
+/// a class named [wrappedWidgetName]. Returns that library's `package:`
+/// URI — the right form to import in the generated host adapter.
 ///
-/// Returns null when the factory's return type isn't from a `package:`
-/// URI (caller falls back to the factory file itself in that case).
-String? _deriveWrappedWidgetImport(ExecutableElement2 factoryFn) {
-  // Unwrap Future<T> → T to get the controller's actual type.
-  var t = factoryFn.returnType;
-  if (t.element3?.name3 == 'Future') {
-    if (t is InterfaceType && t.typeArguments.length == 1) {
-      t = t.typeArguments.first;
+/// Strategy: for each library the factory imports, examine its export
+/// NAMESPACE (which includes both directly-declared classes AND
+/// `export 'foo.dart'` re-exports). If the namespace contains a class
+/// matching [wrappedWidgetName], use that library's URI.
+///
+/// Falls back to checking the factory's OWN library first — the
+/// widget might be declared in the same file (Ticker's case).
+String? _findWidgetImport(
+  ResolvedUnitResult factoryUnit,
+  String wrappedWidgetName,
+) {
+  final factoryLib = factoryUnit.libraryElement2;
+  // Check the factory's own library first — handles "controller +
+  // widget + factory in one file" (local-package case).
+  if (_libraryExposes(factoryLib, wrappedWidgetName)) {
+    return factoryLib.uri.toString();
+  }
+  // Otherwise walk each imported library's export namespace.
+  for (final imp in factoryLib.firstFragment.libraryImports2) {
+    final lib = imp.importedLibrary2;
+    if (lib == null) continue;
+    if (_libraryExposes(lib, wrappedWidgetName)) {
+      return lib.uri.toString();
     }
   }
-  final lib = t.element3?.library2;
-  if (lib == null) return null;
-  final uri = lib.uri;
-  if (uri.scheme != 'package' || uri.pathSegments.isEmpty) return null;
-  final pkg = uri.pathSegments.first;
-  return 'package:$pkg/$pkg.dart';
+  return null;
+}
+
+/// True iff [lib]'s export namespace contains a class named [name].
+/// Covers both directly-declared classes AND `export 'other.dart'`
+/// re-exports — the latter is the camera case: `package:camera/camera.dart`
+/// declares no classes itself, just `export 'src/...'` statements.
+bool _libraryExposes(LibraryElement2 lib, String name) {
+  // Direct classes (cheap check first).
+  for (final cls in lib.classes) {
+    if (cls.name3 == name) return true;
+  }
+  // exportNamespace covers re-exports. Returns a Namespace whose
+  // `definedNames` map (in the new API: getter on the namespace) keys
+  // the exported names → their Elements. We just need to know if the
+  // name is present + resolves to a class.
+  final exported = lib.exportNamespace.definedNames2;
+  final el = exported[name];
+  return el is ClassElement2;
 }
 
 /// Resolve a wrapped-package's lib/ on disk, via

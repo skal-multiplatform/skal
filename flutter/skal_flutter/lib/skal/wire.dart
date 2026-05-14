@@ -67,6 +67,22 @@ const int opSetCustomPropU32  = 0x18;
 const int opSetCustomPropF32  = 0x19;
 const int opSetCustomPropStr  = 0x1A;
 const int opBindCustomHandler = 0x1B;
+// Method invocation — JS → Dart RPC for controller-owning host widgets.
+// JSX side: `await ref.takePicture()`. Wire shape:
+//
+//   opInvokeMethod(nodeId, methodNameHash, callId)
+//
+// The methodNameHash uses the same FNV-1a 32-bit + opDeclareName
+// dictionary as custom-prop names. callId is a 32-bit JS-side counter
+// that pairs the invocation with its reply (see evMethodReply below).
+// Returns are delivered through the event ring under a callId key
+// rather than handlerId, discriminated by the event kind byte.
+//
+// Method args (0..N) are sent as separate opMethodArg ops BEFORE the
+// opInvokeMethod for the same callId. Dart accumulates args keyed by
+// callId, drains them when the invoke arrives, then discards.
+const int opInvokeMethod      = 0x1C;
+const int opMethodArg         = 0x1D;
 // Hot props — own opcodes so the drain dispatches them directly to
 // dedicated ValueNotifiers without the propsVersion bump. See
 // PROPS_PLAN.md §5.
@@ -129,8 +145,17 @@ const int wtReorderableListView  = 7;
 const int wtCustom               = 8;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
-const int evClick  = 0x01;
-const int evChange = 0x02;
+const int evClick        = 0x01;
+const int evChange       = 0x02;
+// Method-invocation reply. The "handlerId" slot (bytes 4-7 of the
+// event record) carries the callId from the matching opInvokeMethod.
+// JS side maintains a `Map<callId, {resolve, reject}>` and resolves
+// the Promise when this event arrives. argType + argValueI32 encode
+// the return value (eventArgVoid for `void`/`Future<void>` methods).
+const int evMethodReply  = 0x03;
+// Method-invocation failure. Same layout, but argType+argValueI32
+// encode an error code or string-heap ref. The Promise rejects.
+const int evMethodError  = 0x04;
 
 // ── Event record layout (16 bytes per slot in the event ring) ────────
 //

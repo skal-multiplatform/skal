@@ -13,6 +13,95 @@
 // Re-import in App.jsx when one of those shapes shows up.
 
 import { createSignal, createMemo, createEffect, onCleanup, For } from 'solid-js';
+import * as B from './bridge.js';
+
+/**
+ * Create a JSX-side handle for invoking imperative methods on a
+ * codegen-generated host widget.
+ *
+ * Usage:
+ *
+ * ```jsx
+ * const ticker = createSkalRef();
+ *
+ * <Ticker ref={ticker} intervalMs={500} />
+ * <Button onClick={() => ticker.pause()} label="Pause" />
+ * <Button onClick={async () => {
+ *   const v = await ticker.getValue();
+ *   alert(`Tick count: ${v}`);
+ * }} label="Read" />
+ * ```
+ *
+ * Mechanics:
+ *
+ *  • `createSkalRef()` returns a Proxy. Any property access produces
+ *    a function that, when called, emits an `OP_INVOKE_METHOD` (with
+ *    one `OP_METHOD_ARG` per positional arg) and returns a `Promise`.
+ *
+ *  • The matching JSX element MUST be a codegen-generated host widget
+ *    (declared via `hosts:` in `skal_codegen.yaml`). Other widgets
+ *    don't have a method dispatcher registered on the Dart side; the
+ *    Promise will reject with `status 2` (no dispatcher registered).
+ *
+ *  • The Promise resolves with the Dart method's return value, decoded
+ *    by the bridge's argType discriminator: int/double/bool/void today.
+ *    String + object returns are deferred (need producer-side string
+ *    heap + flat-object serialization).
+ *
+ *  • If the ref's node hasn't mounted yet when you call a method, the
+ *    Promise rejects (status 2). Either await the next tick after
+ *    mounting, or wire your call into a JSX event handler (those run
+ *    after mount by construction).
+ *
+ *  • Arg encoding: integers → I32, fractional numbers → F32, booleans
+ *    → BOOL. Strings + objects pass as VOID (effectively dropped) —
+ *    same deferred-plumbing reason as returns.
+ *
+ * Returns: a Proxy you assign to `ref=` on a host widget.
+ */
+export function createSkalRef() {
+  let nodeId = 0;
+  // The target MUST be callable so that `ref={ticker}` in JSX (which
+  // Solid's babel preset compiles to `use(ticker, element)`) can
+  // invoke the proxy as a function. Without a callable target, the
+  // Proxy isn't callable regardless of traps and Solid's use-call
+  // throws "f is not a function".
+  //
+  // The function-target itself does nothing — the actual binding
+  // happens in the `apply` trap below.
+  const target = function () {};
+  target.__skalBind = (id) => { nodeId = id; };
+  return new Proxy(target, {
+    // Called as `ref(element)` — Solid's universal renderer passes
+    // the rendered SkalNode here. Read the bridge node id off it.
+    apply(_, _this, args) {
+      const el = args[0];
+      if (el && typeof el.id === 'number') {
+        nodeId = el.id;
+      }
+    },
+    get(_, prop) {
+      // Symbol props (Proxy iteration, util.inspect, …) and the
+      // __skalBind escape-hatch return the target's own values.
+      if (prop === '__skalBind' || typeof prop === 'symbol') {
+        return target[prop];
+      }
+      // String prop access → an invoker that bumps a callId, writes
+      // the ops, returns a Promise resolved by the event drain.
+      return (...args) => {
+        if (nodeId === 0) {
+          // Ref not yet bound — would dispatch to nodeId=0 (the root
+          // host's reserved id) and almost certainly error out. Reject
+          // upfront with a clearer message.
+          return Promise.reject(new Error(
+            `skal ref: cannot call .${String(prop)}() before the host `
+            + `mounts. Move the call into a JSX event handler.`));
+        }
+        return B.invokeMethod(nodeId, prop, args);
+      };
+    },
+  });
+}
 
 /**
  * <ChunkedFor each={items}>{(item) => <Tweet …/>}</ChunkedFor>

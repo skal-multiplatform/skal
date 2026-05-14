@@ -65,6 +65,16 @@ export const OP_SET_CUSTOM_PROP_U32 = 0x18;
 export const OP_SET_CUSTOM_PROP_F32 = 0x19;
 export const OP_SET_CUSTOM_PROP_STR = 0x1A;
 export const OP_BIND_CUSTOM_HANDLER = 0x1B;
+// JS → Dart RPC. JSX side calls `await ref.takePicture()`. The macro
+// resolves the method name to a hash (same FNV-1a as custom-prop
+// names, declared once via OP_DECLARE_NAME), allocates a 32-bit
+// callId, emits OP_METHOD_ARG ops for each arg, then OP_INVOKE_METHOD.
+// Dart processes the args (accumulated keyed by callId), invokes the
+// host's registered method, writes a reply event under that callId.
+// JS resolves the matching Promise. See bridge.dart's op handlers and
+// __skal_drainEvents' EV_METHOD_REPLY branch.
+export const OP_INVOKE_METHOD       = 0x1C;
+export const OP_METHOD_ARG          = 0x1D;
 // Hot-prop opcodes — distinct from OP_SET_PROP_F32 so the host's
 // switch on opcode dispatches them directly to their dedicated
 // notifier without going through the cold-prop machinery. See
@@ -105,8 +115,13 @@ export const WT_REORDERABLE_LIST_VIEW = 7;
 export const WT_CUSTOM                = 8;
 
 // Event kinds
-export const EV_CLICK  = 0x01;
-export const EV_CHANGE = 0x02;
+export const EV_CLICK         = 0x01;
+export const EV_CHANGE        = 0x02;
+// Method-RPC reply / error. The "handlerId" slot (bytes 4-7 of the
+// event record) carries the callId. JS keeps a `Map<callId, {resolve,
+// reject}>` and consumes it on receipt. See OP_INVOKE_METHOD.
+export const EV_METHOD_REPLY  = 0x03;
+export const EV_METHOD_ERROR  = 0x04;
 
 // Event-arg types — encoded in byte 1 of the event record. See
 // flutter/skal_flutter/lib/skal/wire.dart's `eventArg*` constants.
@@ -752,6 +767,66 @@ export function bindCustomHandler(nodeId, name, handlerId) {
 }
 
 // ───────────────────────────────────────────────────────────────────────
+// Method invocation — JS → Dart RPC
+//
+// JSX side calls `await ref.takePicture()`. This module:
+//
+//   1. Allocates a fresh 32-bit callId (monotonic counter)
+//   2. Stores the (resolve, reject) pair in a callId-keyed Map
+//   3. Writes OP_METHOD_ARG for each positional arg (in order)
+//   4. Writes OP_INVOKE_METHOD with (nodeId, methodNameHash, callId)
+//   5. Returns the Promise
+//
+// Dart-side bridge accumulates args, looks up the node's dispatcher,
+// invokes the method, writes EV_METHOD_REPLY (or EV_METHOD_ERROR) back
+// through the event ring. __skal_drainEvents below routes by event kind:
+// regular events → handlers map; replies → pendingCalls map.
+// ───────────────────────────────────────────────────────────────────────
+
+const pendingCalls = new Map();
+let nextCallId = 1;
+
+/**
+ * Invoke a method on a Dart-side host's controller. Returns a Promise
+ * that resolves with the method's return value (decoded per its
+ * argType) or rejects with an error code string.
+ *
+ * @param {number} nodeId   The host's bridge node id.
+ * @param {string} methodName  e.g. 'takePicture', 'pause'.
+ * @param {Array<number|boolean>} args  Positional args, in order.
+ */
+export function invokeMethod(nodeId, methodName, args) {
+  const h = _internName(methodName);
+  const callId = nextCallId++;
+  // Emit OP_METHOD_ARG per arg BEFORE the invoke — Dart drains args
+  // keyed by callId, picks them up when OP_INVOKE_METHOD arrives.
+  // Order is preserved (ops execute in write order).
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i];
+    if (typeof v === 'number') {
+      if (Number.isInteger(v)) {
+        writeOp(OP_METHOD_ARG, callId, EVENT_ARG_I32, v | 0);
+      } else {
+        // f32 bit-cast via the same _f32buf scratch the prop-write uses.
+        _f32buf[0] = v;
+        writeOp(OP_METHOD_ARG, callId, EVENT_ARG_F32, _u32view[0]);
+      }
+    } else if (typeof v === 'boolean') {
+      writeOp(OP_METHOD_ARG, callId, EVENT_ARG_BOOL, v ? 1 : 0);
+    } else {
+      // Unsupported arg type — pass void; Dart side gets null in
+      // that slot. Strings + objects need follow-up plumbing.
+      writeOp(OP_METHOD_ARG, callId, EVENT_ARG_VOID, 0);
+    }
+  }
+  writeOp(OP_INVOKE_METHOD, nodeId, h, callId);
+  scheduleCommit();
+  return new Promise((resolve, reject) => {
+    pendingCalls.set(callId, { resolve, reject });
+  });
+}
+
+// ───────────────────────────────────────────────────────────────────────
 // Event dispatch — the host writes events into the event ring and wakes
 // the JS thread; the native bridge then runs `__skal_drainEvents()` which
 // looks up handlers and calls them.
@@ -795,40 +870,69 @@ globalThis.__skal_drainEvents = function () {
   let safety = EVENT_SAFETY;
   while (readPos32 !== writePos32 && safety-- > 0) {
     // Word 0 packs eventKind (byte 0) + argType (byte 1). Word 1 is
-    // handlerId. Word 2 holds the typed arg payload. See
-    // wire.dart's "Event record layout" comment.
-    const word0    = u32[readPos32 + 0];
-    const argType  = (word0 >>> 8) & 0xFF;
-    const handlerId = u32[readPos32 + 1];
-    const argRaw   = u32[readPos32 + 2];
-    const fn = handlers.get(handlerId);
-    if (fn) {
-      // Decode the arg per its declared type. VOID → no arg passed
-      // (legacy onClick / onTap handlers expect zero-arg invocation).
-      // I32 / BOOL → integer (raw u32 interpreted as int; bool maps
-      // 0/1 → false/true). F32 → reinterpret the u32 bits as a
-      // 32-bit float via the shared scratch buffer.
-      let arg;
-      let argCount = 0;
-      if (argType === EVENT_ARG_I32) {
-        arg = argRaw | 0;  // signed reinterpret
-        argCount = 1;
-      } else if (argType === EVENT_ARG_F32) {
-        _f32DecodeU32[0] = argRaw;
-        arg = _f32DecodeF32[0];
-        argCount = 1;
-      } else if (argType === EVENT_ARG_BOOL) {
-        arg = argRaw !== 0;
-        argCount = 1;
+    // handlerId (or callId, for method replies). Word 2 holds the
+    // typed arg payload. See wire.dart's "Event record layout".
+    const word0     = u32[readPos32 + 0];
+    const eventKind = word0 & 0xFF;
+    const argType   = (word0 >>> 8) & 0xFF;
+    const idSlot    = u32[readPos32 + 1];
+    const argRaw    = u32[readPos32 + 2];
+
+    // Decode the typed arg once — same shape for regular events AND
+    // method replies. Three primitives + void. F32 reinterprets the
+    // u32 bits via the shared scratch ArrayBuffer.
+    let arg = undefined;
+    let hasArg = false;
+    if (argType === EVENT_ARG_I32) {
+      arg = argRaw | 0;
+      hasArg = true;
+    } else if (argType === EVENT_ARG_F32) {
+      _f32DecodeU32[0] = argRaw;
+      arg = _f32DecodeF32[0];
+      hasArg = true;
+    } else if (argType === EVENT_ARG_BOOL) {
+      arg = argRaw !== 0;
+      hasArg = true;
+    }
+
+    if (eventKind === EV_METHOD_REPLY) {
+      // RPC reply — resolve the pending Promise. The id slot is
+      // callId, not handlerId. Pass `undefined` for void returns
+      // (hasArg=false).
+      const pending = pendingCalls.get(idSlot);
+      if (pending) {
+        pendingCalls.delete(idSlot);
+        try { pending.resolve(hasArg ? arg : undefined); }
+        catch (e) {
+          lastHandlerError = e && (e.stack || e.message || String(e)) || 'unknown';
+        }
       }
-      try {
-        if (argCount === 0) fn();
-        else fn(arg);
-      } catch (e) {
-        // Capture into a module global so we can read it via skalStatus()
-        // — calling console.error here crashes Bun's ConsoleObject in the
-        // embedded environment (no stdio wired up yet).
-        lastHandlerError = e && (e.stack || e.message || String(e)) || 'unknown';
+    } else if (eventKind === EV_METHOD_ERROR) {
+      // RPC error — reject the pending Promise. Payload is a status
+      // code (0=no node, 1=unknown method, 2=no dispatcher, 3=async
+      // rejected, 4=sync threw). See bridge.dart's _writeMethodError.
+      const pending = pendingCalls.get(idSlot);
+      if (pending) {
+        pendingCalls.delete(idSlot);
+        try {
+          pending.reject(new Error(`skal RPC error (status ${arg})`));
+        } catch (e) {
+          lastHandlerError = e && (e.stack || e.message || String(e)) || 'unknown';
+        }
+      }
+    } else {
+      // Regular event — fire the bound JSX handler.
+      const fn = handlers.get(idSlot);
+      if (fn) {
+        try {
+          if (hasArg) fn(arg);
+          else fn();
+        } catch (e) {
+          // Capture into a module global so we can read it via skalStatus()
+          // — calling console.error here crashes Bun's ConsoleObject in the
+          // embedded environment (no stdio wired up yet).
+          lastHandlerError = e && (e.stack || e.message || String(e)) || 'unknown';
+        }
       }
     }
     readPos32 += 4;

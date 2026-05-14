@@ -14,10 +14,13 @@
 //
 // What this plugin provides:
 //
-//   1. A VIRTUAL MODULE `skal-codegen-generated` — JSX can
-//      `import { QrImageView, VideoPlayer } from 'skal-codegen-generated'`
+//   1. A VIRTUAL MODULE `skal-flutter` (default; override via
+//      `moduleName:`) — JSX can
+//      `import { QrImageView, VideoPlayer } from 'skal-flutter'`
 //      without any file existing under js-app/src/. The plugin
 //      synthesizes the module's source at build time from the manifest.
+//      The companion `skal` module (resolved separately via the
+//      vite.config.js alias) carries the universal intrinsics.
 //
 //   2. A MACRO CONFIG fragment — the babel-plugin-skal-jsx needs to
 //      know which capitalized identifiers from which modules to
@@ -63,7 +66,17 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 
-const VIRTUAL_MODULE_ID = 'skal-codegen-generated';
+// Default module name reflects the BACKEND, not the implementation.
+// The `skal` module ships the intrinsic widgets defined by Skal's
+// wire protocol — universal across hosts (Flutter / RN / web /
+// native, anyone who implements the bridge). `skal-flutter` ships
+// widgets wrapped from pub.dev — inherently Flutter-bound, since
+// the codegen output references Flutter classes directly.
+//
+// Future backends would follow the same pattern: `skal-rn`,
+// `skal-uikit`, etc. The dev's import line tells them at a glance
+// whether the symbol is portable.
+const VIRTUAL_MODULE_ID = 'skal-flutter';
 // Vite convention: virtual modules start with `\0` after resolution
 // so other plugins don't try to resolve them as filesystem paths.
 const RESOLVED_VIRTUAL_ID = '\0' + VIRTUAL_MODULE_ID;
@@ -78,7 +91,9 @@ const RESOLVED_VIRTUAL_ID = '\0' + VIRTUAL_MODULE_ID;
  *   in the same project. Later entries override earlier ones on key
  *   collision (last-wins, matches Object spread semantics).
  * @property {string} [moduleName]   Override the virtual module
- *   name. Default `skal-codegen-generated`.
+ *   name. Default `skal-flutter`. Override when running multiple
+ *   codegen pipelines side-by-side (e.g. one per backend), since
+ *   each pipeline owns its own module namespace.
  */
 
 /**
@@ -188,8 +203,11 @@ function _synthesizeModule(widgets, moduleName) {
   // required double-escaping every backtick. The throw message uses
   // ordinary string concatenation so the synthesized source is plain
   // ASCII without any nested template-literal escaping.
+  // Use the actual moduleName in the error so the dev sees which
+  // import source the broken JSX came from (the same module might
+  // be aliased to different names across configs).
   const errMsg =
-    '"skal-codegen-generated: <" + name + "> was used without the ' +
+    '"' + moduleName + ': <" + name + "> was used without the ' +
     "babel-plugin-skal-jsx transform recognizing '" + moduleName + "'. " +
     'Ensure the consumer\\u0027s vite.config.js spreads ' +
     'codegen.macroModules into the macro\\u0027s modules option."';

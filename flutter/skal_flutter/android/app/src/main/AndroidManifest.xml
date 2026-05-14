@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Camera plugin: requires CAMERA permission + a hardware-camera
+         feature declaration. `required="false"` lets the demo install
+         on devices without a camera (the host pattern's error path
+         renders an inline banner cleanly in that case). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application
         android:label="skal_flutter"
         android:name="${applicationName}"

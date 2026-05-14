@@ -30,7 +30,7 @@ All four patterns share the same five-step ritual:
 2. (Patterns C/D only) Write a tiny factory function in `lib/adapters/<name>_factory.dart`
 3. Declare the wrap in `flutter/skal_flutter/lib/skal_codegen.yaml`
 4. Run `dart run build_runner build`
-5. Import the synthesized symbol from `'skal-codegen-generated'` in your JSX
+5. Import the synthesized symbol from `'skal-flutter'` in your JSX
 
 The build_runner step regenerates BOTH `lib/skal_codegen.g.dart` (the
 Dart adapter) AND `lib/skal_codegen.json` (the manifest the Vite
@@ -78,7 +78,7 @@ one `_build_<ClassName>` adapter each.
 **4. Import + use.**
 
 ```jsx
-import { QrImageView } from 'skal-codegen-generated';
+import { QrImageView } from 'skal-flutter';
 
 <QrImageView data="https://skal.dev" size={200} />
 ```
@@ -129,7 +129,7 @@ class Shimmer extends StatelessWidget {
 
 JSX:
 ```jsx
-import { ShimmerFromColors } from 'skal-codegen-generated';
+import { ShimmerFromColors } from 'skal-flutter';
 <ShimmerFromColors baseColor={0xFFBDBDBD} highlightColor={0xFFE0E0E0}>
   <SomeChild />
 </ShimmerFromColors>
@@ -146,7 +146,7 @@ A widget that takes `List<Widget> children`. Identical to Pattern A;
 codegen detects the list type and emits the per-child reader:
 
 ```jsx
-import { Stack } from 'skal-codegen-generated';  // hypothetical
+import { Stack } from 'skal-flutter';  // hypothetical
 <Stack alignment={0}>
   <Image src="bg.jpg" />
   <Text label="overlay" fontSize={20} color="#FFFFFFFF" />
@@ -222,7 +222,7 @@ dart run build_runner build
 ```
 
 ```jsx
-import { Camera } from 'skal-codegen-generated';
+import { Camera } from 'skal-flutter';
 <Camera resolutionIndex={1} />
 ```
 

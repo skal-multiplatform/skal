@@ -1,14 +1,18 @@
 import { createSignal, createMemo, For } from 'solid-js';
 import { Container, Column, Row, Text, Button, ListView } from 'skal';
 import { createSkalRef } from './skal-runtime.jsx';
+// `skal` (above) ships the Skal-protocol INTRINSIC widgets — universal,
+// any host that speaks the wire protocol can render them.
+// `skal-flutter` (below) ships codegen-wrapped widgets pulled from
+// pub.dev — inherently Flutter-bound. The two import sources tell the
+// dev at a glance whether a symbol is portable.
+//
 // Auto-discovered from BOTH manifests the codegen pipeline emits:
 //   • lib/adapters/generated/skal_adapters.json (local CLI; Greeting +
 //     Stickers in this demo — widgets the dev writes themselves)
 //   • lib/skal_codegen.json (build_runner; pub-package widgets like
 //     QrImageView from qr_flutter + ShimmerFromColors from shimmer)
-// Single virtual module = single import source. The babel macro lowers
-// each capitalized symbol to its registry-key intrinsic tag at build
-// time. Named-ctor widgets surface as PascalCased concatenations
+// Named-ctor widgets surface as PascalCased concatenations
 // (Shimmer.fromColors → ShimmerFromColors); default ctors keep the
 // class name verbatim. Multi-child widgets (those that take
 // `List<Widget> children` on the Dart side) accept any number of JSX
@@ -37,7 +41,7 @@ import {
   // NodeState that routes JSX `ref.pause()` / `ref.getValue()` calls
   // to the controller. See createSkalRef in skal-runtime.jsx.
   Ticker,
-} from 'skal-codegen-generated';
+} from 'skal-flutter';
 
 const TWEET_LINES = [
   "Just shipped a new feature, feeling great about how it turned out 🚀",

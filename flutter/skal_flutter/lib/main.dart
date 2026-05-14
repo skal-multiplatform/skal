@@ -30,7 +30,6 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'adapters/generated/skal_adapters.g.dart' as local_gen;
-import 'adapters/shimmer_manual.dart' as shimmer_manual;
 import 'skal_codegen.g.dart' as packages_gen;
 import 'skal/bridge.dart';
 import 'skal/root.dart';
@@ -67,18 +66,17 @@ void main() async {
   //   dart run build_runner build
   //
   // The Builder walks each listed package's lib/ in pub-cache and
-  // emits a single combined adapter at `lib/skal_codegen.g.dart`.
+  // emits a single combined adapter at `lib/skal_codegen.g.dart`,
+  // INCLUDING adapters for named constructors (e.g. shimmer's
+  // `Shimmer.fromColors` surfaces as `<ShimmerFromColors>` in JSX).
   // Add a package by listing it in skal_codegen.yaml and re-running.
+  //
+  // Hand-written escape-hatch adapters would also be wired here, if
+  // any: they'd live under `lib/adapters/<name>_manual.dart`, expose
+  // a `registerAll()` of their own, and be called AFTER packages_gen
+  // so they shadow on name collision. The MVP currently has none —
+  // qr_flutter + shimmer both round-trip cleanly through codegen.
   packages_gen.registerAll();
-
-  // Manual escape-hatch adapters — wrap widgets the codegen had to
-  // skip (e.g. ones whose default constructor takes a complex type
-  // codegen doesn't yet encode, OR ones whose ergonomic surface is
-  // on a NAMED constructor like Shimmer.fromColors). These call the
-  // same SkalRegistry API the generated adapters use. Registered
-  // after the generated ones so they can shadow generated entries
-  // when a widget name collides.
-  shimmer_manual.registerAll();
 
   // ── 1. Create the bun runtime ───────────────────────────────────────
   final tCreate0 = bootClock.elapsedMicroseconds;

@@ -8,6 +8,8 @@
 // real Flutter widget. The default value comes from the constructor's
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
+//
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';

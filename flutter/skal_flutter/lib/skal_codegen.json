@@ -1,0 +1,6 @@
+{
+  "widgets": {
+    "QrImageView": "qrImageView",
+    "ShimmerFromColors": "shimmerFromColors"
+  }
+}

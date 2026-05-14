@@ -1,19 +1,22 @@
 // Generator — turns a list of target Widget class names + a parsed
 // AST view of their source files into Skal adapter source code.
 //
-// The output matches the hand-written shape from
-// `flutter/skal_flutter/lib/adapters/greeting.dart` byte-for-byte
-// (after dart format). Each Widget class produces one private
-// `_build_X` function and one line inside `registerAll()`.
+// The output shape mirrors a hand-written SkalRegistry.registerWidget
+// call (after dart format). Each (Widget class × eligible constructor)
+// pair produces one private `_build_X` function and one line inside
+// `registerAll()`.
 //
-// What this generator does NOT do (yet — Slice 3+):
+// What this generator does NOT do (yet):
 //
 //   - Walk transitive dependencies / scan whole packages. Caller
 //     hands it pre-resolved [ResolvedUnitResult]s; package scanning
 //     is the CLI's job.
-//   - Handle non-primitive constructor params (Widget, List<Widget>,
-//     enums, Duration, EdgeInsets). The type mapper returns null for
-//     those; the generator skips the whole widget with a warning.
+//   - Handle every non-primitive constructor param. The type mapper
+//     returns null for unsupported types (e.g. Gradient, BoxDecoration,
+//     TextStyle, raw QrCode objects) — the generator then either
+//     silently omits the param (if optional) or skips the whole
+//     widget with a warning (if required). See type_mapper.dart for
+//     the current supported-type matrix.
 //   - Event callbacks beyond what the bridge supports today.
 //
 // What it does:
@@ -22,9 +25,14 @@
 //   2. Filter to direct subclasses of StatelessWidget / StatefulWidget
 //      (anything not a Widget gets skipped silently — that's fine,
 //      package source can include non-widget exports).
-//   3. Find the default constructor (unnamed). Named constructors get
-//      ignored — supporting them needs a JSX naming convention we
-//      haven't designed yet.
+//   3. Walk EVERY public constructor — both the default (unnamed) one
+//      and any named ctors like `Shimmer.fromColors`. Each ctor
+//      becomes its own adapter, exposed to JSX under a synthesized
+//      PascalCase name: default ctor keeps the class name verbatim
+//      (`Shimmer` → `<Shimmer>`), named ctors concatenate (`Shimmer`
+//      + `fromColors` → `<ShimmerFromColors>`). The registry key
+//      lowercases the first letter (`shimmerFromColors`). Same
+//      manifest shape as before, just more entries.
 //   4. For each named parameter, ask the type_mapper for an encoding.
 //      If any required param has no encoding, skip the whole widget
 //      and record a warning.
@@ -128,15 +136,29 @@ GenerationResult generate({
     final unit = units[i];
     final classes = _topLevelWidgetClasses(unit);
     for (final cls in classes) {
-      final result = _emitAdapter(cls);
-      widgets.add(result.summary);
-      if (result.body != null) {
-        adapterBodies.add(result.body!);
-        contributingUnitIdx.add(i);
-        extraImports.addAll(result.requiredImports);
+      final ctors = _eligibleConstructors(cls);
+      if (ctors.isEmpty) {
+        // Class has no usable constructor (all private, or somehow
+        // no constructors at all). Record a skip so the dev sees the
+        // class was considered but produced nothing.
+        widgets.add(GeneratedWidget(
+          cls.name3 ?? '',
+          _camelCase(cls.name3 ?? ''),
+          skipReason: 'no public constructors',
+        ));
+        continue;
       }
-      if (result.registryLine != null) {
-        registryCalls.add(result.registryLine!);
+      for (final ctor in ctors) {
+        final result = _emitAdapter(cls, ctor);
+        widgets.add(result.summary);
+        if (result.body != null) {
+          adapterBodies.add(result.body!);
+          contributingUnitIdx.add(i);
+          extraImports.addAll(result.requiredImports);
+        }
+        if (result.registryLine != null) {
+          registryCalls.add(result.registryLine!);
+        }
       }
     }
   }
@@ -161,6 +183,23 @@ GenerationResult generate({
     ..writeln("// real Flutter widget. The default value comes from the constructor's")
     ..writeln('// own default — if the JSX consumer omits a prop, they get the same')
     ..writeln('// behaviour as a direct Dart caller would.')
+    // Lint suppressions for machine-emitted code. Each is opt-in for a
+    // specific generator pattern:
+    //
+    //   • non_constant_identifier_names — `_build_FooBar` follows the
+    //     synthesized symbol name (PascalCase) for traceability,
+    //     deliberately not lowerCamelCase.
+    //   • sort_child_properties_last — params are emitted in the
+    //     CONSTRUCTOR's declared order (so default-value mapping stays
+    //     trivial), which can put `child`/`children` before primitive
+    //     siblings. Reordering would couple the generator to lint
+    //     style rather than to source-of-truth semantics.
+    //   • unused_import — unlikely (we filter to contributing units)
+    //     but cheap to suppress for resilience against future changes
+    //     to that filtering logic.
+    ..writeln('//')
+    ..writeln('// ignore_for_file: non_constant_identifier_names, '
+        'sort_child_properties_last, unused_import')
     ..writeln()
     ..writeln("import 'package:flutter/material.dart';")
     ..writeln("import 'package:skal_flutter/skal/bridge.dart';")
@@ -214,19 +253,19 @@ class _AdapterResult {
   });
 }
 
-_AdapterResult _emitAdapter(ClassElement2 cls) {
+_AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
   final className = cls.name3 ?? '';
-  final registryKey = _camelCase(className);
+  final ctorName = ctor.name3 ?? '';
+  final isDefaultCtor = ctorName.isEmpty || ctorName == 'new';
 
-  // Find the default (unnamed) constructor. In the Element2 model
-  // it's `constructors2` (returning ConstructorElement2 instances);
-  // the unnamed constructor's `name3` is the empty string, same as
-  // the old API.
-  final ctor = cls.constructors2.firstWhere(
-    (c) => c.name3 == '' || c.name3 == 'new',
-    orElse: () => throw StateError(
-        'no default constructor on $className — codegen MVP requires one'),
-  );
+  // JSX-facing symbol. Default ctor: keep the class name (`Shimmer`).
+  // Named ctor: concatenate PascalCased (`ShimmerFromColors`). This
+  // double-counts a class with both a default AND a named ctor — they
+  // get separate JSX symbols + registry keys, which is the point.
+  final synthesizedName = isDefaultCtor
+      ? className
+      : '$className${_pascalCase(ctorName)}';
+  final registryKey = _camelCase(synthesizedName);
 
   // Walk named parameters. Three outcomes per param:
   //
@@ -293,26 +332,32 @@ _AdapterResult _emitAdapter(ClassElement2 cls) {
 
   if (skipReason != null) {
     return _AdapterResult(
-      GeneratedWidget(className, registryKey, skipReason: skipReason),
+      GeneratedWidget(synthesizedName, registryKey, skipReason: skipReason),
     );
   }
 
+  // Constructor invocation: `Foo(...)` for default, `Foo.bar(...)` for
+  // named. The function name uses the synthesized symbol (so a class
+  // with multiple ctors gets distinct `_build_Foo` / `_build_FooBar`
+  // helpers — no collisions).
+  final ctorInvocation = isDefaultCtor ? className : '$className.$ctorName';
   final body = StringBuffer()
-    ..writeln('Widget _build_$className(NodeState n, SkalBridge bridge) {')
-    ..writeln('  return $className(')
+    ..writeln(
+        'Widget _build_$synthesizedName(NodeState n, SkalBridge bridge) {')
+    ..writeln('  return $ctorInvocation(')
     ..writeAll(lines.map((l) => '$l\n'))
     ..writeln('  );')
     ..write('}');
 
   return _AdapterResult(
     GeneratedWidget(
-      className,
+      synthesizedName,
       registryKey,
       omittedOptionalParams: omittedOptionalParams,
     ),
     body: body.toString(),
     registryLine:
-        "SkalRegistry.registerWidget('$registryKey', _build_$className);",
+        "SkalRegistry.registerWidget('$registryKey', _build_$synthesizedName);",
     requiredImports: requiredImports.toList(),
   );
 }
@@ -385,4 +430,50 @@ bool _extendsWidget(ClassElement2 cls) {
 String _camelCase(String pascalCase) {
   if (pascalCase.isEmpty) return pascalCase;
   return pascalCase[0].toLowerCase() + pascalCase.substring(1);
+}
+
+/// "fromColors" → "FromColors". Uppercases the first letter only.
+/// Used for synthesizing JSX-facing symbols from named-ctor names:
+/// `Shimmer` + pascalCase("fromColors") = `ShimmerFromColors`.
+String _pascalCase(String camelCase) {
+  if (camelCase.isEmpty) return camelCase;
+  return camelCase[0].toUpperCase() + camelCase.substring(1);
+}
+
+/// Constructors on [cls] that are eligible for adapter emission:
+/// public (no leading underscore) and non-redirecting (a redirecting
+/// constructor's body is `: this.other(...)` — calling it directly is
+/// fine, but calling the eventual target is clearer + avoids
+/// double-walking the same parameter list). Returns the default
+/// (unnamed) ctor first if present, then named ctors in declaration
+/// order — keeps the generated file's ordering stable and predictable.
+List<ConstructorElement2> _eligibleConstructors(ClassElement2 cls) {
+  final result = <ConstructorElement2>[];
+  // Default ctor first.
+  for (final c in cls.constructors2) {
+    final n = c.name3 ?? '';
+    if (n.isEmpty || n == 'new') {
+      if (!_isCtorEligible(c)) continue;
+      result.add(c);
+      break;
+    }
+  }
+  // Then named ctors in source order.
+  for (final c in cls.constructors2) {
+    final n = c.name3 ?? '';
+    if (n.isEmpty || n == 'new') continue;
+    if (n.startsWith('_')) continue; // private named ctor
+    if (!_isCtorEligible(c)) continue;
+    result.add(c);
+  }
+  return result;
+}
+
+bool _isCtorEligible(ConstructorElement2 c) {
+  // Skip redirecting generative constructors — they delegate to
+  // another ctor and re-encoding the param list twice would emit two
+  // adapters that build the same widget. The target ctor (which we
+  // also visit) is the canonical entry point.
+  if (c.redirectedConstructor2 != null) return false;
+  return true;
 }

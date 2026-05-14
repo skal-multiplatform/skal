@@ -1,7 +1,8 @@
 // Test fixture — a target Widget class that the codegen should
-// process. Mimics the shape of `flutter/skal_flutter/lib/adapters/greeting.dart`
-// but framed as an INPUT to the generator (representing some
-// hypothetical pub.dev package's exported widget), not an output.
+// process. Same primitive-only shape as the demo's `Greeting` widget
+// in `flutter/skal_flutter/lib/adapters/greeting_widget.dart`, just
+// framed as a hypothetical pub.dev package's exported widget that the
+// generator hasn't seen before.
 //
 // Constructor has three primitive-typed named parameters with default
 // values:

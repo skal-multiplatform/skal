@@ -8,11 +8,14 @@
 // real Flutter widget. The default value comes from the constructor's
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
+//
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
+import 'package:skal_flutter/skal/root.dart';
 
 import '../greeting_widget.dart';
 
@@ -24,6 +27,16 @@ Widget _build_Greeting(NodeState n, SkalBridge bridge) {
   );
 }
 
+Widget _build_Stickers(NodeState n, SkalBridge bridge) {
+  return Stickers(
+    children: List.generate(n.childCount, (i) => SkalNode(nodeId: n.childAt(i), bridge: bridge, key: ValueKey<int>(n.childAt(i)))),
+    background: Color(n.getCustomPropU32('background', 0xFFFFE082)),
+    gap: n.getCustomPropF32('gap', 8.0),
+    padding: n.getCustomPropF32('padding', 12.0),
+  );
+}
+
 void registerAll() {
   SkalRegistry.registerWidget('greeting', _build_Greeting);
+  SkalRegistry.registerWidget('stickers', _build_Stickers);
 }

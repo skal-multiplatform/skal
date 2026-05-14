@@ -2,9 +2,28 @@ import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';
 import { resolve } from 'path';
 import { createRequire } from 'module';
+import { skalCodegen } from './vite-plugin-skal-codegen.js';
 
 const require = createRequire(import.meta.url);
 const skalJsxPlugin = require('./babel-plugin-skal-jsx.cjs');
+
+// Auto-discover widgets wrapped by skal_codegen on the Flutter side.
+// Reads JSON manifests emitted by BOTH:
+//   • the local CLI (lib/adapters/generated/skal_adapters.json — for
+//     Widget classes in the consumer's own lib/, e.g. Greeting /
+//     Stickers in this demo)
+//   • build_runner (lib/skal_codegen.json — for third-party pub
+//     packages listed in lib/skal_codegen.yaml: qr_flutter, shimmer)
+// All widgets surface through one virtual module `skal-codegen-generated`,
+// so JSX has a single import source regardless of where the underlying
+// adapter was generated. See vite-plugin-skal-codegen.js for the
+// merge semantics (last-wins on key collision, by array order).
+const codegen = skalCodegen({
+  manifests: [
+    '../flutter/skal_flutter/lib/adapters/generated/skal_adapters.json',
+    '../flutter/skal_flutter/lib/skal_codegen.json',
+  ],
+});
 
 // Solid's universal-renderer mode: babel-preset-solid (wrapped by
 // vite-plugin-solid) compiles JSX into direct calls to OUR custom
@@ -29,26 +48,14 @@ export default defineConfig({
       // exports are runtime-fallback throwers; the babel plugin
       // strips real usages at compile time.
       'skal': resolve(__dirname, 'src/skal/index.js'),
-      // Example Skal adapter package — see js-app/src/skal-greeting and
-      // flutter/skal_flutter/lib/adapters/greeting.dart for the matched
-      // pair. Real third-party adapters would live as separate pub.dev /
-      // npm publications; here we keep both halves in-tree for the
-      // demo + Slice 1 validation.
-      'skal-greeting': resolve(__dirname, 'src/skal-greeting/index.js'),
-      // Third-party `qr_flutter` package wrapped via skal_codegen.
-      // Dart side: lib/adapters/generated/qr_flutter.g.dart (generated
-      // from ~/.pub-cache/...qr_flutter.../qr_image_view.dart). JS side:
-      // this module provides the capitalized symbols + JSDoc types.
-      'skal-qr-flutter': resolve(__dirname, 'src/skal-qr-flutter/index.js'),
-      // Shimmer — hand-written Dart adapter (Shimmer's default
-      // constructor takes a Gradient which codegen can't yet
-      // encode), JS-side module of the usual shape. Demonstrates
-      // the manual escape hatch pattern alongside the codegen
-      // happy path.
-      'skal-shimmer': resolve(__dirname, 'src/skal-shimmer/index.js'),
     },
   },
   plugins: [
+    // Virtual module + manifest watcher for codegen-wrapped widgets.
+    // Synthesizes `skal-codegen-generated` from skal_codegen.json so JSX
+    // can `import { QrImageView } from 'skal-codegen-generated'` without
+    // any hand-written stub.
+    codegen.vitePlugin,
     solid({
       solid: {
         generate: 'universal',
@@ -64,9 +71,15 @@ export default defineConfig({
             // side SkalRegistry registration key (see greeting.dart's
             // `SkalRegistry.registerWidget('greeting', …)`).
             modules: {
-              'skal-greeting': { Greeting: 'greeting' },
-              'skal-qr-flutter': { QrImageView: 'qrImageView' },
-              'skal-shimmer': { Shimmer: 'shimmer' },
+              // ALL custom-widget imports flow through skal-codegen-generated
+              // now — both local CLI-emitted (Greeting, Stickers) and
+              // build_runner pub-package (QrImageView, ShimmerFromColors).
+              // Single source of truth; the JS side doesn't care which
+              // generator produced a widget. Manual stub modules + macro
+              // entries would only be needed for hand-written escape-hatch
+              // Dart adapters that the codegen pipeline doesn't touch
+              // (none in the demo right now).
+              ...codegen.macroModules,
             },
           }],
         ],

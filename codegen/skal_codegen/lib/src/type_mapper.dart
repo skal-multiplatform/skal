@@ -29,6 +29,9 @@
 //                                     for a param named `padding`)
 //   Widget      → SkalNode(nodeId: <first JSX child>, ...) — the
 //                 widget renders the FIRST child node from JSX.
+//   List<Widget>→ List.generate(n.childCount, (i) => SkalNode(...)) —
+//                 EVERY JSX child becomes one element. Unlocks multi-
+//                 child wrappers like Wrap, Stack, Flow, StaggeredGrid.
 //
 // Anything else → null (the caller skips the whole widget with a
 // warning — falls back to a hand-written adapter for the long tail).
@@ -205,15 +208,37 @@ PropEncoding? encodingFor({
   // — passing a shrink widget is functionally equivalent to null
   // for layout purposes, and keeps the generated code uniform.
   //
-  // Multi-child params (`List<Widget> children`) are NOT handled
-  // yet — they need to gather every child node id, not just the
-  // first. Separate type-mapper branch in a follow-up commit.
   if (_isFlutterWidget(type)) {
     return PropEncoding(
       readerExpression: 'n.childCount > 0'
           ' ? SkalNode(nodeId: n.childAt(0), bridge: bridge, '
           'key: ValueKey<int>(n.childAt(0)))'
           ' : const SizedBox.shrink()',
+      dartTypeName: typeName,
+      requiredImports: const ['package:skal_flutter/skal/root.dart'],
+    );
+  }
+
+  // List<Widget> — multi-child wrappers. Wrap, Stack, Flow, Column-
+  // alikes from third-party packages. Every JSX child becomes one
+  // element; childCount=0 produces an empty list (which Flutter
+  // multi-child widgets accept).
+  //
+  // Generator emits a `List.generate(childCount, …)` so the list is
+  // freshly built on each rebuild — important because the per-child
+  // SkalNode needs a stable ValueKey tied to the node id (Flutter
+  // diff-keys by it for child reordering). Allocating a small list
+  // per rebuild is the same cost the manual Row/Column intrinsics
+  // pay; the multi-child render path is the same downstream.
+  //
+  // The default value for an unsupplied `List<Widget> children = const []`
+  // is irrelevant — JSX always supplies children (or doesn't, and
+  // the empty list is the right behavior). No constant-eval needed.
+  if (_isFlutterWidgetList(type)) {
+    return PropEncoding(
+      readerExpression: 'List.generate(n.childCount, (i) => '
+          'SkalNode(nodeId: n.childAt(i), bridge: bridge, '
+          'key: ValueKey<int>(n.childAt(i))))',
       dartTypeName: typeName,
       requiredImports: const ['package:skal_flutter/skal/root.dart'],
     );
@@ -347,6 +372,19 @@ bool _isFlutterWidget(DartType t) {
     }
   }
   return false;
+}
+
+/// Match `List<Widget>` (or List of any Widget subclass —
+/// `List<StatefulWidget>` etc., though rare in real APIs). The
+/// element check looks for the dart:core `List` type plus a single
+/// type argument that passes [_isFlutterWidget].
+bool _isFlutterWidgetList(DartType t) {
+  final el = t.element3;
+  if (el?.name3 != 'List') return false;
+  if (el?.library2?.isDartCore != true) return false;
+  if (t is! InterfaceType) return false;
+  if (t.typeArguments.length != 1) return false;
+  return _isFlutterWidget(t.typeArguments.first);
 }
 
 bool _isFlutterEdgeInsets(DartType t) {

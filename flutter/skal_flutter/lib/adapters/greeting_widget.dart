@@ -28,12 +28,18 @@
 //     they'd write. Codegen wraps everything in `lib/` (or whichever
 //     directory they point it at) and registers all of it.
 //
-// Re-generation flow (until build_runner integration lands):
+// Re-generation flow (CLI path, used for LOCAL widgets — build_runner
+// is reserved for wrapping third-party pub.dev packages via the
+// `lib/skal_codegen.yaml` marker file):
 //
 //   $ cd flutter/skal_flutter
 //   $ dart run ../../codegen/skal_codegen/bin/skal_codegen.dart \
 //       lib/adapters/greeting_widget.dart \
 //       -o lib/adapters/generated/skal_adapters.g.dart
+//
+// Emits both `skal_adapters.g.dart` (the Dart adapter) and a sibling
+// `skal_adapters.json` manifest the Vite plugin reads to auto-wire
+// the JSX side — no per-widget JS stub modules required.
 
 import 'package:flutter/material.dart';
 
@@ -60,6 +66,66 @@ class Greeting extends StatelessWidget {
           fontSize: fontSize,
           fontWeight: FontWeight.w600,
         ),
+      ),
+    );
+  }
+}
+
+/// A vertically-stacked group of children sitting on a colored card.
+/// Exercises the codegen's `List<Widget> children` encoding — every
+/// JSX child element becomes one row inside the column.
+///
+/// JSX usage:
+///
+/// ```jsx
+/// <Stickers background={0xFFFFE082} gap={8}>
+///   <Greeting name="Stacked A" />
+///   <Greeting name="Stacked B" />
+///   <Greeting name="Stacked C" />
+/// </Stickers>
+/// ```
+///
+/// Codegen output (see lib/adapters/generated/skal_adapters.g.dart):
+///
+/// ```dart
+/// children: List.generate(n.childCount, (i) => SkalNode(
+///                nodeId: n.childAt(i), bridge: bridge,
+///                key: ValueKey<int>(n.childAt(i)))),
+/// ```
+class Stickers extends StatelessWidget {
+  final List<Widget> children;
+  final Color background;
+  final double gap;
+  final double padding;
+
+  const Stickers({
+    super.key,
+    this.children = const [],
+    this.background = const Color(0xFFFFE082),
+    this.gap = 8.0,
+    this.padding = 12.0,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Interleave children with SizedBox gaps so we don't need
+    // `Column.gap` (which Flutter only added recently). Keeps the
+    // widget runnable on older Flutter versions in CI.
+    final spaced = <Widget>[];
+    for (var i = 0; i < children.length; i++) {
+      if (i > 0) spaced.add(SizedBox(height: gap));
+      spaced.add(children[i]);
+    }
+    return Container(
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      padding: EdgeInsets.all(padding),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: spaced,
       ),
     );
   }

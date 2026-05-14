@@ -11,7 +11,8 @@
 //      via the SDK + pub cache).
 //   2. The generator's AST walk finds the right class.
 //   3. The type mapper picks the right encoder for String / Color /
-//      double (the three FancyText param types — Slice 2 MVP scope).
+//      double (the three FancyText param types — the primitive baseline,
+//      with the other tests covering complex types on top).
 //   4. The default-value extraction reads param.defaultValueCode
 //      verbatim, so 'Hello' / const Color(0xFF000000) / 14.0 round-trip
 //      into the output unchanged.
@@ -164,6 +165,88 @@ void main() {
       expect(_normalize(result.source), _normalize(expected),
           reason: 'widget-child generator output does NOT match '
               'widget_child.expected.dart');
+    });
+
+    test('List<Widget> children: emits per-child SkalNode reader', () async {
+      // Two classes with `List<Widget>` params (named children + layers
+      // respectively) to confirm:
+      //   1. The encoding fires for List<Widget>, regardless of param name.
+      //   2. Generated reader walks NodeState.childCount — one SkalNode
+      //      per child, all keyed by node id.
+      //   3. Sibling primitive params (int, Color) compose with it.
+      //   4. The SkalNode import is pulled in just like for single-child.
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/widget_list.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/widget_list.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+
+      final result = generate(
+        units: [unitResult as ResolvedUnitResult],
+        sourceRelativeImports: ['widget_list.dart'],
+      );
+
+      expect(
+        result.generated.map((w) => w.className).toSet(),
+        {'Grid', 'LayerStack'},
+      );
+      expect(result.skipped, isEmpty,
+          reason: 'List<Widget> children should NOT cause skips');
+
+      final expected = File(expectedPath).readAsStringSync();
+      expect(_normalize(result.source), _normalize(expected),
+          reason: 'widget-list generator output does NOT match '
+              'widget_list.expected.dart');
+    });
+
+    test('named constructors: default + named both emit, redirect skipped',
+        () async {
+      // Three classes exercising the named-ctor matrix:
+      //   • Card    — default + named: emits <Card> AND <CardOutlined>
+      //   • Sheet   — only named:      emits <SheetElevated> (no <Sheet>)
+      //   • Link    — default + REDIRECTING named: emits ONLY <Link>
+      //                (the redirecting ctor delegates to the default,
+      //                so wrapping it would be a duplicate adapter)
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/named_ctors.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/named_ctors.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+
+      final result = generate(
+        units: [unitResult as ResolvedUnitResult],
+        sourceRelativeImports: ['named_ctors.dart'],
+      );
+
+      // Four adapters expected — Card, Card.outlined, Sheet.elevated,
+      // Link. NOT five: Link.empty redirects, so the eligibility filter
+      // drops it before emission.
+      expect(
+        result.generated.map((w) => w.className).toList(),
+        ['Card', 'CardOutlined', 'SheetElevated', 'Link'],
+      );
+      expect(result.skipped, isEmpty,
+          reason: 'named-ctor handling should not produce skip warnings '
+              '(redirecting ctors are silently filtered, not skipped)');
+
+      final expected = File(expectedPath).readAsStringSync();
+      expect(_normalize(result.source), _normalize(expected),
+          reason: 'named-ctor generator output does NOT match '
+              'named_ctors.expected.dart');
     });
 
     test('complex types: enum + Duration encoded correctly', () async {

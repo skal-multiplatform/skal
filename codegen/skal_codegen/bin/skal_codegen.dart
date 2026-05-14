@@ -209,24 +209,36 @@ Future<int> main(List<String> args) async {
     units.add(unitResult);
     // Decide how to import the source from the generated file:
     //
-    //   • If the analyzer resolved it via a `package:` URI (pub-cache
-    //     third-party packages always come back this way), import the
-    //     package's CANONICAL entry-point — `package:qr_flutter/qr_flutter.dart`
-    //     for any file in qr_flutter. That gives us not just the widget
-    //     class but also the package's transitive re-exports
-    //     (`QrVersions`, `QrErrorCorrectLevel`, etc.), which are
-    //     referenced as default values in the constructor and need to
-    //     be in scope at the generated adapter's call site.
+    //   • If the input lives INSIDE the consumer's project root,
+    //     use a path relative to the generated file. The analyzer
+    //     will return a `package:` URI for it too (lib/ IS the
+    //     consuming project's package namespace), but rewriting that
+    //     to a canonical entry-point would only work if the consumer
+    //     maintains a top-level `<pkg>.dart` barrel — which most
+    //     Flutter apps don't.
     //
-    //   • Otherwise (input is a local file inside the consumer's
-    //     project), use a path relative to the generated file. That's
-    //     the natural form for in-tree widgets.
-    final srcUri = unitResult.libraryElement2.uri;
-    if (srcUri.scheme == 'package' && srcUri.pathSegments.isNotEmpty) {
-      final pkg = srcUri.pathSegments.first;
-      relImports.add('package:$pkg/$pkg.dart');
+    //   • If the input lives OUTSIDE pkgRoot (i.e. it's a pub-cache
+    //     third-party package), import the package's CANONICAL
+    //     entry-point — `package:qr_flutter/qr_flutter.dart` for any
+    //     file in qr_flutter. That gives us not just the widget class
+    //     but also the package's transitive re-exports (`QrVersions`,
+    //     `QrErrorCorrectLevel`, etc.), which are referenced as
+    //     default values in the constructor and need to be in scope
+    //     at the generated adapter's call site.
+    final inputAbs = p.normalize(input);
+    final pkgRootAbs = p.normalize(pkgRoot);
+    final isLocal = p.isWithin(pkgRootAbs, inputAbs) ||
+        p.equals(pkgRootAbs, p.dirname(inputAbs));
+    if (isLocal) {
+      relImports.add(p.relative(inputAbs, from: p.dirname(absOutput)));
     } else {
-      relImports.add(p.relative(input, from: p.dirname(absOutput)));
+      final srcUri = unitResult.libraryElement2.uri;
+      if (srcUri.scheme == 'package' && srcUri.pathSegments.isNotEmpty) {
+        final pkg = srcUri.pathSegments.first;
+        relImports.add('package:$pkg/$pkg.dart');
+      } else {
+        relImports.add(p.relative(inputAbs, from: p.dirname(absOutput)));
+      }
     }
   }
 
@@ -239,9 +251,29 @@ Future<int> main(List<String> args) async {
   Directory(p.dirname(absOutput)).createSync(recursive: true);
   File(absOutput).writeAsStringSync(result.source);
 
+  // Sibling JSON manifest — same shape the build_runner Builder
+  // writes (see lib/builder.dart). Lets the Vite plugin pick up local
+  // CLI-emitted widgets via the same `skalCodegen({manifests: […]})`
+  // mechanism it uses for pub-package widgets, with no per-widget JS
+  // stub or per-package vite.config.js edits required.
+  //
+  // Filename: swap the `.g.dart` suffix for `.json` so the two
+  // outputs stay paired. `skal_adapters.g.dart` → `skal_adapters.json`.
+  final manifestPath = absOutput.endsWith('.g.dart')
+      ? '${absOutput.substring(0, absOutput.length - '.g.dart'.length)}.json'
+      : '$absOutput.json';
+  final manifest = {
+    'widgets': {
+      for (final w in result.generated) w.className: w.registryKey,
+    },
+  };
+  File(manifestPath).writeAsStringSync(
+      const JsonEncoder.withIndent('  ').convert(manifest));
+
   stdout.writeln(
       'Generated ${result.generated.length} widget(s) from '
       '${inputFiles.length} file(s) → $absOutput');
+  stdout.writeln('  manifest → $manifestPath');
   for (final w in result.generated) {
     stdout.write('  • ${w.className} → ${w.registryKey}');
     if (w.omittedOptionalParams.isNotEmpty) {

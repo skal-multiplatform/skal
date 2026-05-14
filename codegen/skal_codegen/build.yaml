@@ -15,6 +15,7 @@ builders:
     build_extensions:
       "skal_codegen.yaml":
         - "skal_codegen.g.dart"
+        - "skal_codegen.json"
     # Auto-run when consumers add us as a dev_dependency.
     auto_apply: dependents
     # Write directly to the consumer's source tree, not the build cache.

@@ -4,12 +4,15 @@
 //
 //   dart run skal_codegen <input...> [-o <output.dart>]
 //
-//     <input...>   One or more Dart files OR directories. Each
+//     <input...>   Zero or more Dart files OR directories. Each
 //                  directory is walked recursively for `*.dart`
 //                  files (excluding `*.g.dart` to avoid pulling in
-//                  prior codegen output).
+//                  prior codegen output). When `--package` is used,
+//                  inputs may be omitted and the CLI uses the
+//                  package's lib/ directory.
 //     -o, --out    Output path for the generated adapter file
-//                  (default: <first-input-dir>/generated/skal_adapters.g.dart)
+//                  (default: <first-input-dir>/generated/skal_adapters.g.dart
+//                   or <root>/lib/adapters/generated/<package>.g.dart with --package)
 //     -r, --root   Project root for type resolution. Defaults to the
 //                  current working directory. Must contain a
 //                  `pubspec.yaml` AND a `.dart_tool/package_config.json`
@@ -17,6 +20,12 @@
 //                  Required when wrapping a pub-cache package whose
 //                  own directory has no `.dart_tool/` — point this at
 //                  the CONSUMING project's root.
+//     -p, --package <name>
+//                  Resolve <name> via the consuming project's
+//                  `.dart_tool/package_config.json`, find its lib/
+//                  directory in pub-cache, and walk it as input.
+//                  Shorthand for typing the absolute pub-cache path.
+//                  Composes with bare inputs (everything gets merged).
 //
 // Multiple inputs feed into a SINGLE generated file. Devs typically
 // point at one directory (a package's `lib/`) and get one combined
@@ -37,6 +46,7 @@
 //     • Slider → slider
 //     • Toggle → toggle
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
@@ -53,6 +63,7 @@ Future<int> main(List<String> args) async {
   }
 
   final inputArgs = <String>[];
+  final packageNames = <String>[];
   String? outputPath;
   String? rootOverride;
   for (var i = 0; i < args.length; i++) {
@@ -69,6 +80,12 @@ Future<int> main(List<String> args) async {
         return 1;
       }
       rootOverride = args[++i];
+    } else if (a == '-p' || a == '--package') {
+      if (i + 1 >= args.length) {
+        stderr.writeln('error: $a requires a package name');
+        return 1;
+      }
+      packageNames.add(args[++i]);
     } else if (a.startsWith('-')) {
       stderr.writeln('error: unknown flag $a');
       _printUsage();
@@ -78,9 +95,43 @@ Future<int> main(List<String> args) async {
     }
   }
 
-  if (inputArgs.isEmpty) {
+  if (inputArgs.isEmpty && packageNames.isEmpty) {
     _printUsage();
     return 1;
+  }
+
+  // Project root has to come first — we need it to resolve --package
+  // names via .dart_tool/package_config.json. For bare-input usage
+  // (no --package), this also anchors the analyzer's package
+  // resolution. Order:
+  //   1. Explicit --root override
+  //   2. Current working directory if it looks like a Flutter project
+  //      (has both pubspec.yaml AND .dart_tool/package_config.json)
+  //   3. Walk up from the first input as a last-resort fallback
+  final firstInputForRootSearch = inputArgs.isNotEmpty
+      ? p.normalize(p.absolute(inputArgs.first))
+      : Directory.current.path;
+  final pkgRoot = _resolvePackageRoot(rootOverride, firstInputForRootSearch);
+  if (pkgRoot == null) {
+    stderr.writeln(
+        'error: could not determine a project root. Pass --root <path> to '
+        'a directory with pubspec.yaml + .dart_tool/package_config.json '
+        '(i.e. a Flutter project where `flutter pub get` has been run).');
+    return 1;
+  }
+
+  // Expand --package names into their pub-cache lib/ directories.
+  // These go into `inputArgs` alongside any bare files/dirs the dev
+  // passed, then the existing walk handles everything uniformly.
+  for (final pkgName in packageNames) {
+    final libDir = _resolvePackageLibDir(pkgRoot, pkgName);
+    if (libDir == null) {
+      stderr.writeln(
+          'error: package "$pkgName" not found in $pkgRoot/.dart_tool/'
+          'package_config.json. Did you `flutter pub get` after adding it?');
+      return 1;
+    }
+    inputArgs.add(libDir);
   }
 
   // Expand each input arg (file or directory) into a flat list of
@@ -105,31 +156,20 @@ Future<int> main(List<String> args) async {
   }
   inputFiles.sort();
 
-  // Anchor the analyzer at the CONSUMING project, not at the input
-  // file's nearest pubspec. Inputs can live in pub-cache (when wrapping
-  // third-party packages), and pub-cache directories don't have
-  // `.dart_tool/package_config.json` — analyzer can't resolve
-  // `package:flutter/…` from there.
-  //
-  // Order of resolution:
-  //   1. Explicit --root override
-  //   2. Current working directory if it looks like a Flutter project
-  //      (has both pubspec.yaml AND .dart_tool/package_config.json)
-  //   3. Walk up from the first input as a last-resort fallback
-  //      (useful when the dev's input IS inside their own project)
-  final pkgRoot = _resolvePackageRoot(rootOverride, inputFiles.first);
-  if (pkgRoot == null) {
-    stderr.writeln(
-        'error: could not determine a project root. Pass --root <path> to '
-        'a directory with pubspec.yaml + .dart_tool/package_config.json '
-        '(i.e. a Flutter project where `flutter pub get` has been run).');
-    return 1;
+  // Default output:
+  //   • With --package <name>: <pkgRoot>/lib/adapters/generated/<name>.g.dart
+  //     The standard place wrapped-package adapters live in the
+  //     consumer's source tree.
+  //   • Otherwise: alongside the first input under generated/.
+  if (outputPath == null) {
+    if (packageNames.length == 1) {
+      outputPath = p.join(pkgRoot, 'lib', 'adapters', 'generated',
+          '${packageNames.first}.g.dart');
+    } else {
+      outputPath = p.join(p.dirname(inputFiles.first), 'generated',
+          'skal_adapters.g.dart');
+    }
   }
-
-  // Default output: under the same package root as the first input,
-  // in lib/generated/. Devs typically override this per-package.
-  outputPath ??= p.join(p.dirname(inputFiles.first), 'generated',
-      'skal_adapters.g.dart');
   final absOutput = p.normalize(p.absolute(outputPath));
 
   // Single analyzer context anchored at the consumer's project. We
@@ -211,6 +251,58 @@ Future<int> main(List<String> args) async {
     }
   }
   return 0;
+}
+
+/// Resolve a package name to its lib/ directory on disk, via the
+/// consumer project's `.dart_tool/package_config.json`. Returns null
+/// if the package isn't listed (consumer hasn't run `flutter pub get`
+/// since adding it) or the file is missing.
+///
+/// package_config.json format (configVersion 2):
+///
+/// ```json
+/// {
+///   "configVersion": 2,
+///   "packages": [
+///     {
+///       "name":         "qr_flutter",
+///       "rootUri":      "file:///…/.pub-cache/hosted/pub.dev/qr_flutter-4.1.0",
+///       "packageUri":   "lib/",
+///       "languageVersion": "2.19"
+///     }
+///   ]
+/// }
+/// ```
+///
+/// We resolve `<rootUri>/<packageUri>` (file URI → filesystem path)
+/// and return the joined lib/ directory.
+String? _resolvePackageLibDir(String pkgRoot, String packageName) {
+  final cfgPath = p.join(pkgRoot, '.dart_tool', 'package_config.json');
+  final cfgFile = File(cfgPath);
+  if (!cfgFile.existsSync()) return null;
+
+  final Map<String, dynamic> cfg;
+  try {
+    cfg = jsonDecode(cfgFile.readAsStringSync()) as Map<String, dynamic>;
+  } on FormatException {
+    return null;
+  }
+  final pkgs = (cfg['packages'] as List?) ?? const [];
+  for (final entry in pkgs.cast<Map<String, dynamic>>()) {
+    if (entry['name'] != packageName) continue;
+    final rootUri = entry['rootUri'] as String?;
+    final packageUri = entry['packageUri'] as String?;
+    if (rootUri == null) return null;
+    // rootUri is typically an absolute `file://...` URI for pub-cache
+    // packages. For path-style deps (e.g. monorepo siblings) it can
+    // be a relative `../foo` URI that needs to be resolved against
+    // the package_config.json's parent dir.
+    final base = Uri.file(p.join(pkgRoot, '.dart_tool/'));
+    final resolved = base.resolve(rootUri);
+    final rootPath = resolved.toFilePath();
+    return p.normalize(p.join(rootPath, packageUri ?? 'lib/'));
+  }
+  return null;
 }
 
 /// Recursively find all `.dart` files under [dir], excluding generated

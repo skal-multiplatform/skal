@@ -313,6 +313,30 @@ export default function App() {
             setTickerLog(`bogus() rejected: ${e.message}`);
           }
         }} />
+        {/* Stress test: fire 1000 concurrent ref.getValue() RPCs,
+            await Promise.all, verify all resolve to the same value
+            (no callId race), report timing. Exercises:
+              • Monotonic callId allocation under burst load
+              • pendingCalls Map size growth + clean teardown
+              • Op-ring fill-then-commit cycle
+              • Event-ring drain throughput */}
+        <Button label="stress 1000" onClick={async () => {
+          const N = 1000;
+          const t0 = performance.now();
+          const promises = [];
+          for (let i = 0; i < N; i++) promises.push(ticker.getValue());
+          const results = await Promise.all(promises);
+          const ms = (performance.now() - t0).toFixed(2);
+          const min = Math.min(...results);
+          const max = Math.max(...results);
+          // All N replies should resolve. min/max should be close
+          // (value may have ticked during the test) — but never null
+          // or undefined.
+          setTickerLog(
+            `${N} RPCs in ${ms}ms · resolved=${results.length}/${N} · `
+            + `min=${min} max=${max} · ${(ms / N * 1000).toFixed(0)}µs/call`,
+          );
+        }} />
         {/* Stream subscription. `ticks$` (note the trailing $) tells
             the runtime "this is a stream method"; we get an
             unsubscribe function back. Each tick emission updates the

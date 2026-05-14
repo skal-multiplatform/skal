@@ -62,7 +62,14 @@ import 'package:path/path.dart' as p;
 
 import 'package:skal_codegen/src/generator.dart';
 
-Future<int> main(List<String> args) async {
+Future<void> main(List<String> args) async {
+  exit(await _runMain(args));
+}
+
+/// Inner main that returns an exit code. Wrapped by [main] so the
+/// caller can `exit()` with the returned value — `dart run` doesn't
+/// propagate `Future<int>`'s value to the process exit code reliably.
+Future<int> _runMain(List<String> args) async {
   if (args.isEmpty || args.contains('-h') || args.contains('--help')) {
     _printUsage();
     return args.isEmpty ? 1 : 0;

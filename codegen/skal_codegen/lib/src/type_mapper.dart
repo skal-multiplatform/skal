@@ -233,6 +233,18 @@ PropEncoding? encodingFor({
     final cleanTypeName = typeName.endsWith('?')
         ? typeName.substring(0, typeName.length - 1)
         : typeName;
+    // Nullable `EnumType?` — a missing JSX prop reads as `null`, not
+    // `values[defaultIndex]`. Same nullable-coercion gap the numeric
+    // + Color encoders had; the IIFE reads the U32 slot once and maps
+    // null → null.
+    if (typeName.endsWith('?')) {
+      return PropEncoding(
+        readerExpression:
+            "(() { final i = n.getCustomPropU32OrNull('$paramName'); "
+            "return i == null ? null : $cleanTypeName.values[i]; })()",
+        dartTypeName: typeName,
+      );
+    }
     return PropEncoding(
       readerExpression:
           "$cleanTypeName.values[n.getCustomPropU32('$paramName', $defaultIndex)]",
@@ -256,6 +268,17 @@ PropEncoding? encodingFor({
     final micros =
         defaultConstant?.getField('_duration')?.toIntValue() ?? 0;
     final defaultMs = micros ~/ 1000;
+    // Nullable `Duration?` — a missing JSX prop reads as `null`, not
+    // `Duration(milliseconds: 0)`. Same nullable-coercion gap as the
+    // numeric / Color / enum encoders.
+    if (typeName.endsWith('?')) {
+      return PropEncoding(
+        readerExpression:
+            "(() { final ms = n.getCustomPropU32OrNull('$paramName'); "
+            "return ms == null ? null : Duration(milliseconds: ms); })()",
+        dartTypeName: typeName,
+      );
+    }
     return PropEncoding(
       readerExpression:
           "Duration(milliseconds: n.getCustomPropU32('$paramName', $defaultMs))",

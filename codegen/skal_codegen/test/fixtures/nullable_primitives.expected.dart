@@ -27,10 +27,20 @@ Widget _build_Tunable(NodeState n, SkalBridge bridge) {
       final v = n.getCustomPropU32OrNull('tint');
       return v == null ? null : Color(v);
     })(),
+    density: (() {
+      final i = n.getCustomPropU32OrNull('density');
+      return i == null ? null : Density.values[i];
+    })(),
+    fadeIn: (() {
+      final ms = n.getCustomPropU32OrNull('fadeIn');
+      return ms == null ? null : Duration(milliseconds: ms);
+    })(),
     scale: n.getCustomPropF32('scale', 1.0),
     priority: n.getCustomPropU32('priority', 0),
     enabled: n.getCustomPropU32('enabled', 1) != 0,
     background: Color(n.getCustomPropU32('background', 0xFF202020)),
+    layout: Density.values[n.getCustomPropU32('layout', 1)],
+    animation: Duration(milliseconds: n.getCustomPropU32('animation', 250)),
   );
 }
 

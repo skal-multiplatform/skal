@@ -658,9 +658,553 @@ PropEncoding? encodingFor({
     );
   }
 
+  // Generic value-class encoder — last-resort match before giving up.
+  //
+  // Many third-party packages expose plain Dart data classes as
+  // constructor params (flutter_map's MapOptions, LatLng, LatLngBounds;
+  // syncfusion's series-config objects; etc.). They're not Widgets,
+  // they don't hold runtime state, and their constructor params are
+  // recursively encodable. The hand-coded branches above (Color,
+  // Duration, TextStyle, BoxDecoration, Gradient, …) are special cases
+  // of this same pattern; this branch generalizes the algorithm.
+  //
+  // Algorithm: walk the type's constructor params, recursively emit a
+  // JSON reader per param type. The reader is a top-level helper named
+  // `_skalParseT(Object? raw)` that handles BOTH the top-level
+  // String-from-prop case AND the nested Object-from-parent-JSON case
+  // (the inner `if (raw is String)` branches on which one it is).
+  //
+  // Bounded by:
+  //   • A depth limit ([_kValueClassMaxDepth]) so a pathological type
+  //     graph can't blow the codegen stack.
+  //   • A cycle-detection Set keyed by element identity — if T's
+  //     constructor reaches T again transitively, we bail with a
+  //     skip rather than infinite-recurse.
+  //   • A denylist of known stateful types ([_isStatefulTypeDenied])
+  //     — controllers, plugin-channel-backed classes — which look
+  //     structurally like value classes but aren't.
+  //   • Method/field heuristics ([_looksStateful]) — anything with a
+  //     `dispose()` method, ChangeNotifier mixin, etc.
+  //
+  // What stays NOT handled here (deferred to Phase 2/3):
+  //   • Abstract / sealed types with multiple concrete subclasses —
+  //     would need discriminator inference. Gradient's hand-coded
+  //     branch above is the current shape.
+  //   • `List<ValueClass>` — needs an elementwise recursion shape.
+  //     Phase 3.
+  final valueClassEnc = _tryValueClassEncoding(
+    type: type,
+    paramName: paramName,
+    defaultLiteral: defaultLiteral,
+  );
+  if (valueClassEnc != null) return valueClassEnc;
+
   // Unsupported (yet). Caller decides: skip the widget with a warning,
   // or fall through to a hand-written adapter slot.
   return null;
+}
+
+// ── Generic value-class encoder ─────────────────────────────────────
+
+/// Cap the depth of the value-class recursion. A constructor parameter
+/// whose own constructor params are themselves value classes counts
+/// one level deeper. 8 is generous — real type graphs (MapOptions →
+/// LatLng/InteractionOptions/CameraConstraint → primitives) reach 2-3.
+const int _kValueClassMaxDepth = 8;
+
+/// Class names we explicitly reject from the value-class auto-encoder
+/// even though they're structurally constructor-driven. These are
+/// either controller classes (mutable state, plugin channels) or
+/// types where reconstruction-from-JSON breaks the widget's contract.
+/// Each entry must be matched by a `_looksStateful` heuristic too
+/// when possible; this denylist is just a fast path + a guarantee for
+/// well-known cases the heuristic might miss.
+const Set<String> _kStatefulDenylist = {
+  'MapController',
+  'AnimationController',
+  'TextEditingController',
+  'ScrollController',
+  'PageController',
+  'TabController',
+  'CameraController',
+  'VideoPlayerController',
+  'TransformationController',
+  'OverlayPortalController',
+  'WebViewController',
+  // Stream / Future / Completer — control flow, not data.
+  'Stream', 'StreamController', 'StreamSubscription',
+  'Future', 'FutureOr', 'Completer',
+  // Subscription handles that wrap a listener.
+  'Listenable', 'ValueListenable', 'ChangeNotifier', 'ValueNotifier',
+};
+
+/// Mixin / supertype names that signal "this class is stateful and
+/// shouldn't be reconstructed from JSON each render."
+const Set<String> _kStatefulMixinNames = {
+  'ChangeNotifier',
+  'TickerProvider',
+  'TickerProviderStateMixin',
+  'SingleTickerProviderStateMixin',
+  'Listenable',
+  'ValueListenable',
+};
+
+/// Try to build a top-level helper that decodes [type] from a JSON-
+/// shaped value (String OR Map). Returns the resulting [PropEncoding]
+/// (which references the helper) or null if [type] isn't a viable
+/// value class.
+PropEncoding? _tryValueClassEncoding({
+  required DartType type,
+  required String paramName,
+  required String? defaultLiteral,
+}) {
+  final typeName = type.getDisplayString();
+  final isNullable = typeName.endsWith('?');
+
+  // Build (and dedup) helpers for this type + every value class it
+  // references transitively. Helpers map is shared across the
+  // recursion so a type referenced from multiple places emits once.
+  // [imports] collects package URIs for every type the helper chain
+  // references — LatLng might live in a different pub package than
+  // its parent value class (latlong2 vs flutter_map, for instance),
+  // and the generated file needs all of them in scope.
+  final helpers = <String, String>{};
+  final visiting = <int>{};
+  final imports = <String>{'dart:convert'};
+  final helperName = _buildValueClassHelper(
+    type: type,
+    helpers: helpers,
+    visiting: visiting,
+    imports: imports,
+    depth: 0,
+  );
+  if (helperName == null) return null;
+
+  // Reader expression. For nullable params, missing prop → null
+  // assigns cleanly. For non-nullable, missing prop → either the
+  // declared default literal (if any) or a runtime crash via `!`.
+  //
+  // The Gradient encoder uses a similar pattern; mirror its shape for
+  // consistency.
+  final String reader;
+  if (isNullable) {
+    reader = "$helperName(n.getCustomPropStr('$paramName'))";
+  } else if (defaultLiteral != null) {
+    reader = "($helperName(n.getCustomPropStr('$paramName')) ?? "
+        "$defaultLiteral)";
+  } else {
+    // No default + non-nullable. Mark with `!` so the developer's
+    // failure mode is a clear NPE pointing at the prop rather than
+    // a constructor with all-null args.
+    reader = "$helperName(n.getCustomPropStr('$paramName'))!";
+  }
+
+  return PropEncoding(
+    readerExpression: reader,
+    dartTypeName: typeName,
+    requiredImports: imports.toList(),
+    requiredHelpers: helpers,
+  );
+}
+
+/// Build (and register in [helpers]) a parser helper for [type], plus
+/// any nested helpers it references. Returns the helper function name
+/// — e.g. `_skalParseMapOptions` for `MapOptions`. Returns null if
+/// [type] isn't a viable value class at this point in the recursion.
+/// Side-effect: adds the canonical `package:` import for [type] (and
+/// every referenced type, transitively) to [imports].
+String? _buildValueClassHelper({
+  required DartType type,
+  required Map<String, String> helpers,
+  required Set<int> visiting,
+  required Set<String> imports,
+  required int depth,
+}) {
+  if (depth > _kValueClassMaxDepth) return null;
+
+  final el = type.element3;
+  if (el is! ClassElement2) return null;
+  final className = el.name3;
+  if (className == null || className.isEmpty) return null;
+
+  // Eligibility heuristics — fast-rejects first.
+  if (el.isAbstract) return null;
+  if (_kStatefulDenylist.contains(className)) return null;
+  // Widget subclasses are NOT value classes — they're UI nodes. A
+  // constructor param typed as a narrow Widget subtype (e.g.
+  // `Text source` on flutter_map's SimpleAttributionWidget) must go
+  // through the SkalNode child mechanism, not get JSON-reconstructed
+  // here. Without this guard the encoder happily emits a
+  // `_skalParseText` that rebuilds a Text widget from a JSON prop —
+  // it compiles, but bypasses the bridge's node model and is
+  // inconsistent with how every other widget child is handled. Let
+  // such params fall through to the unsupported-type skip instead.
+  if (_extendsWidgetTransitively(el)) return null;
+  if (_looksStateful(el)) return null;
+
+  // Cycle detection. We key by identityHashCode so mutually recursive
+  // types (A → B → A) bail rather than infinite-loop. Same primitive
+  // the duplicate-emission dedup uses up in generate().
+  final id = identityHashCode(el);
+  if (!visiting.add(id)) return null;
+
+  try {
+    final helperName = '_skalParse$className';
+    if (helpers.containsKey(helperName)) {
+      // Already emitted; the import is presumed already tracked too.
+      _addCanonicalImport(el, imports);
+      return helperName;
+    }
+    _addCanonicalImport(el, imports);
+
+    // Pick a constructor: prefer the default unnamed ctor, fall back
+    // to the first non-redirecting public named ctor. Reject pure-
+    // factory-only classes (factory ctors often imply hidden state).
+    final ctor = _pickValueClassCtor(el);
+    if (ctor == null) return null;
+
+    // For each ctor param, emit an expression that reconstructs that
+    // param from the parent JSON map's same-named field. Encoding
+    // failure on an OPTIONAL param (has a source-level default or is
+    // a non-required named param) → silently skip that field; the
+    // constructor takes its declared default. Encoding failure on a
+    // REQUIRED param → abort the whole helper (we can't construct a
+    // partial T). This matches how the top-level widget walk handles
+    // unsupported params: skip with a warning for required, omit
+    // silently for optional.
+    final fieldExprs = <String>[];
+    for (final param in ctor.formalParameters) {
+      final name = param.name3;
+      if (name == null || name.isEmpty) return null;
+      final reader = _emitJsonReaderForField(
+        type: param.type,
+        jsonExpr: "j['$name']",
+        helpers: helpers,
+        visiting: visiting,
+        imports: imports,
+        depth: depth + 1,
+      );
+      if (reader == null) {
+        final isRequired = param.isRequiredNamed || param.isRequiredPositional;
+        if (isRequired) return null;
+        // Optional param the encoder can't handle (callbacks, abstract
+        // base classes, etc.) — skip. The constructor uses its source
+        // default. flutter_map's MapOptions has ~15 callback fields
+        // like `onTap`, `onMapEvent`; those stay unset rather than
+        // blocking the entire MapOptions helper.
+        continue;
+      }
+      // The reader expression is always nullable (returns null on
+      // missing/wrong-shape JSON). For non-nullable constructor params,
+      // we need a non-null fallback: prefer the source-level default
+      // expression (so `MapInit(initialZoom: 13.0)` round-trips correctly);
+      // otherwise synthesize a type-shaped zero (0.0, 0, '', false) so
+      // the generated code at least compiles. As a last resort fall
+      // back to a `!` non-null assertion — the JSX consumer must then
+      // supply the field, or a clear runtime NPE points at it.
+      final paramDefault = param.defaultValueCode;
+      final paramTypeName = param.type.getDisplayString();
+      final isParamNullable = paramTypeName.endsWith('?');
+      String coerced;
+      if (isParamNullable) {
+        // Nullable param: pass nullable reader through unchanged.
+        // Explicit null in JSON or missing field both → null, which
+        // is what the dev's API contract expects.
+        coerced = reader;
+      } else if (paramDefault != null) {
+        coerced = '$reader ?? $paramDefault';
+      } else {
+        // Non-nullable, no default. Synthesize a zero-value fallback
+        // for the primitive types so the generated code compiles; the
+        // dev still sees the WRONG behavior at runtime if they forget
+        // to pass the field. For value-class or other types we use
+        // `!` since there's no safe zero to synthesize.
+        final zero = _zeroValueForType(param.type);
+        coerced = zero != null ? '$reader ?? $zero' : '$reader!';
+      }
+      final fieldExpr = param.isPositional ? coerced : '$name: $coerced';
+      fieldExprs.add('    $fieldExpr,');
+    }
+
+    // Build the constructor invocation. Default ctor → `Foo(...)`,
+    // named ctor → `Foo.bar(...)`. (Picking a named ctor over the
+    // default is uncommon but flutter_map's LatLngBounds is one such
+    // case — its default ctor is a `factory` we reject, leaving the
+    // `.unsafe` named ctor as the first viable choice.)
+    final ctorName = ctor.name3 ?? '';
+    final ctorInvocation =
+        (ctorName.isEmpty || ctorName == 'new') ? className : '$className.$ctorName';
+
+    // Register the shared "is this a JSON object or a JSON string we
+    // need to decode" helper. Every value-class helper delegates to it
+    // so the per-class body stays a one-liner. Saves ~10 lines per
+    // helper at scale (the flutter_map run emits ~10 value-class
+    // helpers — about 100 lines of boilerplate condensed to 1).
+    helpers['_skalDecodeMap'] = _decodeMapHelperSource;
+
+    final body = StringBuffer()
+      ..writeln('$className? $helperName(Object? raw) {')
+      ..writeln('  final j = _skalDecodeMap(raw);')
+      ..writeln('  if (j == null) return null;')
+      ..writeln('  return $ctorInvocation(')
+      ..writeAll(fieldExprs.map((l) => '$l\n'))
+      ..writeln('  );')
+      ..write('}');
+    helpers[helperName] = body.toString();
+    return helperName;
+  } finally {
+    visiting.remove(id);
+  }
+}
+
+/// Emit a Dart expression that decodes [type] from [jsonExpr] (a Dart
+/// expression of static type `Object?` — typically `j['fieldName']`).
+/// Returns null if the type isn't decodable from JSON. Side-effect:
+/// any type referenced (enum class, nested value class) gets its
+/// canonical `package:` import added to [imports].
+String? _emitJsonReaderForField({
+  required DartType type,
+  required String jsonExpr,
+  required Map<String, String> helpers,
+  required Set<int> visiting,
+  required Set<String> imports,
+  required int depth,
+}) {
+  if (depth > _kValueClassMaxDepth) return null;
+
+  // Primitives that jsonDecode produces directly.
+  if (_isCoreString(type)) {
+    return '($jsonExpr) as String?';
+  }
+  if (_isCoreDouble(type)) {
+    return '(($jsonExpr) as num?)?.toDouble()';
+  }
+  if (_isCoreInt(type)) {
+    return '(($jsonExpr) as num?)?.toInt()';
+  }
+  if (_isCoreBool(type)) {
+    return '($jsonExpr) as bool?';
+  }
+  // Color: int-as-ARGB or '#RRGGBB[AA]' string. The Gradient helpers
+  // already cover this exactly — reuse _skalParseColor and pull in
+  // its source via [helpers]. _skalParseColor itself is non-nullable
+  // (falls through to opaque black on garbage input — correct for
+  // gradient color arrays where missing entries don't make sense);
+  // wrap with a null-guard here so a missing/null field in the
+  // parent JSON propagates as null up the recursion chain instead
+  // of becoming an unintended opaque-black.
+  if (_isFlutterColor(type)) {
+    helpers['_skalParseColor'] = _gradientColorHelperSource;
+    return '(($jsonExpr) == null ? null : _skalParseColor($jsonExpr))';
+  }
+  // Duration: milliseconds int. Use a helper so the result is nullable
+  // (Duration?) — the outer-level fallback chain (`?? const Duration(…)`
+  // for non-nullable fields with a source default) only works if the
+  // reader CAN be null. Inlining the conditional here keeps the call
+  // site readable.
+  if (_isDuration(type)) {
+    helpers['_skalParseDuration'] = '''
+Duration? _skalParseDuration(Object? raw) {
+  if (raw is! num) return null;
+  return Duration(milliseconds: raw.toInt());
+}''';
+    return '_skalParseDuration($jsonExpr)';
+  }
+  // Enum by name OR by index. Emit an inline switch on `.name`,
+  // fall back to `values[index]` if the JSON has an int.
+  if (_isEnum(type)) {
+    final el = type.element3;
+    if (el is EnumElement2) {
+      final enumName = el.name3 ?? '';
+      _addCanonicalImport(el, imports);
+      // Build a tiny per-enum decoder. Keys: 'EnumX' → byName lookup.
+      final helperName = '_skalParseEnum$enumName';
+      if (!helpers.containsKey(helperName)) {
+        final cases = <String>[];
+        for (final v in el.constants2) {
+          final n = v.name3;
+          if (n == null) continue;
+          cases.add("    case '$n': return $enumName.$n;");
+        }
+        helpers[helperName] = '$enumName? $helperName(Object? raw) {\n'
+            '  if (raw is int) {\n'
+            '    if (raw < 0 || raw >= $enumName.values.length) return null;\n'
+            '    return $enumName.values[raw];\n'
+            '  }\n'
+            '  if (raw is String) {\n'
+            '    switch (raw) {\n'
+            '${cases.join("\n")}\n'
+            '    }\n'
+            '  }\n'
+            '  return null;\n'
+            '}';
+      }
+      return '$helperName($jsonExpr)';
+    }
+  }
+  // Offset { dx, dy }
+  if (_isFlutterOffset(type)) {
+    helpers['_skalParseOffset'] = '''
+Offset? _skalParseOffset(Object? raw) {
+  if (raw is List && raw.length == 2) {
+    return Offset((raw[0] as num).toDouble(), (raw[1] as num).toDouble());
+  }
+  if (raw is Map<String, dynamic>) {
+    final dx = (raw['dx'] as num?)?.toDouble() ?? 0.0;
+    final dy = (raw['dy'] as num?)?.toDouble() ?? 0.0;
+    return Offset(dx, dy);
+  }
+  return null;
+}''';
+    return '_skalParseOffset($jsonExpr)';
+  }
+  // Alignment — reuse the Gradient helper. Same null-guard rationale
+  // as Color: the Gradient version is non-nullable (defaults to
+  // Alignment.center), so we have to short-circuit explicitly when the
+  // parent JSON omits the field.
+  if (_isFlutterAlignment(type)) {
+    helpers['_skalParseAlignment'] = _gradientAlignmentHelperSource;
+    return '(($jsonExpr) == null ? null : _skalParseAlignment($jsonExpr))';
+  }
+  // Recurse: nested value class.
+  final nestedHelper = _buildValueClassHelper(
+    type: type,
+    helpers: helpers,
+    visiting: visiting,
+    imports: imports,
+    depth: depth,
+  );
+  if (nestedHelper != null) {
+    return '$nestedHelper($jsonExpr)';
+  }
+  return null;
+}
+
+/// Add the import URI for [el]'s declaring library to [imports].
+///
+/// Only `package:` URIs are added. For nested value-class references
+/// (LatLng in latlong2, the various Map* config types in flutter_map
+/// subdirs) we use the library's ACTUAL `package:` URI — even if it
+/// points at an `src/...dart` internal path — rather than the
+/// `package:<pkg>/<pkg>.dart` canonical-entry-point heuristic. Reason:
+/// not every package's entry-point file is named after the package
+/// (latlong2 exports via `package:latlong2/latlong.dart`, not
+/// `latlong2.dart` — note the missing `2`). The actual library URI
+/// is correct for every case.
+///
+/// `dart:` URIs are skipped (already in scope implicitly).
+///
+/// Non-package, non-dart URIs (`file://...`, in-project relative
+/// paths) are skipped TOO — those come from the consumer's own
+/// source tree, which the generator already imports through its
+/// `sourceRelativeImports` machinery per top-level walked unit. We
+/// can't predict the right relative path from the encoder; the unit
+/// walk already handled it.
+void _addCanonicalImport(Element2 el, Set<String> imports) {
+  final lib = el.library2;
+  if (lib == null) return;
+  final uri = lib.uri;
+  if (uri.scheme != 'package') return;
+  imports.add(uri.toString());
+}
+
+/// Pick a constructor we can call with all named/positional args derived
+/// from JSON. Prefer the default (unnamed) constructor; fall back to the
+/// first public, non-factory, non-redirecting named constructor. Reject
+/// classes with NO suitable ctor.
+ConstructorElement2? _pickValueClassCtor(ClassElement2 cls) {
+  ConstructorElement2? best;
+  for (final c in cls.constructors2) {
+    final name = c.name3 ?? '';
+    if (name.startsWith('_')) continue;          // private
+    if (c.isFactory) continue;                   // factory hides state
+    if (c.redirectedConstructor2 != null) continue;
+    // Prefer the default (unnamed → name is 'new' in the new model).
+    if (name == 'new' || name.isEmpty) return c;
+    best ??= c;
+  }
+  return best;
+}
+
+/// True if [cls] is `Widget` or transitively extends it. Used to keep
+/// the value-class encoder from JSON-reconstructing UI nodes — those
+/// belong to the SkalNode child path. Distinct from [_isFlutterWidget],
+/// which strict-matches only the four top-level abstract Widget types
+/// (for the "render a child here" encoding); this one walks the whole
+/// supertype chain so narrow subclasses (`Text`, `Container`, package-
+/// defined widgets) are caught too.
+bool _extendsWidgetTransitively(ClassElement2 cls) {
+  if (cls.name3 == 'Widget') return true;
+  var sup = cls.supertype;
+  while (sup != null) {
+    if (sup.element3.name3 == 'Widget') return true;
+    sup = sup.element3.supertype;
+  }
+  return false;
+}
+
+/// Return a Dart source literal that's a valid non-null value of [t],
+/// for use as a last-resort fallback when a constructor param is
+/// non-nullable, has no source-level default, AND the JSON didn't
+/// supply it. Returns null if there's no obvious zero value (e.g.
+/// for a custom class — `!` is the only fallback in that case).
+String? _zeroValueForType(DartType t) {
+  if (_isCoreDouble(t)) return '0.0';
+  if (_isCoreInt(t)) return '0';
+  if (_isCoreBool(t)) return 'false';
+  if (_isCoreString(t)) return "''";
+  return null;
+}
+
+/// Structural check for "this class has runtime state we shouldn't
+/// reconstruct from JSON." False here doesn't mean "definitely a value
+/// class" — it just means "no obvious red flag." The denylist above
+/// handles known-bad cases the heuristic might miss.
+bool _looksStateful(ClassElement2 cls) {
+  // dispose() method → almost always resource-management.
+  for (final m in cls.methods2) {
+    if (m.name3 == 'dispose') return true;
+  }
+  // Mixin or supertype names that signal stateful behavior.
+  for (final mx in cls.mixins) {
+    if (_kStatefulMixinNames.contains(mx.element3.name3)) return true;
+  }
+  var sup = cls.supertype;
+  while (sup != null) {
+    final n = sup.element3.name3;
+    if (_kStatefulMixinNames.contains(n)) return true;
+    sup = sup.element3.supertype;
+  }
+  // Walk the instance fields looking for signals of mutable state.
+  for (final f in cls.fields2) {
+    if (f.isStatic) continue;
+    // Skip SYNTHETIC fields — these are the analyzer's induced
+    // backing entries for explicit getters/setters (`int get hashCode`,
+    // `bool get isEmpty`, etc.), not real stored state. They report
+    // `isFinal == false`, so without this skip ANY value class that
+    // overrides `==`/`hashCode` or exposes a computed getter — which
+    // is most well-written value classes — gets wrongly flagged
+    // stateful and rejected. Real declared fields (`final double x`
+    // or the mutable `double x`) are NOT synthetic and still checked.
+    if (f.isSynthetic) continue;
+    final ft = f.type;
+    final n = ft.element3?.name3;
+    // Stream/Future/StreamController fields → definitely not a value
+    // class.
+    if (n == 'Stream' || n == 'Future' || n == 'StreamController') {
+      return true;
+    }
+    // NON-FINAL instance fields → mutable state. flutter_map's
+    // LatLngBounds is the motivating case: `double north;` (not
+    // final) means the class is intended to be mutated post-
+    // construction. Reconstructing it from JSON each render loses
+    // any mutations the dev applied. Skip these and let the dev
+    // wrap manually (or via the host pattern if they need lifecycle).
+    // (`late final` and `late` non-final follow the same rule —
+    // `late` without `final` is mutable too.)
+    if (!f.isFinal) return true;
+  }
+  return false;
 }
 
 bool _isCoreString(DartType t) =>
@@ -802,6 +1346,25 @@ Color _skalParseColor(dynamic v) {
     return Color(int.parse(s, radix: 16));
   }
   return const Color(0xFF000000);
+}''';
+
+/// Shared decode-or-pass-through helper used by every generic value-
+/// class helper (`_skalParseT(...)`). Accepts an already-decoded
+/// `Map<String, dynamic>`, OR a JSON string that we decode here,
+/// OR any other shape → returns null. Centralizing this saves ~10
+/// lines of boilerplate per value-class helper.
+const String _decodeMapHelperSource = '''
+Map<String, dynamic>? _skalDecodeMap(Object? raw) {
+  if (raw == null) return null;
+  if (raw is Map<String, dynamic>) return raw;
+  if (raw is String) {
+    if (raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+  }
+  return null;
 }''';
 
 /// Helper for parsing Alignment from JSON. Accepts named presets

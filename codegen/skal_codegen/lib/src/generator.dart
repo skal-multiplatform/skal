@@ -338,10 +338,25 @@ GenerationResult generate({
     //     package's constructor declares as defaults. Suppressing here
     //     so the consumer's `dart analyze` stays green when wrapping
     //     a package that hasn't migrated yet.
+    //   • implementation_imports / unnecessary_import — the value-
+    //     class encoder imports a referenced type's ACTUAL declaring
+    //     library (e.g. `package:flutter_map/src/.../tile_layer.dart`)
+    //     because not every package's public entry-point file is named
+    //     after the package (latlong2 exports via `latlong.dart`). The
+    //     declaring URI is always correct but is sometimes an internal
+    //     `src/` path that a package ALSO re-exports from its public
+    //     entry-point — triggering both lints. Machine-generated
+    //     imports legitimately can't always pick the canonical export.
+    //   • depend_on_referenced_packages — a value-class param can pull
+    //     in a TRANSITIVE dependency (LatLng lives in latlong2, a dep
+    //     of flutter_map, not of the consumer directly). The import
+    //     resolves fine via the package config; the lint just wants
+    //     the consumer to declare it. Not actionable from generated code.
     ..writeln('//')
     ..writeln('// ignore_for_file: non_constant_identifier_names, '
         'sort_child_properties_last, unused_import, '
-        'deprecated_member_use')
+        'deprecated_member_use, implementation_imports, '
+        'unnecessary_import, depend_on_referenced_packages')
     ..writeln()
     ..writeln("import 'package:flutter/material.dart';")
     ..writeln("import 'package:skal_flutter/skal/bridge.dart';")

@@ -9,7 +9,7 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use, implementation_imports, unnecessary_import, depend_on_referenced_packages
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
@@ -18,12 +18,26 @@ import 'package:skal_flutter/skal/registry.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:camera/camera.dart';
+import 'package:qr_flutter/src/types.dart';
 import 'package:skal_flutter/adapters/camera_factory.dart';
 import 'package:skal_flutter/adapters/ticker.dart';
 import 'package:skal_flutter/skal/root.dart';
 
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shimmer/shimmer.dart';
+
+Map<String, dynamic>? _skalDecodeMap(Object? raw) {
+  if (raw == null) return null;
+  if (raw is Map<String, dynamic>) return raw;
+  if (raw is String) {
+    if (raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+  }
+  return null;
+}
 
 Alignment _skalParseAlignment(dynamic v, {Alignment def = Alignment.center}) {
   if (v is String) {
@@ -64,6 +78,38 @@ Color _skalParseColor(dynamic v) {
   return const Color(0xFF000000);
 }
 
+QrDataModuleShape? _skalParseEnumQrDataModuleShape(Object? raw) {
+  if (raw is int) {
+    if (raw < 0 || raw >= QrDataModuleShape.values.length) return null;
+    return QrDataModuleShape.values[raw];
+  }
+  if (raw is String) {
+    switch (raw) {
+      case 'square':
+        return QrDataModuleShape.square;
+      case 'circle':
+        return QrDataModuleShape.circle;
+    }
+  }
+  return null;
+}
+
+QrEyeShape? _skalParseEnumQrEyeShape(Object? raw) {
+  if (raw is int) {
+    if (raw < 0 || raw >= QrEyeShape.values.length) return null;
+    return QrEyeShape.values[raw];
+  }
+  if (raw is String) {
+    switch (raw) {
+      case 'square':
+        return QrEyeShape.square;
+      case 'circle':
+        return QrEyeShape.circle;
+    }
+  }
+  return null;
+}
+
 Gradient? _skalParseGradient(String? json) {
   if (json == null || json.isEmpty) return null;
   final m = jsonDecode(json) as Map<String, dynamic>;
@@ -98,6 +144,42 @@ Gradient? _skalParseGradient(String? json) {
   }
 }
 
+QrDataModuleStyle? _skalParseQrDataModuleStyle(Object? raw) {
+  final j = _skalDecodeMap(raw);
+  if (j == null) return null;
+  return QrDataModuleStyle(
+    dataModuleShape: _skalParseEnumQrDataModuleShape(j['dataModuleShape']),
+    color: ((j['color']) == null ? null : _skalParseColor(j['color'])),
+  );
+}
+
+QrEmbeddedImageStyle? _skalParseQrEmbeddedImageStyle(Object? raw) {
+  final j = _skalDecodeMap(raw);
+  if (j == null) return null;
+  return QrEmbeddedImageStyle(
+    size: _skalParseSize(j['size']),
+    color: ((j['color']) == null ? null : _skalParseColor(j['color'])),
+  );
+}
+
+QrEyeStyle? _skalParseQrEyeStyle(Object? raw) {
+  final j = _skalDecodeMap(raw);
+  if (j == null) return null;
+  return QrEyeStyle(
+    eyeShape: _skalParseEnumQrEyeShape(j['eyeShape']),
+    color: ((j['color']) == null ? null : _skalParseColor(j['color'])),
+  );
+}
+
+Size? _skalParseSize(Object? raw) {
+  final j = _skalDecodeMap(raw);
+  if (j == null) return null;
+  return Size(
+    ((j['width']) as num?)?.toDouble() ?? 0.0,
+    ((j['height']) as num?)?.toDouble() ?? 0.0,
+  );
+}
+
 Widget _build_QrImageView(NodeState n, SkalBridge bridge) {
   return QrImageView(
     data: n.getCustomPropStr('data') ?? '',
@@ -127,7 +209,19 @@ Widget _build_QrImageView(NodeState n, SkalBridge bridge) {
               return AssetImage(s);
             })()
             as ImageProvider?),
+    embeddedImageStyle: _skalParseQrEmbeddedImageStyle(
+      n.getCustomPropStr('embeddedImageStyle'),
+    ),
     semanticsLabel: n.getCustomPropStr('semanticsLabel') ?? 'qr code',
+    eyeStyle:
+        (_skalParseQrEyeStyle(n.getCustomPropStr('eyeStyle')) ??
+        const QrEyeStyle(eyeShape: QrEyeShape.square, color: Colors.black)),
+    dataModuleStyle:
+        (_skalParseQrDataModuleStyle(n.getCustomPropStr('dataModuleStyle')) ??
+        const QrDataModuleStyle(
+          dataModuleShape: QrDataModuleShape.square,
+          color: Colors.black,
+        )),
     embeddedImageEmitsError:
         n.getCustomPropU32('embeddedImageEmitsError', 0) != 0,
     foregroundColor: Color(n.getCustomPropU32('foregroundColor', 0xFF000000)),

@@ -286,6 +286,57 @@ void main() {
               'gradient.expected.dart');
     });
 
+    test('generic value classes: nested data records via JSON-object props',
+        () async {
+      // Drives the generic value-class encoder added after the
+      // empirical flutter_map exercise. The fixture's MapInit /
+      // GeoBounds / GeoPoint chain is structurally identical to
+      // MapOptions / LatLngBounds / LatLng — what we couldn't wrap
+      // before this slice landed. Expected codegen behavior:
+      //
+      //   • One `_skalParseGeoPoint(Object? raw)` helper, emitted once.
+      //   • One `_skalParseGeoBounds(Object? raw)` helper that calls
+      //     _skalParseGeoPoint for each corner.
+      //   • One `_skalParseMapInit(Object? raw)` helper composing both.
+      //   • The MiniMap adapter reads `init` (required, no default →
+      //     `!` non-null assertion) and `cameraBounds` (nullable → null
+      //     passthrough) via getCustomPropStr.
+      //   • `import 'dart:convert';` for jsonDecode inside each helper.
+      //
+      // Snapshot captures the exact emitted shape so future encoder
+      // changes don't silently shift the contract.
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/value_class.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/value_class.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+
+      final result = generate(
+        units: [unitResult as ResolvedUnitResult],
+        sourceRelativeImports: ['value_class.dart'],
+      );
+
+      // Only MiniMap is a Widget (extends StatelessWidget). The data
+      // classes (GeoPoint, GeoBounds, MapInit) should NOT show up as
+      // generated adapters — they're routed through the value-class
+      // encoder as helpers instead.
+      expect(result.generated.map((w) => w.className), ['MiniMap']);
+      expect(result.skipped, isEmpty,
+          reason: 'nothing should skip — GeoPoint/GeoBounds/MapInit '
+              'are value classes the encoder handles');
+
+      _expectSnapshot(result.source, expectedPath,
+          reason: 'value-class generator output does NOT match '
+              'value_class.expected.dart');
+    });
+
     test('value types v2: TextStyle / BoxDecoration / BorderRadius / Offset / '
         'Alignment / ImageProvider', () async {
       // Each new value type expands into sub-props (TextStyle's

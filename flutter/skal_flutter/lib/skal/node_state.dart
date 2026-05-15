@@ -204,6 +204,22 @@ class NodeState {
   String? getCustomPropStr(String name) => _customPropsStr?[name];
   int getCustomHandler(String name) => _customHandlers?[name] ?? 0;
 
+  // Nullable variants — return null when the prop was never written
+  // (the JSX consumer omitted it), as opposed to coercing to a zero
+  // fallback. Codegen uses these for NULLABLE constructor params
+  // (`double? tileSize`, `int? maxLines`, `bool? softWrap`) where the
+  // wrapped widget treats null distinctly from 0 — e.g. flutter_map's
+  // TileLayer falls back to `tileDimension` only when `tileSize` is
+  // null, and divides by `tileSize.toInt()` (→ 0 → Infinity) if it
+  // isn't. The backing maps already key-miss to null; these just
+  // expose that without the `?? fallback` the non-null getters apply.
+  double? getCustomPropF32OrNull(String name) => _customPropsF32?[name];
+  int? getCustomPropU32OrNull(String name) => _customPropsU32?[name];
+  bool? getCustomPropBoolOrNull(String name) {
+    final v = _customPropsU32?[name];
+    return v == null ? null : v != 0;
+  }
+
   void setCustomPropU32(String name, int value) {
     (_customPropsU32 ??= <String, int>{})[name] = value;
   }

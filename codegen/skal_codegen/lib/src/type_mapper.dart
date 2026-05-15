@@ -155,8 +155,22 @@ PropEncoding? encodingFor({
     );
   }
 
-  // double — covers `double?` too via promoteNullable lookup.
+  // double / double?
+  //
+  // For a NULLABLE `double?` param, a missing JSX prop must read as
+  // `null`, NOT a coerced 0.0 — the wrapped widget may treat the two
+  // distinctly. flutter_map's `TileLayer.tileSize` (`double?`,
+  // defaults to null) is the motivating bug: passing 0.0 instead of
+  // null makes flutter_map compute `tileDimension = 0` and divide by
+  // it → Infinity. The String encoder above already does this
+  // null-passthrough; numeric encoders must match.
   if (_isCoreDouble(type)) {
+    if (typeName.endsWith('?')) {
+      return PropEncoding(
+        readerExpression: "n.getCustomPropF32OrNull('$paramName')",
+        dartTypeName: typeName,
+      );
+    }
     final fallback = defaultLiteral ?? '0.0';
     return PropEncoding(
       readerExpression: "n.getCustomPropF32('$paramName', $fallback)",
@@ -164,8 +178,14 @@ PropEncoding? encodingFor({
     );
   }
 
-  // int.
+  // int / int?
   if (_isCoreInt(type)) {
+    if (typeName.endsWith('?')) {
+      return PropEncoding(
+        readerExpression: "n.getCustomPropU32OrNull('$paramName')",
+        dartTypeName: typeName,
+      );
+    }
     final fallback = defaultLiteral ?? '0';
     return PropEncoding(
       readerExpression: "n.getCustomPropU32('$paramName', $fallback)",
@@ -173,10 +193,17 @@ PropEncoding? encodingFor({
     );
   }
 
-  // bool — encoded as u32 0/1 on the wire. The default for the
+  // bool / bool? — encoded as u32 0/1 on the wire. The default for the
   // getCustomPropU32 call uses the boolean's int equivalent (1 or 0);
-  // the != 0 check rebuilds the bool at the call site.
+  // the != 0 check rebuilds the bool at the call site. Nullable
+  // `bool?` routes through getCustomPropBoolOrNull (null when unset).
   if (_isCoreBool(type)) {
+    if (typeName.endsWith('?')) {
+      return PropEncoding(
+        readerExpression: "n.getCustomPropBoolOrNull('$paramName')",
+        dartTypeName: typeName,
+      );
+    }
     final defaultInt = _boolDefaultAsInt(defaultLiteral);
     return PropEncoding(
       readerExpression:
@@ -650,6 +677,19 @@ PropEncoding? encodingFor({
   // hiding the QR pattern behind a black square. (This was the bug
   // the qr_flutter integration surfaced.)
   if (_isFlutterColor(type)) {
+    // Nullable `Color?` — a missing JSX prop must read as `null`, not
+    // a coerced `Color(...)`. Many widgets treat `color: null` as
+    // "inherit / use theme default" distinctly from an explicit
+    // opaque color. Same nullable-coercion gap the numeric encoders
+    // had; the IIFE reads the U32 slot once and maps null → null.
+    if (typeName.endsWith('?')) {
+      return PropEncoding(
+        readerExpression:
+            "(() { final v = n.getCustomPropU32OrNull('$paramName'); "
+            "return v == null ? null : Color(v); })()",
+        dartTypeName: typeName,
+      );
+    }
     final fallbackU32 = _colorDefaultAsU32(defaultConstant);
     return PropEncoding(
       readerExpression:

@@ -183,7 +183,7 @@ Size? _skalParseSize(Object? raw) {
 Widget _build_QrImageView(NodeState n, SkalBridge bridge) {
   return QrImageView(
     data: n.getCustomPropStr('data') ?? '',
-    size: n.getCustomPropF32('size', 0.0),
+    size: n.getCustomPropF32OrNull('size'),
     padding: EdgeInsets.fromLTRB(
       n.getCustomPropF32('paddingLeft', 10.0),
       n.getCustomPropF32('paddingTop', 10.0),
@@ -224,7 +224,10 @@ Widget _build_QrImageView(NodeState n, SkalBridge bridge) {
         )),
     embeddedImageEmitsError:
         n.getCustomPropU32('embeddedImageEmitsError', 0) != 0,
-    foregroundColor: Color(n.getCustomPropU32('foregroundColor', 0xFF000000)),
+    foregroundColor: (() {
+      final v = n.getCustomPropU32OrNull('foregroundColor');
+      return v == null ? null : Color(v);
+    })(),
   );
 }
 

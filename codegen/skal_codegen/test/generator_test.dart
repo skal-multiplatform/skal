@@ -337,6 +337,45 @@ void main() {
               'value_class.expected.dart');
     });
 
+    test('nullable primitives: double? / int? / bool? / Color? read as null '
+        'when unset', () async {
+      // Regression guard for the nullable-coercion bug. A nullable
+      // param the JSX consumer omits MUST read as `null`, not a
+      // coerced zero. The fixture's `Tunable` has nullable + non-
+      // nullable params of each type; the snapshot must show:
+      //   • opacity (double?)  → n.getCustomPropF32OrNull('opacity')
+      //   • maxLines (int?)    → n.getCustomPropU32OrNull('maxLines')
+      //   • dense (bool?)      → n.getCustomPropBoolOrNull('dense')
+      //   • tint (Color?)      → IIFE mapping the OrNull int → Color/null
+      //   • scale/priority/enabled/background (non-nullable) → the
+      //     unchanged zero-fallback forms.
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath =
+          p.join(pkgRoot, 'test/fixtures/nullable_primitives.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/nullable_primitives.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+
+      final result = generate(
+        units: [unitResult as ResolvedUnitResult],
+        sourceRelativeImports: ['nullable_primitives.dart'],
+      );
+
+      expect(result.generated.map((w) => w.className), ['Tunable']);
+      expect(result.skipped, isEmpty);
+
+      _expectSnapshot(result.source, expectedPath,
+          reason: 'nullable-primitives generator output does NOT match '
+              'nullable_primitives.expected.dart');
+    });
+
     test('value types v2: TextStyle / BoxDecoration / BorderRadius / Offset / '
         'Alignment / ImageProvider', () async {
       // Each new value type expands into sub-props (TextStyle's

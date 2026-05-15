@@ -129,6 +129,14 @@ class NodeState {
   String text = '';
   int onClickHandlerId = 0;
   int onChangeHandlerId = 0;
+  // Gesture handlers for container behavior props (`<box onLongPress=…
+  // onDoubleTap=…>`). `onTap` reuses [onClickHandlerId].
+  int onLongPressHandlerId = 0;
+  int onDoubleTapHandlerId = 0;
+  // `<textInput onSubmit=…>` — fired on Enter / done key.
+  int onSubmitHandlerId = 0;
+  // `<reorderableListView onReorder=…>` — fired when a drag completes.
+  int onReorderHandlerId = 0;
 
   // ── Cold-prop storage (non-reactive, primitive-keyed) ──────────────
   // Widgets subscribe to [cold] then read these directly. The maps

@@ -39,7 +39,35 @@ const TAG_TO_HTML = {
   box:                  'div',
   text:                 'span',
   button:               'button',
+  // <image> → <img>. `src` sets the element src; `contentScale`
+  // maps to CSS object-fit.
+  image:                'img',
+  // <stack> → position:relative div; positioned children go absolute.
+  stack:                'div',
+  // Wave-2 controls. switch/checkbox → checkbox input; slider → range
+  // input; activityIndicator → spinner div; progressBar → <progress>.
+  switch:               'input',
+  slider:               'input',
+  checkbox:             'input',
+  activityIndicator:    'div',
+  progressBar:          'progress',
+  // Wave-3. lazyGrid → CSS grid; wrap → flex-wrap; safeArea → env()
+  // inset padding; richText → inline span of styled spans.
+  lazyGrid:             'div',
+  wrap:                 'div',
+  safeArea:             'div',
+  richText:             'span',
+  // <textInput> → <input>.
+  textInput:            'input',
 };
+
+// Spinner keyframes for <activityIndicator> — injected once.
+if (typeof document !== 'undefined' && !document.getElementById('skal-kf')) {
+  const _st = document.createElement('style');
+  _st.id = 'skal-kf';
+  _st.textContent = '@keyframes skal-spin{to{transform:rotate(360deg)}}';
+  document.head.appendChild(_st);
+}
 
 // Baseline inline styles applied at createElement time. Each prop set
 // later via setProperty wins over these (last-style-wins in inline CSS).
@@ -100,6 +128,35 @@ function applyDefaults(el, tag) {
       s.position = 'relative';
       s.boxSizing = 'border-box';
       break;
+    case 'stack':
+      // Containing block for absolutely-positioned children.
+      s.display = 'block';
+      s.position = 'relative';
+      s.boxSizing = 'border-box';
+      break;
+    case 'switch':
+    case 'checkbox':
+      el.type = 'checkbox';
+      break;
+    case 'slider':
+      el.type = 'range';
+      el.min = '0';
+      el.max = '1';
+      el.step = 'any';
+      s.width = '100%';
+      break;
+    case 'activityIndicator':
+      s.width = '24px';
+      s.height = '24px';
+      s.boxSizing = 'border-box';
+      s.border = '3px solid rgba(0,0,0,0.15)';
+      s.borderTopColor = 'rgba(0,0,0,0.55)';
+      s.borderRadius = '50%';
+      s.animation = 'skal-spin 0.8s linear infinite';
+      break;
+    case 'progressBar':
+      s.width = '100%';
+      break;
     case 'text':
       // <span> by default — inherits inline flow. Monospace matches
       // native FontFamily.Monospace default for unstyled text.
@@ -126,8 +183,56 @@ function applyDefaults(el, tag) {
       s.fontFamily = 'inherit';
       s.boxSizing = 'border-box';
       break;
+    case 'image':
+      // <img> is inline by default — make it a block leaf so width/
+      // height props behave like the native Image. Default object-fit
+      // matches the native BoxFit.contain default.
+      s.display = 'block';
+      s.objectFit = 'contain';
+      break;
+    case 'lazyGrid':
+      s.display = 'grid';
+      s.gridTemplateColumns = 'repeat(2, 1fr)';
+      s.gap = '8px';
+      s.boxSizing = 'border-box';
+      s.width = '100%';
+      s.padding = '16px';
+      s.overflowY = 'auto';
+      break;
+    case 'wrap':
+      s.display = 'flex';
+      s.flexWrap = 'wrap';
+      s.gap = '8px';
+      s.boxSizing = 'border-box';
+      break;
+    case 'safeArea':
+      s.display = 'block';
+      s.boxSizing = 'border-box';
+      s.paddingTop = 'env(safe-area-inset-top)';
+      s.paddingBottom = 'env(safe-area-inset-bottom)';
+      s.paddingLeft = 'env(safe-area-inset-left)';
+      s.paddingRight = 'env(safe-area-inset-right)';
+      break;
+    case 'richText':
+      s.fontFamily =
+        'system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif';
+      s.whiteSpace = 'pre-line';
+      break;
+    case 'textInput':
+      el.type = 'text';
+      s.boxSizing = 'border-box';
+      s.padding = '8px 12px';
+      s.border = '1px solid rgba(0,0,0,0.4)';
+      s.borderRadius = '4px';
+      s.fontSize = '14px';
+      s.fontFamily = 'inherit';
+      break;
   }
 }
+
+// contentScale wire enum → CSS object-fit. CSS has no fitWidth /
+// fitHeight, so those degrade to `contain`.
+const OBJECT_FITS = ['contain', 'cover', 'fill', 'contain', 'contain', 'none', 'scale-down'];
 
 // ──────────────────────────────────────────────────────────────────────
 // Color encoding — Skal sends ARGB-packed strings ("#AARRGGBB") and
@@ -197,6 +302,18 @@ const FONT_FAMILIES = {
   3: 'system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif',
 };
 
+// `animate.curve` name → wire enum, and wire enum → CSS easing.
+// CSS has no bounce/elastic easing — those degrade to fastOutSlowIn.
+const ANIM_CURVES_WEB = {
+  linear: 0, easeIn: 1, easeOut: 2, easeInOut: 3,
+  bounce: 4, elastic: 5, fastOutSlowIn: 6,
+};
+const WEB_EASINGS = [
+  'linear', 'ease-in', 'ease-out', 'ease-in-out',
+  'cubic-bezier(.4,0,.2,1)', 'cubic-bezier(.4,0,.2,1)',
+  'cubic-bezier(.4,0,.2,1)',
+];
+
 const TEXT_ALIGNS = ['start', 'center', 'end', 'justify'];
 // Skal alignment enum (for arrangement/contentAlignment). Container-
 // specific — we mostly use these via flexbox justify-content.
@@ -258,6 +375,33 @@ function applyProp(node, name, value) {
       if (v) s.justifyContent = v;
       return;
     }
+    case 'axis': {
+      // Scroll axis for scrollView / listView. 1 = horizontal.
+      if (value === 1) {
+        s.flexDirection = 'row';
+        s.overflowX = 'auto';
+        s.overflowY = 'hidden';
+      } else {
+        s.flexDirection = 'column';
+        s.overflowX = 'hidden';
+        s.overflowY = 'auto';
+      }
+      return;
+    }
+    // Grid (lazyGrid). aspectRatio can't be expressed from the grid
+    // container in CSS — left as a no-op on web.
+    case 'crossAxisCount':
+      s.gridTemplateColumns = `repeat(${value}, 1fr)`;
+      return;
+    case 'aspectRatio':
+      return;
+
+    // Stack-child positioning — set on a child of <stack>. Any one of
+    // these promotes the child to absolute positioning.
+    case 'top':    s.position = 'absolute'; s.top = `${value}px`; return;
+    case 'right':  s.position = 'absolute'; s.right = `${value}px`; return;
+    case 'bottom': s.position = 'absolute'; s.bottom = `${value}px`; return;
+    case 'left':   s.position = 'absolute'; s.left = `${value}px`; return;
 
     // ── Visual ──────────────────────────────────────────────────────
     case 'background':  { const c = parseColor(value); if (c) s.background = c; return; }
@@ -289,13 +433,35 @@ function applyProp(node, name, value) {
       return;
     }
 
-    // ── Image / input — basic pass-through. Real Image / TextField
-    // support would need different host elements (we use <span> and
-    // <button> as our two leaves, neither is <img> or <input>). A
-    // future change can introduce a <skalImage> / <input> mapping.
-    case 'src':         /* would set on <img> */ return;
+    // ── Image ───────────────────────────────────────────────────────
+    case 'src':
+      if (node._skalTag === 'image') node.src = String(value);
+      return;
+    case 'contentScale':
+      s.objectFit = OBJECT_FITS[value] || 'contain';
+      return;
+
+    // ── Controls (switch / checkbox / slider / progressBar) ─────────
+    case 'checked':  node.checked = !!value; return;
+    case 'min':      node.min = String(value); return;
+    case 'max':      node.max = String(value); return;
+    case 'progress':
+      // <progress> with no `value` attribute renders indeterminate.
+      if (value < 0) node.removeAttribute('value');
+      else node.value = String(value);
+      return;
+
+    // ── Input ───────────────────────────────────────────────────────
     case 'placeholder': if (node._skalTag === 'button') return; node.placeholder = String(value); return;
     case 'value':       if (node._skalTag === 'button') return; node.value = String(value); return;
+    case 'secureEntry':
+      if (node._skalTag === 'textInput') node.type = value ? 'password' : 'text';
+      return;
+    case 'keyboardType': {
+      const modes = ['text', 'numeric', 'email', 'tel', 'url', 'text'];
+      node.inputMode = modes[value] || 'text';
+      return;
+    }
 
     // ── Behavior ────────────────────────────────────────────────────
     case 'enabled':   node.disabled = !value; return;
@@ -338,14 +504,35 @@ const _renderer = createRenderer({
   },
 
   setProperty(node, name, value, _prev) {
-    // onClick — direct DOM handler. No event ring / handler-id
-    // indirection needed; we're already in the browser's JS context.
-    if (name === 'onClick' || name === 'onclick') {
-      if (typeof value === 'function') {
-        node.onclick = value;
-      } else {
-        node.onclick = null;
-      }
+    // Gesture handlers — direct DOM handlers. No event ring / handler-
+    // id indirection needed; we're already in the browser's JS context.
+    if (name === 'onClick' || name === 'onclick' || name === 'onTap') {
+      node.onclick = typeof value === 'function' ? value : null;
+      return;
+    }
+    if (name === 'onDoubleTap') {
+      node.ondblclick = typeof value === 'function' ? value : null;
+      return;
+    }
+    // onChange — value-change callback for controls. range/checkbox
+    // inputs fire `input` for live updates.
+    if (name === 'onChange') {
+      node.oninput = typeof value === 'function' ? value : null;
+      return;
+    }
+    // onSubmit — Enter key on a text input.
+    if (name === 'onSubmit') {
+      node.onkeydown = typeof value === 'function'
+        ? (e) => { if (e.key === 'Enter') value(node.value); }
+        : null;
+      return;
+    }
+    if (name === 'onLongPress') {
+      // The DOM has no long-press event — approximate with contextmenu
+      // (right-click / touch-and-hold), suppressing the default menu.
+      node.oncontextmenu = typeof value === 'function'
+        ? (e) => { e.preventDefault(); value(e); }
+        : null;
       return;
     }
 
@@ -354,6 +541,21 @@ const _renderer = createRenderer({
     // can use the same prop name on both targets.
     if (name === 'label' && (node._skalTag === 'button' || node._skalTag === 'text')) {
       node.textContent = value == null ? '' : String(value);
+      return;
+    }
+
+    // animate={{ duration, curve, delay }} — on web, a CSS transition
+    // does the tweening. `all` so cold props (color/size) ride along
+    // too — web gets §10.3 Phase 2 for free.
+    if (name === 'animate' && value && typeof value === 'object') {
+      const dur = value.duration | 0;
+      let curve = value.curve;
+      curve = typeof curve === 'string'
+        ? (ANIM_CURVES_WEB[curve] ?? 0)
+        : (curve | 0);
+      const delay = value.delay | 0;
+      node.style.transition =
+        `all ${dur}ms ${WEB_EASINGS[curve] || 'linear'} ${delay}ms`;
       return;
     }
 
@@ -389,3 +591,40 @@ export const {
   mergeProps,
   use,
 } = _renderer;
+
+// App-facing design-system selection — web parity for renderer.js's
+// `setDesign`. Sets the document color-scheme so native form
+// controls + scrollbars follow the chosen brightness.
+const _WEB_DESIGN_MODES = ['material', 'cupertino', 'adaptive'];
+export function setDesign(mode, brightness) {
+  if (typeof document === 'undefined') return;
+  const dark = brightness === 1 || brightness === 'dark';
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+  document.documentElement.dataset.skalDesign =
+    typeof mode === 'string' ? mode : (_WEB_DESIGN_MODES[mode] || 'material');
+}
+
+// Imperative dialog API — web parity for §10.2. Best-effort with the
+// browser's native dialogs (no multi-button UI), so the same app code
+// runs on web. The Flutter target gets the full AlertDialog surface.
+export function showDialog(spec) {
+  spec = spec || {};
+  const actions = spec.actions || [];
+  const msg = [spec.title, spec.message].filter(Boolean).join('\n\n');
+  if (actions.length >= 2) {
+    const ok = window.confirm(msg);
+    const a = ok ? actions[actions.length - 1] : actions[0];
+    return Promise.resolve(a ? a.value : null);
+  }
+  window.alert(msg);
+  return Promise.resolve(actions[0] ? actions[0].value : null);
+}
+export function showActionSheet(spec) {
+  return showDialog(spec);
+}
+export function showSnackbar(spec) {
+  const s = typeof spec === 'string' ? { message: spec } : (spec || {});
+  // No native equivalent — log so the call is observable in dev.
+  if (s.message) console.log('[skal] snackbar:', s.message);
+  return Promise.resolve(null);
+}

@@ -118,6 +118,10 @@ const int opSetTranslationY = 0x22;
 const int opSetScaleX       = 0x23;
 const int opSetScaleY       = 0x24;
 const int opSetRotationZ    = 0x25;
+// Global design-system selector — `setDesign(mode, brightness)` on
+// the JS side. a = mode (0 material / 1 cupertino / 2 adaptive),
+// b = brightness (0 light / 1 dark). Not node-scoped.
+const int opSetDesign       = 0x26;
 
 // ── Widget types (NodeState.type) ─────────────────────────────────────
 //
@@ -169,6 +173,42 @@ const int wtReorderableListView  = 7;
 /// `VideoPlayer`, anything from pub.dev — into JSX with a 5-line
 /// adapter, without touching the wire format.
 const int wtCustom               = 8;
+/// Image leaf — Flutter `Image`. `src` (propImageSrc, string) is
+/// dispatched to `NetworkImage` / `FileImage` / `AssetImage` by URI
+/// scheme; `contentScale` (propContentScale) maps to `BoxFit`; a
+/// `cornerRadius` prop clips the image via `ClipRRect`.
+const int wtImage                = 9;
+/// Overlapping-children container — Flutter `Stack`. Children carrying
+/// any of propTop/Right/Bottom/Left are wrapped in a `Positioned`;
+/// children with none are laid out at the stack's top-start corner.
+const int wtStack                = 10;
+/// Material `Switch` — `checked` (propChecked) + `onChange(bool)`.
+const int wtSwitch               = 11;
+/// Material `Slider` — `value`/`min`/`max` (propSlider*) + `onChange(double)`.
+const int wtSlider               = 12;
+/// Material `Checkbox` — `checked` (propChecked) + `onChange(bool)`.
+const int wtCheckbox             = 13;
+/// `CircularProgressIndicator` — indeterminate spinner. `color`
+/// (propFgColor) + size from propWidth.
+const int wtActivityIndicator    = 14;
+/// `LinearProgressIndicator` — `progress` (propProgress) 0..1, or
+/// indeterminate when the prop is unset.
+const int wtProgressBar          = 15;
+/// `GridView.builder` — lazy 2-D grid. `crossAxisCount` columns,
+/// `aspectRatio` per cell, `gap` for both spacings.
+const int wtLazyGrid             = 16;
+/// `Wrap` — flow layout; children wrap to the next run. `gap` sets
+/// both `spacing` and `runSpacing`.
+const int wtWrap                 = 17;
+/// `SafeArea` — insets its child past notches / system bars.
+const int wtSafeArea             = 18;
+/// `Text.rich` — inline styled runs. Each child `<text>` becomes one
+/// `TextSpan`; the child's text + text-tier props style that run.
+const int wtRichText             = 19;
+/// `TextField` — host-pattern widget; owns a `TextEditingController`
+/// and `FocusNode`. `value`/`placeholder`/`keyboardType`/`secureEntry`
+/// props; `onChange` (per keystroke) + `onSubmit` (Enter) callbacks.
+const int wtTextInput            = 20;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick        = 0x01;
@@ -191,6 +231,15 @@ const int evMethodError  = 0x04;
 const int evStreamValue  = 0x05;
 const int evStreamDone   = 0x06;
 const int evStreamError  = 0x07;
+// Gesture events for the behavior props on container widgets
+// (`onLongPress` / `onDoubleTap` on `<box>`). `onTap` reuses evClick.
+const int evLongPress    = 0x08;
+const int evDoubleTap    = 0x09;
+// Text-field submit (Enter / done key) — `onSubmit` on `<textInput>`.
+const int evSubmit       = 0x0A;
+// Reorder — a `<reorderableListView>` drag completed. The tuple arg
+// carries (oldIndex, newIndex); the JS app reorders its source list.
+const int evReorder      = 0x0B;
 
 // ── Event record layout (16 bytes per slot in the event ring) ────────
 //
@@ -257,6 +306,21 @@ const int propHeight          = 0x06;
 const int propWeight          = 0x07;     // f32 → propsF
 const int propAlignment       = 0x08;
 const int propGap             = 0x09;
+// Scroll axis for scrollView / listView / reorderableListView.
+// enum: 0 = vertical (default), 1 = horizontal.
+const int propAxis            = 0x0A;
+// Stack-child positioning — maps to `Positioned`. These are set on a
+// CHILD of a `<stack>`; the stack's builder reads them off each child
+// and wraps it. A write to one of these also re-dirties the child's
+// PARENT (see opSetPropU32 in bridge.dart) so the stack rebuilds.
+// Unset reads as kNoValue → the child is left non-positioned.
+const int propTop             = 0x0B;
+const int propRight           = 0x0C;
+const int propBottom          = 0x0D;
+const int propLeft            = 0x0E;
+// Grid layout (lazyGrid).
+const int propCrossAxisCount  = 0x0F;   // column count
+const int propAspectRatio     = 0x10;   // f32 → propsF — cell w/h ratio
 
 // Visual (u32 ARGB for colors)
 const int propBgColor         = 0x20;
@@ -284,11 +348,23 @@ const int propPlaceholder     = 0x80;
 const int propValue           = 0x81;
 const int propKeyboardType    = 0x82;
 const int propSecureEntry     = 0x83;
+// Control values — switch / checkbox / slider / progressBar.
+const int propChecked         = 0x84;   // switch + checkbox on/off (0/1)
+const int propSliderValue     = 0x85;   // f32 → propsF
+const int propSliderMin       = 0x86;   // f32 → propsF
+const int propSliderMax       = 0x87;   // f32 → propsF
+const int propProgress        = 0x88;   // f32; <0 = indeterminate
 
 // Behavior
 const int propEnabled         = 0xA0;
 const int propFocusable       = 0xA1;
 const int propVisible         = 0xA2;
+// Animation — see FLUTTER_JS_COMPONENTS.md §10.3. A non-zero
+// propAnimDuration turns on implicit animation of the node's hot
+// props (opacity / transform): a change tweens instead of snapping.
+const int propAnimDuration    = 0xA3;   // ms; 0 = no animation
+const int propAnimCurve       = 0xA4;   // enum → curve table
+const int propAnimDelay       = 0xA5;   // ms before the tween starts
 
 // ── Sentinel values for width/height props ───────────────────────────
 // Encoded into PROP_WIDTH / PROP_HEIGHT instead of needing distinct

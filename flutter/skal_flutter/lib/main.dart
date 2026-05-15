@@ -23,6 +23,7 @@
 import 'dart:io';
 import 'dart:ui' show FramePhase;
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -32,6 +33,7 @@ import 'package:path_provider/path_provider.dart';
 import 'adapters/generated/skal_adapters.g.dart' as local_gen;
 import 'skal_codegen.g.dart' as packages_gen;
 import 'skal/bridge.dart';
+import 'skal/dialogs.dart';
 import 'skal/root.dart';
 import 'skal_ffi.dart';
 
@@ -138,6 +140,10 @@ void main() async {
   bridge.ensureRoot();
   bridge.pumpOps();
 
+  // Register the app-level RPC dispatcher on the (now-existing) root
+  // node — backs the imperative showDialog / showSnackbar JS API.
+  installAppDispatcher(bridge);
+
   if (result.isError) {
     debugPrint('[skal] EVAL ERROR: ${result.value}');
   }
@@ -171,34 +177,61 @@ class SkalApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Skal-Flutter',
-      theme: ThemeData.light(useMaterial3: true),
-      debugShowCheckedModeBanner: false,
-      home: Scaffold(
-        backgroundColor: const Color(0xFFF0F0F3),
-        body: SafeArea(
-          child: Column(
-            children: [
-              PerfHud(bridge: bridge, initMs: initMs, evalMs: evalMs, bootMs: bootMs),
-              // SkalRoot is mounted inside Expanded only (no outer
-              // SingleChildScrollView). The JS app's root is a
-              // <listView>, which renders to ListView.builder —
-              // a self-contained vertical scroller that virtualizes
-              // its children. Wrapping it in another vertical
-              // scroller would (a) crash on unbounded constraints,
-              // (b) defeat virtualization (ListView would try to
-              // size to intrinsic content).
-              //
-              // If the JS app uses a plain <column> as its root,
-              // anything off-screen will be clipped. Use <listView>
-              // (or <reorderableListView>) at the top level for
-              // scrollable content.
-              Expanded(child: SkalRoot(bridge: bridge)),
-            ],
+    // Rebuilds whenever JS calls `setDesign` — the MaterialApp theme
+    // and the CupertinoTheme below both re-derive from the bridge's
+    // design mode + brightness. See FLUTTER_JS_COMPONENTS.md §10.1.
+    return ListenableBuilder(
+      listenable: bridge.designChanged,
+      builder: (context, _) {
+        final dark = bridge.designBrightness == 1;
+        return MaterialApp(
+          title: 'Skal-Flutter',
+          theme: dark
+              ? ThemeData.dark(useMaterial3: true)
+              : ThemeData.light(useMaterial3: true),
+          debugShowCheckedModeBanner: false,
+          // Context-free handles for the imperative dialog API (§10.2).
+          navigatorKey: skalNavigatorKey,
+          scaffoldMessengerKey: skalScaffoldMessengerKey,
+          // CupertinoTheme ancestor so Cupertino-variant widgets
+          // (CupertinoButton/Switch/…) theme + pick up brightness.
+          home: CupertinoTheme(
+            data: CupertinoThemeData(
+              brightness: dark ? Brightness.dark : Brightness.light,
+            ),
+            child: Scaffold(
+              backgroundColor: dark
+                  ? const Color(0xFF101014)
+                  : const Color(0xFFF0F0F3),
+              body: SafeArea(
+                child: Column(
+                  children: [
+                    PerfHud(
+                      bridge: bridge,
+                      initMs: initMs,
+                      evalMs: evalMs,
+                      bootMs: bootMs,
+                    ),
+                    // SkalRoot is mounted inside Expanded only (no outer
+                    // SingleChildScrollView). The JS app's root is a
+                    // <listView>, which renders to ListView.builder —
+                    // a self-contained vertical scroller that
+                    // virtualizes its children. Wrapping it in another
+                    // vertical scroller would (a) crash on unbounded
+                    // constraints, (b) defeat virtualization.
+                    //
+                    // If the JS app uses a plain <column> as its root,
+                    // anything off-screen will be clipped. Use
+                    // <listView> at the top level for scrollable
+                    // content.
+                    Expanded(child: SkalRoot(bridge: bridge)),
+                  ],
+                ),
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
@@ -356,39 +389,53 @@ class _PerfHudState extends State<PerfHud> with SingleTickerProviderStateMixin {
 /// sit next to the .cjs because bun derives the bytecode path by appending
 /// ".jsc" to the resolved module URL.
 ///
-/// Skip-if-exists: after the very first launch both files are on disk
-/// at known paths and won't change until the next APK install. We could
-/// version-gate by comparing PackageInfo.versionName against a marker
-/// file; for now `existsSync()` on both is good enough — re-extraction
-/// only happens on install/upgrade because the app's data dir gets
-/// wiped or replaced.
-///
-/// On a warm-disk relaunch the existsSync checks take ~tens of µs;
-/// extraction is fully skipped, eliminating the ~hundreds-of-ms write
-/// cost we'd otherwise pay every cold launch.
+/// Staleness check: an `adb install -r` reinstall — what `flutter run`
+/// and most app upgrades do — KEEPS the app's data directory. A bare
+/// `existsSync()` check would therefore load the PREVIOUS APK's
+/// bytecode forever: a silent version mismatch against the freshly
+/// installed libskal (e.g. a changed bridge-buffer size → the JS side
+/// throws `bridge buffer not available` at eval time). So we
+/// byte-compare the small (~50 KB) `.cjs` against the APK's bundled
+/// copy and re-extract only when it actually changed. The expensive
+/// part — loading + writing the ~400 KB `.jsc` — is still skipped on
+/// an unchanged warm relaunch.
 Future<String> _extractBytecodeAssets() async {
   final dir = await getApplicationSupportDirectory();
   final cjsFile = File('${dir.path}/skal-app.cjs');
   final jscFile = File('${dir.path}/skal-app.cjs.jsc');
 
-  if (cjsFile.existsSync() && jscFile.existsSync()) {
-    return cjsFile.path;
-  }
-
   // load() (not loadString) — both are raw bytes that must round-trip
   // without UTF-8 reinterpretation. .cjs is mostly ASCII but contains
   // emoji literals in user strings; .jsc is binary.
-  final cjsBytes = await rootBundle.load('assets/skal-app.cjs');
-  final jscBytes = await rootBundle.load('assets/skal-app.cjs.jsc');
-  await cjsFile.writeAsBytes(
-    cjsBytes.buffer.asUint8List(cjsBytes.offsetInBytes, cjsBytes.lengthInBytes),
-    flush: false,
-  );
+  final cjsData = await rootBundle.load('assets/skal-app.cjs');
+  final cjsBytes =
+      cjsData.buffer.asUint8List(cjsData.offsetInBytes, cjsData.lengthInBytes);
+
+  // Up to date? The .cjs and .jsc are always rebuilt as a pair, so the
+  // .cjs is a faithful staleness proxy for both.
+  if (cjsFile.existsSync() &&
+      jscFile.existsSync() &&
+      _bytesEqual(cjsFile.readAsBytesSync(), cjsBytes)) {
+    return cjsFile.path;
+  }
+
+  final jscData = await rootBundle.load('assets/skal-app.cjs.jsc');
+  await cjsFile.writeAsBytes(cjsBytes, flush: false);
   await jscFile.writeAsBytes(
-    jscBytes.buffer.asUint8List(jscBytes.offsetInBytes, jscBytes.lengthInBytes),
+    jscData.buffer.asUint8List(jscData.offsetInBytes, jscData.lengthInBytes),
     flush: false,
   );
   return cjsFile.path;
+}
+
+/// Byte-equality for the staleness check. Length-first so a changed
+/// bundle (almost always a different size) rejects in O(1).
+bool _bytesEqual(List<int> a, List<int> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 /// Quote a string as a JS string literal — quotes, backslashes, and

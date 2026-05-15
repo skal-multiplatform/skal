@@ -229,10 +229,144 @@ export const ListView = makeMissingMacroComponent('ListView');
  * insert, remove, indexOf, idAt). Pay the constant-factor overhead vs
  * `ListView` only when you actually need any-position mutation.
  *
- * **Note:** drag gestures are currently swallowed — the visual snap-back
- * is the safe default until the JS reorder-event protocol lands. See
- * `TODO(reorder-events)` in `root.dart`.
+ * A completed drag fires `onReorder(from, to)` — the app owns the
+ * list, so the handler must reorder its own source array (e.g. a
+ * signal) for the new order to stick. With no `onReorder` bound the
+ * drag snaps back.
+ *
+ * @type {Component<BaseProps & { onReorder?: (from: number, to: number) => void }>}
+ */
+export const ReorderableListView = makeMissingMacroComponent('ReorderableListView');
+
+// ─────────────────────────────────────────────────────────────────────
+// Extended widget set — image, stack, controls, grid, etc.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Image leaf. Flutter `Image`.
+ *
+ * `src` is dispatched by URI scheme — `http(s)://` → network,
+ * `file://` / absolute path → file, `asset://name` or a bare string →
+ * asset. `contentScale` is the BoxFit enum (0 contain, 1 cover,
+ * 2 fill, 3 fitWidth, 4 fitHeight, 5 none, 6 scaleDown). A non-zero
+ * `cornerRadius` clips the image.
+ *
+ * @type {Component<BaseProps & { src?: string, contentScale?: number }>}
+ */
+export const Image = makeMissingMacroComponent('Image');
+
+/**
+ * Overlapping-children container. Flutter `Stack`.
+ *
+ * A child carrying any of `top` / `right` / `bottom` / `left` (dp) is
+ * absolutely positioned; children with none sit at the top-start
+ * corner. Give the stack a `width` / `height` if all children are
+ * positioned.
  *
  * @type {Component<BaseProps>}
  */
-export const ReorderableListView = makeMissingMacroComponent('ReorderableListView');
+export const Stack = makeMissingMacroComponent('Stack');
+
+/**
+ * On/off toggle. Flutter `Switch` / `CupertinoSwitch`.
+ *
+ * Controlled: `checked` is the source of truth; `onChange(bool)` fires
+ * on toggle. With no `onChange` bound the switch renders disabled.
+ *
+ * @type {Component<BaseProps & { checked?: boolean, onChange?: (v: boolean) => void }>}
+ */
+export const Switch = makeMissingMacroComponent('Switch');
+
+/**
+ * Slider. Flutter `Slider` / `CupertinoSlider`.
+ *
+ * `value` / `min` / `max` are doubles; `onChange(double)` fires
+ * continuously while dragging. Uncontrolled *during* a drag (the
+ * thumb tracks the finger with zero latency), controlled otherwise.
+ *
+ * @type {Component<BaseProps & {
+ *   value?: number, min?: number, max?: number,
+ *   onChange?: (v: number) => void }>}
+ */
+export const Slider = makeMissingMacroComponent('Slider');
+
+/**
+ * Checkbox. Flutter `Checkbox` / `CupertinoCheckbox`.
+ *
+ * Controlled — same `checked` + `onChange(bool)` contract as
+ * {@link Switch}.
+ *
+ * @type {Component<BaseProps & { checked?: boolean, onChange?: (v: boolean) => void }>}
+ */
+export const Checkbox = makeMissingMacroComponent('Checkbox');
+
+/**
+ * Indeterminate spinner. Flutter `CircularProgressIndicator` /
+ * `CupertinoActivityIndicator`. `color` tints it; `width` sets the
+ * box size.
+ *
+ * @type {Component<BaseProps>}
+ */
+export const ActivityIndicator = makeMissingMacroComponent('ActivityIndicator');
+
+/**
+ * Linear progress bar. Flutter `LinearProgressIndicator`.
+ *
+ * `progress` is 0..1 for a determinate bar; omit it (or pass a
+ * negative value) for the indeterminate animation.
+ *
+ * @type {Component<BaseProps & { progress?: number }>}
+ */
+export const ProgressBar = makeMissingMacroComponent('ProgressBar');
+
+/**
+ * Lazy 2-D grid. Flutter `GridView.builder`.
+ *
+ * `crossAxisCount` sets the column count; `aspectRatio` the cell
+ * width/height ratio; `gap` both spacings. Virtualized like
+ * {@link ListView}.
+ *
+ * @type {Component<BaseProps & { crossAxisCount?: number, aspectRatio?: number }>}
+ */
+export const LazyGrid = makeMissingMacroComponent('LazyGrid');
+
+/**
+ * Flow layout. Flutter `Wrap` — children flow and wrap onto new runs.
+ * `gap` sets both the in-run spacing and the run spacing.
+ *
+ * @type {Component<BaseProps>}
+ */
+export const Wrap = makeMissingMacroComponent('Wrap');
+
+/**
+ * Insets its child past notches / system bars. Flutter `SafeArea`.
+ *
+ * @type {Component<BaseProps>}
+ */
+export const SafeArea = makeMissingMacroComponent('SafeArea');
+
+/**
+ * Inline styled text. Flutter `Text.rich`.
+ *
+ * Each child {@link Text} becomes one styled run (`TextSpan`) — the
+ * child's own text-tier props (`fontSize`, `color`, `fontWeight`…)
+ * style that run.
+ *
+ * @type {Component<TextProps>}
+ */
+export const RichText = makeMissingMacroComponent('RichText');
+
+/**
+ * Text field. Flutter `TextField` / `CupertinoTextField`.
+ *
+ * `value` is the text (controlled — synced without caret jumps),
+ * `placeholder` the hint, `keyboardType` an enum (0 text, 1 number,
+ * 2 email, 3 phone, 4 url, 5 multiline), `secureEntry` obscures.
+ * `onChange(string)` fires per keystroke, `onSubmit(string)` on Enter.
+ *
+ * @type {Component<BaseProps & {
+ *   value?: string, placeholder?: string, keyboardType?: number,
+ *   secureEntry?: boolean,
+ *   onChange?: (v: string) => void, onSubmit?: (v: string) => void }>}
+ */
+export const TextInput = makeMissingMacroComponent('TextInput');

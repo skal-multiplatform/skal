@@ -99,6 +99,8 @@ export const OP_SET_TRANSLATION_Y = 0x22;
 export const OP_SET_SCALE_X       = 0x23;
 export const OP_SET_SCALE_Y       = 0x24;
 export const OP_SET_ROTATION_Z    = 0x25;
+// Global design-system selector (mode, brightness). See wire.dart.
+export const OP_SET_DESIGN        = 0x26;
 
 // Widget types — naming mirrors Flutter's widget vocabulary.
 export const WT_BOX                  = 0;
@@ -127,6 +129,24 @@ export const WT_REORDERABLE_LIST_VIEW = 7;
 // tag. The host looks the name up in its registry to know what real
 // Flutter widget to build.
 export const WT_CUSTOM                = 8;
+// Image leaf — Flutter `Image`. `src` dispatched by URI scheme,
+// `contentScale` → BoxFit. See wire.dart's wtImage.
+export const WT_IMAGE                 = 9;
+// Overlapping-children container — Flutter `Stack`. See wire.dart.
+export const WT_STACK                 = 10;
+// Wave-2 controls. See wire.dart for the per-widget prop surface.
+export const WT_SWITCH                 = 11;
+export const WT_SLIDER                 = 12;
+export const WT_CHECKBOX                = 13;
+export const WT_ACTIVITY_INDICATOR      = 14;
+export const WT_PROGRESS_BAR            = 15;
+// Wave-3 widgets. See wire.dart.
+export const WT_LAZY_GRID               = 16;
+export const WT_WRAP                    = 17;
+export const WT_SAFE_AREA               = 18;
+export const WT_RICH_TEXT               = 19;
+// TextField — host-pattern. See wire.dart's wtTextInput.
+export const WT_TEXT_INPUT              = 20;
 
 // Event kinds
 export const EV_CLICK         = 0x01;
@@ -143,6 +163,13 @@ export const EV_METHOD_ERROR  = 0x04;
 export const EV_STREAM_VALUE  = 0x05;
 export const EV_STREAM_DONE   = 0x06;
 export const EV_STREAM_ERROR  = 0x07;
+// Gesture events for container behavior props. onTap reuses EV_CLICK.
+export const EV_LONG_PRESS    = 0x08;
+export const EV_DOUBLE_TAP    = 0x09;
+// Text-field submit (Enter) — onSubmit on <textInput>.
+export const EV_SUBMIT        = 0x0A;
+// Reorder — <reorderableListView> drag completed; tuple (from, to).
+export const EV_REORDER       = 0x0B;
 
 // Event-arg types — encoded in byte 1 of the event record. See
 // flutter/skal_flutter/lib/skal/wire.dart's `eventArg*` constants.
@@ -182,6 +209,16 @@ export const PROP_HEIGHT           = 0x06;
 export const PROP_WEIGHT           = 0x07; // f32 → setPropF32
 export const PROP_ALIGNMENT        = 0x08;
 export const PROP_GAP              = 0x09;
+// Scroll axis: 0 = vertical (default), 1 = horizontal.
+export const PROP_AXIS             = 0x0A;
+// Stack-child positioning (→ Positioned). Set on a child of <stack>.
+export const PROP_TOP              = 0x0B;
+export const PROP_RIGHT            = 0x0C;
+export const PROP_BOTTOM           = 0x0D;
+export const PROP_LEFT             = 0x0E;
+// Grid layout (lazyGrid).
+export const PROP_CROSS_AXIS_COUNT = 0x0F;
+export const PROP_ASPECT_RATIO     = 0x10;
 
 // Visual
 export const PROP_BG_COLOR         = 0x20;
@@ -209,11 +246,21 @@ export const PROP_PLACEHOLDER      = 0x80;
 export const PROP_VALUE            = 0x81;
 export const PROP_KEYBOARD_TYPE    = 0x82;
 export const PROP_SECURE_ENTRY     = 0x83;
+// Control values — switch / checkbox / slider / progressBar.
+export const PROP_CHECKED          = 0x84;
+export const PROP_SLIDER_VALUE     = 0x85;
+export const PROP_SLIDER_MIN       = 0x86;
+export const PROP_SLIDER_MAX       = 0x87;
+export const PROP_PROGRESS         = 0x88;
 
 // Behavior
 export const PROP_ENABLED          = 0xA0;
 export const PROP_FOCUSABLE        = 0xA1;
 export const PROP_VISIBLE          = 0xA2;
+// Animation — `animate={{duration, curve, delay}}`. See §10.3.
+export const PROP_ANIM_DURATION    = 0xA3;
+export const PROP_ANIM_CURVE       = 0xA4;
+export const PROP_ANIM_DELAY       = 0xA5;
 
 // Sentinel values for width/height u32 props.
 export const NO_VALUE     = -1 | 0;          // prop unset → host default
@@ -502,10 +549,29 @@ KEY_TO_SLOT[PROP_SECURE_ENTRY]     = 28;
 KEY_TO_SLOT[PROP_ENABLED]          = 29;
 KEY_TO_SLOT[PROP_FOCUSABLE]        = 30;
 KEY_TO_SLOT[PROP_VISIBLE]          = 31;
+// Extended widget set (slots 32..46) — scroll axis, stack positioning,
+// grid layout, control values, and the animation spec. EVERY cold
+// prop key must appear here to be diff-cached; an unregistered key
+// still works (setProp* writes it uncached) but pays a write each set.
+KEY_TO_SLOT[PROP_AXIS]             = 32;
+KEY_TO_SLOT[PROP_TOP]              = 33;
+KEY_TO_SLOT[PROP_RIGHT]            = 34;
+KEY_TO_SLOT[PROP_BOTTOM]           = 35;
+KEY_TO_SLOT[PROP_LEFT]             = 36;
+KEY_TO_SLOT[PROP_CROSS_AXIS_COUNT] = 37;
+KEY_TO_SLOT[PROP_ASPECT_RATIO]     = 38;
+KEY_TO_SLOT[PROP_CHECKED]          = 39;
+KEY_TO_SLOT[PROP_SLIDER_VALUE]     = 40;
+KEY_TO_SLOT[PROP_SLIDER_MIN]       = 41;
+KEY_TO_SLOT[PROP_SLIDER_MAX]       = 42;
+KEY_TO_SLOT[PROP_PROGRESS]         = 43;
+KEY_TO_SLOT[PROP_ANIM_DURATION]    = 44;
+KEY_TO_SLOT[PROP_ANIM_CURVE]       = 45;
+KEY_TO_SLOT[PROP_ANIM_DELAY]       = 46;
 
-// Round up to 32 for a tidy power-of-two row stride. Leaves room to
-// add ~32 more cold props without resizing — beyond that, expand to 64.
-const SLOTS_PER_NODE = 32;
+// 64-slot row stride (was 32 — the extended widget set filled it).
+// KEY_TO_SLOT is an Int8Array, so slots must stay < 128.
+const SLOTS_PER_NODE = 64;
 
 // `let` bindings (not const) — `growCache()` rebinds them when the
 // flat-array capacity doubles. JS modules pass `let` exports as live
@@ -676,14 +742,21 @@ const _f32buf  = new Float32Array(1);
 const _u32view = new Uint32Array(_f32buf.buffer);
 
 export function setPropU32(nodeId, key, value) {
-  const slotIdx = KEY_TO_SLOT[key];
-  if (slotIdx < 0) return; // unknown key — drop silently (no host rebuild, no wire byte spent)
-  const row = rowFor(nodeId);
-  const slot = row * SLOTS_PER_NODE + slotIdx;
   // | 0 normalizes the value to int32 — JS subtraction-then-equality
   // would mis-fire on JS numbers that aren't exact 32-bit. The Int32Array
   // load also yields a signed int, so this matches Dart's signed int.
   const v = value | 0;
+  const slotIdx = KEY_TO_SLOT[key];
+  if (slotIdx < 0) {
+    // Key not in the diff-cache slot table — write it UNCACHED rather
+    // than drop it. A missing KEY_TO_SLOT entry then costs a redundant
+    // write, never a silently-lost prop.
+    writeOp(OP_SET_PROP_U32, nodeId, key, v);
+    propWritesCounter++;
+    return;
+  }
+  const row = rowFor(nodeId);
+  const slot = row * SLOTS_PER_NODE + slotIdx;
   // Two-step check: only consult the value cell if we've previously
   // stored something there. Every 32-bit pattern is a legitimate u32
   // prop value, so we can't reserve a sentinel — see hasValueU32.
@@ -696,7 +769,13 @@ export function setPropU32(nodeId, key, value) {
 
 export function setPropF32(nodeId, key, value) {
   const slotIdx = KEY_TO_SLOT[key];
-  if (slotIdx < 0) return;
+  if (slotIdx < 0) {
+    // Uncached fallback — see setPropU32.
+    _f32buf[0] = value;
+    writeOp(OP_SET_PROP_F32, nodeId, key, _u32view[0]);
+    propWritesCounter++;
+    return;
+  }
   const row = rowFor(nodeId);
   const slot = row * SLOTS_PER_NODE + slotIdx;
   if (diffCacheF32[slot] === value) { propSkipsCounter++; return; }
@@ -711,7 +790,14 @@ export function setPropF32(nodeId, key, value) {
 
 export function setPropStr(nodeId, key, value) {
   const slotIdx = KEY_TO_SLOT[key];
-  if (slotIdx < 0) return;
+  if (slotIdx < 0) {
+    // Uncached fallback — see setPropU32.
+    writeString(value == null ? '' : String(value));
+    const packedB0 = ((key & 0xFF) << 24) | (_strOffset & 0xFFFFFF);
+    writeOp(OP_SET_PROP_STR, nodeId, packedB0, _strLength);
+    propWritesCounter++;
+    return;
+  }
   const row = rowFor(nodeId);
   const slot = row * SLOTS_PER_NODE + slotIdx;
   if (diffCacheStr[slot] === value) { propSkipsCounter++; return; }
@@ -752,6 +838,46 @@ export function setTranslationY(nodeId, v) { setHotF32Indexed(nodeId, OP_SET_TRA
 export function setScaleX      (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_SCALE_X,       3, v); }
 export function setScaleY      (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_SCALE_Y,       4, v); }
 export function setRotationZ   (nodeId, v) { setHotF32Indexed(nodeId, OP_SET_ROTATION_Z,    5, v); }
+
+/**
+ * Select the app-wide design system + brightness. Not node-scoped —
+ * the host's SkalApp rebuilds its theme in response.
+ *   mode:       0 = material, 1 = cupertino, 2 = adaptive (per-platform)
+ *   brightness: 0 = light, 1 = dark
+ * Accepts string aliases for ergonomics.
+ */
+const _DESIGN_MODES = { material: 0, cupertino: 1, adaptive: 2 };
+const _BRIGHTNESSES = { light: 0, dark: 1 };
+export function setDesign(mode, brightness) {
+  const m = typeof mode === 'string' ? (_DESIGN_MODES[mode] ?? 0) : (mode | 0);
+  const b = typeof brightness === 'string'
+    ? (_BRIGHTNESSES[brightness] ?? 0)
+    : (brightness | 0);
+  writeOp(OP_SET_DESIGN, m, b, 0);
+  scheduleCommit();
+}
+
+/**
+ * Imperative dialog API — FLUTTER_JS_COMPONENTS.md §10.2. Each call
+ * crosses the bridge as an RPC on the root node and returns a Promise
+ * that resolves with the chosen action's `value` (or null/undefined
+ * on a barrier dismiss).
+ *
+ *   spec: { title?, message?, actions?: [{ label, value, style? }] }
+ *
+ * `style: 'destructive'` renders the action emphasized (red).
+ */
+export function showDialog(spec) {
+  return invokeMethod(ROOT_NODE_ID, 'showDialog', [JSON.stringify(spec || {})]);
+}
+export function showActionSheet(spec) {
+  return invokeMethod(
+    ROOT_NODE_ID, 'showActionSheet', [JSON.stringify(spec || {})]);
+}
+export function showSnackbar(spec) {
+  const s = typeof spec === 'string' ? { message: spec } : (spec || {});
+  return invokeMethod(ROOT_NODE_ID, 'showSnackbar', [JSON.stringify(s)]);
+}
 
 // ───────────────────────────────────────────────────────────────────────
 // Custom-widget machinery — name-keyed props + handlers + create.

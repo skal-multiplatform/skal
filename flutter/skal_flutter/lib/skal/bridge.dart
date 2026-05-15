@@ -116,6 +116,30 @@ class SkalBridge {
   final Map<int, StreamSubscription<Object?>> _streamSubscriptions =
       <int, StreamSubscription<Object?>>{};
 
+  // ── Design system (set by opSetDesign from JS) ───────────────────
+  /// 0 = material, 1 = cupertino, 2 = adaptive (resolved per platform
+  /// in root.dart). The control builders branch on this.
+  int designMode = 0;
+
+  /// 0 = light, 1 = dark.
+  int designBrightness = 0;
+
+  /// Fires when opSetDesign changes either field — SkalApp rebuilds
+  /// the MaterialApp theme + CupertinoTheme in response.
+  final NodeNotifier designChanged = NodeNotifier();
+
+  /// App-level RPC dispatcher for the root node — backs the imperative
+  /// dialog API (skal/dialogs.dart). Held on the bridge (not just the
+  /// node) so it survives a root-node recreation: `opCreateNode`
+  /// re-attaches it whenever id 1 is (re)created.
+  SkalMethodDispatcher? rootDispatcher;
+
+  /// Latches true once any `<richText>` node is created. Gates the
+  /// drain's pass-0 (richText child→parent rebuild propagation) so a
+  /// tree that never uses richText skips that scan entirely — one
+  /// bool test instead of a full `touched` walk every drain.
+  bool _treeHasRichText = false;
+
   // ── Perf instrumentation (read by PerfHud) ───────────────────────
   int pumpAvgNs = 0;
   int pumpPeakNs = 0;
@@ -227,6 +251,11 @@ class SkalBridge {
       switch (opcode) {
         case opCreateNode:
           ns[a] = NodeState(b);
+          // JS (re)creates the root node id at startup — re-attach the
+          // app-level dispatcher so the imperative dialog API survives.
+          if (a == kRootNodeId) ns[a]?.methodDispatcher = rootDispatcher;
+          // Latch — enables the richText pass-0 in the coalescer.
+          if (b == wtRichText) _treeHasRichText = true;
           break;
 
         case opCreateCustomNode:
@@ -242,6 +271,11 @@ class SkalBridge {
           break;
 
         case opInsertBefore:
+          // Insert-before-self ("X before X") is a no-op — X stays
+          // put. A reconciler may emit it for an adjacent swap;
+          // without this the detach-then-reinsert below would fail to
+          // find the (just-detached) anchor and append X instead.
+          if (b == c) break;
           final parentNode = ns[a];
           final movingNode = ns[b];
           // Both parent and moving node must exist — without the moving
@@ -295,6 +329,17 @@ class SkalBridge {
             node.coldDirty = true;
             touched.add(a);
             propWrites++;
+            // Stack-positioning props (top/right/bottom/left) live on
+            // the CHILD but are consumed by the parent `<stack>`'s
+            // builder, which wraps the child in a Positioned. Re-dirty
+            // the parent so the stack rebuilds with the new offset.
+            if (b >= propTop && b <= propLeft) {
+              final parent = ns[node.parent];
+              if (parent != null) {
+                parent.coldDirty = true;
+                touched.add(node.parent);
+              }
+            }
           }
           break;
 
@@ -338,6 +383,14 @@ class SkalBridge {
               node.onClickHandlerId = c;
             } else if (b == evChange) {
               node.onChangeHandlerId = c;
+            } else if (b == evLongPress) {
+              node.onLongPressHandlerId = c;
+            } else if (b == evDoubleTap) {
+              node.onDoubleTapHandlerId = c;
+            } else if (b == evSubmit) {
+              node.onSubmitHandlerId = c;
+            } else if (b == evReorder) {
+              node.onReorderHandlerId = c;
             }
             node.coldDirty = true;
             touched.add(a);
@@ -616,6 +669,13 @@ class SkalBridge {
             touched.add(a);
           }
           break;
+
+        case opSetDesign:
+          // Global, not node-scoped — a = mode, b = brightness.
+          designMode = a;
+          designBrightness = b;
+          designChanged.notify();
+          break;
       }
 
       p += 16;
@@ -625,6 +685,33 @@ class SkalBridge {
     // Hot and cold are independent: a frame can hit one, the other, or
     // both. Tree-shape ops fall into cold (the parent's cached widget
     // tree needs to invalidate to re-emit children).
+    // Pass 0 — `<richText>` reactivity. A richText absorbs each child
+    // `<text>` into a TextSpan; the child is never its own widget, so
+    // a dirty child must rebuild the parent. Promote each such parent
+    // into the `touched` set + mark it cold-dirty so the coalescing
+    // loop below notifies it EXACTLY ONCE — no per-child or
+    // parent+child double rebuild. `richTextParents` is lazily
+    // allocated, so a richText-using app with no dirty spans this
+    // drain still pays nothing; `_treeHasRichText` skips the scan
+    // outright for an app that never uses richText.
+    if (_treeHasRichText) {
+      List<int>? richTextParents;
+      for (final id in touched) {
+        final node = ns[id];
+        if (node == null || !node.coldDirty) continue;
+        final parent = ns[node.parent];
+        if (parent != null && parent.type == wtRichText) {
+          (richTextParents ??= <int>[]).add(node.parent);
+        }
+      }
+      if (richTextParents != null) {
+        for (final pid in richTextParents) {
+          ns[pid]?.coldDirty = true;
+        }
+        touched.addAll(richTextParents);
+      }
+    }
+
     int coldCount = 0;
     for (final id in touched) {
       final node = ns[id];

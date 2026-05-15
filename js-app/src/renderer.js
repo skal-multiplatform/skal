@@ -33,6 +33,31 @@ const TAG_TO_WIDGET = {
   // The string child is auto-wrapped as an unstyled WT_TEXT leaf.
   text:                 B.WT_TEXT,
   button:               B.WT_BUTTON,
+  // <image src="https://..." contentScale={1} cornerRadius={8} /> —
+  // a display leaf. `src` accepts http(s):// , file:// , asset:// or
+  // a bare asset path. `contentScale` is the BoxFit enum (0=contain,
+  // 1=cover, 2=fill, 3=fitWidth, 4=fitHeight, 5=none, 6=scaleDown).
+  image:                B.WT_IMAGE,
+  // <stack> overlaps children. A child carrying top/right/bottom/left
+  // is wrapped in a Positioned by the host.
+  stack:                B.WT_STACK,
+  // Wave-2 controls. switch/checkbox take `checked` + onChange(bool);
+  // slider takes `value`/`min`/`max` + onChange(double); progressBar
+  // takes `progress` (0..1, omit for indeterminate).
+  switch:               B.WT_SWITCH,
+  slider:               B.WT_SLIDER,
+  checkbox:             B.WT_CHECKBOX,
+  activityIndicator:    B.WT_ACTIVITY_INDICATOR,
+  progressBar:          B.WT_PROGRESS_BAR,
+  // Wave-3. <lazyGrid> takes crossAxisCount + aspectRatio; <wrap> is
+  // a flow layout; <safeArea> insets one child; <richText> styles
+  // inline runs via its child <text> nodes.
+  lazyGrid:             B.WT_LAZY_GRID,
+  wrap:                 B.WT_WRAP,
+  safeArea:             B.WT_SAFE_AREA,
+  richText:             B.WT_RICH_TEXT,
+  // <textInput value=… placeholder=… onChange=… onSubmit=… />
+  textInput:            B.WT_TEXT_INPUT,
 };
 
 // ───────────────────────────────────────────────────────────────────────
@@ -65,6 +90,19 @@ const COLD_PROPS = {
   weight:         [B.PROP_WEIGHT,           'f32'],
   alignment:      [B.PROP_ALIGNMENT,        'u32'],
   gap:            [B.PROP_GAP,              'u32'],
+  // axis: 0 = vertical (default), 1 = horizontal — for scrollView /
+  // listView / reorderableListView. `axis={1}` makes a lazy list scroll
+  // sideways (the "lazyRow" use case).
+  axis:           [B.PROP_AXIS,             'u32'],
+  // Stack-child positioning — set on a child of <stack>. Offsets in dp
+  // (negative allowed for overflow). Omit for a non-positioned child.
+  top:            [B.PROP_TOP,              'u32'],
+  right:          [B.PROP_RIGHT,            'u32'],
+  bottom:         [B.PROP_BOTTOM,           'u32'],
+  left:           [B.PROP_LEFT,             'u32'],
+  // Grid (lazyGrid).
+  crossAxisCount: [B.PROP_CROSS_AXIS_COUNT, 'u32'],
+  aspectRatio:    [B.PROP_ASPECT_RATIO,     'f32'],
   // Visual
   background:     [B.PROP_BG_COLOR,         'color'],
   color:          [B.PROP_FG_COLOR,         'color'],
@@ -88,6 +126,13 @@ const COLD_PROPS = {
   value:          [B.PROP_VALUE,            'str'],
   keyboardType:   [B.PROP_KEYBOARD_TYPE,    'u32'],
   secureEntry:    [B.PROP_SECURE_ENTRY,     'u32'],
+  // Controls — `checked` for switch/checkbox; `min`/`max` for slider;
+  // `progress` for progressBar. (Slider's `value` is handled per-tag
+  // in setProperty since the name collides with text inputs.)
+  checked:        [B.PROP_CHECKED,          'u32'],
+  min:            [B.PROP_SLIDER_MIN,       'f32'],
+  max:            [B.PROP_SLIDER_MAX,       'f32'],
+  progress:       [B.PROP_PROGRESS,         'f32'],
   // Behavior
   enabled:        [B.PROP_ENABLED,          'u32'],
   focusable:      [B.PROP_FOCUSABLE,        'u32'],
@@ -101,6 +146,27 @@ const HOT_PROP_SETTERS = {
   scaleX:       B.setScaleX,
   scaleY:       B.setScaleY,
   rotation:     B.setRotationZ,
+};
+
+// Function-valued handler props → bridge event kinds. Gesture
+// handlers (onClick / onTap / onLongPress / onDoubleTap) wrap the node
+// in a GestureDetector on the host; onChange is the value-change
+// callback for controls (switch / slider / checkbox).
+const HANDLER_EVENTS = {
+  onClick:     B.EV_CLICK,
+  onclick:     B.EV_CLICK,
+  onTap:       B.EV_CLICK,
+  onLongPress: B.EV_LONG_PRESS,
+  onDoubleTap: B.EV_DOUBLE_TAP,
+  onChange:    B.EV_CHANGE,
+  onSubmit:    B.EV_SUBMIT,
+  onReorder:   B.EV_REORDER,
+};
+
+// `animate.curve` name → wire enum (mirrors _curveFor in root.dart).
+const ANIM_CURVES = {
+  linear: 0, easeIn: 1, easeOut: 2, easeInOut: 3,
+  bounce: 4, elastic: 5, fastOutSlowIn: 6,
 };
 
 /**
@@ -376,13 +442,41 @@ const _renderer = createRenderer({
       _setCustomProperty(node, name, value);
       return;
     }
-    // onClick / onclick — wire to a bridge handler ID.
-    if (name === 'onClick' || name === 'onclick') {
+    // Handler props (onClick / onTap / onLongPress / onDoubleTap /
+    // onChange) — wire to a bridge handler ID under the matching kind.
+    const handlerKind = HANDLER_EVENTS[name];
+    if (handlerKind !== undefined) {
       if (typeof value === 'function') {
         const handlerId = B.newHandlerId(value);
-        B.bindHandler(node.id, B.EV_CLICK, handlerId);
+        B.bindHandler(node.id, handlerKind, handlerId);
         B.scheduleCommit();
       }
+      return;
+    }
+
+    // <slider value={0.5}> — slider's value is a float, distinct from
+    // the string `value` that text inputs use. Dispatch by tag.
+    if (name === 'value' && node.tag === 'slider') {
+      B.setPropF32(node.id, B.PROP_SLIDER_VALUE, Number(value) || 0);
+      B.scheduleCommit();
+      return;
+    }
+
+    // animate={{ duration, curve, delay }} — turns on implicit
+    // animation of this node's hot props (opacity / transform). A
+    // duration of 0 (or omitting `animate`) leaves the node snapping.
+    if (name === 'animate' && value && typeof value === 'object') {
+      B.setPropU32(node.id, B.PROP_ANIM_DURATION, value.duration | 0);
+      if (value.curve != null) {
+        const c = typeof value.curve === 'string'
+          ? (ANIM_CURVES[value.curve] ?? 0)
+          : (value.curve | 0);
+        B.setPropU32(node.id, B.PROP_ANIM_CURVE, c);
+      }
+      if (value.delay != null) {
+        B.setPropU32(node.id, B.PROP_ANIM_DELAY, value.delay | 0);
+      }
+      B.scheduleCommit();
       return;
     }
     // <button label="..." /> or <text label="..." /> — set the
@@ -459,6 +553,24 @@ const _renderer = createRenderer({
   },
 
   insertNode(parent, node, anchor) {
+    // Insert-before-self is a no-op — "X stays where it is". Solid's
+    // reconcileArrays swap path emits exactly `insertBefore(X, X)` for
+    // an adjacent swap; without this guard the bridge detaches X, then
+    // fails to find the (just-detached) anchor and appends it.
+    if (node === anchor) return;
+    // If `node` is already mounted this is a MOVE — detach it from its
+    // current sibling links first (DOM insertBefore semantics).
+    // Without this the old neighbours keep pointing at it, corrupting
+    // the sibling list Solid's reconcileArrays walks to plan moves.
+    if (node.parent) {
+      const op = node.parent;
+      if (node.prevSibling) node.prevSibling.nextSibling = node.nextSibling;
+      else if (op.firstChild === node) op.firstChild = node.nextSibling;
+      if (node.nextSibling) node.nextSibling.prevSibling = node.prevSibling;
+      else if (op.lastChild === node) op.lastChild = node.prevSibling;
+      node.prevSibling = null;
+      node.nextSibling = null;
+    }
     // Bridge op
     const anchorId = anchor ? anchor.id : 0;
     B.writeOp(B.OP_INSERT_BEFORE, parent.id, node.id, anchorId);
@@ -520,6 +632,12 @@ export const {
   mergeProps,
   use,
 } = _renderer;
+
+// App-facing imperative API — design system selection + dialogs.
+// Re-exported so user code imports it from the same module as the
+// renderer.
+export { setDesign, showDialog, showActionSheet, showSnackbar }
+  from './bridge.js';
 
 // ───────────────────────────────────────────────────────────────────────
 // The root host node. Pre-creates the bridge node with id=ROOT_NODE_ID

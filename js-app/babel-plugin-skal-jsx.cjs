@@ -87,6 +87,18 @@ const BUILT_IN_WIDGET_NAMES = {
   ScrollView:           'scrollView',
   ListView:             'listView',
   ReorderableListView:  'reorderableListView',
+  Image:                'image',
+  Stack:                'stack',
+  Switch:               'switch',
+  Slider:               'slider',
+  Checkbox:             'checkbox',
+  ActivityIndicator:    'activityIndicator',
+  ProgressBar:          'progressBar',
+  LazyGrid:             'lazyGrid',
+  Wrap:                 'wrap',
+  SafeArea:             'safeArea',
+  RichText:             'richText',
+  TextInput:            'textInput',
 };
 
 module.exports = function ({ types: t }) {

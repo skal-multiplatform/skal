@@ -312,6 +312,13 @@ export const PROP_TRANSITION       = 0xAB;
 // Non-zero → the host drives the node's translation itself as the
 // pointer moves (zero per-frame bridge traffic). See wire.dart.
 export const PROP_DRAGGABLE        = 0xAC;
+// Spring physics mode — 0 off, 1 gentle, 2 bouncy, 3 stiff. Non-zero →
+// the node's hot props are driven by a real SpringSimulation (velocity-
+// aware), distinct from the curve-based animate.spring. See wire.dart.
+export const PROP_SPRING           = 0xAD;
+// Draggable release physics — 0 none, 1 glide (friction), 2 springBack.
+// What a draggable node does with its fling velocity on release.
+export const PROP_RELEASE          = 0xAE;
 
 // Sentinel values for width/height u32 props.
 export const NO_VALUE     = -1 | 0;          // prop unset → host default
@@ -630,6 +637,8 @@ KEY_TO_SLOT[PROP_ANIM_LOOP]        = 54;
 KEY_TO_SLOT[PROP_ANIM_SPRING]      = 55;
 KEY_TO_SLOT[PROP_TRANSITION]       = 56;
 KEY_TO_SLOT[PROP_DRAGGABLE]        = 57;
+KEY_TO_SLOT[PROP_SPRING]           = 58;
+KEY_TO_SLOT[PROP_RELEASE]          = 59;
 
 // 64-slot row stride (was 32 — the extended widget set filled it).
 // KEY_TO_SLOT is an Int8Array, so slots must stay < 128.

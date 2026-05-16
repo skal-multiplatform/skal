@@ -423,6 +423,8 @@ function attachGestures(node) {
     }
     const wantPan = g.panStart || g.panUpdate || g.panEnd || g.draggable;
     if (panId === -1 && wantPan && !wantScale) {
+      // Re-grabbing the box cancels any release simulation in flight.
+      if (node._skalReleaseCancel) { node._skalReleaseCancel(); node._skalReleaseCancel = null; }
       panId = e.pointerId;
       node.setPointerCapture(e.pointerId);
       const r = node.getBoundingClientRect();
@@ -467,7 +469,11 @@ function attachGestures(node) {
     }
     if (e.pointerId !== panId) return;
     panId = -1;
-    if (g && g.panEnd) {
+    if (!g) return;
+    if (g.draggable && g.release) {
+      // Release physics — keep moving, then report the resting offset.
+      runRelease(node, g, vx, vy);
+    } else if (g.panEnd) {
       if (g.draggable) {
         const h = node._skalHot || { tx: 0, ty: 0 };
         g.panEnd(h.tx, h.ty);   // final resting offset
@@ -480,6 +486,52 @@ function attachGestures(node) {
   node.addEventListener('pointercancel', endPointer);
 }
 
+// Web release-physics — the rAF counterpart of native's _MomentumDraggable.
+// `glide` decays the fling velocity with friction; `springBack` integrates
+// a numeric spring back to the origin. Runs entirely on the compositor's
+// transform, then reports the resting offset through `onPanEnd`.
+function runRelease(node, g, vx, vy) {
+  const h = ensureHotState(node);
+  const spring = g.release === 2;
+  const k = 200, c = 2 * Math.sqrt(200) * 0.7; // springBack stiffness + damping
+  // Honour the draggable axis lock — no off-axis glide / spring.
+  if (g.draggable === 2) vy = 0;   // horizontal-only
+  if (g.draggable === 3) vx = 0;   // vertical-only
+  let last = performance.now();
+  let raf = 0;
+  const step = (now) => {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.05) dt = 0.05; // clamp a tab-switch stall
+    if (spring) {
+      vx += (-k * h.tx - c * vx) * dt;
+      vy += (-k * h.ty - c * vy) * dt;
+      h.tx += vx * dt; h.ty += vy * dt;
+      if (Math.abs(h.tx) < 0.5 && Math.abs(h.ty) < 0.5 &&
+          Math.abs(vx) < 5 && Math.abs(vy) < 5) {
+        h.tx = 0; h.ty = 0; updateTransform(node);
+        node._skalReleaseCancel = null;
+        if (g.panEnd) g.panEnd(0, 0);
+        return;
+      }
+    } else {
+      const decay = Math.exp(-3 * dt); // friction e-fold
+      vx *= decay; vy *= decay;
+      h.tx += vx * dt; h.ty += vy * dt;
+      if (Math.abs(vx) < 5 && Math.abs(vy) < 5) {
+        updateTransform(node);
+        node._skalReleaseCancel = null;
+        if (g.panEnd) g.panEnd(h.tx, h.ty);
+        return;
+      }
+    }
+    updateTransform(node);
+    raf = requestAnimationFrame(step);
+  };
+  node._skalReleaseCancel = () => { if (raf) cancelAnimationFrame(raf); };
+  raf = requestAnimationFrame(step);
+}
+
 // onPan* / onScale* prop name → `node._skalG` slot.
 const GESTURE_HANDLER_SLOTS = {
   onPanStart: 'panStart', onPanUpdate: 'panUpdate', onPanEnd: 'panEnd',
@@ -490,6 +542,14 @@ const GESTURE_HANDLER_SLOTS = {
 const DRAGGABLE_MODES = {
   free: 1, both: 1, horizontal: 2, x: 2, vertical: 3, y: 3,
 };
+
+// `release` enum: friendly string → 1 glide (friction) / 2 springBack.
+const RELEASE_MODES = {
+  none: 0, glide: 1, friction: 1, springback: 2, spring: 2,
+};
+
+// `spring` enum: friendly string → 1 gentle / 2 bouncy / 3 stiff.
+const SPRING_MODES = { gentle: 1, bouncy: 2, stiff: 3, wobbly: 2 };
 
 // ──────────────────────────────────────────────────────────────────────
 // Per-tag prop dispatch.
@@ -692,6 +752,34 @@ const _renderer = createRenderer({
         ? (DRAGGABLE_MODES[value] || 0)
         : (value === true ? 1 : (value | 0));
       attachGestures(node);
+      return;
+    }
+    // release — draggable release physics: 1 glide, 2 springBack.
+    if (name === 'release') {
+      const g = (node._skalG ||= {});
+      g.release = typeof value === 'string'
+        ? (RELEASE_MODES[value.toLowerCase()] || 0)
+        : (value === true ? 1 : (value | 0));
+      attachGestures(node);
+      return;
+    }
+    // spring — real-physics mode. The browser can't do native's
+    // velocity-aware retargeting, so we approximate with a spring-
+    // shaped CSS transition (bouncy overshoots via a >1 bezier).
+    if (name === 'spring') {
+      const m = typeof value === 'string'
+        ? (SPRING_MODES[value] || 0)
+        : (value === true ? 1 : (value | 0));
+      if (m) {
+        const easing = m === 2 ? 'cubic-bezier(0.34, 1.56, 0.64, 1)' // bouncy
+          : m === 3 ? 'cubic-bezier(0.22, 1, 0.36, 1)'               // stiff
+          : 'cubic-bezier(0.4, 0, 0.2, 1)';                          // gentle
+        const dur = m === 2 ? 620 : m === 3 ? 340 : 460;
+        node.style.transition =
+          `transform ${dur}ms ${easing}, opacity ${dur}ms ${easing}`;
+      } else {
+        node.style.transition = '';
+      }
       return;
     }
 

@@ -221,10 +221,12 @@ than a true `SpringSimulation` + unbounded controller. The curve form
 is allocation-identical to a normal tween and covers the UI cases
 (settle, bounce). A non-zero `spring` overrides the `curve` field.
 
-A true velocity-aware `SpringSimulation` only earns its extra
-machinery (an unbounded controller, to allow overshoot past the
-target) once there's gesture-driven motion to carry a fling's velocity
-into — which Skal doesn't have yet. Deferred until then.
+This curve-based `animate.spring` is **kept as-is** — it's the cheap,
+no-controller-overhead path for signal-driven UI motion. A *real*
+velocity-aware `SpringSimulation` is now also available as a separate,
+additive `spring` mode — see §10b. It earns its extra machinery (an
+unbounded controller) now that gestures exist to feed it a fling's
+velocity.
 
 ## 10a. Custom page transitions (Phase 4, shipped)
 
@@ -234,6 +236,42 @@ page-API `Page` whose `createRoute` returns a `PageRouteBuilder` with
 a `FadeTransition` (or zero-duration). `0` keeps the platform default
 (Material slide / Cupertino slide). The transitions run host-side on
 the raster thread — see §11 rule 8.
+
+## 10b. Real physics — `spring` mode + release momentum (Phase 5, shipped)
+
+Two additive features, both built on real `dart:physics` simulations
+driving an `AnimationController`. They do **not** replace the
+curve-based `animate.spring` (§10) — that stays as the cheap path.
+
+A `Simulation` driving a controller costs exactly the same as a curve:
+one controller, one ticker, evaluated host-side. Real physics is a
+fidelity gain at **equal** cost — §11's rules all still hold.
+
+**`spring` mode — velocity-aware hot-prop physics.**
+`<box spring="gentle" | "bouncy" | "stiff">` routes the node's hot
+props (opacity / transform) through `_SpringHotLayer` instead of
+`_StaticHotLayer` / `_AnimatedHotLayer`. An unbounded
+`AnimationController` runs a `SpringSimulation` (the preset picks a
+`SpringDescription.withDampingRatio` — ratio 1.0 critically damped,
+0.55 underdamped/bouncy, 0.9 stiff). The win over `animate.spring`'s
+curves: when a signal **retargets** the node mid-flight, the new
+spring is seeded with the controller's *current* value and velocity —
+motion stays continuous, where a curve restarts from a dead stop.
+
+**Release momentum — `draggable` + `release`.**
+`<box draggable release="glide" | "springBack">` makes a released box
+carry the fling velocity the gesture system measures (`onPanEnd`).
+`_MomentumDraggable` owns two unbounded controllers (one per axis); on
+release it seeds them with `(vx, vy)` and runs either a
+`FrictionSimulation` (glide — coast and decelerate, drag 0.135) or a
+`SpringSimulation` home to the origin (springBack). `onPanEnd` fires
+once the box settles, with the resting offset. The drag *and* the
+settle are both pure host-side — zero per-frame bridge traffic; only
+the single settle `onPanEnd` crosses the bridge.
+
+Web: `release` runs an equivalent `requestAnimationFrame` friction /
+numeric-spring loop; `spring` mode approximates with a spring-shaped
+CSS transition (no velocity-aware retargeting — the browser can't).
 
 ## 11. Performance rules (cross-cutting)
 
@@ -299,8 +337,12 @@ the raster thread — see §11 rule 8.
   bounded controller — no `SpringSimulation` / unbounded controller);
   custom page transitions (`<screen transition>` → fade / none via a
   `_FadePage`).
-- **Remaining** — a true velocity-aware `SpringSimulation` (only
-  matters with gesture-driven motion, which Skal doesn't have yet).
+- **Phase 5 — done.** Real physics (§10b), additive to the curve-based
+  `animate.spring`: a velocity-aware `spring` mode (`_SpringHotLayer`
+  running a `SpringSimulation`) and `draggable` release momentum
+  (`_MomentumDraggable` running `FrictionSimulation` / `SpringSimulation`
+  seeded with the gesture's fling velocity). Unblocked by the gesture
+  system, which now produces the velocity real springs consume.
 - **Out of scope** — Lottie / Rive: vector-animation files belong on
   the codegen-wrapped custom-widget path (`<Lottie src=…>`), like the
   camera / QR widgets — not a core animation primitive.

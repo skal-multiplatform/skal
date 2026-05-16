@@ -461,6 +461,22 @@ const int propTransition      = 0xAB;
 // is intentionally NOT dispatched while `draggable` is on. Enum:
 // 0 off, 1 free (both axes), 2 horizontal-only, 3 vertical-only.
 const int propDraggable       = 0xAC;
+// Spring physics mode — distinct from the curve-based `animate.spring`.
+// When non-zero, the node's hot props (opacity / transform) are driven
+// by a real `SpringSimulation` rather than snapping or curve-tweening:
+// a signal that retargets the node mid-flight is picked up from the
+// spring's CURRENT position AND velocity, so motion stays continuous
+// (a curve would restart from a dead stop). Runs host-side on one
+// controller — zero per-frame bridge traffic. See ANIMATION.md §13.
+// Enum: 0 off, 1 gentle, 2 bouncy, 3 stiff (→ SpringDescription presets).
+const int propSpring          = 0xAD;
+// Draggable release physics — what a `draggable` node does when the
+// pointer lifts. The host seeds a simulation with the fling velocity
+// the gesture measured and runs it host-side (one controller, zero
+// bridge traffic) until it settles, then fires `onPanEnd`. Enum:
+// 0 none (stop dead), 1 glide (FrictionSimulation — decelerate to
+// rest), 2 springBack (SpringSimulation — spring home to the origin).
+const int propRelease         = 0xAE;
 
 // ── Sentinel values for width/height props ───────────────────────────
 // Encoded into PROP_WIDTH / PROP_HEIGHT instead of needing distinct

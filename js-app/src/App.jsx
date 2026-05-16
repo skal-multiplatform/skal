@@ -121,6 +121,8 @@ function AnimationsPage() {
   const [animOn, setAnimOn]     = createSignal(false);
   const [coldOn, setColdOn]     = createSignal(false);
   const [springOn, setSpringOn] = createSignal(false);
+  const [springPos, setSpringPos] = createSignal(0);
+  const [dragGlide, setDragGlide] = createSignal('0, 0');
   const [faded, setFaded]       = createSignal(false);
   const [listItems, setListItems] = createSignal(['Alpha', 'Beta', 'Gamma']);
   let itemSeq = 3;
@@ -291,6 +293,82 @@ function AnimationsPage() {
         />
         <Text
           label="gentle · bouncy · stiff — three spring-like curves; bouncy overshoots and wobbles into place."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      <Section title="Physics — real SpringSimulation (spring)">
+        <Column gap={12}>
+          <Box
+            width={52}
+            height={52}
+            background={ACCENT}
+            cornerRadius={12}
+            spring="gentle"
+            translationX={springPos()}
+          />
+          <Box
+            width={52}
+            height={52}
+            background={GREEN}
+            cornerRadius={12}
+            spring="bouncy"
+            translationX={springPos()}
+          />
+          <Box
+            width={52}
+            height={52}
+            background={ORANGE}
+            cornerRadius={12}
+            spring="stiff"
+            translationX={springPos()}
+          />
+        </Column>
+        <Button
+          label={springPos() === 0 ? 'Spring' : 'Back'}
+          onClick={() => setSpringPos(springPos() === 0 ? 175 : 0)}
+        />
+        <Text
+          label="A real SpringSimulation drives these — not a curve. Tap fast: the box retargets from its CURRENT position and velocity mid-flight, with no dead-stop restart. gentle settles, bouncy overshoots, stiff snaps."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      <Section title="Physics — release momentum (draggable + release)">
+        <Box height={150} background={CHIP} cornerRadius={12}>
+          <Box
+            draggable
+            release="glide"
+            width={60}
+            height={60}
+            background={ACCENT}
+            cornerRadius={14}
+            onPanEnd={(x, y) => setDragGlide(`${x.toFixed(0)}, ${y.toFixed(0)}`)}
+          >
+            <Text label="glide" fontSize={11} color="#FFFFFFFF" />
+          </Box>
+        </Box>
+        <Text
+          label={`Throw the blue box — friction carries it on after you let go and decelerates it to rest. Resting at ${dragGlide()}.`}
+          fontSize={11}
+          color={SUBTLE}
+        />
+        <Box height={150} background={CHIP} cornerRadius={12}>
+          <Box
+            draggable
+            release="springBack"
+            width={60}
+            height={60}
+            background={PURPLE}
+            cornerRadius={14}
+          >
+            <Text label="spring" fontSize={11} color="#FFFFFFFF" />
+          </Box>
+        </Box>
+        <Text
+          label="Throw the purple box — a SpringSimulation springs it home to the origin, seeded with your fling velocity (throw harder → springs back harder). All host-side: zero per-frame bridge traffic."
           fontSize={11}
           color={SUBTLE}
         />

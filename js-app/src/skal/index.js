@@ -108,6 +108,16 @@
  *   host-move fast-path — the widget follows the pointer with no
  *   per-frame bridge traffic. `true`/`'free'` drags both axes,
  *   `'horizontal'` / `'vertical'` lock to one.
+ * @property {boolean | 1 | 2 | 3 | 'gentle' | 'bouncy' | 'stiff'} [spring]
+ *   real-physics mode — the node's hot props are driven by a
+ *   SpringSimulation, not a curve. A signal that retargets the node
+ *   mid-flight is picked up from the spring's current position AND
+ *   velocity (no dead-stop restart). Distinct from `animate.spring`.
+ * @property {boolean | 1 | 2 | 'glide' | 'springBack'} [release]
+ *   draggable release physics — what the box does when the pointer
+ *   lifts. `'glide'` carries the fling velocity and decelerates to
+ *   rest (friction); `'springBack'` springs home to the origin. Only
+ *   applies alongside `draggable`.
  */
 
 /**

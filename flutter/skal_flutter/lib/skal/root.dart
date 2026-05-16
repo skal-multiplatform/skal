@@ -41,6 +41,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter/scheduler.dart';
 
 import 'bridge.dart';
@@ -471,51 +472,44 @@ Widget _applyGestures(NodeState n, SkalBridge bridge, Widget child) {
   // box is deeper in the tree than the Scrollable). This is the exact
   // recognizer family Flutter's own `Draggable` uses to work inside a
   // `ListView`. `draggable` 2 / 3 additionally lock to one axis.
-  Drag? handleDragStart(Offset position) {
-    if (panStart != 0) {
-      bridge.dispatchEventVec2(panStart, position.dx, position.dy,
-          eventKind: evPanStart);
-    }
-    return _SkalDrag(
+  final release = n.getPropU32(propRelease, 0);
+
+  Widget out;
+  if (draggable != 0 && release != 0) {
+    // Release physics — the box keeps moving (glide / spring-back)
+    // after the pointer lifts. `_MomentumDraggable` owns its own
+    // recognizer plus the post-release simulation controllers.
+    out = _MomentumDraggable(
       node: n,
       bridge: bridge,
       draggable: draggable,
-      panUpdate: panUpdate,
+      release: release,
+      panStart: panStart,
       panEnd: panEnd,
-    );
-  }
-
-  final Type dragType;
-  final GestureRecognizerFactory dragFactory;
-  if (draggable == 2) {
-    dragType = HorizontalMultiDragGestureRecognizer;
-    dragFactory =
-        GestureRecognizerFactoryWithHandlers<HorizontalMultiDragGestureRecognizer>(
-      HorizontalMultiDragGestureRecognizer.new,
-      (r) => r.onStart = handleDragStart,
-    );
-  } else if (draggable == 3) {
-    dragType = VerticalMultiDragGestureRecognizer;
-    dragFactory =
-        GestureRecognizerFactoryWithHandlers<VerticalMultiDragGestureRecognizer>(
-      VerticalMultiDragGestureRecognizer.new,
-      (r) => r.onStart = handleDragStart,
+      child: child,
     );
   } else {
-    // Free drag (draggable == 1) and plain onPan* event handlers.
-    dragType = ImmediateMultiDragGestureRecognizer;
-    dragFactory =
-        GestureRecognizerFactoryWithHandlers<ImmediateMultiDragGestureRecognizer>(
-      ImmediateMultiDragGestureRecognizer.new,
-      (r) => r.onStart = handleDragStart,
+    Drag? handleDragStart(Offset position) {
+      if (panStart != 0) {
+        bridge.dispatchEventVec2(panStart, position.dx, position.dy,
+            eventKind: evPanStart);
+      }
+      return _SkalDrag(
+        node: n,
+        bridge: bridge,
+        draggable: draggable,
+        panUpdate: panUpdate,
+        panEnd: panEnd,
+      );
+    }
+
+    final (dragType, dragFactory) = _dragRecognizer(draggable, handleDragStart);
+    out = RawGestureDetector(
+      behavior: HitTestBehavior.opaque,
+      gestures: <Type, GestureRecognizerFactory>{dragType: dragFactory},
+      child: child,
     );
   }
-
-  Widget out = RawGestureDetector(
-    behavior: HitTestBehavior.opaque,
-    gestures: <Type, GestureRecognizerFactory>{dragType: dragFactory},
-    child: child,
-  );
   // Taps live in their own GestureDetector — a tap recognizer and a
   // drag recognizer coexist fine in the arena (tap wins with no move,
   // drag wins on movement). The drag detector is the inner/deeper one
@@ -530,6 +524,40 @@ Widget _applyGestures(NodeState n, SkalBridge bridge, Widget child) {
     );
   }
   return out;
+}
+
+/// Builds the MultiDrag recognizer for a `draggable` axis (2 →
+/// horizontal-only, 3 → vertical-only, else free / plain pan). Returns
+/// the recognizer's runtime [Type] — the `RawGestureDetector` map key —
+/// paired with its factory. Shared by [_applyGestures] and
+/// [_MomentumDraggable] so both pick the recognizer the same way.
+(Type, GestureRecognizerFactory) _dragRecognizer(
+    int draggable, GestureMultiDragStartCallback onStart) {
+  if (draggable == 2) {
+    return (
+      HorizontalMultiDragGestureRecognizer,
+      GestureRecognizerFactoryWithHandlers<HorizontalMultiDragGestureRecognizer>(
+        HorizontalMultiDragGestureRecognizer.new,
+        (r) => r.onStart = onStart,
+      ),
+    );
+  }
+  if (draggable == 3) {
+    return (
+      VerticalMultiDragGestureRecognizer,
+      GestureRecognizerFactoryWithHandlers<VerticalMultiDragGestureRecognizer>(
+        VerticalMultiDragGestureRecognizer.new,
+        (r) => r.onStart = onStart,
+      ),
+    );
+  }
+  return (
+    ImmediateMultiDragGestureRecognizer,
+    GestureRecognizerFactoryWithHandlers<ImmediateMultiDragGestureRecognizer>(
+      ImmediateMultiDragGestureRecognizer.new,
+      (r) => r.onStart = onStart,
+    ),
+  );
 }
 
 /// The [Drag] sink for a Skal pan / drag gesture — one is created per
@@ -548,6 +576,7 @@ class _SkalDrag extends Drag {
     required this.draggable,
     required this.panUpdate,
     required this.panEnd,
+    this.onMomentumEnd,
   });
 
   final NodeState node;
@@ -555,6 +584,12 @@ class _SkalDrag extends Drag {
   final int draggable;
   final int panUpdate;
   final int panEnd;
+
+  /// When set (a `draggable` node with `release` physics), the drag's
+  /// `end` hands the fling velocity here instead of dispatching
+  /// `onPanEnd` — the release simulation owns the rest of the motion
+  /// and fires `onPanEnd` itself once it settles. See [_MomentumDraggable].
+  final void Function(double vx, double vy)? onMomentumEnd;
 
   @override
   void update(DragUpdateDetails details) {
@@ -575,6 +610,12 @@ class _SkalDrag extends Drag {
 
   @override
   void end(DragEndDetails details) {
+    final v = details.velocity.pixelsPerSecond;
+    if (onMomentumEnd != null) {
+      // Release physics owns the settle — hand off the fling velocity.
+      onMomentumEnd!(v.dx, v.dy);
+      return;
+    }
     if (panEnd != 0) {
       if (draggable != 0) {
         // Host-driven drag → report the final resting offset so JS
@@ -583,10 +624,160 @@ class _SkalDrag extends Drag {
             panEnd, node.translationX, node.translationY,
             eventKind: evPanEnd);
       } else {
-        final v = details.velocity.pixelsPerSecond;
         bridge.dispatchEventVec2(panEnd, v.dx, v.dy, eventKind: evPanEnd);
       }
     }
+  }
+}
+
+/// Drag coefficient for `release: 'glide'` — a [FrictionSimulation]'s
+/// `drag` ∈ (0,1); lower = more friction / shorter coast. 0.135 is the
+/// value iOS uses for scroll deceleration, and gives a thrown box a
+/// natural ~0.5–1 s glide to rest.
+const double _kReleaseFrictionDrag = 0.135;
+
+/// Spring for `release: 'springBack'` — pulls a released box home to
+/// its origin; the fling velocity rides in as the spring's initial
+/// velocity, so a hard throw springs back hard.
+final SpringDescription _kReleaseSpring =
+    SpringDescription.withDampingRatio(mass: 1, stiffness: 200, ratio: 0.7);
+
+/// A `draggable` box with `release` physics — the host machinery for
+/// post-release motion. During the drag it host-moves the node exactly
+/// like the bare draggable path (a [_SkalDrag] mutating `translation`);
+/// on release the gesture's fling velocity seeds a [Simulation] that
+/// runs on two unbounded controllers (one per axis) until the box
+/// settles, then `onPanEnd` fires with the resting offset.
+///
+/// Release modes (`propRelease`):
+///   • 1 glide      — [FrictionSimulation]: coast and decelerate.
+///   • 2 springBack — [SpringSimulation] home to the origin.
+///
+/// All host-side: ZERO per-frame bridge traffic during both the drag
+/// and the settle — only the single `onPanEnd` crosses the bridge.
+class _MomentumDraggable extends StatefulWidget {
+  final NodeState node;
+  final SkalBridge bridge;
+  final int draggable;
+  final int release;
+  final int panStart;
+  final int panEnd;
+  final Widget child;
+  const _MomentumDraggable({
+    required this.node,
+    required this.bridge,
+    required this.draggable,
+    required this.release,
+    required this.panStart,
+    required this.panEnd,
+    required this.child,
+  });
+
+  @override
+  State<_MomentumDraggable> createState() => _MomentumDraggableState();
+}
+
+class _MomentumDraggableState extends State<_MomentumDraggable>
+    with TickerProviderStateMixin {
+  late final AnimationController _ctrlX;
+  late final AnimationController _ctrlY;
+  // True between release and the box coming fully to rest.
+  bool _settling = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrlX = AnimationController.unbounded(vsync: this)
+      ..addListener(_tickX)
+      ..addStatusListener(_onAxisStatus);
+    _ctrlY = AnimationController.unbounded(vsync: this)
+      ..addListener(_tickY)
+      ..addStatusListener(_onAxisStatus);
+  }
+
+  @override
+  void dispose() {
+    _ctrlX.dispose();
+    _ctrlY.dispose();
+    super.dispose();
+  }
+
+  void _tickX() {
+    widget.node.translationX = _ctrlX.value;
+    widget.node.hot.notify();
+  }
+
+  void _tickY() {
+    widget.node.translationY = _ctrlY.value;
+    widget.node.hot.notify();
+  }
+
+  /// Pointer down — cancel any release simulation still running (the
+  /// user re-grabbed the box mid-flight) and start a fresh host drag.
+  Drag? _handleDragStart(Offset position) {
+    _settling = false;
+    _ctrlX.stop();
+    _ctrlY.stop();
+    if (widget.panStart != 0) {
+      widget.bridge.dispatchEventVec2(
+          widget.panStart, position.dx, position.dy, eventKind: evPanStart);
+    }
+    return _SkalDrag(
+      node: widget.node,
+      bridge: widget.bridge,
+      draggable: widget.draggable,
+      panUpdate: 0, // draggable host-moves; onPanUpdate is never dispatched
+      panEnd: widget.panEnd,
+      onMomentumEnd: _onReleased,
+    );
+  }
+
+  /// The pointer lifted — seed the release simulation with the fling
+  /// velocity the gesture measured and run it on both axes.
+  void _onReleased(double vx, double vy) {
+    final n = widget.node;
+    // Honour the draggable axis lock — a horizontal- / vertical-only
+    // box must not glide or spring off-axis even on a diagonal fling.
+    if (widget.draggable == 2) vy = 0.0; // horizontal-only
+    if (widget.draggable == 3) vx = 0.0; // vertical-only
+    if (widget.release == 2) {
+      // springBack — each axis springs home to the origin.
+      _ctrlX.animateWith(
+          SpringSimulation(_kReleaseSpring, n.translationX, 0.0, vx));
+      _ctrlY.animateWith(
+          SpringSimulation(_kReleaseSpring, n.translationY, 0.0, vy));
+    } else {
+      // glide — friction keeps the box's heading and decelerates it.
+      _ctrlX.animateWith(
+          FrictionSimulation(_kReleaseFrictionDrag, n.translationX, vx));
+      _ctrlY.animateWith(
+          FrictionSimulation(_kReleaseFrictionDrag, n.translationY, vy));
+    }
+    _settling = true;
+  }
+
+  /// An axis controller changed status. Once the release is settling
+  /// AND both axes have come to rest, the motion is done — report the
+  /// final resting offset to JS.
+  void _onAxisStatus(AnimationStatus _) {
+    if (!_settling || _ctrlX.isAnimating || _ctrlY.isAnimating) return;
+    _settling = false;
+    if (widget.panEnd != 0) {
+      widget.bridge.dispatchEventVec2(
+          widget.panEnd, widget.node.translationX, widget.node.translationY,
+          eventKind: evPanEnd);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final (type, factory) =
+        _dragRecognizer(widget.draggable, _handleDragStart);
+    return RawGestureDetector(
+      behavior: HitTestBehavior.opaque,
+      gestures: <Type, GestureRecognizerFactory>{type: factory},
+      child: widget.child,
+    );
   }
 }
 
@@ -596,10 +787,36 @@ class _SkalDrag extends Drag {
 /// (`propAnimDuration > 0`). Picking per-node means a 5000-row list
 /// pays for an `AnimationController` only on the rows that animate.
 Widget _hotLayer({required NodeState node, required Widget child}) {
+  // `spring` (real SpringSimulation physics) takes precedence over the
+  // curve-based `animate` — a node opting into physics gets physics.
+  if (node.getPropU32(propSpring, 0) > 0) {
+    return _SpringHotLayer(node: node, child: child);
+  }
   if (node.getPropU32(propAnimDuration, 0) > 0) {
     return _AnimatedHotLayer(node: node, child: child);
   }
   return _StaticHotLayer(node: node, child: child);
+}
+
+/// `propSpring` enum → a real [SpringDescription]. The presets pick a
+/// mass / stiffness / damping-ratio: ratio 1.0 is critically damped
+/// (no overshoot), below 1.0 underdamped (overshoots + wobbles), above
+/// 1.0 overdamped (slow, no overshoot). ANIMATION.md §13.
+SpringDescription _springDescFor(int v) {
+  switch (v) {
+    case 1: // gentle — a soft, overshoot-free settle
+      return SpringDescription.withDampingRatio(
+          mass: 1, stiffness: 120, ratio: 1.0);
+    case 2: // bouncy — underdamped: overshoots the target and wobbles in
+      return SpringDescription.withDampingRatio(
+          mass: 1, stiffness: 180, ratio: 0.55);
+    case 3: // stiff — fast and crisp, a hair of overshoot
+      return SpringDescription.withDampingRatio(
+          mass: 1, stiffness: 500, ratio: 0.9);
+    default:
+      return SpringDescription.withDampingRatio(
+          mass: 1, stiffness: 150, ratio: 0.8);
+  }
 }
 
 /// True when [n] carries a gesture that *moves the node itself* — a
@@ -907,6 +1124,132 @@ class _AnimatedHotLayerState extends State<_AnimatedHotLayer>
     if (stable || _op < 1.0) {
       w = Opacity(opacity: _op.clamp(0.0, 1.0), child: w);
     }
+    return w;
+  }
+}
+
+/// The physics hot layer — `<box spring>`. Drives the node's hot props
+/// (opacity / transform) with a real [SpringSimulation] instead of a
+/// curve. Its edge over `animate.spring`'s curves: when a hot prop is
+/// RETARGETED mid-flight, the spring continues from the value AND
+/// velocity it currently has — motion stays continuous, no dead-stop
+/// restart that a curve would force.
+///
+/// One unbounded [AnimationController] runs the spring host-side; its
+/// value is the 0→1 progress (overshooting past 1 during the bounce)
+/// and every hot prop lerps by it. Zero per-frame bridge traffic — the
+/// same contract as `_AnimatedHotLayer`. ANIMATION.md §13.
+class _SpringHotLayer extends StatefulWidget {
+  final NodeState node;
+  final Widget child;
+  const _SpringHotLayer({required this.node, required this.child});
+
+  @override
+  State<_SpringHotLayer> createState() => _SpringHotLayerState();
+}
+
+class _SpringHotLayerState extends State<_SpringHotLayer>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  // Currently-rendered values.
+  double _op = 1, _tx = 0, _ty = 0, _sx = 1, _sy = 1, _rz = 0;
+  // Spring endpoints (from → to); the controller's value lerps between.
+  double _fOp = 1, _fTx = 0, _fTy = 0, _fSx = 1, _fSy = 1, _fRz = 0;
+  double _tOp = 1, _tTx = 0, _tTy = 0, _tSx = 1, _tSy = 1, _tRz = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    final n = widget.node;
+    _op = _fOp = _tOp = n.opacity;
+    _tx = _fTx = _tTx = n.translationX;
+    _ty = _fTy = _tTy = n.translationY;
+    _sx = _fSx = _tSx = n.scaleX;
+    _sy = _fSy = _tSy = n.scaleY;
+    _rz = _fRz = _tRz = n.rotationZ;
+    // Unbounded — a spring overshoots past 1.0 during the bounce.
+    // Starts settled at 1.0 (displayed == target), so no animation runs
+    // until a hot-prop write actually retargets it.
+    _ctrl = AnimationController.unbounded(value: 1.0, vsync: this)
+      ..addListener(_onTick);
+    n.hot.addListener(_onHot);
+  }
+
+  @override
+  void dispose() {
+    widget.node.hot.removeListener(_onHot);
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  /// A hot-prop write landed — rebase the spring on whatever is on
+  /// screen right now, carrying the controller's current velocity so
+  /// an interrupted spring keeps its momentum instead of restarting
+  /// from a dead stop.
+  void _onHot() {
+    final n = widget.node;
+    final nOp = n.opacity,
+        nTx = n.translationX,
+        nTy = n.translationY,
+        nSx = n.scaleX,
+        nSy = n.scaleY,
+        nRz = n.rotationZ;
+    if (nOp == _tOp &&
+        nTx == _tTx &&
+        nTy == _tTy &&
+        nSx == _tSx &&
+        nSy == _tSy &&
+        nRz == _tRz) {
+      return; // nothing actually changed
+    }
+    _fOp = _op;
+    _fTx = _tx;
+    _fTy = _ty;
+    _fSx = _sx;
+    _fSy = _sy;
+    _fRz = _rz;
+    _tOp = nOp;
+    _tTx = nTx;
+    _tTy = nTy;
+    _tSx = nSx;
+    _tSy = nSy;
+    _tRz = nRz;
+    // Carry the in-flight progress velocity into the new spring — this
+    // is what makes a retargeted spring continuous. `velocity` already
+    // reads 0 when the controller is idle.
+    final spring = _springDescFor(n.getPropU32(propSpring, 0));
+    _ctrl.animateWith(SpringSimulation(spring, 0.0, 1.0, _ctrl.velocity));
+  }
+
+  void _onTick() {
+    final t = _ctrl.value;
+    setState(() {
+      _op = _lerp(_fOp, _tOp, t);
+      _tx = _lerp(_fTx, _tTx, t);
+      _ty = _lerp(_fTy, _tTy, t);
+      _sx = _lerp(_fSx, _tSx, t);
+      _sy = _lerp(_fSy, _tSy, t);
+      _rz = _lerp(_fRz, _tRz, t);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // RepaintBoundary: the spring re-composites this retained layer
+    // each frame without re-running the child's paint — see the same
+    // note on `_AnimatedHotLayer`. The Transform / Opacity wrappers are
+    // unconditional: a spring node is animating its transform by
+    // definition, and a fixed structure is what keeps any gesture
+    // recognizer below from being re-parented mid-spring.
+    Widget w = RepaintBoundary(child: widget.child);
+    final m = Matrix4.identity()
+      ..translateByDouble(_tx, _ty, 0.0, 1.0)
+      ..rotateZ(_rz)
+      ..scaleByDouble(_sx, _sy, 1.0, 1.0);
+    w = Transform(transform: m, alignment: Alignment.center, child: w);
+    // Opacity at 1.0 is free — RenderOpacity skips its layer at alpha 255.
+    w = Opacity(opacity: _op.clamp(0.0, 1.0), child: w);
     return w;
   }
 }

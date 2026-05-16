@@ -163,6 +163,8 @@ const COLD_PROPS = {
   focusable:      [B.PROP_FOCUSABLE,        'u32'],
   visible:        [B.PROP_VISIBLE,          'u32'],
   draggable:      [B.PROP_DRAGGABLE,        'u32'],
+  spring:         [B.PROP_SPRING,           'u32'],
+  release:        [B.PROP_RELEASE,          'u32'],
 };
 
 const HOT_PROP_SETTERS = {
@@ -509,6 +511,22 @@ const _renderer = createRenderer({
     if (name === 'draggable' && typeof value === 'string') {
       const m = { free: 1, both: 1, horizontal: 2, x: 2, vertical: 3, y: 3 };
       B.setPropU32(node.id, B.PROP_DRAGGABLE, m[value] ?? 0);
+      B.scheduleCommit();
+      return;
+    }
+    // <box spring="bouncy"> — real SpringSimulation physics on the hot
+    // props. `spring={true}` → gentle. Distinct from animate.spring.
+    if (name === 'spring' && typeof value === 'string') {
+      const m = { gentle: 1, bouncy: 2, stiff: 3, wobbly: 2 };
+      B.setPropU32(node.id, B.PROP_SPRING, m[value] ?? 0);
+      B.scheduleCommit();
+      return;
+    }
+    // <box draggable release="glide"> — release-physics for a draggable
+    // box. `release={true}` → glide (friction decelerate).
+    if (name === 'release' && typeof value === 'string') {
+      const m = { none: 0, glide: 1, friction: 1, springback: 2, spring: 2 };
+      B.setPropU32(node.id, B.PROP_RELEASE, m[value.toLowerCase()] ?? 0);
       B.scheduleCommit();
       return;
     }

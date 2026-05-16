@@ -227,6 +227,19 @@ const int wtTabs                 = 23;
 /// label and `propIcon` the bar icon (a name resolved by a host-side
 /// icon table); its single child is the tab body.
 const int wtTab                  = 24;
+/// `<animatedList>` → `AnimatedList` — a `<listView>` that animates
+/// item insertion + removal. Removal uses deferred teardown: the
+/// bridge keeps a removed child alive until its exit animation
+/// finishes. See ANIMATION.md §6.
+const int wtAnimatedList         = 25;
+/// `<crossFade>` → `AnimatedSwitcher` — holds one child and cross-fades
+/// when that child's node id changes. Shares the deferred-teardown
+/// machinery with `<animatedList>`. See ANIMATION.md §7.
+const int wtCrossFade            = 26;
+/// `<hero>` → Flutter `Hero` — a shared-element transition. Two `<hero>`
+/// nodes with the same `propHeroTag`, one per route, animate between
+/// each other across a navigator push/pop. See ANIMATION.md §8.
+const int wtHero                 = 27;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick        = 0x01;
@@ -363,6 +376,9 @@ const int propTextOverflow    = 0x46;     // enum: 0=clip 1=ellipsis 2=visible
 // Screen / tab chrome title (string). On a `<screen>` it drives the
 // AppBar; on a `<tab>` it is the navigation-bar destination label.
 const int propTitle           = 0x47;
+// `<hero>` shared-element tag (string). Matching tags across two
+// routes animate into each other on a navigator push/pop.
+const int propHeroTag         = 0x48;
 
 // Image (string-valued)
 const int propImageSrc        = 0x60;
@@ -398,6 +414,18 @@ const int propAnimDelay       = 0xA5;   // ms before the tween starts
 // `<screen>` presentation — 0 = push (default), 1 = modal (a
 // bottom-up `fullscreenDialog` page).
 const int propPresentation    = 0xA6;
+// Animation looping — see ANIMATION.md §5. `propAnimRepeat` (0/1) makes
+// the node's tween run forever; `propAnimReverse` (0/1) ping-pongs it;
+// `propAnimLoop` caps it at N cycles (0 = uncapped when repeat is on).
+const int propAnimRepeat      = 0xA7;
+const int propAnimReverse     = 0xA8;
+const int propAnimLoop        = 0xA9;
+// Physics — `propAnimSpring` enum: 0 off, 1 gentle, 2 bouncy, 3 stiff.
+// Non-zero drives the tween with a `SpringSimulation`. ANIMATION.md §10.
+const int propAnimSpring      = 0xAA;
+// `<screen>` transition enum — 0 platform default, 1 fade, 2 none.
+// ANIMATION.md §10 / custom page transitions.
+const int propTransition      = 0xAB;
 
 // ── Sentinel values for width/height props ───────────────────────────
 // Encoded into PROP_WIDTH / PROP_HEIGHT instead of needing distinct

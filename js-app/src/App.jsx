@@ -16,7 +16,7 @@ import {
   Box, Column, Row, Text, Button, ListView, ScrollView,
   Image, Stack, Switch, Slider, Checkbox, ActivityIndicator,
   ProgressBar, LazyGrid, Wrap, SafeArea, RichText, ReorderableListView,
-  TextInput, Tabs, Tab,
+  TextInput, Tabs, Tab, Hero, AnimatedList, CrossFade,
 } from 'skal';
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
@@ -112,6 +112,261 @@ function NavDetail(props) {
   );
 }
 
+// ── Animations page — a dedicated screen, pushed from the UI tab's
+//    Animation card. Demos land here as ANIMATION.md phases ship. ──
+// Hero-demo swatches — module scope so the prop-diff cache hits.
+const HERO_SWATCHES = [ACCENT, GREEN, ORANGE, PURPLE];
+
+function AnimationsPage() {
+  const [animOn, setAnimOn]     = createSignal(false);
+  const [coldOn, setColdOn]     = createSignal(false);
+  const [springOn, setSpringOn] = createSignal(false);
+  const [faded, setFaded]       = createSignal(false);
+  const [listItems, setListItems] = createSignal(['Alpha', 'Beta', 'Gamma']);
+  let itemSeq = 3;
+
+  // A nested screen-stack router for the shared-element (Hero) demo.
+  const heroRouter = createRouter({
+    gallery: (p) => (
+      <Column background={BG} padding={16} gap={12} height="fill">
+        <Text label="Tap a swatch — it flies to the detail screen." fontSize={13} color={SUBTLE} />
+        <Row gap={12}>
+          <For each={HERO_SWATCHES}>
+            {(c) => (
+              <Hero tag={`hero-${c}`}>
+                <Box
+                  width={56}
+                  height={56}
+                  background={c}
+                  cornerRadius={12}
+                  onTap={() => p.router.navigate('detail', { color: c })}
+                />
+              </Hero>
+            )}
+          </For>
+        </Row>
+      </Column>
+    ),
+    detail: {
+      component: (p) => (
+        <Column background={BG} padding={16} gap={12} height="fill">
+          <Hero tag={`hero-${p.params.color}`}>
+            <Box width="fill" height={180} background={p.params.color} cornerRadius={20} />
+          </Hero>
+          <Text
+            label="The swatch flew here from the gallery — a shared-element transition, GPU-composited host-side."
+            fontSize={13}
+            color={SUBTLE}
+          />
+        </Column>
+      ),
+      title: 'Detail',
+      transition: 'fade', // ANIMATION.md §10 — fade page transition
+    },
+  }, 'gallery');
+
+  return (
+    <ScrollView background={BG} padding={16} gap={14}>
+      <Text label="Animations" fontSize={24} fontWeight={800} color={INK} />
+      <Text
+        label="Host-side motion — JS flips one signal, Flutter runs the whole tween. Zero per-frame bridge traffic. See ANIMATION.md for the full plan."
+        fontSize={13}
+        color={SUBTLE}
+      />
+      <Section title="Implicit hot-prop tween — the animate prop">
+        <Row gap={8}>
+          <Box
+            width={64}
+            height={64}
+            background={ACCENT}
+            cornerRadius={14}
+            animate={{ duration: 450, curve: 'easeInOut' }}
+            opacity={animOn() ? 0.3 : 1}
+            scaleX={animOn() ? 1.4 : 1}
+            scaleY={animOn() ? 1.4 : 1}
+            rotation={animOn() ? 0.5 : 0}
+            translationX={animOn() ? 70 : 0}
+          />
+        </Row>
+        <Button
+          label={animOn() ? 'Reset' : 'Animate'}
+          onClick={() => setAnimOn(!animOn())}
+        />
+        <Text
+          label="opacity + scale + rotation + translation tween together — JS only flips one signal; the whole tween runs host-side."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+      <Section title="Cold-prop tween — colour · radius · padding">
+        <Box
+          animate={{ duration: 400, curve: 'easeInOut' }}
+          background={coldOn() ? RED : ACCENT}
+          cornerRadius={coldOn() ? 32 : 8}
+          padding={coldOn() ? 28 : 12}
+          width="fill"
+        >
+          <Text
+            label="AnimatedContainer tweens these host-side"
+            fontSize={12}
+            color="#FFFFFFFF"
+          />
+        </Box>
+        <Button
+          label={coldOn() ? 'Reset' : 'Animate'}
+          onClick={() => setColdOn(!coldOn())}
+        />
+        <Text
+          label="background, cornerRadius and padding are cold props — the host's AnimatedContainer tweens them; JS writes each value once."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      <Section title="Looping — repeat · reverse">
+        <Row gap={20}>
+          <Box
+            width={44}
+            height={44}
+            background={PURPLE}
+            cornerRadius={22}
+            animate={{ duration: 800, curve: 'easeInOut', repeat: true, reverse: true }}
+            scaleX={1.35}
+            scaleY={1.35}
+          />
+          <Box
+            width={44}
+            height={44}
+            background={GREEN}
+            cornerRadius={10}
+            animate={{ duration: 1400, repeat: true }}
+            rotation={6.2832}
+          />
+          <Box
+            width={44}
+            height={44}
+            background={ORANGE}
+            cornerRadius={22}
+            animate={{ duration: 900, curve: 'easeInOut', repeat: true, reverse: true }}
+            opacity={0.25}
+          />
+        </Row>
+        <Text
+          label="A pulse, a spin and a breathe — each loops forever host-side; JS set the endpoints once and never touches them again."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      <Section title="Spring physics — animate.spring">
+        <Column gap={10}>
+          <Box
+            width={48}
+            height={48}
+            background={ACCENT}
+            cornerRadius={10}
+            animate={{ duration: 700, spring: 'gentle' }}
+            translationX={springOn() ? 150 : 0}
+          />
+          <Box
+            width={48}
+            height={48}
+            background={GREEN}
+            cornerRadius={10}
+            animate={{ duration: 700, spring: 'bouncy' }}
+            translationX={springOn() ? 150 : 0}
+          />
+          <Box
+            width={48}
+            height={48}
+            background={ORANGE}
+            cornerRadius={10}
+            animate={{ duration: 700, spring: 'stiff' }}
+            translationX={springOn() ? 150 : 0}
+          />
+        </Column>
+        <Button
+          label={springOn() ? 'Back' : 'Spring'}
+          onClick={() => setSpringOn(!springOn())}
+        />
+        <Text
+          label="gentle · bouncy · stiff — three spring-like curves; bouncy overshoots and wobbles into place."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      <Section title="Cross-fade — CrossFade">
+        <Box height={92}>
+          <CrossFade>
+            {faded()
+              ? (
+                <Box width="fill" height={92} background={PURPLE} cornerRadius={12} padding={16}>
+                  <Text label="Panel B" fontSize={16} fontWeight={800} color="#FFFFFFFF" />
+                </Box>
+              )
+              : (
+                <Box width="fill" height={92} background={ACCENT} cornerRadius={12} padding={16}>
+                  <Text label="Panel A" fontSize={16} fontWeight={800} color="#FFFFFFFF" />
+                </Box>
+              )}
+          </CrossFade>
+        </Box>
+        <Button label="Swap panel" onClick={() => setFaded(!faded())} />
+        <Text
+          label="AnimatedSwitcher fades the old child out as the new fades in — the outgoing element is retained through the fade."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      <Section title="Animated list — AnimatedList">
+        <AnimatedList gap={8}>
+          <For each={listItems()}>
+            {(item) => (
+              <Box background={CHIP} cornerRadius={8} padding={12}>
+                <Text label={item} fontSize={13} color={INK} />
+              </Box>
+            )}
+          </For>
+        </AnimatedList>
+        <Row gap={8}>
+          <Button
+            label="Add"
+            onClick={() => setListItems([...listItems(), `Item ${++itemSeq}`])}
+          />
+          <Button
+            label="Remove"
+            onClick={() => setListItems(listItems().slice(0, -1))}
+          />
+        </Row>
+        <Text
+          label="Add → a row fades + expands in; Remove → it collapses + fades out. Both host-side, via deferred teardown."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      <Section title="Shared element — Hero">
+        <Box height={300} borderWidth={1} borderColor={BORDER} cornerRadius={8}>
+          <heroRouter.View />
+        </Box>
+        <Text
+          label="A Hero with a matching tag on each screen flies between them across the navigator push — the navigator is a real Flutter Navigator."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      <Text
+        label="— end of animations —"
+        fontSize={12}
+        color={SUBTLE}
+      />
+    </ScrollView>
+  );
+}
+
 function UITab() {
   const [mode, setMode]       = createSignal('material');
   const [dark, setDark]       = createSignal(false);
@@ -119,7 +374,6 @@ function UITab() {
   const [cb, setCb]           = createSignal(false);
   const [slider, setSlider]   = createSignal(40);
   const [name, setName]       = createSignal('');
-  const [animOn, setAnimOn]   = createSignal(false);
   const [gesture, setGesture] = createSignal('none yet');
   const [dialog, setDialog]   = createSignal('— try a dialog button —');
   const [rows, setRows]       = createSignal(
@@ -149,7 +403,16 @@ function UITab() {
   // a large array), so eager rendering keeps every Section's Flutter
   // element + scroll position alive while scrolling, and the nested
   // navigator / inner tabs never get torn down on scroll.
-  return (
+  // The UI demo lives behind a router so the Animation card can push a
+  // dedicated Animations page — keep-alive, so back returns instantly
+  // with this scroll position preserved.
+  const uiRouter = createRouter({
+    home:       { component: (p) => homeScreen(p.router) },
+    animations: { component: () => <AnimationsPage />, title: 'Animations' },
+  }, 'home');
+
+  function homeScreen(router) {
+    return (
     <ScrollView background={BG} padding={16} gap={14}>
       <Text label="Skal — Component Demo" fontSize={24} fontWeight={800} color={INK} />
       <Text
@@ -338,29 +601,15 @@ function UITab() {
       </Section>
 
       {/* ── Animation ───────────────────────────────────────────── */}
-      <Section title="Animation — animate prop (Dart-side tween)">
-        <Row gap={8}>
-          <Box
-            width={64}
-            height={64}
-            background={ACCENT}
-            cornerRadius={14}
-            animate={{ duration: 450, curve: 'easeInOut' }}
-            opacity={animOn() ? 0.3 : 1}
-            scaleX={animOn() ? 1.4 : 1}
-            scaleY={animOn() ? 1.4 : 1}
-            rotation={animOn() ? 0.5 : 0}
-            translationX={animOn() ? 70 : 0}
-          />
-        </Row>
-        <Button
-          label={animOn() ? 'Reset' : 'Animate'}
-          onClick={() => setAnimOn(!animOn())}
-        />
+      <Section title="Animation">
         <Text
-          label="opacity + scale + rotation + translation tween together — JS only flips one signal; the whole tween runs host-side."
+          label="Implicit tweens, looping, list enter/exit, Hero — all host-side, zero per-frame bridge traffic. Opens a dedicated page."
           fontSize={11}
           color={SUBTLE}
+        />
+        <Button
+          label="Open Animations →"
+          onClick={() => router.navigate('animations')}
         />
       </Section>
 
@@ -496,7 +745,10 @@ function UITab() {
 
       <Text label="— end of UI demo —" fontSize={12} color={SUBTLE} />
     </ScrollView>
-  );
+    );
+  }
+
+  return <uiRouter.View />;
 }
 
 // ════════════════════════════════════════════════════════════════════

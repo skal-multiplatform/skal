@@ -267,7 +267,28 @@ class SkalBridge {
           break;
 
         case opRemoveNode:
-          _removeSubtree(a, ns);
+          final victim = ns[a];
+          if (victim != null) {
+            final rmParent = ns[victim.parent];
+            if (rmParent != null && rmParent.type == wtAnimatedList) {
+              // ANIMATION.md §6 — deferred teardown. Detach the child
+              // from the animated list (the data model is now correct)
+              // but keep its NodeState + subtree ALIVE so the host can
+              // animate the exit. `_SkalAnimatedList` calls
+              // `finalizeLeavingNode` once the exit finishes.
+              final rmIdx = rmParent.childIndexOf(a);
+              if (rmIdx >= 0) {
+                rmParent.removeChildAt(rmIdx);
+                (rmParent.leavingChildren ??= <int, int>{})[a] = rmIdx;
+                rmParent.coldDirty = true;
+                touched.add(victim.parent);
+              } else {
+                _removeSubtree(a, ns);
+              }
+            } else {
+              _removeSubtree(a, ns);
+            }
+          }
           break;
 
         case opInsertBefore:
@@ -787,10 +808,27 @@ class SkalBridge {
       final node = ns[cur];
       if (node == null) continue;
       stack.addAll(node.childIds);
+      // Deferred-teardown children (an `<animatedList>` mid-exit) are
+      // detached from `childIds` but still alive — fold them into the
+      // DFS so removing the list doesn't leak its leaving subtrees.
+      final leaving = node.leavingChildren;
+      if (leaving != null) stack.addAll(leaving.keys);
       node.clearChildren();
       ns.remove(cur);
       node.dispose();
     }
+  }
+
+  /// Finish the deferred teardown of an `<animatedList>` child whose
+  /// exit animation has completed — called by `_SkalAnimatedList`
+  /// (post-frame, after it has stopped rendering the child so the
+  /// `SkalNode` element has already dropped its `cold` listener).
+  /// ANIMATION.md §6.
+  void finalizeLeavingNode(int childId) {
+    final child = nodes[childId];
+    if (child == null) return;
+    nodes[child.parent]?.leavingChildren?.remove(childId);
+    _removeSubtree(childId, nodes);
   }
 
   /// Diagnostic — peek at the current header so a stuck bridge (op

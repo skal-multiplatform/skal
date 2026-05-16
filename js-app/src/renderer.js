@@ -65,6 +65,12 @@ const TAG_TO_WIDGET = {
   // bottom NavigationBar. `activeTab` selects; onChange(index) fires.
   tabs:                 B.WT_TABS,
   tab:                  B.WT_TAB,
+  // Animation widgets — <animatedList> animates item enter/exit;
+  // <crossFade> cross-fades its single child when it swaps; <hero>
+  // marks a shared-element for navigator transitions. See ANIMATION.md.
+  animatedList:         B.WT_ANIMATED_LIST,
+  crossFade:            B.WT_CROSS_FADE,
+  hero:                 B.WT_HERO,
 };
 
 // ───────────────────────────────────────────────────────────────────────
@@ -148,6 +154,10 @@ const COLD_PROPS = {
   icon:           [B.PROP_ICON,             'str'],
   // <tabs activeTab> → selected destination index (controlled).
   activeTab:      [B.PROP_ACTIVE_TAB,       'u32'],
+  // <hero tag> → shared-element transition tag.
+  tag:            [B.PROP_HERO_TAG,         'str'],
+  // <screen transition> → 0 default, 1 fade, 2 none.
+  transition:     [B.PROP_TRANSITION,       'u32'],
   // Behavior
   enabled:        [B.PROP_ENABLED,          'u32'],
   focusable:      [B.PROP_FOCUSABLE,        'u32'],
@@ -184,6 +194,9 @@ const ANIM_CURVES = {
   linear: 0, easeIn: 1, easeOut: 2, easeInOut: 3,
   bounce: 4, elastic: 5, fastOutSlowIn: 6,
 };
+
+// `animate.spring` name → wire enum (mirrors _springFor in root.dart).
+const ANIM_SPRINGS = { gentle: 1, bouncy: 2, stiff: 3 };
 
 /**
  * Parse a CSS hex color string to a packed ARGB u32. Accepts:
@@ -478,9 +491,15 @@ const _renderer = createRenderer({
       return;
     }
 
-    // animate={{ duration, curve, delay }} — turns on implicit
-    // animation of this node's hot props (opacity / transform). A
-    // duration of 0 (or omitting `animate`) leaves the node snapping.
+    // animate={{ duration, curve, delay, repeat, reverse, loop, spring }}
+    // — turns on implicit animation of this node's hot props (opacity /
+    // transform) AND its cold visual/layout props (color, size, radius,
+    // padding — see ANIMATION.md §4). A duration of 0 (or omitting
+    // `animate`) leaves the node snapping.
+    //   repeat  — run the tween forever (a pulse / spin)
+    //   reverse — ping-pong each cycle instead of saw-toothing
+    //   loop    — cap repeat at N cycles
+    //   spring  — 'gentle' | 'bouncy' | 'stiff' physics, overrides curve
     if (name === 'animate' && value && typeof value === 'object') {
       B.setPropU32(node.id, B.PROP_ANIM_DURATION, value.duration | 0);
       if (value.curve != null) {
@@ -491,6 +510,21 @@ const _renderer = createRenderer({
       }
       if (value.delay != null) {
         B.setPropU32(node.id, B.PROP_ANIM_DELAY, value.delay | 0);
+      }
+      if (value.repeat != null) {
+        B.setPropU32(node.id, B.PROP_ANIM_REPEAT, value.repeat ? 1 : 0);
+      }
+      if (value.reverse != null) {
+        B.setPropU32(node.id, B.PROP_ANIM_REVERSE, value.reverse ? 1 : 0);
+      }
+      if (value.loop != null) {
+        B.setPropU32(node.id, B.PROP_ANIM_LOOP, value.loop | 0);
+      }
+      if (value.spring != null) {
+        const s = typeof value.spring === 'string'
+          ? (ANIM_SPRINGS[value.spring] ?? 0)
+          : (value.spring ? 2 : 0);
+        B.setPropU32(node.id, B.PROP_ANIM_SPRING, s);
       }
       B.scheduleCommit();
       return;

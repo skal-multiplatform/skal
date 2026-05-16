@@ -66,6 +66,11 @@ const TAG_TO_HTML = {
   // one at a time; on web all panes are present, CSS-degraded).
   tabs:                 'div',
   tab:                  'div',
+  // Animation widgets — on web these degrade to plain divs (the
+  // enter/exit + Hero motion is host-side; CSS parity is best-effort).
+  animatedList:         'div',
+  crossFade:            'div',
+  hero:                 'div',
 };
 
 // Spinner keyframes for <activityIndicator> — injected once.

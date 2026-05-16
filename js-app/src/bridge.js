@@ -153,6 +153,11 @@ export const WT_SCREEN                  = 22;
 // Tabs — <tabs> (IndexedStack + NavigationBar) + <tab> (one destination).
 export const WT_TABS                    = 23;
 export const WT_TAB                     = 24;
+// Animation widgets — <animatedList> (AnimatedList), <crossFade>
+// (AnimatedSwitcher), <hero> (Hero). See ANIMATION.md.
+export const WT_ANIMATED_LIST           = 25;
+export const WT_CROSS_FADE              = 26;
+export const WT_HERO                    = 27;
 
 // Event kinds
 export const EV_CLICK         = 0x01;
@@ -247,6 +252,8 @@ export const PROP_TEXT_OVERFLOW    = 0x46;
 // Screen / tab chrome title — AppBar title on <screen>, nav-bar label
 // on <tab>.
 export const PROP_TITLE            = 0x47;
+// <hero> shared-element tag (string).
+export const PROP_HERO_TAG         = 0x48;
 
 // Image (string-valued)
 export const PROP_IMAGE_SRC        = 0x60;
@@ -278,6 +285,14 @@ export const PROP_ANIM_CURVE       = 0xA4;
 export const PROP_ANIM_DELAY       = 0xA5;
 // <screen> presentation — 0 = push, 1 = modal.
 export const PROP_PRESENTATION     = 0xA6;
+// Animation looping — repeat (0/1), reverse/ping-pong (0/1), loop count.
+export const PROP_ANIM_REPEAT      = 0xA7;
+export const PROP_ANIM_REVERSE     = 0xA8;
+export const PROP_ANIM_LOOP        = 0xA9;
+// Physics spring enum — 0 off, 1 gentle, 2 bouncy, 3 stiff.
+export const PROP_ANIM_SPRING      = 0xAA;
+// <screen> transition enum — 0 default, 1 fade, 2 none.
+export const PROP_TRANSITION       = 0xAB;
 
 // Sentinel values for width/height u32 props.
 export const NO_VALUE     = -1 | 0;          // prop unset → host default
@@ -589,6 +604,12 @@ KEY_TO_SLOT[PROP_PRESENTATION]     = 47;
 KEY_TO_SLOT[PROP_TITLE]            = 48;
 KEY_TO_SLOT[PROP_ICON]             = 49;
 KEY_TO_SLOT[PROP_ACTIVE_TAB]       = 50;
+KEY_TO_SLOT[PROP_HERO_TAG]         = 51;
+KEY_TO_SLOT[PROP_ANIM_REPEAT]      = 52;
+KEY_TO_SLOT[PROP_ANIM_REVERSE]     = 53;
+KEY_TO_SLOT[PROP_ANIM_LOOP]        = 54;
+KEY_TO_SLOT[PROP_ANIM_SPRING]      = 55;
+KEY_TO_SLOT[PROP_TRANSITION]       = 56;
 
 // 64-slot row stride (was 32 — the extended widget set filled it).
 // KEY_TO_SLOT is an Int8Array, so slots must stay < 128.

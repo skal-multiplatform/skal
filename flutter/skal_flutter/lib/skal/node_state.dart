@@ -125,6 +125,15 @@ class NodeState {
   /// Map.clear cost. Subtree-teardown path; not per-frame.
   void clearChildren() => _children.clear();
 
+  /// `<animatedList>` only — children that JS removed but which the
+  /// bridge kept alive for their exit animation (ANIMATION.md §6).
+  /// Maps the leaving child id → the list index it occupied at
+  /// removal. `null` on every other node. Populated by the
+  /// deferred-teardown branch of `opRemoveNode`; an entry is dropped
+  /// (and the subtree finally torn down) by `finalizeLeavingNode` once
+  /// `_SkalAnimatedList` reports the exit animation finished.
+  Map<int, int>? leavingChildren;
+
   // ── Per-node single-value reactive fields (plain) ──────────────────
   String text = '';
   int onClickHandlerId = 0;

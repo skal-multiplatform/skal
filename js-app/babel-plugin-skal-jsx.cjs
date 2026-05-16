@@ -103,6 +103,9 @@ const BUILT_IN_WIDGET_NAMES = {
   Screen:               'screen',
   Tabs:                 'tabs',
   Tab:                  'tab',
+  AnimatedList:         'animatedList',
+  CrossFade:            'crossFade',
+  Hero:                 'hero',
 };
 
 module.exports = function ({ types: t }) {

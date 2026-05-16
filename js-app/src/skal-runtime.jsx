@@ -255,9 +255,11 @@ export function ChunkedFor(props) {
  * createRouter — a screen-stack router over `<Navigator>` / `<Screen>`.
  *
  * The router owns the route stack (a signal). `routes` maps a route
- * name to either a screen component, or `{ component, title }` — the
- * `title` drives the screen's AppBar / nav-bar (NAVIGATION.md Phase 2).
- * Each screen is rendered with the props `{ params, router }`.
+ * name to either a screen component, or `{ component, title, transition }`
+ * — `title` drives the screen's AppBar / nav-bar (NAVIGATION.md
+ * Phase 2); `transition` ('fade' | 'none') overrides the push
+ * animation (ANIMATION.md §10). Each screen is rendered with the
+ * props `{ params, router }`.
  *
  * ```jsx
  * const router = createRouter({
@@ -276,8 +278,9 @@ export function ChunkedFor(props) {
  * re-mount. A back-gesture / system-back pop arrives via <Navigator>'s
  * `onPop`, which calls `router.back()`.
  *
- * `navigate(name, params, { presentation: 'modal', title: '…' })`
- * pushes a bottom-up modal page and/or overrides the route's title.
+ * `navigate(name, params, { presentation: 'modal', title, transition })`
+ * pushes a bottom-up modal page and/or overrides the route's title +
+ * transition.
  *
  * Web URL linking (NAVIGATION.md Phase 3): pass `{ linking: true }` as
  * the third arg. On the web target the launch URL's `#/route` hash
@@ -297,6 +300,15 @@ export function createRouter(routes, initial, options) {
     const r = routes[name];
     return r && typeof r === 'object' ? r.title : undefined;
   };
+  const defaultTransitionFor = (name) => {
+    const r = routes[name];
+    return r && typeof r === 'object' ? r.transition : undefined;
+  };
+  // Route `transition` → the propTransition enum: 'fade' → 1,
+  // 'none' → 2, 0 = the platform default push. A number passes
+  // through; anything else resolves to the default.
+  const transitionEnum = (t) =>
+    t === 'fade' ? 1 : t === 'none' ? 2 : (typeof t === 'number' ? t : 0);
 
   const linking = !!(options && options.linking);
   const hasWindow = typeof window !== 'undefined';
@@ -317,7 +329,12 @@ export function createRouter(routes, initial, options) {
     if (fromUrl) firstName = fromUrl;
   }
   const [stack, setStack] = createSignal([
-    { name: firstName, params: {}, title: defaultTitleFor(firstName) },
+    {
+      name: firstName,
+      params: {},
+      title: defaultTitleFor(firstName),
+      transition: defaultTransitionFor(firstName),
+    },
   ]);
 
   const router = {
@@ -332,6 +349,9 @@ export function createRouter(routes, initial, options) {
           title: (opts && opts.title) !== undefined
             ? opts.title
             : defaultTitleFor(name),
+          transition: (opts && opts.transition) !== undefined
+            ? opts.transition
+            : defaultTransitionFor(name),
         },
       ]);
     },
@@ -348,12 +368,20 @@ export function createRouter(routes, initial, options) {
           title: (opts && opts.title) !== undefined
             ? opts.title
             : defaultTitleFor(name),
+          transition: (opts && opts.transition) !== undefined
+            ? opts.transition
+            : defaultTransitionFor(name),
         },
       ]);
     },
     reset(name, params) {
       setStack([
-        { name, params: params || {}, title: defaultTitleFor(name) },
+        {
+          name,
+          params: params || {},
+          title: defaultTitleFor(name),
+          transition: defaultTransitionFor(name),
+        },
       ]);
     },
     canGoBack() {
@@ -385,6 +413,7 @@ export function createRouter(routes, initial, options) {
             <Screen
               presentation={entry.presentation === 'modal' ? 1 : 0}
               title={entry.title || ''}
+              transition={transitionEnum(entry.transition)}
             >
               {Comp ? <Comp params={entry.params || {}} router={router} /> : null}
             </Screen>
@@ -395,4 +424,28 @@ export function createRouter(routes, initial, options) {
   );
 
   return router;
+}
+
+/**
+ * createStagger — per-index animation delays for a staggered reveal.
+ *
+ * Staggered animation is not a primitive — it is the `animate` prop's
+ * `delay` applied per item (ANIMATION.md §9). `createStagger(step)`
+ * returns a function mapping a list index to a delay in milliseconds.
+ *
+ * ```jsx
+ * const stagger = createStagger(40);
+ * <For each={items()}>
+ *   {(item, i) => (
+ *     <Box animate={{ duration: 300, delay: stagger(i()) }}
+ *          opacity={shown() ? 1 : 0}>…</Box>
+ *   )}
+ * </For>
+ * ```
+ *
+ * @param {number} [step] ms added per index (default 50)
+ * @returns {(index: number) => number}
+ */
+export function createStagger(step = 50) {
+  return (index) => (index | 0) * step;
 }

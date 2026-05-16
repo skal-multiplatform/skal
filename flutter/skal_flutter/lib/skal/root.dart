@@ -141,6 +141,9 @@ Widget _buildForType(NodeState node, SkalBridge bridge) {
     case wtScreen:               return _buildScreen(node, bridge);
     case wtTabs:                 return _buildTabs(node, bridge);
     case wtTab:                  return _buildTab(node, bridge);
+    case wtHero:                 return _buildHero(node, bridge);
+    case wtAnimatedList:         return _buildAnimatedList(node, bridge);
+    case wtCrossFade:            return _buildCrossFade(node, bridge);
     case wtCustom:               return _buildCustom(node, bridge);
     default:                     return const SizedBox.shrink();
   }
@@ -319,17 +322,45 @@ EdgeInsets? _paddingFor(NodeState n, int defaultAll) {
 /// padding wraps INSIDE the bg so bg extends to the node's outer
 /// bounds rather than being inset.
 Widget _applyColdVisual(NodeState n, Widget child, {int defaultPadding = 0}) {
-  Widget out = child;
-
   final pad = _paddingFor(n, defaultPadding);
-  if (pad != null) out = Padding(padding: pad, child: out);
 
   final bg = n.getPropU32(propBgColor, 0);
   final corner = n.getPropU32(propCornerRadius, 0);
   final borderW = n.getPropU32(propBorderWidth, 0);
   final borderC = n.getPropU32(propBorderColor, 0xFF000000);
+  final hasDecoration = bg != 0 || corner > 0 || borderW > 0;
 
-  if (bg != 0 || corner > 0 || borderW > 0) {
+  BoxDecoration? decoration() => hasDecoration
+      ? BoxDecoration(
+          color: bg != 0 ? _argb(bg) : null,
+          borderRadius:
+              corner > 0 ? BorderRadius.circular(corner.toDouble()) : null,
+          border: borderW > 0
+              ? Border.all(color: _argb(borderC), width: borderW.toDouble())
+              : null,
+        )
+      : null;
+
+  // ANIMATION.md §4 — cold-prop tweens. When the node carries an
+  // `animate` spec, an `AnimatedContainer` tweens the decoration
+  // (color / border / radius) + padding host-side on any change;
+  // without one we keep the lean DecoratedBox + Padding chain. The
+  // child sits behind a RepaintBoundary so the per-frame container
+  // re-composite never re-runs the child's paint().
+  final animMs = n.getPropU32(propAnimDuration, 0);
+  if (animMs > 0 && (hasDecoration || pad != null)) {
+    return AnimatedContainer(
+      duration: Duration(milliseconds: animMs),
+      curve: _curveFor(n.getPropU32(propAnimCurve, 0)),
+      padding: pad,
+      decoration: decoration(),
+      child: RepaintBoundary(child: child),
+    );
+  }
+
+  Widget out = child;
+  if (pad != null) out = Padding(padding: pad, child: out);
+  if (hasDecoration) {
     // DecoratedBox instead of Container — Container is a convenience
     // widget that composes ConstrainedBox + Padding + DecoratedBox +
     // Transform + Align internally; we apply sizing / padding via
@@ -337,18 +368,8 @@ Widget _applyColdVisual(NodeState n, Widget child, {int defaultPadding = 0}) {
     // of Container's inner widgets would be no-ops in our tree. Five
     // fewer widget objects per styled node, real frame-budget win for
     // the tweet feed.
-    out = DecoratedBox(
-      decoration: BoxDecoration(
-        color: bg != 0 ? _argb(bg) : null,
-        borderRadius: corner > 0 ? BorderRadius.circular(corner.toDouble()) : null,
-        border: borderW > 0
-            ? Border.all(color: _argb(borderC), width: borderW.toDouble())
-            : null,
-      ),
-      child: out,
-    );
+    out = DecoratedBox(decoration: decoration()!, child: out);
   }
-
   return out;
 }
 
@@ -417,7 +438,10 @@ class _StaticHotLayer extends StatelessWidget {
             ..translateByDouble(tx, ty, 0.0, 1.0)
             ..rotateZ(rz)
             ..scaleByDouble(sx, sy, 1.0, 1.0);
-          w = Transform(transform: m, child: w);
+          // alignment: center so scale + rotation pivot on the node's
+          // middle (a pulse / spin reads right); translation in the
+          // matrix is still absolute.
+          w = Transform(transform: m, alignment: Alignment.center, child: w);
         }
         if (op < 1.0) w = Opacity(opacity: op.clamp(0.0, 1.0), child: w);
         return w;
@@ -441,6 +465,28 @@ Curve _curveFor(int v) {
 }
 
 double _lerp(double a, double b, double t) => a + (b - a) * t;
+
+/// `propAnimSpring` enum → a spring-like [Curve]. ANIMATION.md §10.
+/// Skal expresses physics motion as curves on the existing bounded
+/// controller rather than a `SpringSimulation` + unbounded controller —
+/// the curve form is allocation-identical to a normal tween and
+/// covers the UI cases (settle, bounce) without gesture velocity.
+Curve _springCurveFor(int v) {
+  switch (v) {
+    case 1: return Curves.easeOutCubic;  // gentle — soft settle
+    case 2: return Curves.elasticOut;    // bouncy — overshoot + wobble
+    case 3: return Curves.easeOutExpo;   // stiff  — fast, crisp stop
+    default: return Curves.easeInOut;
+  }
+}
+
+/// Resolve a node's animation curve — a non-zero `propAnimSpring`
+/// (physics preset) overrides the plain `propAnimCurve` enum.
+Curve _resolveCurve(NodeState n) {
+  final spring = n.getPropU32(propAnimSpring, 0);
+  if (spring != 0) return _springCurveFor(spring);
+  return _curveFor(n.getPropU32(propAnimCurve, 0));
+}
 
 /// The animated hot layer — FLUTTER_JS_COMPONENTS.md §10.3, Phase 1.
 ///
@@ -467,6 +513,10 @@ class _AnimatedHotLayerState extends State<_AnimatedHotLayer>
   // cancel it instead of stacking a second forward().
   Timer? _delayTimer;
 
+  // True while a looping (repeat / loop) animation is running — so a
+  // runtime toggle of `animate.repeat` can start / stop it.
+  bool _wasRepeating = false;
+
   // Currently-rendered values.
   double _op = 1, _tx = 0, _ty = 0, _sx = 1, _sy = 1, _rz = 0;
   // Tween endpoints (from → to).
@@ -485,6 +535,14 @@ class _AnimatedHotLayerState extends State<_AnimatedHotLayer>
     _rz = _fRz = _tRz = n.rotationZ;
     _ctrl = AnimationController(vsync: this)..addListener(_onTick);
     n.hot.addListener(_onHot);
+    // ANIMATION.md §5 — a looping animation (repeat / loop) starts on
+    // mount; its endpoints are the prop identity defaults ↔ the set
+    // values, so a static `scaleX={1.15} repeat` pulses even though no
+    // hot-prop change ever arrives.
+    if (n.getPropU32(propAnimRepeat, 0) != 0) {
+      _wasRepeating = true;
+      _startRepeat();
+    }
   }
 
   @override
@@ -499,6 +557,12 @@ class _AnimatedHotLayerState extends State<_AnimatedHotLayer>
   /// tween from whatever is on screen right now.
   void _onHot() {
     final n = widget.node;
+    if (n.getPropU32(propAnimRepeat, 0) != 0) {
+      // A looping animation owns its own cycle — re-target and keep
+      // running rather than firing a one-shot tween.
+      _startRepeat();
+      return;
+    }
     final nOp = n.opacity,
         nTx = n.translationX,
         nTy = n.translationY,
@@ -527,7 +591,7 @@ class _AnimatedHotLayerState extends State<_AnimatedHotLayer>
     _tRz = nRz;
     final durMs = n.getPropU32(propAnimDuration, 0);
     final delayMs = n.getPropU32(propAnimDelay, 0);
-    _curve = _curveFor(n.getPropU32(propAnimCurve, 0));
+    _curve = _resolveCurve(n);
     _ctrl
       ..duration = Duration(milliseconds: durMs <= 0 ? 1 : durMs)
       ..reset();
@@ -539,6 +603,51 @@ class _AnimatedHotLayerState extends State<_AnimatedHotLayer>
       });
     } else {
       _ctrl.forward();
+    }
+  }
+
+  /// Begin (or restart) a looping animation — ANIMATION.md §5.
+  /// Oscillates each hot prop between its identity default and the
+  /// node's set value; `reverse` ping-pongs, `loop` caps the cycles.
+  void _startRepeat() {
+    final n = widget.node;
+    _fOp = 1;
+    _fTx = 0;
+    _fTy = 0;
+    _fSx = 1;
+    _fSy = 1;
+    _fRz = 0;
+    _tOp = n.opacity;
+    _tTx = n.translationX;
+    _tTy = n.translationY;
+    _tSx = n.scaleX;
+    _tSy = n.scaleY;
+    _tRz = n.rotationZ;
+    final durMs = n.getPropU32(propAnimDuration, 0);
+    final loop = n.getPropU32(propAnimLoop, 0);
+    _curve = _resolveCurve(n);
+    _delayTimer?.cancel();
+    _ctrl
+      ..duration = Duration(milliseconds: durMs <= 0 ? 1 : durMs)
+      ..reset()
+      ..repeat(
+        reverse: n.getPropU32(propAnimReverse, 0) != 0,
+        count: loop > 0 ? loop : null,
+      );
+  }
+
+  @override
+  void didUpdateWidget(_AnimatedHotLayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // `animate.repeat` toggled at runtime (a cold-prop change rebuilds
+    // this layer) — start or stop the loop accordingly.
+    final repeating = widget.node.getPropU32(propAnimRepeat, 0) != 0;
+    if (repeating && !_wasRepeating) {
+      _wasRepeating = true;
+      _startRepeat();
+    } else if (!repeating && _wasRepeating) {
+      _wasRepeating = false;
+      _ctrl.stop();
     }
   }
 
@@ -570,7 +679,7 @@ class _AnimatedHotLayerState extends State<_AnimatedHotLayer>
         ..translateByDouble(_tx, _ty, 0.0, 1.0)
         ..rotateZ(_rz)
         ..scaleByDouble(_sx, _sy, 1.0, 1.0);
-      w = Transform(transform: m, child: w);
+      w = Transform(transform: m, alignment: Alignment.center, child: w);
     }
     if (_op < 1.0) w = Opacity(opacity: _op.clamp(0.0, 1.0), child: w);
     return w;
@@ -1104,19 +1213,37 @@ Widget _buildText(NodeState n, SkalBridge bridge) {
   final family = _fontFamilyFor(n.getPropU32(propFontFamily, 2)); // mono default
   final lineHeight = n.getPropU32(propLineHeight, 0);
 
-  final widget = Text(
-    text,
-    style: TextStyle(
-      fontSize: fontSize.toDouble(),
-      fontWeight: fontWeight,
-      color: _argb(fgRaw),
-      fontFamily: family,
-      height: lineHeight > 0 ? lineHeight / fontSize : null,
-    ),
-    textAlign: align,
-    maxLines: maxLinesV > 0 ? maxLinesV : null,
-    overflow: overflow,
+  final style = TextStyle(
+    fontSize: fontSize.toDouble(),
+    fontWeight: fontWeight,
+    color: _argb(fgRaw),
+    fontFamily: family,
+    height: lineHeight > 0 ? lineHeight / fontSize : null,
   );
+
+  // ANIMATION.md §4 — an animated `<text>` tweens its style (size,
+  // weight, colour) host-side via `AnimatedDefaultTextStyle`.
+  final animMs = n.getPropU32(propAnimDuration, 0);
+  final Widget widget;
+  if (animMs > 0) {
+    widget = AnimatedDefaultTextStyle(
+      duration: Duration(milliseconds: animMs),
+      curve: _curveFor(n.getPropU32(propAnimCurve, 0)),
+      style: style,
+      textAlign: align,
+      maxLines: maxLinesV > 0 ? maxLinesV : null,
+      overflow: overflow,
+      child: Text(text),
+    );
+  } else {
+    widget = Text(
+      text,
+      style: style,
+      textAlign: align,
+      maxLines: maxLinesV > 0 ? maxLinesV : null,
+      overflow: overflow,
+    );
+  }
 
   return _hotLayer(node: n, child: widget);
 }
@@ -1484,6 +1611,31 @@ TextInputType _keyboardTypeFor(int v) {
 
 // ── Navigation ────────────────────────────────────────────────────
 
+/// A page-API `Page` with a cross-fade (or no) transition — backs
+/// `<screen transition>` (ANIMATION.md §10). `instant` collapses the
+/// transition to zero duration (`transition: 'none'`).
+class _FadePage<T> extends Page<T> {
+  final Widget child;
+  final bool instant;
+  const _FadePage({required this.child, required this.instant, super.key});
+
+  @override
+  Route<T> createRoute(BuildContext context) {
+    return PageRouteBuilder<T>(
+      settings: this,
+      transitionDuration:
+          instant ? Duration.zero : const Duration(milliseconds: 250),
+      reverseTransitionDuration:
+          instant ? Duration.zero : const Duration(milliseconds: 200),
+      pageBuilder: (_, _, _) => child,
+      transitionsBuilder: instant
+          ? (_, _, _, c) => c
+          : (_, animation, _, c) =>
+              FadeTransition(opacity: animation, child: c),
+    );
+  }
+}
+
 /// `<navigator>` → Flutter `Navigator(pages:)`. Each `<screen>` child
 /// becomes one page; the JS app owns the route stack, so a push is a
 /// new `<screen>` child and a pop is one removed. Backgrounded screens
@@ -1516,17 +1668,28 @@ Widget _buildNavigator(NodeState n, SkalBridge bridge) {
       content = _screenChrome(title, content, cupertino);
     }
     final modal = screen.getPropU32(propPresentation, 0) == 1;
-    pages.add(cupertino
-        ? CupertinoPage<dynamic>(
-            key: ValueKey<int>(screenId),
-            fullscreenDialog: modal,
-            child: content,
-          )
-        : MaterialPage<dynamic>(
-            key: ValueKey<int>(screenId),
-            fullscreenDialog: modal,
-            child: content,
-          ));
+    // ANIMATION.md §10 — `<screen transition>`: 1 fade, 2 none. 0 keeps
+    // the platform default push (Material slide / Cupertino slide).
+    final transition = screen.getPropU32(propTransition, 0);
+    if (transition == 1 || transition == 2) {
+      pages.add(_FadePage<dynamic>(
+        key: ValueKey<int>(screenId),
+        instant: transition == 2,
+        child: content,
+      ));
+    } else {
+      pages.add(cupertino
+          ? CupertinoPage<dynamic>(
+              key: ValueKey<int>(screenId),
+              fullscreenDialog: modal,
+              child: content,
+            )
+          : MaterialPage<dynamic>(
+              key: ValueKey<int>(screenId),
+              fullscreenDialog: modal,
+              child: content,
+            ));
+    }
   }
   // A Navigator must always have at least one page.
   if (pages.isEmpty) {
@@ -1742,6 +1905,250 @@ IconData _iconFor(String name) {
     case 'music':                  return Icons.music_note;
     case 'map':                    return Icons.map;
     default:                       return Icons.circle;
+  }
+}
+
+// ── Hero — shared-element transitions ─────────────────────────────
+
+/// `<hero tag="…">` → Flutter `Hero`. Two `<hero>` nodes carrying the
+/// same `tag`, one on each route, fly into each other across a
+/// navigator push/pop — the flight is GPU-composited, host-side, with
+/// zero bridge traffic. ANIMATION.md §8.
+///
+/// An empty `tag` degrades to a plain passthrough (no Hero), so a
+/// `<hero>` with no tag set yet never trips Flutter's
+/// "tag must not be null" assert.
+Widget _buildHero(NodeState n, SkalBridge bridge) {
+  final children = _childWidgets(n, bridge);
+  final Widget content = children.isEmpty
+      ? const SizedBox.shrink()
+      : (children.length == 1 ? children.first : Stack(children: children));
+  final tag = n.getPropStr(propHeroTag);
+  if (tag == null || tag.isEmpty) {
+    return _hotLayer(node: n, child: content);
+  }
+  return _hotLayer(node: n, child: Hero(tag: tag, child: content));
+}
+
+// ── Animated list / cross-fade ────────────────────────────────────
+
+/// `<crossFade>` → `AnimatedSwitcher`. Holds one child; when that
+/// child's node id changes the old fades out while the new fades in.
+/// `AnimatedSwitcher` retains the outgoing child's element for the
+/// fade (it never rebuilds it), so the child whose `NodeState` the
+/// bridge disposed in this same drain keeps painting its last frame as
+/// it fades — no deferred teardown needed. ANIMATION.md §7.
+Widget _buildCrossFade(NodeState n, SkalBridge bridge) {
+  final width = n.getPropU32(propWidth, kNoValue);
+  final height = n.getPropU32(propHeight, kNoValue);
+  final durMs = n.getPropU32(propAnimDuration, 0);
+
+  final childId = n.hasChildren ? n.childAt(0) : -1;
+  final Widget current = childId >= 0
+      ? SkalNode(nodeId: childId, bridge: bridge, key: ValueKey<int>(childId))
+      : const SizedBox.shrink(key: ValueKey<int>(0));
+
+  Widget inner = AnimatedSwitcher(
+    duration: Duration(milliseconds: durMs > 0 ? durMs : 250),
+    switchInCurve: _resolveCurve(n),
+    child: current,
+  );
+  inner = _applyColdVisual(n, inner);
+  inner = _applyHeight(height, _applyWidth(width, inner));
+  return _hotLayer(node: n, child: inner);
+}
+
+/// `<animatedList>` → a column of children that animates both insertion
+/// and removal. A newly-inserted child fades + expands in; a removed
+/// child collapses + fades out, then the bridge tears it down. The
+/// initial batch mounts without animation. ANIMATION.md §6.
+///
+/// Removal works via deferred teardown: `opRemoveNode` parks a removed
+/// child in `node.leavingChildren` (NodeState kept alive) instead of
+/// destroying it; this host plays the exit on the still-live subtree,
+/// then calls `bridge.finalizeLeavingNode` post-frame.
+///
+/// For long feeds use `<listView>`; this is for short, mutating lists
+/// (every row is built and carries an `AnimationController`).
+Widget _buildAnimatedList(NodeState n, SkalBridge bridge) {
+  return _SkalAnimatedList(node: n, bridge: bridge);
+}
+
+class _SkalAnimatedList extends StatefulWidget {
+  final NodeState node;
+  final SkalBridge bridge;
+  const _SkalAnimatedList({required this.node, required this.bridge});
+
+  @override
+  State<_SkalAnimatedList> createState() => _SkalAnimatedListState();
+}
+
+class _SkalAnimatedListState extends State<_SkalAnimatedList> {
+  // Child ids rendered at least once — anything absent is new and
+  // earns a one-shot enter animation.
+  final Set<int> _seen = <int>{};
+  // Leaving ids whose exit animation has finished — `build` skips them
+  // until `finalizeLeavingNode` drops them from `node.leavingChildren`.
+  final Set<int> _done = <int>{};
+  bool _first = true;
+
+  /// A row's exit animation finished. Stop rendering it THIS frame (so
+  /// its `SkalNode` element unmounts and drops its `cold` listener),
+  /// then tear the node down post-frame — strictly after the unmount,
+  /// so the `NodeState` is never disposed while still listened-to.
+  void _onExited(int id) {
+    if (!mounted) return;
+    setState(() => _done.add(id));
+    final bridge = widget.bridge;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      bridge.finalizeLeavingNode(id);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final n = widget.node;
+    final bridge = widget.bridge;
+    final gap = n.getPropU32(propGap, 8).toDouble();
+    final durMs = n.getPropU32(propAnimDuration, 0);
+    final dur = Duration(milliseconds: durMs > 0 ? durMs : 280);
+    final curve = _resolveCurve(n);
+
+    final present = n.childIds.toList();
+    final leaving = n.leavingChildren;
+
+    // Render order: present children, with each leaving (exiting) child
+    // spliced back in at the index it was removed from — so it collapses
+    // in place while the rows below slide up.
+    final order = List<int>.from(present);
+    if (leaving != null && leaving.isNotEmpty) {
+      final ls = leaving.entries.toList()
+        ..sort((a, b) => a.value.compareTo(b.value));
+      for (final e in ls) {
+        order.insert(e.value.clamp(0, order.length), e.key);
+      }
+    }
+
+    final items = <Widget>[];
+    for (final id in order) {
+      if (_done.contains(id)) continue;
+      if (bridge.nodes[id] == null) continue;
+      final isNew = !_seen.contains(id);
+      _seen.add(id);
+      items.add(_AnimatedListEntry(
+        key: ValueKey<int>(id),
+        animateIn: isNew && !_first,
+        leaving: leaving != null && leaving.containsKey(id),
+        duration: dur,
+        curve: curve,
+        gap: gap,
+        onExited: () => _onExited(id),
+        child: SkalNode(nodeId: id, bridge: bridge),
+      ));
+    }
+    _first = false;
+
+    // Keep the bookkeeping sets bounded — ids never reappear.
+    final live = <int>{...present, if (leaving != null) ...leaving.keys};
+    if (_seen.length > live.length) _seen.retainAll(live);
+    if (_done.isNotEmpty) _done.retainWhere(live.contains);
+
+    Widget col = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: items,
+    );
+    final pad = _paddingFor(n, 16);
+    if (pad != null) col = Padding(padding: pad, child: col);
+    return _hotLayer(node: n, child: _applyColdVisual(n, col));
+  }
+}
+
+/// One `<animatedList>` row. A *new* id runs a one-shot enter animation
+/// (`SizeTransition` expand + `FadeTransition`); when the host flips
+/// `leaving` true the same animation reverses into an exit collapse,
+/// and `onExited` fires once it is fully dismissed. The trailing `gap`
+/// lives inside the row so it collapses with it on exit.
+class _AnimatedListEntry extends StatefulWidget {
+  final Widget child;
+  final bool animateIn;
+  final bool leaving;
+  final Duration duration;
+  final Curve curve;
+  final double gap;
+  final VoidCallback onExited;
+  const _AnimatedListEntry({
+    super.key,
+    required this.child,
+    required this.animateIn,
+    required this.leaving,
+    required this.duration,
+    required this.curve,
+    required this.gap,
+    required this.onExited,
+  });
+
+  @override
+  State<_AnimatedListEntry> createState() => _AnimatedListEntryState();
+}
+
+class _AnimatedListEntryState extends State<_AnimatedListEntry>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c;
+  late final CurvedAnimation _curved;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(
+      vsync: this,
+      duration: widget.duration,
+      value: widget.animateIn ? 0.0 : 1.0,
+    );
+    _curved = CurvedAnimation(parent: _c, curve: widget.curve);
+    _c.addStatusListener(_onStatus);
+    if (widget.leaving) {
+      _c.reverse();
+    } else if (widget.animateIn) {
+      _c.forward();
+    }
+  }
+
+  @override
+  void didUpdateWidget(_AnimatedListEntry oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.leaving && !oldWidget.leaving) {
+      _c.reverse(); // present → leaving: collapse + fade out
+    }
+  }
+
+  void _onStatus(AnimationStatus s) {
+    if (s == AnimationStatus.dismissed && widget.leaving) {
+      widget.onExited();
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.removeStatusListener(_onStatus);
+    _curved.dispose();
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizeTransition(
+      sizeFactor: _curved,
+      axisAlignment: -1.0,
+      child: FadeTransition(
+        opacity: _curved,
+        child: Padding(
+          padding: EdgeInsets.only(bottom: widget.gap),
+          child: widget.child,
+        ),
+      ),
+    );
   }
 }
 

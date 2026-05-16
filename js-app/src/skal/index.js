@@ -426,3 +426,40 @@ export const Tabs = makeMissingMacroComponent('Tabs');
  * @type {Component<BaseProps & { title?: string, icon?: string }>}
  */
 export const Tab = makeMissingMacroComponent('Tab');
+
+/**
+ * Animated list. Flutter `AnimatedList`.
+ *
+ * A virtualized list (like {@link ListView}) that animates item
+ * insertion and removal — a child added by a `<For>` fades + expands
+ * in; a removed child collapses + fades out. The JS app owns the
+ * array; the host runs the enter/exit motion (deferred teardown keeps
+ * a removed node alive until its exit animation finishes). For
+ * drag-reorder use {@link ReorderableListView} instead.
+ *
+ * @type {Component<BaseProps>}
+ */
+export const AnimatedList = makeMissingMacroComponent('AnimatedList');
+
+/**
+ * Cross-fade container. Flutter `AnimatedSwitcher`.
+ *
+ * Holds a single child and cross-fades when that child swaps
+ * (`{cond() ? <A/> : <B/>}`). The outgoing child stays mounted through
+ * the fade via the same deferred-teardown machinery as
+ * {@link AnimatedList}.
+ *
+ * @type {Component<BaseProps>}
+ */
+export const CrossFade = makeMissingMacroComponent('CrossFade');
+
+/**
+ * Shared-element transition marker. Flutter `Hero`.
+ *
+ * Two `<Hero>` nodes with the same `tag` — one on each route — fly
+ * into each other when a {@link Navigator} pushes/pops between the
+ * two screens. The flight is GPU-composited host-side.
+ *
+ * @type {Component<BaseProps & { tag?: string }>}
+ */
+export const Hero = makeMissingMacroComponent('Hero');

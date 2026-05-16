@@ -11,7 +11,7 @@
 // switching tabs never re-mounts; scroll position and signal state on
 // each tab survive.
 
-import { createSignal, createMemo, For, Show } from 'solid-js';
+import { createSignal, createMemo, For } from 'solid-js';
 import {
   Box, Column, Row, Text, Button, ListView, ScrollView,
   Image, Stack, Switch, Slider, Checkbox, ActivityIndicator,
@@ -712,11 +712,18 @@ function LibsTab() {
           label={cameraOn() ? 'Stop camera' : 'Start camera'}
           onClick={() => setCameraOn(!cameraOn())}
         />
-        <Show when={cameraOn()}>
+        {/* Gate with a plain `&&` short-circuit, NOT <Show>. <Show>'s
+            element children are evaluated eagerly by the universal
+            renderer — the <Camera> node would be created (firing
+            _CameraHost.initState → createCamera(), which opens the
+            camera) and then discarded. `cameraOn() && <Camera/>` only
+            evaluates the right side when the left is truthy, so the
+            <Camera> createElement genuinely never runs until Start. */}
+        {cameraOn() && (
           <Box background="#FF000000" padding={4} cornerRadius={8}>
             <Camera resolutionIndex={1} />
           </Box>
-        </Show>
+        )}
       </Section>
 
       {/* ── Counter — typed callbacks ───────────────────────────── */}

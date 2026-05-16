@@ -35,6 +35,7 @@
 //      them all down.
 
 import 'dart:async' show Completer, Timer;
+import 'dart:convert' show jsonDecode;
 import 'dart:io' show File;
 
 import 'package:flutter/cupertino.dart';
@@ -153,6 +154,7 @@ Widget _buildForType(NodeState node, SkalBridge bridge) {
     case wtSliverAppBar:         return _buildSliverAppBar(node, bridge);
     case wtSliverList:           return _buildSliverList(node, bridge);
     case wtSliverGrid:           return _buildSliverGrid(node, bridge);
+    case wtCanvas:               return _buildCanvas(node);
     case wtCustom:               return _buildCustom(node, bridge);
     default:                     return const SizedBox.shrink();
   }
@@ -2780,6 +2782,132 @@ Widget _buildSliverGrid(NodeState n, SkalBridge bridge) {
       childCount: n.childCount,
     ),
   );
+}
+
+// ── Canvas — CustomPaint / arbitrary 2-D drawing ──────────────────
+
+/// `<canvas>` → Flutter `CustomPaint`. The draw program — a JSON list
+/// of paint commands recorded by the JS `draw(ctx)` callback — arrives
+/// in `n.text` over the ordinary opSetText channel. `width` / `height`
+/// size the paint surface (default 100×100 if unset).
+Widget _buildCanvas(NodeState n) {
+  final wRaw = n.getPropU32(propWidth, kNoValue);
+  final hRaw = n.getPropU32(propHeight, kNoValue);
+  final w = (wRaw > 0 && wRaw < kWrapContent) ? wRaw.toDouble() : 100.0;
+  final h = (hRaw > 0 && hRaw < kWrapContent) ? hRaw.toDouble() : 100.0;
+  Widget inner = CustomPaint(size: Size(w, h), painter: _SkalPainter(n.text));
+  inner = _applyColdVisual(n, inner);
+  return _hotLayer(node: n, child: inner);
+}
+
+double _canvasD(dynamic v) => v is num ? v.toDouble() : 0.0;
+int _canvasI(dynamic v) => v is num ? v.toInt() : 0;
+
+void _paintCanvasText(Canvas canvas, String text, double x, double y,
+    Color color, double size) {
+  final tp = TextPainter(
+    text: TextSpan(text: text, style: TextStyle(color: color, fontSize: size)),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, Offset(x, y));
+}
+
+/// Replays a `<canvas>` draw program onto a Flutter `Canvas`. The
+/// program is the JSON command list from the JS recorder. It's parsed
+/// ONCE (lazily, cached on the painter instance — a new painter is
+/// built per program change), and `shouldRepaint` gates repaints to
+/// real program changes, so a static drawing never re-parses or
+/// re-paints after its first frame. Replaying a command list is fast
+/// and entirely host-side — zero per-frame bridge traffic.
+class _SkalPainter extends CustomPainter {
+  _SkalPainter(this.program);
+  final String program;
+  List<dynamic>? _cmds;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (program.isEmpty) return;
+    final cmds = _cmds ??= () {
+      try {
+        final d = jsonDecode(program);
+        return d is List ? d : const <dynamic>[];
+      } catch (_) {
+        return const <dynamic>[];
+      }
+    }();
+
+    final fill = Paint()..style = PaintingStyle.fill;
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0;
+    Path path = Path();
+    double fontSize = 14.0;
+
+    for (final c in cmds) {
+      if (c is! List || c.isEmpty) continue;
+      switch (c[0]) {
+        case 'fillStyle':
+          fill.color = _argb(_canvasI(c[1]));
+          break;
+        case 'strokeStyle':
+          stroke.color = _argb(_canvasI(c[1]));
+          break;
+        case 'lineWidth':
+          stroke.strokeWidth = _canvasD(c[1]);
+          break;
+        case 'fillRect':
+          canvas.drawRect(
+              Rect.fromLTWH(_canvasD(c[1]), _canvasD(c[2]), _canvasD(c[3]),
+                  _canvasD(c[4])),
+              fill);
+          break;
+        case 'strokeRect':
+          canvas.drawRect(
+              Rect.fromLTWH(_canvasD(c[1]), _canvasD(c[2]), _canvasD(c[3]),
+                  _canvasD(c[4])),
+              stroke);
+          break;
+        case 'circle':
+          path.addOval(Rect.fromCircle(
+              center: Offset(_canvasD(c[1]), _canvasD(c[2])),
+              radius: _canvasD(c[3])));
+          break;
+        case 'line':
+          canvas.drawLine(Offset(_canvasD(c[1]), _canvasD(c[2])),
+              Offset(_canvasD(c[3]), _canvasD(c[4])), stroke);
+          break;
+        case 'beginPath':
+          path = Path();
+          break;
+        case 'moveTo':
+          path.moveTo(_canvasD(c[1]), _canvasD(c[2]));
+          break;
+        case 'lineTo':
+          path.lineTo(_canvasD(c[1]), _canvasD(c[2]));
+          break;
+        case 'closePath':
+          path.close();
+          break;
+        case 'fill':
+          canvas.drawPath(path, fill);
+          break;
+        case 'stroke':
+          canvas.drawPath(path, stroke);
+          break;
+        case 'fontSize':
+          fontSize = _canvasD(c[1]);
+          break;
+        case 'fillText':
+          _paintCanvasText(canvas, '${c[1]}', _canvasD(c[2]), _canvasD(c[3]),
+              fill.color, fontSize);
+          break;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_SkalPainter oldDelegate) =>
+      oldDelegate.program != program;
 }
 
 // ── Hero — shared-element transitions ─────────────────────────────

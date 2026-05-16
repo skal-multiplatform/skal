@@ -13,6 +13,7 @@
 // our `effect`/`memo` exports with createSignal & friends from solid-js.
 
 import { createRenderer } from 'solid-js/universal';
+import { createEffect } from 'solid-js';
 import * as B from './bridge.js';
 
 // Map JSX tag → widget type opcode. Tag names mirror Flutter widget
@@ -83,7 +84,39 @@ const TAG_TO_WIDGET = {
   sliverAppBar:         B.WT_SLIVER_APP_BAR,
   sliverList:           B.WT_SLIVER_LIST,
   sliverGrid:           B.WT_SLIVER_GRID,
+  // <canvas draw={(ctx) => …}> — arbitrary 2-D drawing via CustomPaint.
+  canvas:               B.WT_CANVAS,
 };
+
+/**
+ * Build a recording 2-D context for `<canvas draw>`. Each method
+ * appends a paint command to `_cmds`; the renderer JSON-encodes the
+ * list and ships it to the host, which replays it onto a Flutter
+ * Canvas. Methods are chainable. Colors are parsed to packed u32
+ * here (once) so the host never parses a colour string.
+ */
+function makeCanvasRecorder() {
+  const cmds = [];
+  const ctx = {
+    _cmds: cmds,
+    fillStyle(c)        { cmds.push(['fillStyle', parseColor(c)]); return ctx; },
+    strokeStyle(c)      { cmds.push(['strokeStyle', parseColor(c)]); return ctx; },
+    lineWidth(w)        { cmds.push(['lineWidth', +w || 0]); return ctx; },
+    fillRect(x, y, w, h)   { cmds.push(['fillRect', +x, +y, +w, +h]); return ctx; },
+    strokeRect(x, y, w, h) { cmds.push(['strokeRect', +x, +y, +w, +h]); return ctx; },
+    circle(x, y, r)     { cmds.push(['circle', +x, +y, +r]); return ctx; },
+    line(x1, y1, x2, y2){ cmds.push(['line', +x1, +y1, +x2, +y2]); return ctx; },
+    beginPath()         { cmds.push(['beginPath']); return ctx; },
+    moveTo(x, y)        { cmds.push(['moveTo', +x, +y]); return ctx; },
+    lineTo(x, y)        { cmds.push(['lineTo', +x, +y]); return ctx; },
+    closePath()         { cmds.push(['closePath']); return ctx; },
+    fill()              { cmds.push(['fill']); return ctx; },
+    stroke()            { cmds.push(['stroke']); return ctx; },
+    fontSize(s)         { cmds.push(['fontSize', +s || 14]); return ctx; },
+    fillText(t, x, y)   { cmds.push(['fillText', String(t), +x, +y]); return ctx; },
+  };
+  return ctx;
+}
 
 // ───────────────────────────────────────────────────────────────────────
 // JSX attribute → bridge prop mapping
@@ -522,6 +555,35 @@ const _renderer = createRenderer({
         B.bindHandler(node.id, B.EV_REFRESH, handlerId);
         B.scheduleCommit();
       }
+      return;
+    }
+    // <canvas draw={(ctx) => …}> — record + ship the draw program.
+    // Run inside an effect so any signals the draw fn reads are
+    // tracked: a data change re-records and re-sends the program. A
+    // static drawing (no signal reads) records exactly once. The
+    // program rides opSetText — diff-cached, so an unchanged program
+    // is a no-op write.
+    if (name === 'draw' && typeof value === 'function') {
+      const drawFn = value;
+      const canvasNode = node;
+      createEffect(() => {
+        const ctx = makeCanvasRecorder();
+        try {
+          drawFn(ctx);
+        } catch (_) {
+          // A throwing draw fn just yields whatever it recorded so far.
+        }
+        const program = JSON.stringify(ctx._cmds);
+        // Diff here: B.setText / opSetText do NOT diff, so a spurious
+        // effect re-run (a tracked signal fired but the drawing didn't
+        // change) would otherwise write an op and cold-rebuild the
+        // canvas node for nothing. Skipping an identical program keeps
+        // an unchanged drawing at true zero bridge traffic.
+        if (program === canvasNode._skalCanvasProgram) return;
+        canvasNode._skalCanvasProgram = program;
+        B.setText(canvasNode.id, program);
+        B.scheduleCommit();
+      });
       return;
     }
     // Handler props (onClick / onTap / onLongPress / onDoubleTap /

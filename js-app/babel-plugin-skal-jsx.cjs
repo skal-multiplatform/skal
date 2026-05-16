@@ -113,6 +113,7 @@ const BUILT_IN_WIDGET_NAMES = {
   SliverAppBar:         'sliverAppBar',
   SliverList:           'sliverList',
   SliverGrid:           'sliverGrid',
+  Canvas:               'canvas',
 };
 
 module.exports = function ({ types: t }) {

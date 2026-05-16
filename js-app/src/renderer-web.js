@@ -83,6 +83,9 @@ const TAG_TO_HTML = {
   sliverAppBar:         'div',
   sliverList:           'div',
   sliverGrid:           'div',
+  // <canvas> — a real DOM <canvas> element (the draw program would
+  // replay onto its 2-D context; native-fast-path is the product).
+  canvas:               'canvas',
 };
 
 // Spinner keyframes for <activityIndicator> — injected once.

@@ -579,3 +579,31 @@ export const SliverList = makeMissingMacroComponent('SliverList');
  * }>}
  */
 export const SliverGrid = makeMissingMacroComponent('SliverGrid');
+
+/**
+ * Arbitrary 2-D drawing surface. Flutter `CustomPaint`.
+ *
+ * `draw` is a callback given a recording context — call its methods
+ * (`fillStyle`, `fillRect`, `circle`, `beginPath`/`moveTo`/`lineTo`,
+ * `fill`, `stroke`, `fillText`, …) to describe the drawing. The
+ * commands are recorded, shipped once, and replayed host-side; the
+ * draw fn re-runs reactively when signals it reads change. `width` /
+ * `height` size the surface.
+ *
+ * @type {Component<BaseProps & {
+ *   width?: number, height?: number,
+ *   draw?: (ctx: {
+ *     fillStyle(c: string | number): any, strokeStyle(c: string | number): any,
+ *     lineWidth(w: number): any,
+ *     fillRect(x: number, y: number, w: number, h: number): any,
+ *     strokeRect(x: number, y: number, w: number, h: number): any,
+ *     circle(x: number, y: number, r: number): any,
+ *     line(x1: number, y1: number, x2: number, y2: number): any,
+ *     beginPath(): any, moveTo(x: number, y: number): any,
+ *     lineTo(x: number, y: number): any, closePath(): any,
+ *     fill(): any, stroke(): any,
+ *     fontSize(s: number): any, fillText(t: string, x: number, y: number): any,
+ *   }) => void,
+ * }>}
+ */
+export const Canvas = makeMissingMacroComponent('Canvas');

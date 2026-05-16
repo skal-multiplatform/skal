@@ -170,6 +170,8 @@ export const WT_CUSTOM_SCROLL_VIEW      = 31;
 export const WT_SLIVER_APP_BAR          = 32;
 export const WT_SLIVER_LIST             = 33;
 export const WT_SLIVER_GRID             = 34;
+// <canvas> — CustomPaint; the draw program rides opSetText.
+export const WT_CANVAS                  = 35;
 
 // Event kinds
 export const EV_CLICK         = 0x01;

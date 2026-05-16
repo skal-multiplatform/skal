@@ -17,7 +17,7 @@ import {
   Image, Stack, Switch, Slider, Checkbox, ActivityIndicator,
   ProgressBar, LazyGrid, Wrap, SafeArea, RichText, ReorderableListView,
   TextInput, Tabs, Tab, Hero, AnimatedList, CrossFade, ListTile, PageView,
-  Dismissible, CustomScrollView, SliverAppBar, SliverList, SliverGrid,
+  Dismissible, CustomScrollView, SliverAppBar, SliverList, SliverGrid, Canvas,
 } from 'skal';
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
@@ -457,6 +457,7 @@ function UITab() {
   const [page, setPage]       = createSignal(0);
   const [feed, setFeed]       = createSignal(['Item one', 'Item two', 'Item three', 'Item four']);
   let feedSeq = 0;
+  const [canvasShapes, setCanvasShapes] = createSignal([]);
   const [dragRest, setDragRest] = createSignal('0, 0');
   const [panDelta, setPanDelta] = createSignal('—');
   const [pinch, setPinch]     = createSignal(1);
@@ -813,6 +814,53 @@ function UITab() {
         </Box>
         <Text
           label="Scroll the panel up — the purple header collapses into a pinned blue bar. The SliverList builds rows lazily; non-sliver children would auto-wrap in a SliverToBoxAdapter."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      {/* ── Canvas — CustomPaint 2-D drawing ─────────────────────── */}
+      <Section title="Canvas — CustomPaint 2-D drawing">
+        <Box background={CARD} cornerRadius={12} borderWidth={1} borderColor={BORDER} padding={10}>
+          <Canvas
+            width={300}
+            height={170}
+            draw={(c) => {
+              // A stroked baseline.
+              c.strokeStyle(BORDER).lineWidth(2)
+                .beginPath().moveTo(16, 150).lineTo(284, 150).stroke();
+              // Five bars — the 4th tracks the Controls slider signal,
+              // so this whole drawing re-records when the slider moves.
+              const vals = [50, 95, 70, slider() + 10, 80];
+              vals.forEach((v, i) => {
+                c.fillStyle(i === 3 ? ACCENT : PURPLE)
+                  .fillRect(28 + i * 52, 150 - v, 34, v);
+              });
+              // A filled circle + a label.
+              c.fillStyle(GREEN).beginPath().circle(252, 44, 22).fill();
+              c.fillStyle(INK).fontSize(12).fillText('bars · circle · path · text', 18, 22);
+              // Shapes the "Draw a shape" button appends — each click
+              // pushes one, the draw callback re-records and repaints.
+              canvasShapes().forEach((s) => {
+                c.fillStyle(s.color).beginPath().circle(s.x, s.y, s.r).fill();
+              });
+            }}
+          />
+        </Box>
+        <Row gap={8}>
+          <Button
+            label="Draw a shape"
+            onClick={() => setCanvasShapes([...canvasShapes(), {
+              x: 24 + Math.random() * 252,
+              y: 16 + Math.random() * 120,
+              r: 8 + Math.random() * 20,
+              color: [ACCENT, GREEN, ORANGE, RED, PURPLE][Math.floor(Math.random() * 5)],
+            }])}
+          />
+          <Button label="Clear" onClick={() => setCanvasShapes([])} />
+        </Row>
+        <Text
+          label="Bars, a circle, a stroked path, text. The 4th bar tracks the Controls slider; the buttons append/clear circles — each click flips the canvasShapes signal, so the draw callback re-records and the host repaints. Static drawings cross the bridge exactly once."
           fontSize={11}
           color={SUBTLE}
         />

@@ -281,6 +281,15 @@ const int wtSliverList           = 33;
 /// inside a `<customScrollView>`. `propCrossAxisCount` columns,
 /// `propAspectRatio` per cell, `propGap` spacing.
 const int wtSliverGrid           = 34;
+/// `<canvas>` → Flutter `CustomPaint`. Arbitrary 2-D drawing. The JS
+/// `draw(ctx)` callback records a list of paint commands; the renderer
+/// JSON-encodes it and ships it through the ordinary [opSetText]
+/// channel (it lands in `NodeState.text`). The host's `_SkalPainter`
+/// parses that program once and replays it onto the `Canvas`, only
+/// repainting when the program string changes — so a static drawing
+/// costs ONE bridge write and zero per-frame traffic. No new op: the
+/// draw program rides `opSetText`. See FLUTTER_COMPONENTS_TODO_2.md §1.2.
+const int wtCanvas               = 35;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick        = 0x01;

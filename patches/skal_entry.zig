@@ -203,8 +203,25 @@ const Runtime = struct {
 
         self.ready.set();
 
-        // bun's standard tick-forever loop.
+        // Long-lived event loop — mirrors bun's watcher-mode loop in
+        // `src/bun.js.zig`. While the loop has work — pending timers,
+        // I/O, queued tasks — tick *actively*: `autoTickActive` is the
+        // tick that computes the next-timer timeout for the uSockets
+        // sleep AND calls `timer.drainTimers`, so `setTimeout` /
+        // `setInterval` callbacks actually fire. When the loop is
+        // fully idle, block in `tickPossiblyForever` until a bridge
+        // event (a concurrent task) wakes us.
+        //
+        // The previous code ran ONLY `tickPossiblyForever`, which does
+        // neither — it sleeps on the uSockets loop with no timer
+        // timeout and never drains the timer heap, so JS timers never
+        // fired. Bridge events still worked only because
+        // `enqueueTaskConcurrent` issues an explicit loop wakeup.
         while (true) {
+            while (vm.isEventLoopAlive()) {
+                vm.tick();
+                vm.eventLoop().autoTickActive();
+            }
             vm.eventLoop().tickPossiblyForever();
         }
     }

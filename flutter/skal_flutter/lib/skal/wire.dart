@@ -261,6 +261,26 @@ const int wtPageView             = 29;
 /// so a rebuild before that removal renders nothing (Flutter asserts
 /// a dismissed `Dismissible` must leave the tree). See §1.5.
 const int wtDismissible          = 30;
+/// `<customScrollView>` → Flutter `CustomScrollView` — a scroll
+/// viewport whose children are SLIVERS. Each child node that is itself
+/// a sliver type (`wtSliverAppBar` / `wtSliverList` / `wtSliverGrid`)
+/// is placed directly; any other child is wrapped in a
+/// `SliverToBoxAdapter`. This is the only place sliver widgets are
+/// valid. See FLUTTER_COMPONENTS_TODO_2.md §1.1.
+const int wtCustomScrollView     = 31;
+/// `<sliverAppBar>` → Flutter `SliverAppBar` — the collapsing /
+/// parallax header. `propTitle` is the bar title, `propHeight` the
+/// expanded height, `propSliverMode` picks pinned / floating; a child
+/// becomes the `FlexibleSpaceBar` background. Direct child of a
+/// `<customScrollView>` only.
+const int wtSliverAppBar         = 32;
+/// `<sliverList>` → Flutter `SliverList` — a lazily-built list section
+/// inside a `<customScrollView>`. Children are rows.
+const int wtSliverList           = 33;
+/// `<sliverGrid>` → Flutter `SliverGrid` — a lazily-built grid section
+/// inside a `<customScrollView>`. `propCrossAxisCount` columns,
+/// `propAspectRatio` per cell, `propGap` spacing.
+const int wtSliverGrid           = 34;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick        = 0x01;
@@ -510,6 +530,10 @@ const int propSpring          = 0xAD;
 // 0 none (stop dead), 1 glide (FrictionSimulation — decelerate to
 // rest), 2 springBack (SpringSimulation — spring home to the origin).
 const int propRelease         = 0xAE;
+// `<sliverAppBar>` scroll behaviour — 0 normal (scrolls away), 1
+// pinned (header stays when collapsed), 2 floating (reappears on any
+// scroll-up), 3 pinned + floating.
+const int propSliverMode      = 0xAF;
 
 // ── Sentinel values for width/height props ───────────────────────────
 // Encoded into PROP_WIDTH / PROP_HEIGHT instead of needing distinct

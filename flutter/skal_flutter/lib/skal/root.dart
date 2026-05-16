@@ -149,6 +149,10 @@ Widget _buildForType(NodeState node, SkalBridge bridge) {
     case wtListTile:             return _buildListTile(node, bridge);
     case wtPageView:             return _buildPageView(node, bridge);
     case wtDismissible:          return _buildDismissible(node, bridge);
+    case wtCustomScrollView:     return _buildCustomScrollView(node, bridge);
+    case wtSliverAppBar:         return _buildSliverAppBar(node, bridge);
+    case wtSliverList:           return _buildSliverList(node, bridge);
+    case wtSliverGrid:           return _buildSliverGrid(node, bridge);
     case wtCustom:               return _buildCustom(node, bridge);
     default:                     return const SizedBox.shrink();
   }
@@ -2661,6 +2665,119 @@ Widget _buildDismissible(NodeState n, SkalBridge bridge) {
         if (handler != 0) bridge.dispatchEvent(handler, eventKind: evDismiss);
       },
       child: content,
+    ),
+  );
+}
+
+// ── Slivers — CustomScrollView + collapsing headers ───────────────
+
+/// True for the sliver widget types — the ones that may sit directly
+/// inside a `<customScrollView>` and produce a `RenderSliver`.
+bool _isSliverType(int t) =>
+    t == wtSliverAppBar || t == wtSliverList || t == wtSliverGrid;
+
+/// `<customScrollView>` → Flutter `CustomScrollView`. A child that is
+/// itself a sliver type goes in directly — its `SkalNode` builds a
+/// sliver and `MemoizingListenableBuilder` passes it through untouched
+/// — while any non-sliver child is wrapped in a `SliverToBoxAdapter`.
+/// This is the one place sliver widgets are valid.
+Widget _buildCustomScrollView(NodeState n, SkalBridge bridge) {
+  final width = n.getPropU32(propWidth, kNoValue);
+  final height = n.getPropU32(propHeight, kNoValue);
+  final axis = _axisFor(n.getPropU32(propAxis, 0));
+
+  final slivers = <Widget>[];
+  for (final id in n.childIds) {
+    final childNode = bridge.nodes[id];
+    if (childNode != null && _isSliverType(childNode.type)) {
+      slivers.add(
+          SkalNode(nodeId: id, bridge: bridge, key: ValueKey<int>(id)));
+    } else {
+      // Non-sliver child — wrap so it scrolls. Key the adapter itself
+      // (by node id) so the slivers list reconciles stably if it ever
+      // reorders, not just the SkalNode nested inside.
+      slivers.add(SliverToBoxAdapter(
+        key: ValueKey<int>(id),
+        child: SkalNode(nodeId: id, bridge: bridge),
+      ));
+    }
+  }
+
+  Widget inner = CustomScrollView(
+    scrollDirection: axis,
+    physics: n.onRefreshHandlerId != 0
+        ? const AlwaysScrollableScrollPhysics()
+        : null,
+    slivers: slivers,
+  );
+  inner = _withRefresh(n, bridge, inner);
+  inner = _applyHeight(height, _applyWidth(width, inner));
+  return _hotLayer(node: n, child: inner);
+}
+
+/// `<sliverAppBar>` → Flutter `SliverAppBar` — the collapsing header.
+/// `propTitle` → title, `propHeight` → expanded height, `propSliverMode`
+/// → pinned / floating, `propBgColor` → bar colour. A child node becomes
+/// the `FlexibleSpaceBar` background (the parallax content that
+/// collapses). Valid only as a direct child of `<customScrollView>`.
+Widget _buildSliverAppBar(NodeState n, SkalBridge bridge) {
+  final title = n.getPropStr(propTitle);
+  final height = n.getPropU32(propHeight, kNoValue);
+  final mode = n.getPropU32(propSliverMode, 0);
+  final bg = n.getPropU32(propBgColor, 0);
+  final childId = n.hasChildren ? n.childAt(0) : -1;
+  return SliverAppBar(
+    title: title != null ? Text(title) : null,
+    pinned: mode == 1 || mode == 3,    // 1 pinned, 3 pinned+floating
+    floating: mode == 2 || mode == 3,  // 2 floating, 3 both
+    backgroundColor: bg != 0 ? _argb(bg) : null,
+    expandedHeight: height != kNoValue ? height.toDouble() : null,
+    flexibleSpace: childId >= 0
+        ? FlexibleSpaceBar(
+            background: SkalNode(
+                nodeId: childId,
+                bridge: bridge,
+                key: ValueKey<int>(childId)),
+          )
+        : null,
+  );
+}
+
+/// `<sliverList>` → Flutter `SliverList`, lazily built — only the
+/// on-screen rows materialise. Valid only inside `<customScrollView>`.
+Widget _buildSliverList(NodeState n, SkalBridge bridge) {
+  return SliverList(
+    delegate: SliverChildBuilderDelegate(
+      (_, i) {
+        final id = n.childAt(i);
+        return SkalNode(
+            nodeId: id, bridge: bridge, key: ValueKey<int>(id));
+      },
+      childCount: n.childCount,
+    ),
+  );
+}
+
+/// `<sliverGrid>` → Flutter `SliverGrid`, lazily built. Reuses the
+/// `crossAxisCount` / `aspectRatio` / `gap` props of `<lazyGrid>`.
+Widget _buildSliverGrid(NodeState n, SkalBridge bridge) {
+  final cross = n.getPropU32(propCrossAxisCount, 2);
+  final ratio = n.getPropF32(propAspectRatio, 1.0);
+  final gap = n.getPropU32(propGap, 8).toDouble();
+  return SliverGrid(
+    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+      crossAxisCount: cross < 1 ? 1 : cross,
+      childAspectRatio: ratio <= 0 ? 1.0 : ratio,
+      mainAxisSpacing: gap,
+      crossAxisSpacing: gap,
+    ),
+    delegate: SliverChildBuilderDelegate(
+      (_, i) {
+        final id = n.childAt(i);
+        return SkalNode(
+            nodeId: id, bridge: bridge, key: ValueKey<int>(id));
+      },
+      childCount: n.childCount,
     ),
   );
 }

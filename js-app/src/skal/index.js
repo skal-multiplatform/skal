@@ -534,3 +534,48 @@ export const PageView = makeMissingMacroComponent('PageView');
  * @type {Component<BaseProps & { onDismiss?: () => void }>}
  */
 export const Dismissible = makeMissingMacroComponent('Dismissible');
+
+/**
+ * Sliver scroll viewport. Flutter `CustomScrollView`.
+ *
+ * Its children are sliver sections — `<SliverAppBar>`, `<SliverList>`,
+ * `<SliverGrid>`. Any non-sliver child is auto-wrapped so it scrolls
+ * along. This is the only valid parent for the sliver widgets.
+ *
+ * @type {Component<BaseProps>}
+ */
+export const CustomScrollView = makeMissingMacroComponent('CustomScrollView');
+
+/**
+ * Collapsing / parallax header. Flutter `SliverAppBar`.
+ *
+ * `title` is the bar title, `height` the expanded height, `sliverMode`
+ * picks the scroll behaviour (`'pinned'` / `'floating'` / `'both'`),
+ * and a child becomes the parallax background that collapses. Must be
+ * a direct child of {@link CustomScrollView}.
+ *
+ * @type {Component<BaseProps & {
+ *   title?: string,
+ *   sliverMode?: 0 | 1 | 2 | 3 | 'normal' | 'pinned' | 'floating' | 'both',
+ * }>}
+ */
+export const SliverAppBar = makeMissingMacroComponent('SliverAppBar');
+
+/**
+ * Lazily-built list section. Flutter `SliverList`. Children are rows.
+ * Must be a direct child of {@link CustomScrollView}.
+ *
+ * @type {Component<BaseProps>}
+ */
+export const SliverList = makeMissingMacroComponent('SliverList');
+
+/**
+ * Lazily-built grid section. Flutter `SliverGrid`. `crossAxisCount`
+ * columns, `aspectRatio` per cell, `gap` spacing. Must be a direct
+ * child of {@link CustomScrollView}.
+ *
+ * @type {Component<BaseProps & {
+ *   crossAxisCount?: number, aspectRatio?: number,
+ * }>}
+ */
+export const SliverGrid = makeMissingMacroComponent('SliverGrid');

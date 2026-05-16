@@ -77,6 +77,12 @@ const TAG_TO_HTML = {
   listTile:             'div',
   pageView:             'div',
   dismissible:          'div',
+  // Slivers — <customScrollView> is a scroll container; sliver
+  // sections are plain divs (a <sliverAppBar> uses position:sticky).
+  customScrollView:     'div',
+  sliverAppBar:         'div',
+  sliverList:           'div',
+  sliverGrid:           'div',
 };
 
 // Spinner keyframes for <activityIndicator> — injected once.
@@ -166,6 +172,35 @@ function applyDefaults(el, tag) {
       s.scrollSnapType = 'x mandatory';
       s.scrollbarWidth = 'none';
       s.msOverflowStyle = 'none';
+      break;
+    case 'customScrollView':
+      s.display = 'flex';
+      s.flexDirection = 'column';
+      s.boxSizing = 'border-box';
+      s.width = '100%';
+      s.height = '100%';
+      s.overflowY = 'auto';
+      s.webkitOverflowScrolling = 'touch';
+      break;
+    case 'sliverAppBar':
+      // Collapsing header → a sticky bar on web (best-effort: no
+      // parallax-collapse, just stays pinned at the top on scroll).
+      s.position = 'sticky';
+      s.top = '0';
+      s.zIndex = '1';
+      s.boxSizing = 'border-box';
+      s.width = '100%';
+      break;
+    case 'sliverList':
+      s.display = 'flex';
+      s.flexDirection = 'column';
+      s.boxSizing = 'border-box';
+      s.width = '100%';
+      break;
+    case 'sliverGrid':
+      s.display = 'grid';
+      s.boxSizing = 'border-box';
+      s.width = '100%';
       break;
     case 'box':
       s.display = 'block';

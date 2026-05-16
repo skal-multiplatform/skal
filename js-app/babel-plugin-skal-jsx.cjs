@@ -109,6 +109,10 @@ const BUILT_IN_WIDGET_NAMES = {
   ListTile:             'listTile',
   PageView:             'pageView',
   Dismissible:          'dismissible',
+  CustomScrollView:     'customScrollView',
+  SliverAppBar:         'sliverAppBar',
+  SliverList:           'sliverList',
+  SliverGrid:           'sliverGrid',
 };
 
 module.exports = function ({ types: t }) {

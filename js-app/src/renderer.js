@@ -77,6 +77,12 @@ const TAG_TO_WIDGET = {
   pageView:             B.WT_PAGE_VIEW,
   // <dismissible onDismiss> — swipe its single child away.
   dismissible:          B.WT_DISMISSIBLE,
+  // Slivers — <customScrollView> viewport holds <sliverAppBar> /
+  // <sliverList> / <sliverGrid> sections (collapsing headers etc.).
+  customScrollView:     B.WT_CUSTOM_SCROLL_VIEW,
+  sliverAppBar:         B.WT_SLIVER_APP_BAR,
+  sliverList:           B.WT_SLIVER_LIST,
+  sliverGrid:           B.WT_SLIVER_GRID,
 };
 
 // ───────────────────────────────────────────────────────────────────────
@@ -175,6 +181,8 @@ const COLD_PROPS = {
   draggable:      [B.PROP_DRAGGABLE,        'u32'],
   spring:         [B.PROP_SPRING,           'u32'],
   release:        [B.PROP_RELEASE,          'u32'],
+  // <sliverAppBar sliverMode> — 0 normal / 1 pinned / 2 floating / 3 both.
+  sliverMode:     [B.PROP_SLIVER_MODE,      'u32'],
 };
 
 const HOT_PROP_SETTERS = {
@@ -558,6 +566,13 @@ const _renderer = createRenderer({
     if (name === 'release' && typeof value === 'string') {
       const m = { none: 0, glide: 1, friction: 1, springback: 2, spring: 2 };
       B.setPropU32(node.id, B.PROP_RELEASE, m[value.toLowerCase()] ?? 0);
+      B.scheduleCommit();
+      return;
+    }
+    // <sliverAppBar sliverMode="pinned"> — collapsing-header behaviour.
+    if (name === 'sliverMode' && typeof value === 'string') {
+      const m = { normal: 0, pinned: 1, floating: 2, both: 3 };
+      B.setPropU32(node.id, B.PROP_SLIVER_MODE, m[value.toLowerCase()] ?? 0);
       B.scheduleCommit();
       return;
     }

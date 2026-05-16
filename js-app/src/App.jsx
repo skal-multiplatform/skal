@@ -17,7 +17,7 @@ import {
   Image, Stack, Switch, Slider, Checkbox, ActivityIndicator,
   ProgressBar, LazyGrid, Wrap, SafeArea, RichText, ReorderableListView,
   TextInput, Tabs, Tab, Hero, AnimatedList, CrossFade, ListTile, PageView,
-  Dismissible,
+  Dismissible, CustomScrollView, SliverAppBar, SliverList, SliverGrid,
 } from 'skal';
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
@@ -776,6 +776,43 @@ function UITab() {
         </Box>
         <Text
           label="Pull the list down to refresh (a 900ms async task — the spinner waits for it); swipe any row sideways to dismiss it."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      {/* ── Slivers — collapsing header ──────────────────────────── */}
+      <Section title="Slivers — collapsing header (CustomScrollView)">
+        <Box height={340} borderWidth={1} borderColor={BORDER} cornerRadius={8}>
+          <CustomScrollView>
+            <SliverAppBar
+              title="Collapsing header"
+              height={170}
+              sliverMode="pinned"
+              background={ACCENT}
+            >
+              <Box width="fill" height={170} background={PURPLE} padding={20}>
+                <Text label="Parallax background" fontSize={18} fontWeight={800} color="#FFFFFFFF" />
+              </Box>
+            </SliverAppBar>
+            <SliverList>
+              <For each={['One', 'Two', 'Three', 'Four', 'Five']}>
+                {(item) => (
+                  <Box width="fill" background={CARD} padding={16} borderWidth={1} borderColor={BORDER}>
+                    <Text label={`Row ${item}`} fontSize={14} color={INK} />
+                  </Box>
+                )}
+              </For>
+            </SliverList>
+            <SliverGrid crossAxisCount={3} aspectRatio={1} gap={8}>
+              <For each={[ACCENT, GREEN, ORANGE, PURPLE, RED, ACCENT, GREEN, ORANGE, PURPLE]}>
+                {(c) => <Box background={c} cornerRadius={10} />}
+              </For>
+            </SliverGrid>
+          </CustomScrollView>
+        </Box>
+        <Text
+          label="Scroll the panel up — the purple header collapses into a pinned blue bar. The SliverList builds rows lazily; non-sliver children would auto-wrap in a SliverToBoxAdapter."
           fontSize={11}
           color={SUBTLE}
         />

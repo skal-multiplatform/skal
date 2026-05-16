@@ -16,9 +16,23 @@ import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';
 import { resolve } from 'path';
 import { createRequire } from 'module';
+import { skalCodegen } from './vite-plugin-skal-codegen.js';
 
 const require = createRequire(import.meta.url);
 const skalJsxPlugin = require('./babel-plugin-skal-jsx.cjs');
+
+// Codegen-wrapped widgets — same setup as vite.config.js. The web
+// target needs this too: App.jsx imports `skal-flutter` (Greeting,
+// QrImageView, …), so the virtual module must resolve here as well.
+// On web these custom widgets render through renderer-web.js's
+// custom-node path (degraded — the underlying Flutter widgets aren't
+// available in a browser), but the build + macro tag-lowering work.
+const codegen = skalCodegen({
+  manifests: [
+    '../flutter/skal_flutter/lib/adapters/generated/skal_adapters.json',
+    '../flutter/skal_flutter/lib/skal_codegen.json',
+  ],
+});
 
 export default defineConfig({
   resolve: {
@@ -28,6 +42,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    codegen.vitePlugin,
     solid({
       solid: {
         generate: 'universal',
@@ -35,7 +50,10 @@ export default defineConfig({
       },
       babel: {
         plugins: [
-          [skalJsxPlugin, { moduleName: 'skal' }],
+          [skalJsxPlugin, {
+            moduleName: 'skal',
+            modules: { ...codegen.macroModules },
+          }],
         ],
       },
     }),

@@ -165,6 +165,11 @@ export const WT_HERO                    = 27;
 export const WT_LIST_TILE               = 28;
 export const WT_PAGE_VIEW               = 29;
 export const WT_DISMISSIBLE             = 30;
+// Slivers — <customScrollView> viewport + sliver sections.
+export const WT_CUSTOM_SCROLL_VIEW      = 31;
+export const WT_SLIVER_APP_BAR          = 32;
+export const WT_SLIVER_LIST             = 33;
+export const WT_SLIVER_GRID             = 34;
 
 // Event kinds
 export const EV_CLICK         = 0x01;
@@ -333,6 +338,8 @@ export const PROP_SPRING           = 0xAD;
 // Draggable release physics — 0 none, 1 glide (friction), 2 springBack.
 // What a draggable node does with its fling velocity on release.
 export const PROP_RELEASE          = 0xAE;
+// <sliverAppBar> scroll mode — 0 normal, 1 pinned, 2 floating, 3 both.
+export const PROP_SLIVER_MODE      = 0xAF;
 
 // Sentinel values for width/height u32 props.
 export const NO_VALUE     = -1 | 0;          // prop unset → host default
@@ -655,6 +662,7 @@ KEY_TO_SLOT[PROP_SPRING]           = 58;
 KEY_TO_SLOT[PROP_RELEASE]          = 59;
 KEY_TO_SLOT[PROP_SUBTITLE]         = 60;
 KEY_TO_SLOT[PROP_TRAILING_ICON]    = 61;
+KEY_TO_SLOT[PROP_SLIVER_MODE]      = 62;
 
 // 64-slot row stride (was 32 — the extended widget set filled it).
 // KEY_TO_SLOT is an Int8Array, so slots must stay < 128.

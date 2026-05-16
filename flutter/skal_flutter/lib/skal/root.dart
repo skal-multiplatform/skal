@@ -34,7 +34,7 @@
 //      a child at the head shifts every subsequent slot and tears
 //      them all down.
 
-import 'dart:async' show Timer;
+import 'dart:async' show Completer, Timer;
 import 'dart:io' show File;
 
 import 'package:flutter/cupertino.dart';
@@ -146,6 +146,9 @@ Widget _buildForType(NodeState node, SkalBridge bridge) {
     case wtHero:                 return _buildHero(node, bridge);
     case wtAnimatedList:         return _buildAnimatedList(node, bridge);
     case wtCrossFade:            return _buildCrossFade(node, bridge);
+    case wtListTile:             return _buildListTile(node, bridge);
+    case wtPageView:             return _buildPageView(node, bridge);
+    case wtDismissible:          return _buildDismissible(node, bridge);
     case wtCustom:               return _buildCustom(node, bridge);
     default:                     return const SizedBox.shrink();
   }
@@ -1577,6 +1580,12 @@ Widget _buildListView(NodeState n, SkalBridge bridge) {
   Widget inner = ListView.builder(
     scrollDirection: axis,
     padding: pad,
+    // With pull-to-refresh on, force always-scrollable physics so the
+    // RefreshIndicator can be pulled even when the rows don't fill the
+    // viewport (a plain ListView won't overscroll a short list).
+    physics: n.onRefreshHandlerId != 0
+        ? const AlwaysScrollableScrollPhysics()
+        : null,
     // For interspersed-gap rendering we double the slot count and
     // alternate: even = real child, odd = gap. Cheaper than building
     // a Column-per-row with gap inside. The gap box runs along the
@@ -1597,6 +1606,10 @@ Widget _buildListView(NodeState n, SkalBridge bridge) {
       );
     },
   );
+
+  // Pull-to-refresh — wrap the ListView itself so the RefreshIndicator
+  // finds a Scrollable directly under it.
+  inner = _withRefresh(n, bridge, inner);
 
   // Apply background / border separately (NOT via _applyColdVisual,
   // since that wraps in Padding which would interfere with the inner
@@ -1734,11 +1747,38 @@ Widget _buildScrollView(NodeState n, SkalBridge bridge) {
           children: spaced,
         );
 
-  Widget inner = SingleChildScrollView(scrollDirection: axis, child: flex);
+  Widget inner = SingleChildScrollView(
+    scrollDirection: axis,
+    // See _buildListView — pull-to-refresh needs an always-scrollable
+    // viewport so a short page can still be overscrolled.
+    physics: n.onRefreshHandlerId != 0
+        ? const AlwaysScrollableScrollPhysics()
+        : null,
+    child: flex,
+  );
+  inner = _withRefresh(n, bridge, inner);
 
   inner = _applyColdVisual(n, inner, defaultPadding: 16);
   inner = _applyHeight(height, _applyWidth(width, inner));
   return _hotLayer(node: n, child: inner);
+}
+
+/// Wrap [scrollable] in a `RefreshIndicator` when the node has an
+/// `onRefresh` handler bound. The indicator's spinner stays up until
+/// JS signals completion (`opCompleteRefresh` resolves the Completer)
+/// — so the spinner tracks the app's real async refresh, not a guessed
+/// duration. No handler → [scrollable] is returned untouched. See §1.5.
+Widget _withRefresh(NodeState n, SkalBridge bridge, Widget scrollable) {
+  if (n.onRefreshHandlerId == 0) return scrollable;
+  return RefreshIndicator(
+    onRefresh: () {
+      final c = Completer<void>();
+      n.refreshCompleter = c;
+      bridge.dispatchEvent(n.onRefreshHandlerId, eventKind: evRefresh);
+      return c.future;
+    },
+    child: scrollable,
+  );
 }
 
 Widget _buildRow(NodeState n, SkalBridge bridge) {
@@ -2474,6 +2514,155 @@ IconData _iconFor(String name) {
     case 'map':                    return Icons.map;
     default:                       return Icons.circle;
   }
+}
+
+// ── ListTile — structured Material row ────────────────────────────
+
+/// `<listTile>` → Flutter `ListTile`. Props-keyed (not child slots):
+/// `title` / `subtitle` strings, `leadingIcon` / `trailingIcon` names
+/// resolved through [_iconFor], and `onTap` to make the whole row
+/// pressable. For an arbitrary widget as leading / trailing, compose a
+/// `<row>` instead — this fast-path covers the dominant icon+text case.
+Widget _buildListTile(NodeState n, SkalBridge bridge) {
+  final title = n.getPropStr(propTitle);
+  final subtitle = n.getPropStr(propSubtitle);
+  final leading = n.getPropStr(propIcon);
+  final trailing = n.getPropStr(propTrailingIcon);
+  final tap = n.onClickHandlerId;
+
+  Widget inner = ListTile(
+    leading: (leading != null && leading.isNotEmpty)
+        ? Icon(_iconFor(leading))
+        : null,
+    title: title != null ? Text(title) : null,
+    subtitle: subtitle != null ? Text(subtitle) : null,
+    trailing: (trailing != null && trailing.isNotEmpty)
+        ? Icon(_iconFor(trailing))
+        : null,
+    onTap: tap != 0 ? () => bridge.dispatchEvent(tap) : null,
+  );
+
+  inner = _applyColdVisual(n, inner);
+  inner = _applyHeight(n.getPropU32(propHeight, kNoValue),
+      _applyWidth(n.getPropU32(propWidth, kNoValue), inner));
+  return _hotLayer(node: n, child: inner);
+}
+
+// ── PageView — swipeable full-page pages ──────────────────────────
+
+/// `<pageView>` → Flutter `PageView`. Each child is one full-bleed
+/// page; horizontal swipe by default (`axis` → vertical). `activeTab`
+/// is the CONTROLLED page index — a JS write animates the
+/// `PageController` to it — and `onChange(index)` fires when a swipe
+/// settles. The host owns the swipe physics: zero per-frame traffic.
+Widget _buildPageView(NodeState n, SkalBridge bridge) {
+  final width = n.getPropU32(propWidth, kNoValue);
+  final height = n.getPropU32(propHeight, kNoValue);
+  Widget inner = _SkalPageView(node: n, bridge: bridge);
+  inner = _applyColdVisual(n, inner);
+  inner = _applyHeight(height, _applyWidth(width, inner));
+  return _hotLayer(node: n, child: inner);
+}
+
+class _SkalPageView extends StatefulWidget {
+  final NodeState node;
+  final SkalBridge bridge;
+  const _SkalPageView({required this.node, required this.bridge});
+
+  @override
+  State<_SkalPageView> createState() => _SkalPageViewState();
+}
+
+class _SkalPageViewState extends State<_SkalPageView> {
+  late final PageController _ctrl;
+  // The page currently shown — tracked so a controlled `activeTab`
+  // write can be told apart from JS echoing back our own swipe.
+  int _active = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _active = widget.node.getPropU32(propActiveTab, 0);
+    _ctrl = PageController(initialPage: _active);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(_SkalPageView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Controlled index — JS changed `activeTab`; glide to it. Skipped
+    // when the value just echoes a swipe we already reported.
+    final target = widget.node.getPropU32(propActiveTab, _active);
+    if (target != _active && _ctrl.hasClients) {
+      _active = target;
+      _ctrl.animateToPage(target,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final n = widget.node;
+    final handler = n.onChangeHandlerId;
+    final count = n.childCount;
+    if (count == 0) return const SizedBox.shrink();
+    // PageView.builder (NOT PageView(children:)) — lazy: only the
+    // visible page plus the cache-extent neighbours mount, so a large
+    // pager costs the same as a small one. `childAt` is O(1) on the
+    // node's ListChildList backing.
+    return PageView.builder(
+      controller: _ctrl,
+      scrollDirection: _axisFor(n.getPropU32(propAxis, 0)),
+      itemCount: count,
+      itemBuilder: (_, i) {
+        final id = n.childAt(i);
+        return SkalNode(
+            nodeId: id, bridge: widget.bridge, key: ValueKey<int>(id));
+      },
+      onPageChanged: (i) {
+        _active = i;
+        if (handler != 0) widget.bridge.dispatchEventInt(handler, i);
+      },
+    );
+  }
+}
+
+// ── Dismissible — swipe-to-dismiss ────────────────────────────────
+
+/// `<dismissible>` → Flutter `Dismissible`. Wraps its single child;
+/// `onDismiss` fires when a swipe carries the child off-screen. The JS
+/// app then drops the item from its source list.
+///
+/// The node latches `dismissed` in the `onDismissed` callback: if the
+/// tree rebuilds in the gap before the JS removal lands, this builder
+/// renders nothing — Flutter asserts that a dismissed `Dismissible`
+/// must leave the tree, and a stale rebuild would otherwise trip it.
+Widget _buildDismissible(NodeState n, SkalBridge bridge) {
+  if (n.dismissed) return const SizedBox.shrink();
+  final childId = n.hasChildren ? n.childAt(0) : -1;
+  final Widget content = childId >= 0
+      ? SkalNode(nodeId: childId, bridge: bridge, key: ValueKey<int>(childId))
+      : const SizedBox.shrink();
+  final handler = n.onDismissHandlerId;
+  return _hotLayer(
+    node: n,
+    child: Dismissible(
+      // ObjectKey on the NodeState — unique + stable for this node's
+      // lifetime, which is what Dismissible's dismiss tracking needs.
+      key: ObjectKey(n),
+      onDismissed: (_) {
+        n.dismissed = true;
+        if (handler != 0) bridge.dispatchEvent(handler, eventKind: evDismiss);
+      },
+      child: content,
+    ),
+  );
 }
 
 // ── Hero — shared-element transitions ─────────────────────────────

@@ -71,6 +71,12 @@ const TAG_TO_HTML = {
   animatedList:         'div',
   crossFade:            'div',
   hero:                 'div',
+  // <listTile> — a flex row; <pageView> — a scroll-snap strip;
+  // <dismissible> — a plain div (swipe-away is host-side; web shows
+  // the child without the swipe gesture — best-effort).
+  listTile:             'div',
+  pageView:             'div',
+  dismissible:          'div',
 };
 
 // Spinner keyframes for <activityIndicator> — injected once.
@@ -134,6 +140,32 @@ function applyDefaults(el, tag) {
       s.msOverflowStyle = 'none';           // legacy Edge
       // ::-webkit-scrollbar { display: none } can't be set inline — see
       // the global stylesheet rule we inject below in index.html.
+      break;
+    case 'listTile':
+      // Structured Material row — leading / text / trailing in a flex
+      // row. Web renders `title` as the text; subtitle / icons are a
+      // native-fast-path nicety not mirrored here (best-effort).
+      s.display = 'flex';
+      s.flexDirection = 'row';
+      s.alignItems = 'center';
+      s.boxSizing = 'border-box';
+      s.width = '100%';
+      s.minHeight = '56px';
+      s.padding = '8px 16px';
+      s.gap = '16px';
+      break;
+    case 'pageView':
+      // Swipeable pages — a horizontal scroll-snap strip. Each child
+      // page is sized to the full viewport by the child-insert path.
+      s.display = 'flex';
+      s.flexDirection = 'row';
+      s.boxSizing = 'border-box';
+      s.width = '100%';
+      s.height = '100%';
+      s.overflowX = 'auto';
+      s.scrollSnapType = 'x mandatory';
+      s.scrollbarWidth = 'none';
+      s.msOverflowStyle = 'none';
       break;
     case 'box':
       s.display = 'block';
@@ -790,6 +822,12 @@ const _renderer = createRenderer({
       node.textContent = value == null ? '' : String(value);
       return;
     }
+    // <listTile title> — web renders the title as the row's text
+    // (subtitle / icons are a native-only nicety; best-effort web).
+    if (name === 'title' && node._skalTag === 'listTile') {
+      node.textContent = value == null ? '' : String(value);
+      return;
+    }
 
     // animate={{ duration, curve, delay }} — on web, a CSS transition
     // does the tweening. `all` so cold props (color/size) ride along
@@ -812,6 +850,11 @@ const _renderer = createRenderer({
 
   insertNode(parent, node, anchor) {
     parent.insertBefore(node, anchor || null);
+    // A <pageView> child is one full-bleed snap page.
+    if (parent._skalTag === 'pageView' && node.style) {
+      node.style.flex = '0 0 100%';
+      node.style.scrollSnapAlign = 'start';
+    }
   },
 
   removeNode(parent, node) {

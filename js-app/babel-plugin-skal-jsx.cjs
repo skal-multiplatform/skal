@@ -106,6 +106,9 @@ const BUILT_IN_WIDGET_NAMES = {
   AnimatedList:         'animatedList',
   CrossFade:            'crossFade',
   Hero:                 'hero',
+  ListTile:             'listTile',
+  PageView:             'pageView',
+  Dismissible:          'dismissible',
 };
 
 module.exports = function ({ types: t }) {

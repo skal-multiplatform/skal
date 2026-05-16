@@ -122,6 +122,11 @@ const int opSetRotationZ    = 0x25;
 // the JS side. a = mode (0 material / 1 cupertino / 2 adaptive),
 // b = brightness (0 light / 1 dark). Not node-scoped.
 const int opSetDesign       = 0x26;
+// Pull-to-refresh completion — JS → host signal that the app has
+// finished refreshing, so the host can retract the `RefreshIndicator`
+// spinner. `a` = nodeId. Emitted by JS once the `onRefresh` callback's
+// returned Promise resolves; completes a host-side `Completer`. See §1.5.
+const int opCompleteRefresh = 0x27;
 
 // ── Widget types (NodeState.type) ─────────────────────────────────────
 //
@@ -240,6 +245,22 @@ const int wtCrossFade            = 26;
 /// nodes with the same `propHeroTag`, one per route, animate between
 /// each other across a navigator push/pop. See ANIMATION.md §8.
 const int wtHero                 = 27;
+/// `<listTile>` → Flutter `ListTile` — the structured row primitive.
+/// Props-keyed (not child slots): `propTitle` / `propSubtitle` are the
+/// text, `propIcon` / `propTrailingIcon` resolve to leading / trailing
+/// `Icon`s via the host icon table. `onTap` makes the whole row
+/// pressable. For arbitrary leading/trailing widgets use a `<row>`.
+const int wtListTile             = 28;
+/// `<pageView>` → Flutter `PageView` — full-page horizontal (or
+/// vertical) swipe. Each child is one page; `propActiveTab` is the
+/// controlled page index, `onChange(index)` fires on a settled swipe.
+const int wtPageView             = 29;
+/// `<dismissible>` → Flutter `Dismissible` — swipe one child away.
+/// `onDismiss` fires when the swipe completes; the JS app then drops
+/// the item from its source list. The host marks the node `dismissed`
+/// so a rebuild before that removal renders nothing (Flutter asserts
+/// a dismissed `Dismissible` must leave the tree). See §1.5.
+const int wtDismissible          = 30;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick        = 0x01;
@@ -294,6 +315,13 @@ const int evPanEnd       = 0x0F;
 const int evScaleStart   = 0x10;
 const int evScaleUpdate  = 0x11;
 const int evScaleEnd     = 0x12;
+// Pull-to-refresh — the `onRefresh` callback on a `<listView>` /
+// `<scrollView>`. The JS handler does its async work, then signals
+// completion back via [opCompleteRefresh].
+const int evRefresh      = 0x13;
+// Swipe-to-dismiss — a `<dismissible>` child was swiped away. The JS
+// app drops the item from its source list.
+const int evDismiss      = 0x14;
 
 // ── Event record layout (16 bytes per slot in the event ring) ────────
 //
@@ -406,13 +434,18 @@ const int propTitle           = 0x47;
 // `<hero>` shared-element tag (string). Matching tags across two
 // routes animate into each other on a navigator push/pop.
 const int propHeroTag         = 0x48;
+// `<listTile>` secondary line (string) — the row's subtitle.
+const int propSubtitle        = 0x49;
 
 // Image (string-valued)
 const int propImageSrc        = 0x60;
 const int propContentScale    = 0x61;
 // `<tab>` navigation-bar icon — a name string ("home", "search", …)
 // resolved to an `IconData` by a host-side table (see `_iconFor`).
+// Also the `<listTile>` LEADING icon.
 const int propIcon            = 0x62;
+// `<listTile>` TRAILING icon — same host-side name table as propIcon.
+const int propTrailingIcon    = 0x63;
 
 // Input
 const int propPlaceholder     = 0x80;

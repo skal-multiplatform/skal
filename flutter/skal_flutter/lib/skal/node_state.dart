@@ -148,6 +148,17 @@ class NodeState {
   int onReorderHandlerId = 0;
   // `<navigator onPop=…>` — fired on a gesture / system-back pop.
   int onPopHandlerId = 0;
+  // `<listView onRefresh=…>` — pull-to-refresh. While the spinner is
+  // up, [refreshCompleter] holds the Future the host's RefreshIndicator
+  // is awaiting; JS resolves it via opCompleteRefresh.
+  int onRefreshHandlerId = 0;
+  Completer<void>? refreshCompleter;
+  // `<dismissible onDismiss=…>` — fired when the child is swiped away.
+  // [dismissed] latches true on dismissal so a rebuild before the JS
+  // app drops the node renders nothing (Flutter asserts a dismissed
+  // `Dismissible` must leave the tree).
+  int onDismissHandlerId = 0;
+  bool dismissed = false;
   // Pan / drag gesture handlers (`<box onPanStart=… onPanUpdate=…
   // onPanEnd=…>`). onPanUpdate dispatches a (dx, dy) delta every drag
   // frame; with `draggable` set the host self-drives translation and

@@ -426,10 +426,23 @@ class SkalBridge {
               node.onScaleUpdateHandlerId = c;
             } else if (b == evScaleEnd) {
               node.onScaleEndHandlerId = c;
+            } else if (b == evRefresh) {
+              node.onRefreshHandlerId = c;
+            } else if (b == evDismiss) {
+              node.onDismissHandlerId = c;
             }
             node.coldDirty = true;
             touched.add(a);
           }
+          break;
+
+        // Pull-to-refresh completion — JS finished refreshing; resolve
+        // the Future the host's RefreshIndicator is awaiting so the
+        // spinner retracts. No rebuild needed (the new data already
+        // arrived via the ops in this same drain).
+        case opCompleteRefresh:
+          ns[a]?.refreshCompleter?.complete();
+          ns[a]?.refreshCompleter = null;
           break;
 
         // ── Custom-widget machinery ─────────────────────────────────

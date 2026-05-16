@@ -493,3 +493,44 @@ export const CrossFade = makeMissingMacroComponent('CrossFade');
  * @type {Component<BaseProps & { tag?: string }>}
  */
 export const Hero = makeMissingMacroComponent('Hero');
+
+/**
+ * Structured Material row. Flutter `ListTile`.
+ *
+ * Props-keyed, not child slots: `title` / `subtitle` strings,
+ * `leadingIcon` / `trailingIcon` icon names (the host icon table —
+ * `home`, `search`, `settings`, …), and `onClick` to make the whole
+ * row pressable. For an arbitrary widget as leading / trailing,
+ * compose a `<Row>` instead.
+ *
+ * @type {Component<BaseProps & {
+ *   title?: string, subtitle?: string,
+ *   leadingIcon?: string, trailingIcon?: string,
+ * }>}
+ */
+export const ListTile = makeMissingMacroComponent('ListTile');
+
+/**
+ * Swipeable full-page pager. Flutter `PageView`.
+ *
+ * Each child is one full-bleed page. Horizontal swipe by default;
+ * `axis={1}` makes it vertical. `activeTab` is the controlled page
+ * index — setting it animates to that page — and `onChange(index)`
+ * fires when a swipe settles. The swipe physics run host-side.
+ *
+ * @type {Component<BaseProps & {
+ *   activeTab?: number, onChange?: (index: number) => void,
+ * }>}
+ */
+export const PageView = makeMissingMacroComponent('PageView');
+
+/**
+ * Swipe-to-dismiss wrapper. Flutter `Dismissible`.
+ *
+ * Wraps a single child. `onDismiss` fires when the user swipes the
+ * child off-screen — the app then drops the item from its source
+ * list. Typically one per row inside a {@link ListView}.
+ *
+ * @type {Component<BaseProps & { onDismiss?: () => void }>}
+ */
+export const Dismissible = makeMissingMacroComponent('Dismissible');

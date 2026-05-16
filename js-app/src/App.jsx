@@ -16,7 +16,8 @@ import {
   Box, Column, Row, Text, Button, ListView, ScrollView,
   Image, Stack, Switch, Slider, Checkbox, ActivityIndicator,
   ProgressBar, LazyGrid, Wrap, SafeArea, RichText, ReorderableListView,
-  TextInput, Tabs, Tab, Hero, AnimatedList, CrossFade,
+  TextInput, Tabs, Tab, Hero, AnimatedList, CrossFade, ListTile, PageView,
+  Dismissible,
 } from 'skal';
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
@@ -453,6 +454,9 @@ function UITab() {
   const [slider, setSlider]   = createSignal(40);
   const [name, setName]       = createSignal('');
   const [gesture, setGesture] = createSignal('none yet');
+  const [page, setPage]       = createSignal(0);
+  const [feed, setFeed]       = createSignal(['Item one', 'Item two', 'Item three', 'Item four']);
+  let feedSeq = 0;
   const [dragRest, setDragRest] = createSignal('0, 0');
   const [panDelta, setPanDelta] = createSignal('—');
   const [pinch, setPinch]     = createSignal(1);
@@ -695,6 +699,85 @@ function UITab() {
         <Button
           label="Open Animations →"
           onClick={() => router.navigate('animations')}
+        />
+      </Section>
+
+      {/* ── ListTile — structured Material row ───────────────────── */}
+      <Section title="ListTile — structured rows">
+        <Box background={CARD} cornerRadius={12} borderWidth={1} borderColor={BORDER}>
+          <Column padding={0} gap={0}>
+            <ListTile
+              leadingIcon="person"
+              title="Profile"
+              subtitle="Name, photo, bio"
+              trailingIcon="explore"
+              onClick={() => setGesture('tapped Profile')}
+            />
+            <ListTile
+              leadingIcon="bell"
+              title="Notifications"
+              subtitle="Sounds, badges, alerts"
+              trailingIcon="explore"
+              onClick={() => setGesture('tapped Notifications')}
+            />
+            <ListTile
+              leadingIcon="settings"
+              title="Settings"
+              trailingIcon="explore"
+              onClick={() => setGesture('tapped Settings')}
+            />
+          </Column>
+        </Box>
+        <Text label={`last row: ${gesture()}`} fontSize={11} color={SUBTLE} />
+      </Section>
+
+      {/* ── PageView — swipeable pages ───────────────────────────── */}
+      <Section title="PageView — swipe between pages">
+        <Box height={140}>
+          <PageView activeTab={page()} onChange={(i) => setPage(i)}>
+            <Box width="fill" height={140} background={ACCENT} cornerRadius={12} padding={20}>
+              <Text label="Page 1 — swipe →" fontSize={16} fontWeight={800} color="#FFFFFFFF" />
+            </Box>
+            <Box width="fill" height={140} background={GREEN} cornerRadius={12} padding={20}>
+              <Text label="Page 2" fontSize={16} fontWeight={800} color="#FFFFFFFF" />
+            </Box>
+            <Box width="fill" height={140} background={ORANGE} cornerRadius={12} padding={20}>
+              <Text label="Page 3" fontSize={16} fontWeight={800} color="#FFFFFFFF" />
+            </Box>
+          </PageView>
+        </Box>
+        <Row gap={8}>
+          <Button label="◀ Prev" onClick={() => setPage(Math.max(0, page() - 1))} />
+          <Button label="Next ▶" onClick={() => setPage(Math.min(2, page() + 1))} />
+        </Row>
+        <Text label={`page ${page() + 1} of 3 — swipe or use the buttons`} fontSize={11} color={SUBTLE} />
+      </Section>
+
+      {/* ── Pull-to-refresh + swipe-to-dismiss ───────────────────── */}
+      <Section title="Pull-to-refresh + swipe-to-dismiss">
+        <Box height={210} borderWidth={1} borderColor={BORDER} cornerRadius={8}>
+          <ListView
+            onRefresh={async () => {
+              // The host's spinner stays up until this Promise settles.
+              await new Promise((r) => setTimeout(r, 900));
+              setFeed([`Fresh item ${++feedSeq}`, ...feed()]);
+            }}
+          >
+            <For each={feed()}>
+              {(item) => (
+                <Dismissible onDismiss={() => setFeed(feed().filter((x) => x !== item))}>
+                  <Box width="fill" background={CHIP} cornerRadius={8} padding={14}>
+                    <Text label={item} fontSize={13} color={INK} />
+                  </Box>
+                </Dismissible>
+              )}
+            </For>
+          </ListView>
+        </Box>
+        <Text
+          label="Pull the list down to refresh (a 900ms async task — the spinner waits for it); swipe any row sideways to dismiss it."
+          fontSize={11}
+          color={SUBTLE}
         />
       </Section>
 

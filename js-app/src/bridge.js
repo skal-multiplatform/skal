@@ -101,6 +101,8 @@ export const OP_SET_SCALE_Y       = 0x24;
 export const OP_SET_ROTATION_Z    = 0x25;
 // Global design-system selector (mode, brightness). See wire.dart.
 export const OP_SET_DESIGN        = 0x26;
+// Pull-to-refresh completion — JS → host: app finished refreshing.
+export const OP_COMPLETE_REFRESH  = 0x27;
 
 // Widget types — naming mirrors Flutter's widget vocabulary.
 export const WT_BOX                  = 0;
@@ -158,6 +160,11 @@ export const WT_TAB                     = 24;
 export const WT_ANIMATED_LIST           = 25;
 export const WT_CROSS_FADE              = 26;
 export const WT_HERO                    = 27;
+// <listTile> — structured row; <pageView> — swipeable full pages;
+// <dismissible> — swipe-away wrapper.
+export const WT_LIST_TILE               = 28;
+export const WT_PAGE_VIEW               = 29;
+export const WT_DISMISSIBLE             = 30;
 
 // Event kinds
 export const EV_CLICK         = 0x01;
@@ -193,6 +200,9 @@ export const EV_PAN_END       = 0x0F;
 export const EV_SCALE_START   = 0x10;
 export const EV_SCALE_UPDATE  = 0x11;
 export const EV_SCALE_END     = 0x12;
+// Pull-to-refresh (onRefresh) + swipe-to-dismiss (onDismiss).
+export const EV_REFRESH       = 0x13;
+export const EV_DISMISS       = 0x14;
 
 // Event-arg types — encoded in byte 1 of the event record. See
 // flutter/skal_flutter/lib/skal/wire.dart's `eventArg*` constants.
@@ -269,12 +279,16 @@ export const PROP_TEXT_OVERFLOW    = 0x46;
 export const PROP_TITLE            = 0x47;
 // <hero> shared-element tag (string).
 export const PROP_HERO_TAG         = 0x48;
+// <listTile> subtitle (string).
+export const PROP_SUBTITLE         = 0x49;
 
 // Image (string-valued)
 export const PROP_IMAGE_SRC        = 0x60;
 export const PROP_CONTENT_SCALE    = 0x61;
-// <tab> nav-bar icon — a name string resolved host-side.
+// <tab> nav-bar icon / <listTile> leading icon — a name resolved host-side.
 export const PROP_ICON             = 0x62;
+// <listTile> trailing icon — same host-side name table.
+export const PROP_TRAILING_ICON    = 0x63;
 
 // Input (string-valued except enums)
 export const PROP_PLACEHOLDER      = 0x80;
@@ -639,6 +653,8 @@ KEY_TO_SLOT[PROP_TRANSITION]       = 56;
 KEY_TO_SLOT[PROP_DRAGGABLE]        = 57;
 KEY_TO_SLOT[PROP_SPRING]           = 58;
 KEY_TO_SLOT[PROP_RELEASE]          = 59;
+KEY_TO_SLOT[PROP_SUBTITLE]         = 60;
+KEY_TO_SLOT[PROP_TRAILING_ICON]    = 61;
 
 // 64-slot row stride (was 32 — the extended widget set filled it).
 // KEY_TO_SLOT is an Int8Array, so slots must stay < 128.
@@ -925,6 +941,16 @@ export function setDesign(mode, brightness) {
     ? (_BRIGHTNESSES[brightness] ?? 0)
     : (brightness | 0);
   writeOp(OP_SET_DESIGN, m, b, 0);
+  scheduleCommit();
+}
+
+/**
+ * Pull-to-refresh completion — tell the host the app has finished
+ * refreshing so it can retract the `<listView onRefresh>` spinner.
+ * Called by the renderer once the user's `onRefresh` Promise resolves.
+ */
+export function completeRefresh(nodeId) {
+  writeOp(OP_COMPLETE_REFRESH, nodeId, 0, 0);
   scheduleCommit();
 }
 

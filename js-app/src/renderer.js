@@ -71,6 +71,12 @@ const TAG_TO_WIDGET = {
   animatedList:         B.WT_ANIMATED_LIST,
   crossFade:            B.WT_CROSS_FADE,
   hero:                 B.WT_HERO,
+  // <listTile title subtitle leadingIcon trailingIcon onTap> — the
+  // structured Material row. <pageView> swipes full-page children.
+  listTile:             B.WT_LIST_TILE,
+  pageView:             B.WT_PAGE_VIEW,
+  // <dismissible onDismiss> — swipe its single child away.
+  dismissible:          B.WT_DISMISSIBLE,
 };
 
 // ───────────────────────────────────────────────────────────────────────
@@ -150,9 +156,13 @@ const COLD_PROPS = {
   presentation:   [B.PROP_PRESENTATION,     'u32'],
   // <screen title> → AppBar title; <tab title> → nav-bar label.
   title:          [B.PROP_TITLE,            'str'],
-  // <tab icon> → nav-bar icon (a name resolved host-side).
+  // <tab icon> → nav-bar icon / <listTile leadingIcon> (resolved host-side).
   icon:           [B.PROP_ICON,             'str'],
-  // <tabs activeTab> → selected destination index (controlled).
+  leadingIcon:    [B.PROP_ICON,             'str'],
+  // <listTile subtitle> → secondary line; <listTile trailingIcon>.
+  subtitle:       [B.PROP_SUBTITLE,         'str'],
+  trailingIcon:   [B.PROP_TRAILING_ICON,    'str'],
+  // <tabs activeTab> → selected index; also <pageView activeTab> page.
   activeTab:      [B.PROP_ACTIVE_TAB,       'u32'],
   // <hero tag> → shared-element transition tag.
   tag:            [B.PROP_HERO_TAG,         'str'],
@@ -190,6 +200,8 @@ const HANDLER_EVENTS = {
   onSubmit:      B.EV_SUBMIT,
   onReorder:     B.EV_REORDER,
   onPop:         B.EV_NAV_POP,
+  // <dismissible onDismiss> — fired when the child is swiped away.
+  onDismiss:     B.EV_DISMISS,
   // Pan / drag — onPanUpdate fires every drag frame with a (dx, dy)
   // delta. For "drag this box around" with zero per-frame traffic,
   // use the `draggable` prop instead (the host self-drives translation).
@@ -483,6 +495,25 @@ const _renderer = createRenderer({
     // for the built-in widget set. Dispatch by JS value type instead.
     if (node.isCustom) {
       _setCustomProperty(node, name, value);
+      return;
+    }
+    // onRefresh — pull-to-refresh. Special-cased (not in HANDLER_EVENTS)
+    // because it needs an async wrapper: the host's RefreshIndicator
+    // keeps spinning until JS signals completion. We wrap the user's
+    // callback so that when its returned Promise resolves (or rejects),
+    // `completeRefresh` tells the host to retract the spinner.
+    if (name === 'onRefresh') {
+      if (typeof value === 'function') {
+        const nodeId = node.id;
+        const userFn = value;
+        const wrapped = async () => {
+          try { await userFn(); }
+          finally { B.completeRefresh(nodeId); }
+        };
+        const handlerId = B.newHandlerId(wrapped);
+        B.bindHandler(node.id, B.EV_REFRESH, handlerId);
+        B.scheduleCommit();
+      }
       return;
     }
     // Handler props (onClick / onTap / onLongPress / onDoubleTap /

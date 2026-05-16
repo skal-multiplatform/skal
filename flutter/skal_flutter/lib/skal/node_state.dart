@@ -148,6 +148,19 @@ class NodeState {
   int onReorderHandlerId = 0;
   // `<navigator onPop=…>` — fired on a gesture / system-back pop.
   int onPopHandlerId = 0;
+  // Pan / drag gesture handlers (`<box onPanStart=… onPanUpdate=…
+  // onPanEnd=…>`). onPanUpdate dispatches a (dx, dy) delta every drag
+  // frame; with `draggable` set the host self-drives translation and
+  // onPanUpdate is suppressed (only start/end fire). See _applyGestures.
+  int onPanStartHandlerId = 0;
+  int onPanUpdateHandlerId = 0;
+  int onPanEndHandlerId = 0;
+  // Pinch-scale gesture handlers. onScaleUpdate dispatches a
+  // (scale, rotation) pair. Mutually exclusive with pan on one node —
+  // when both are bound, scale recognizers win.
+  int onScaleStartHandlerId = 0;
+  int onScaleUpdateHandlerId = 0;
+  int onScaleEndHandlerId = 0;
 
   // ── Cold-prop storage (non-reactive, primitive-keyed) ──────────────
   // Widgets subscribe to [cold] then read these directly. The maps

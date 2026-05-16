@@ -183,6 +183,16 @@ export const EV_SUBMIT        = 0x0A;
 export const EV_REORDER       = 0x0B;
 // Navigator pop — <navigator> route popped via gesture / system back.
 export const EV_NAV_POP       = 0x0C;
+// Gesture events — pan/drag + pinch-scale on a container. The *_UPDATE
+// kinds carry a vec2 payload (EVENT_ARG_VEC2): pan-update is (dx, dy),
+// pan-start (localX, localY), pan-end (velocityX, velocityY), scale-
+// update (scale, rotation). scale-start / scale-end are void.
+export const EV_PAN_START     = 0x0D;
+export const EV_PAN_UPDATE    = 0x0E;
+export const EV_PAN_END       = 0x0F;
+export const EV_SCALE_START   = 0x10;
+export const EV_SCALE_UPDATE  = 0x11;
+export const EV_SCALE_END     = 0x12;
 
 // Event-arg types — encoded in byte 1 of the event record. See
 // flutter/skal_flutter/lib/skal/wire.dart's `eventArg*` constants.
@@ -205,6 +215,11 @@ export const EVENT_ARG_JSON = 0x05;
 // (`void Function(int, String)` etc.), distinct from EVENT_ARG_JSON
 // (single Map/Array arg) by spreading at call time.
 export const EVENT_ARG_TUPLE = 0x06;
+// Vec2 — two f32s packed directly into the event record's two payload
+// words (no reply-heap traffic). JS reinterprets both as f32 and
+// SPREADS them on the handler: `fn(x, y)`. Used for gesture deltas
+// (pan dx/dy, scale factor + rotation) that fire every drag frame.
+export const EVENT_ARG_VEC2  = 0x07;
 
 // ───────────────────────────────────────────────────────────────────────
 // Prop key namespace — must match wire.dart's prop* constants.
@@ -293,6 +308,10 @@ export const PROP_ANIM_LOOP        = 0xA9;
 export const PROP_ANIM_SPRING      = 0xAA;
 // <screen> transition enum — 0 default, 1 fade, 2 none.
 export const PROP_TRANSITION       = 0xAB;
+// Draggable fast-path enum — 0 off, 1 free, 2 horizontal, 3 vertical.
+// Non-zero → the host drives the node's translation itself as the
+// pointer moves (zero per-frame bridge traffic). See wire.dart.
+export const PROP_DRAGGABLE        = 0xAC;
 
 // Sentinel values for width/height u32 props.
 export const NO_VALUE     = -1 | 0;          // prop unset → host default
@@ -610,6 +629,7 @@ KEY_TO_SLOT[PROP_ANIM_REVERSE]     = 53;
 KEY_TO_SLOT[PROP_ANIM_LOOP]        = 54;
 KEY_TO_SLOT[PROP_ANIM_SPRING]      = 55;
 KEY_TO_SLOT[PROP_TRANSITION]       = 56;
+KEY_TO_SLOT[PROP_DRAGGABLE]        = 57;
 
 // 64-slot row stride (was 32 — the extended widget set filled it).
 // KEY_TO_SLOT is an Int8Array, so slots must stay < 128.
@@ -1311,6 +1331,16 @@ globalThis.__skal_drainEvents = function () {
       _advanceReplyReadCursor(argOffset, argRaw);
       // Note: handler invocation below SPREADS this array if it's
       // actually an array — the regular-event branch checks for it.
+    } else if (argType === EVENT_ARG_VEC2) {
+      // Two f32s packed in the payload words — no heap involved.
+      // argRaw is component 0's bits, argOffset component 1's.
+      _f32DecodeU32[0] = argRaw;
+      const vx = _f32DecodeF32[0];
+      _f32DecodeU32[0] = argOffset;
+      const vy = _f32DecodeF32[0];
+      arg = [vx, vy];
+      hasArg = true;
+      // SPREAD on the handler — see the regular-event branch.
     }
 
     if (eventKind === EV_METHOD_REPLY) {
@@ -1382,8 +1412,9 @@ globalThis.__skal_drainEvents = function () {
         try {
           if (!hasArg) {
             fn();
-          } else if (argType === EVENT_ARG_TUPLE && Array.isArray(arg)) {
-            // Multi-arg callback — spread the JSON-array payload.
+          } else if ((argType === EVENT_ARG_TUPLE || argType === EVENT_ARG_VEC2)
+                     && Array.isArray(arg)) {
+            // Multi-arg callback — spread the tuple / vec2 payload.
             fn(...arg);
           } else {
             fn(arg);

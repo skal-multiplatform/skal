@@ -88,6 +88,26 @@
  * @property {boolean} [enabled]
  * @property {boolean} [focusable]
  * @property {boolean} [visible]
+ * @property {() => void} [onLongPress]   touch-and-hold handler
+ * @property {() => void} [onDoubleTap]   double-tap handler
+ * @property {(x: number, y: number) => void} [onPanStart]  drag began —
+ *   args are the touch-down position (dp, node-local)
+ * @property {(dx: number, dy: number) => void} [onPanUpdate]  per-frame
+ *   drag delta (dp). Fires every pointer-move frame — for "drag this box
+ *   around" prefer the `draggable` prop, which moves it host-side with
+ *   zero per-frame bridge traffic.
+ * @property {(vx: number, vy: number) => void} [onPanEnd]  drag ended —
+ *   fling velocity in dp/s (or, when `draggable` is set, the final
+ *   resting offset so the app can persist the position)
+ * @property {(scale: number, rotation: number) => void} [onScaleUpdate]
+ *   pinch — cumulative scale factor + rotation (radians). A node cannot
+ *   use scale and pan handlers at once; scale wins.
+ * @property {() => void} [onScaleStart]
+ * @property {() => void} [onScaleEnd]
+ * @property {boolean | 1 | 2 | 3 | 'free' | 'horizontal' | 'vertical'} [draggable]
+ *   host-move fast-path — the widget follows the pointer with no
+ *   per-frame bridge traffic. `true`/`'free'` drags both axes,
+ *   `'horizontal'` / `'vertical'` lock to one.
  */
 
 /**

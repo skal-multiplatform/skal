@@ -39,6 +39,7 @@ import 'dart:io' show File;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -374,31 +375,219 @@ Widget _applyColdVisual(NodeState n, Widget child, {int defaultPadding = 0}) {
 }
 
 /// Wrap [child] in a [GestureDetector] when the node has any gesture
-/// handler bound (`onTap` / `onLongPress` / `onDoubleTap`). Returns
-/// [child] untouched when none are bound — the common case pays for
-/// no extra widget.
+/// handler bound — taps (`onTap` / `onLongPress` / `onDoubleTap`),
+/// pan/drag (`onPan*`), pinch-scale (`onScale*`), or the `draggable`
+/// fast-path. Returns [child] untouched when none are bound — the
+/// common case pays for no extra widget.
 ///
 /// `behavior: opaque` so the whole node area is tappable even when it
 /// paints nothing (a transparent `<box onTap=…>` still receives taps).
+///
+/// Recognizer arbitration: a node binds ONE motion family — scale OR
+/// pan/drag — never both (a pinch and a pan on the same node would be
+/// ambiguous, and `GestureDetector` even asserts against the combo).
+/// When both are bound, scale wins and the pan handlers are dropped.
+///
+/// `draggable` is the performance-first path: instead of shipping a
+/// `(dx, dy)` event every drag frame, the host mutates the node's
+/// own translation hot props and fires `hot.notify()`. The box
+/// follows the finger with ZERO per-frame bridge traffic — the same
+/// "host owns the motion" contract as `animate`. JS only hears
+/// `onPanStart` / `onPanEnd` (when bound); `onPanUpdate` is skipped.
 Widget _applyGestures(NodeState n, SkalBridge bridge, Widget child) {
   final tap = n.onClickHandlerId;
   final longPress = n.onLongPressHandlerId;
   final doubleTap = n.onDoubleTapHandlerId;
-  if (tap == 0 && longPress == 0 && doubleTap == 0) return child;
-  return GestureDetector(
+  final panStart = n.onPanStartHandlerId;
+  final panUpdate = n.onPanUpdateHandlerId;
+  final panEnd = n.onPanEndHandlerId;
+  final scaleStart = n.onScaleStartHandlerId;
+  final scaleUpdate = n.onScaleUpdateHandlerId;
+  final scaleEnd = n.onScaleEndHandlerId;
+  final draggable = n.getPropU32(propDraggable, 0);
+
+  final hasScale = scaleStart != 0 || scaleUpdate != 0 || scaleEnd != 0;
+  final hasPan =
+      panStart != 0 || panUpdate != 0 || panEnd != 0 || draggable != 0;
+
+  if (tap == 0 && longPress == 0 && doubleTap == 0 && !hasScale && !hasPan) {
+    return child;
+  }
+
+  // Tap-family callbacks. Each dispatches under its own event kind so
+  // the wire event is correctly labelled (the JS drain routes by
+  // handlerId, but a mislabelled kind would trap any future consumer).
+  final onTap = tap != 0 ? () => bridge.dispatchEvent(tap) : null;
+  final onLongPress = longPress != 0
+      ? () => bridge.dispatchEvent(longPress, eventKind: evLongPress)
+      : null;
+  final onDoubleTap = doubleTap != 0
+      ? () => bridge.dispatchEvent(doubleTap, eventKind: evDoubleTap)
+      : null;
+
+  // Scale takes the recognizer slot when bound (pan handlers dropped).
+  if (hasScale) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      onDoubleTap: onDoubleTap,
+      onScaleStart: scaleStart != 0
+          ? (_) => bridge.dispatchEvent(scaleStart, eventKind: evScaleStart)
+          : null,
+      // Cumulative scale factor + rotation (radians) — one vec2 event
+      // per pointer-move frame, no reply-heap traffic.
+      onScaleUpdate: scaleUpdate != 0
+          ? (d) => bridge.dispatchEventVec2(
+              scaleUpdate, d.scale, d.rotation,
+              eventKind: evScaleUpdate)
+          : null,
+      onScaleEnd: scaleEnd != 0
+          ? (_) => bridge.dispatchEvent(scaleEnd, eventKind: evScaleEnd)
+          : null,
+      child: child,
+    );
+  }
+
+  if (!hasPan) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      onDoubleTap: onDoubleTap,
+      child: child,
+    );
+  }
+
+  // Pan / drag — driven by a MULTI-drag recognizer, deliberately NOT
+  // by GestureDetector's onPan* (a PanGestureRecognizer).
+  //
+  // A PanGestureRecognizer needs 2× touch-slop of movement before it
+  // claims the gesture arena. An ancestor ScrollView's drag recognizer
+  // claims at 1× slop — so it ALWAYS wins the race, and a dragged box
+  // inside any scroll view would just twitch a few pixels before the
+  // scroll stole the gesture. The MultiDrag recognizers claim at 1×
+  // slop too: they tie the scroll and then win on hit-test depth (the
+  // box is deeper in the tree than the Scrollable). This is the exact
+  // recognizer family Flutter's own `Draggable` uses to work inside a
+  // `ListView`. `draggable` 2 / 3 additionally lock to one axis.
+  Drag? handleDragStart(Offset position) {
+    if (panStart != 0) {
+      bridge.dispatchEventVec2(panStart, position.dx, position.dy,
+          eventKind: evPanStart);
+    }
+    return _SkalDrag(
+      node: n,
+      bridge: bridge,
+      draggable: draggable,
+      panUpdate: panUpdate,
+      panEnd: panEnd,
+    );
+  }
+
+  final Type dragType;
+  final GestureRecognizerFactory dragFactory;
+  if (draggable == 2) {
+    dragType = HorizontalMultiDragGestureRecognizer;
+    dragFactory =
+        GestureRecognizerFactoryWithHandlers<HorizontalMultiDragGestureRecognizer>(
+      HorizontalMultiDragGestureRecognizer.new,
+      (r) => r.onStart = handleDragStart,
+    );
+  } else if (draggable == 3) {
+    dragType = VerticalMultiDragGestureRecognizer;
+    dragFactory =
+        GestureRecognizerFactoryWithHandlers<VerticalMultiDragGestureRecognizer>(
+      VerticalMultiDragGestureRecognizer.new,
+      (r) => r.onStart = handleDragStart,
+    );
+  } else {
+    // Free drag (draggable == 1) and plain onPan* event handlers.
+    dragType = ImmediateMultiDragGestureRecognizer;
+    dragFactory =
+        GestureRecognizerFactoryWithHandlers<ImmediateMultiDragGestureRecognizer>(
+      ImmediateMultiDragGestureRecognizer.new,
+      (r) => r.onStart = handleDragStart,
+    );
+  }
+
+  Widget out = RawGestureDetector(
     behavior: HitTestBehavior.opaque,
-    // Each gesture dispatches under its own event kind so the wire
-    // event is correctly labelled (the JS drain routes by handlerId,
-    // but a mislabelled kind would be a trap for any future consumer).
-    onTap: tap != 0 ? () => bridge.dispatchEvent(tap) : null,
-    onLongPress: longPress != 0
-        ? () => bridge.dispatchEvent(longPress, eventKind: evLongPress)
-        : null,
-    onDoubleTap: doubleTap != 0
-        ? () => bridge.dispatchEvent(doubleTap, eventKind: evDoubleTap)
-        : null,
+    gestures: <Type, GestureRecognizerFactory>{dragType: dragFactory},
     child: child,
   );
+  // Taps live in their own GestureDetector — a tap recognizer and a
+  // drag recognizer coexist fine in the arena (tap wins with no move,
+  // drag wins on movement). The drag detector is the inner/deeper one
+  // so its recognizer enters the arena first.
+  if (tap != 0 || longPress != 0 || doubleTap != 0) {
+    out = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      onDoubleTap: onDoubleTap,
+      child: out,
+    );
+  }
+  return out;
+}
+
+/// The [Drag] sink for a Skal pan / drag gesture — one is created per
+/// active pointer by the MultiDrag recognizer in [_applyGestures].
+///
+/// Two modes, picked by [draggable]:
+///   • `draggable != 0` — host-driven move: each update mutates the
+///     node's own translation hot props and re-composites. ZERO
+///     per-frame bridge traffic; `onPanEnd` reports the final offset.
+///   • `draggable == 0` — plain pan: each update ships an `onPanUpdate`
+///     `(dx, dy)` event; `onPanEnd` ships the fling velocity (dp/s).
+class _SkalDrag extends Drag {
+  _SkalDrag({
+    required this.node,
+    required this.bridge,
+    required this.draggable,
+    required this.panUpdate,
+    required this.panEnd,
+  });
+
+  final NodeState node;
+  final SkalBridge bridge;
+  final int draggable;
+  final int panUpdate;
+  final int panEnd;
+
+  @override
+  void update(DragUpdateDetails details) {
+    var dx = details.delta.dx;
+    var dy = details.delta.dy;
+    if (draggable == 2) dy = 0.0; // horizontal-only
+    if (draggable == 3) dx = 0.0; // vertical-only
+    if (draggable != 0) {
+      // Host owns the motion — mutate translation, re-composite. No
+      // op, no event.
+      node.translationX += dx;
+      node.translationY += dy;
+      node.hot.notify();
+    } else if (panUpdate != 0) {
+      bridge.dispatchEventVec2(panUpdate, dx, dy, eventKind: evPanUpdate);
+    }
+  }
+
+  @override
+  void end(DragEndDetails details) {
+    if (panEnd != 0) {
+      if (draggable != 0) {
+        // Host-driven drag → report the final resting offset so JS
+        // can persist the node's position.
+        bridge.dispatchEventVec2(
+            panEnd, node.translationX, node.translationY,
+            eventKind: evPanEnd);
+      } else {
+        final v = details.velocity.pixelsPerSecond;
+        bridge.dispatchEventVec2(panEnd, v.dx, v.dy, eventKind: evPanEnd);
+      }
+    }
+  }
 }
 
 /// Hot-prop layer dispatcher. Returns the cheap stateless
@@ -413,9 +602,35 @@ Widget _hotLayer({required NodeState node, required Widget child}) {
   return _StaticHotLayer(node: node, child: child);
 }
 
+/// True when [n] carries a gesture that *moves the node itself* — a
+/// pan / scale handler or the `draggable` fast-path. Such a node needs
+/// a STRUCTURALLY STABLE hot layer (see [_StaticHotLayer]): its own
+/// gesture mutates `translation` / `scale`, and if the `Transform`
+/// were conditionally inserted only once the value goes non-identity,
+/// that insertion would re-parent — and so destroy — the live gesture
+/// recognizer mid-drag. Tap-family handlers don't self-transform, so
+/// they don't force the stable layer.
+bool _selfTransformingGesture(NodeState n) =>
+    n.onPanStartHandlerId != 0 ||
+    n.onPanUpdateHandlerId != 0 ||
+    n.onPanEndHandlerId != 0 ||
+    n.onScaleStartHandlerId != 0 ||
+    n.onScaleUpdateHandlerId != 0 ||
+    n.onScaleEndHandlerId != 0 ||
+    n.getPropU32(propDraggable, 0) != 0;
+
 /// The non-animated hot layer — a [ListenableBuilder] on the node's
 /// `hot` notifier that snaps `Transform` / `Opacity` to the latest
 /// values. One rebuild per drain, zero work in the surrounding tree.
+///
+/// Tree-structure stability: for most nodes the `Transform` / `Opacity`
+/// wrappers are added only when actually needed (the common static node
+/// pays for neither). But for a node whose OWN gesture drives its
+/// transform — a draggable / pan / scale node — the wrappers are
+/// ALWAYS present (identity when idle). Inserting a `Transform` the
+/// moment translation first goes non-zero would re-parent the gesture
+/// detector below it and dispose the in-flight recognizer, killing the
+/// drag after one frame. Keeping the structure fixed avoids that.
 class _StaticHotLayer extends StatelessWidget {
   final NodeState node;
   final Widget child;
@@ -423,6 +638,7 @@ class _StaticHotLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final stable = _selfTransformingGesture(node);
     return ListenableBuilder(
       listenable: node.hot,
       builder: (_, c) {
@@ -433,7 +649,7 @@ class _StaticHotLayer extends StatelessWidget {
         final sx = node.scaleX;
         final sy = node.scaleY;
         final rz = node.rotationZ;
-        if (tx != 0 || ty != 0 || sx != 1 || sy != 1 || rz != 0) {
+        if (stable || tx != 0 || ty != 0 || sx != 1 || sy != 1 || rz != 0) {
           final m = Matrix4.identity()
             ..translateByDouble(tx, ty, 0.0, 1.0)
             ..rotateZ(rz)
@@ -443,7 +659,9 @@ class _StaticHotLayer extends StatelessWidget {
           // matrix is still absolute.
           w = Transform(transform: m, alignment: Alignment.center, child: w);
         }
-        if (op < 1.0) w = Opacity(opacity: op.clamp(0.0, 1.0), child: w);
+        if (stable || op < 1.0) {
+          w = Opacity(opacity: op.clamp(0.0, 1.0), child: w);
+        }
         return w;
       },
       child: child,
@@ -674,14 +892,21 @@ class _AnimatedHotLayerState extends State<_AnimatedHotLayer>
     // animations". The node opted into `animate`, so the one permanent
     // boundary layer is the right trade.
     Widget w = RepaintBoundary(child: widget.child);
-    if (_tx != 0 || _ty != 0 || _sx != 1 || _sy != 1 || _rz != 0) {
+    // Keep the wrapper structure fixed for a node whose own gesture
+    // drives its transform — see [_StaticHotLayer]'s docstring. Without
+    // this, the first non-identity frame would insert a `Transform` and
+    // re-parent (destroy) the live gesture recognizer below it.
+    final stable = _selfTransformingGesture(widget.node);
+    if (stable || _tx != 0 || _ty != 0 || _sx != 1 || _sy != 1 || _rz != 0) {
       final m = Matrix4.identity()
         ..translateByDouble(_tx, _ty, 0.0, 1.0)
         ..rotateZ(_rz)
         ..scaleByDouble(_sx, _sy, 1.0, 1.0);
       w = Transform(transform: m, alignment: Alignment.center, child: w);
     }
-    if (_op < 1.0) w = Opacity(opacity: _op.clamp(0.0, 1.0), child: w);
+    if (stable || _op < 1.0) {
+      w = Opacity(opacity: _op.clamp(0.0, 1.0), child: w);
+    }
     return w;
   }
 }

@@ -162,6 +162,7 @@ const COLD_PROPS = {
   enabled:        [B.PROP_ENABLED,          'u32'],
   focusable:      [B.PROP_FOCUSABLE,        'u32'],
   visible:        [B.PROP_VISIBLE,          'u32'],
+  draggable:      [B.PROP_DRAGGABLE,        'u32'],
 };
 
 const HOT_PROP_SETTERS = {
@@ -178,15 +179,26 @@ const HOT_PROP_SETTERS = {
 // in a GestureDetector on the host; onChange is the value-change
 // callback for controls (switch / slider / checkbox).
 const HANDLER_EVENTS = {
-  onClick:     B.EV_CLICK,
-  onclick:     B.EV_CLICK,
-  onTap:       B.EV_CLICK,
-  onLongPress: B.EV_LONG_PRESS,
-  onDoubleTap: B.EV_DOUBLE_TAP,
-  onChange:    B.EV_CHANGE,
-  onSubmit:    B.EV_SUBMIT,
-  onReorder:   B.EV_REORDER,
-  onPop:       B.EV_NAV_POP,
+  onClick:       B.EV_CLICK,
+  onclick:       B.EV_CLICK,
+  onTap:         B.EV_CLICK,
+  onLongPress:   B.EV_LONG_PRESS,
+  onDoubleTap:   B.EV_DOUBLE_TAP,
+  onChange:      B.EV_CHANGE,
+  onSubmit:      B.EV_SUBMIT,
+  onReorder:     B.EV_REORDER,
+  onPop:         B.EV_NAV_POP,
+  // Pan / drag — onPanUpdate fires every drag frame with a (dx, dy)
+  // delta. For "drag this box around" with zero per-frame traffic,
+  // use the `draggable` prop instead (the host self-drives translation).
+  onPanStart:    B.EV_PAN_START,
+  onPanUpdate:   B.EV_PAN_UPDATE,
+  onPanEnd:      B.EV_PAN_END,
+  // Pinch-scale — onScaleUpdate carries (scale, rotation). A node
+  // cannot use scale and pan handlers at once; scale wins on the host.
+  onScaleStart:  B.EV_SCALE_START,
+  onScaleUpdate: B.EV_SCALE_UPDATE,
+  onScaleEnd:    B.EV_SCALE_END,
 };
 
 // `animate.curve` name → wire enum (mirrors _curveFor in root.dart).
@@ -487,6 +499,16 @@ const _renderer = createRenderer({
     // the string `value` that text inputs use. Dispatch by tag.
     if (name === 'value' && node.tag === 'slider') {
       B.setPropF32(node.id, B.PROP_SLIDER_VALUE, Number(value) || 0);
+      B.scheduleCommit();
+      return;
+    }
+
+    // <box draggable="horizontal"> — accept a friendly string alongside
+    // the raw enum. `draggable={true}` and `draggable={1}` (free) still
+    // go through the generic COLD_PROPS u32 path below.
+    if (name === 'draggable' && typeof value === 'string') {
+      const m = { free: 1, both: 1, horizontal: 2, x: 2, vertical: 3, y: 3 };
+      B.setPropU32(node.id, B.PROP_DRAGGABLE, m[value] ?? 0);
       B.scheduleCommit();
       return;
     }

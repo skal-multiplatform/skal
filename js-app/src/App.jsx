@@ -375,6 +375,13 @@ function UITab() {
   const [slider, setSlider]   = createSignal(40);
   const [name, setName]       = createSignal('');
   const [gesture, setGesture] = createSignal('none yet');
+  const [dragRest, setDragRest] = createSignal('0, 0');
+  const [panDelta, setPanDelta] = createSignal('—');
+  const [pinch, setPinch]     = createSignal(1);
+  // onScaleUpdate reports scale relative to the gesture START, so we
+  // snapshot the live value on scaleStart and multiply — successive
+  // pinches then accumulate instead of snapping back to 1×.
+  let pinchBase = 1;
   const [dialog, setDialog]   = createSignal('— try a dialog button —');
   const [rows, setRows]       = createSignal(
     ['First item', 'Second item', 'Third item', 'Fourth item'],
@@ -626,6 +633,66 @@ function UITab() {
           <Text label="Tap / long-press / double-tap this box" fontSize={13} color={INK} />
         </Box>
         <Text label={`last gesture: ${gesture()}`} fontSize={12} color={SUBTLE} />
+      </Section>
+
+      {/* ── Drag — the draggable host-move fast-path ─────────────── */}
+      <Section title="Drag — draggable (zero per-frame bridge traffic)">
+        <Box height={150} background={CHIP} cornerRadius={12}>
+          <Box
+            draggable
+            width={64}
+            height={64}
+            background={ACCENT}
+            cornerRadius={14}
+            onPanEnd={(x, y) => setDragRest(`${x.toFixed(0)}, ${y.toFixed(0)}`)}
+          >
+            <Text label="drag" fontSize={12} color="#FFFFFFFF" />
+          </Box>
+        </Box>
+        <Text
+          label={`Drag the blue box — the host moves it itself, no event per frame. Resting offset: ${dragRest()}`}
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      {/* ── Pan — live onPanUpdate delta ─────────────────────────── */}
+      <Section title="Pan — onPanUpdate delta stream">
+        <Box
+          height={70}
+          background={CHIP}
+          cornerRadius={12}
+          padding={16}
+          onPanStart={() => setPanDelta('drag started')}
+          onPanUpdate={(dx, dy) => setPanDelta(`dx ${dx.toFixed(1)}  dy ${dy.toFixed(1)}`)}
+          onPanEnd={(vx, vy) => setPanDelta(`fling v ${vx.toFixed(0)}, ${vy.toFixed(0)} dp/s`)}
+        >
+          <Text label="Drag anywhere on this strip" fontSize={13} color={INK} />
+        </Box>
+        <Text label={`onPanUpdate: ${panDelta()}`} fontSize={11} color={SUBTLE} />
+      </Section>
+
+      {/* ── Scale — pinch onScaleUpdate ──────────────────────────── */}
+      <Section title="Scale — onScaleUpdate (pinch / rotate)">
+        <Box height={170} background={CHIP} cornerRadius={12}>
+          <Box
+            width={96}
+            height={96}
+            background={PURPLE}
+            cornerRadius={16}
+            scaleX={pinch()}
+            scaleY={pinch()}
+            onScaleStart={() => { pinchBase = pinch(); }}
+            onScaleUpdate={(scale) => setPinch(Math.max(0.3, pinchBase * scale))}
+          >
+            <Text label="pinch" fontSize={13} color="#FFFFFFFF" />
+          </Box>
+        </Box>
+        <Text
+          label={`Pinch the purple box (two pointers / trackpad). Scale ×${pinch().toFixed(2)}`}
+          fontSize={11}
+          color={SUBTLE}
+        />
       </Section>
 
       {/* ── Dialogs ─────────────────────────────────────────────── */}

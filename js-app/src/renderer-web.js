@@ -389,6 +389,109 @@ function updateTransform(node) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// Gesture wiring. The native renderer routes pan / scale through the
+// event ring + a host GestureDetector; in the browser we're already in
+// JS, so Pointer Events drive the handlers directly. The handler set
+// lives in `node._skalG`; listeners are attached once per node.
+//
+// `draggable` is the same host-move fast-path as native — the element
+// follows the pointer via the compositor `transform`, and JS only
+// hears onPanStart / onPanEnd (never a per-frame onPanUpdate).
+// ──────────────────────────────────────────────────────────────────────
+
+function attachGestures(node) {
+  if (node._skalGAttached) return;
+  node._skalGAttached = true;
+  node.style.touchAction = 'none'; // let us own the gesture
+
+  const pts = new Map();           // live pointers (for pinch)
+  let panId = -1, lastX = 0, lastY = 0, lastT = 0, vx = 0, vy = 0;
+  let pinchBase = 1, pinchRot0 = 0, pinching = false;
+
+  node.addEventListener('pointerdown', (e) => {
+    const g = node._skalG;
+    if (!g) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const wantScale = g.scaleStart || g.scaleUpdate || g.scaleEnd;
+    if (pts.size === 2 && wantScale) {
+      const [a, b] = [...pts.values()];
+      pinchBase = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      pinchRot0 = Math.atan2(b.y - a.y, b.x - a.x);
+      pinching = true;
+      if (g.scaleStart) g.scaleStart();
+      return;
+    }
+    const wantPan = g.panStart || g.panUpdate || g.panEnd || g.draggable;
+    if (panId === -1 && wantPan && !wantScale) {
+      panId = e.pointerId;
+      node.setPointerCapture(e.pointerId);
+      const r = node.getBoundingClientRect();
+      lastX = e.clientX; lastY = e.clientY; lastT = e.timeStamp;
+      vx = 0; vy = 0;
+      if (g.panStart) g.panStart(e.clientX - r.left, e.clientY - r.top);
+    }
+  });
+
+  node.addEventListener('pointermove', (e) => {
+    const g = node._skalG;
+    if (!g) return;
+    if (pts.has(e.pointerId)) pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinching && pts.size >= 2) {
+      const [a, b] = [...pts.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      const rot = Math.atan2(b.y - a.y, b.x - a.x) - pinchRot0;
+      if (g.scaleUpdate) g.scaleUpdate(dist / pinchBase, rot);
+      return;
+    }
+    if (e.pointerId !== panId) return;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    const dt = Math.max(1, e.timeStamp - lastT);
+    vx = (dx / dt) * 1000; vy = (dy / dt) * 1000;
+    lastX = e.clientX; lastY = e.clientY; lastT = e.timeStamp;
+    if (g.draggable) {
+      const h = ensureHotState(node);
+      if (g.draggable !== 3) h.tx += dx;   // 3 = vertical-only
+      if (g.draggable !== 2) h.ty += dy;   // 2 = horizontal-only
+      updateTransform(node);
+    } else if (g.panUpdate) {
+      g.panUpdate(dx, dy);
+    }
+  });
+
+  const endPointer = (e) => {
+    const g = node._skalG;
+    pts.delete(e.pointerId);
+    if (pinching && pts.size < 2) {
+      pinching = false;
+      if (g && g.scaleEnd) g.scaleEnd();
+    }
+    if (e.pointerId !== panId) return;
+    panId = -1;
+    if (g && g.panEnd) {
+      if (g.draggable) {
+        const h = node._skalHot || { tx: 0, ty: 0 };
+        g.panEnd(h.tx, h.ty);   // final resting offset
+      } else {
+        g.panEnd(vx, vy);       // fling velocity (px/s)
+      }
+    }
+  };
+  node.addEventListener('pointerup', endPointer);
+  node.addEventListener('pointercancel', endPointer);
+}
+
+// onPan* / onScale* prop name → `node._skalG` slot.
+const GESTURE_HANDLER_SLOTS = {
+  onPanStart: 'panStart', onPanUpdate: 'panUpdate', onPanEnd: 'panEnd',
+  onScaleStart: 'scaleStart', onScaleUpdate: 'scaleUpdate', onScaleEnd: 'scaleEnd',
+};
+
+// `draggable` enum: friendly string → 1 free / 2 horizontal / 3 vertical.
+const DRAGGABLE_MODES = {
+  free: 1, both: 1, horizontal: 2, x: 2, vertical: 3, y: 3,
+};
+
+// ──────────────────────────────────────────────────────────────────────
 // Per-tag prop dispatch.
 //
 // Each prop name maps to one or a few CSS property writes. Unknown
@@ -572,6 +675,23 @@ const _renderer = createRenderer({
       node.oncontextmenu = typeof value === 'function'
         ? (e) => { e.preventDefault(); value(e); }
         : null;
+      return;
+    }
+    // Pan / scale gesture handlers — Pointer Events drive them.
+    const gSlot = GESTURE_HANDLER_SLOTS[name];
+    if (gSlot !== undefined) {
+      (node._skalG ||= {})[gSlot] = typeof value === 'function' ? value : null;
+      attachGestures(node);
+      return;
+    }
+    // draggable — host-move fast-path. Accepts the enum (1/2/3), a
+    // friendly string, or `true` (free).
+    if (name === 'draggable') {
+      const g = (node._skalG ||= {});
+      g.draggable = typeof value === 'string'
+        ? (DRAGGABLE_MODES[value] || 0)
+        : (value === true ? 1 : (value | 0));
+      attachGestures(node);
       return;
     }
 

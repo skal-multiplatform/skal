@@ -275,6 +275,25 @@ const int evReorder      = 0x0B;
 // system back button. Dispatched to the navigator's `onPop` handler;
 // the JS app drops the top route from its stack.
 const int evNavPop       = 0x0C;
+// Gesture events — pan/drag (`onPanStart` / `onPanUpdate` / `onPanEnd`
+// on a container) and pinch-scale (`onScaleStart` / `onScaleUpdate` /
+// `onScaleEnd`). The *Update events carry a two-float payload encoded
+// as [eventArgVec2]:
+//   • evPanUpdate   → (dx, dy)            incremental drag delta, dp
+//   • evPanStart    → (x, y)              touch-down global position, dp
+//   • evPanEnd      → (velocityX, velocityY)  fling velocity, dp/s
+//     (with `draggable` set, evPanEnd instead carries the node's
+//      final resting translation offset)
+//   • evScaleUpdate → (scale, rotation)   cumulative factor + radians
+//   • evScale{Start,End} → void
+// A GestureDetector cannot host pan AND scale recognizers at once, so
+// when a node binds both, scale wins (see `_applyGestures`).
+const int evPanStart     = 0x0D;
+const int evPanUpdate    = 0x0E;
+const int evPanEnd       = 0x0F;
+const int evScaleStart   = 0x10;
+const int evScaleUpdate  = 0x11;
+const int evScaleEnd     = 0x12;
 
 // ── Event record layout (16 bytes per slot in the event ring) ────────
 //
@@ -322,6 +341,14 @@ const int eventArgJson = 0x05;
 // arg). The Dart side serializes the arg list with jsonEncode and
 // dispatches via `bridge.dispatchEventTuple(handlerId, [a, b, c])`.
 const int eventArgTuple = 0x06;
+// Vec2 — two f32 components packed straight into the event record's
+// two payload slots: argValueI32 carries component 0's bit pattern,
+// argHeapOffset carries component 1's. ZERO heap traffic — a gesture
+// firing 120×/sec during an active drag stays a fixed 16-byte event
+// rather than churning the reply heap with a JSON tuple every frame.
+// JS reinterprets both words as f32 and SPREADS them: `fn(x, y)`.
+// Dispatched via `bridge.dispatchEventVec2(handlerId, x, y)`.
+const int eventArgVec2 = 0x07;
 
 // ── Prop key namespace ────────────────────────────────────────────────
 // Partitioned by tier so apps + future expansions don't collide. See
@@ -426,6 +453,14 @@ const int propAnimSpring      = 0xAA;
 // `<screen>` transition enum — 0 platform default, 1 fade, 2 none.
 // ANIMATION.md §10 / custom page transitions.
 const int propTransition      = 0xAB;
+// Draggable fast-path. A non-zero value makes the host drive this
+// node's translation hot props itself as the pointer moves — the box
+// follows the finger with ZERO per-frame bridge traffic (the move is
+// a pure host-side `hot.notify()`, never an op or event). JS only
+// hears `onPanStart` / `onPanEnd` if those are bound; `onPanUpdate`
+// is intentionally NOT dispatched while `draggable` is on. Enum:
+// 0 off, 1 free (both axes), 2 horizontal-only, 3 vertical-only.
+const int propDraggable       = 0xAC;
 
 // ── Sentinel values for width/height props ───────────────────────────
 // Encoded into PROP_WIDTH / PROP_HEIGHT instead of needing distinct

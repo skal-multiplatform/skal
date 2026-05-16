@@ -414,6 +414,18 @@ class SkalBridge {
               node.onReorderHandlerId = c;
             } else if (b == evNavPop) {
               node.onPopHandlerId = c;
+            } else if (b == evPanStart) {
+              node.onPanStartHandlerId = c;
+            } else if (b == evPanUpdate) {
+              node.onPanUpdateHandlerId = c;
+            } else if (b == evPanEnd) {
+              node.onPanEndHandlerId = c;
+            } else if (b == evScaleStart) {
+              node.onScaleStartHandlerId = c;
+            } else if (b == evScaleUpdate) {
+              node.onScaleUpdateHandlerId = c;
+            } else if (b == evScaleEnd) {
+              node.onScaleEndHandlerId = c;
             }
             node.coldDirty = true;
             touched.add(a);
@@ -997,6 +1009,21 @@ class SkalBridge {
         argType: eventArgStr,
         argValueI32: length,
         argHeapOffset: offset);
+  }
+
+  /// Dispatch a two-float gesture callback — `fn(x, y)` on the JS side.
+  /// Both floats ride in the event record's two payload words as raw
+  /// f32 bit patterns, so there is ZERO reply-heap traffic: a pan that
+  /// fires 120×/sec during an active drag stays a fixed 16-byte event
+  /// rather than JSON-encoding a tuple every frame. JS reinterprets the
+  /// words as f32 and spreads them on the handler.
+  void dispatchEventVec2(int handlerId, double x, double y,
+      {int eventKind = evChange}) {
+    dispatchEvent(handlerId,
+        eventKind: eventKind,
+        argType: eventArgVec2,
+        argValueI32: _f32ToBits(x),
+        argHeapOffset: _f32ToBits(y));
   }
 
   /// Dispatch a multi-arg callback. JS-side bound handler receives the

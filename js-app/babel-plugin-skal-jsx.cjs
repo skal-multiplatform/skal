@@ -114,6 +114,8 @@ const BUILT_IN_WIDGET_NAMES = {
   SliverList:           'sliverList',
   SliverGrid:           'sliverGrid',
   Canvas:               'canvas',
+  DragItem:             'dragItem',
+  DropZone:             'dropZone',
 };
 
 module.exports = function ({ types: t }) {

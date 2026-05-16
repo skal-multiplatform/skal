@@ -290,6 +290,16 @@ const int wtSliverGrid           = 34;
 /// costs ONE bridge write and zero per-frame traffic. No new op: the
 /// draw program rides `opSetText`. See FLUTTER_COMPONENTS_TODO_2.md §1.2.
 const int wtCanvas               = 35;
+/// `<dragItem>` → Flutter `Draggable<String>`. Wraps one child, carries
+/// the `propDragData` string id, and shows a floating feedback widget
+/// under the pointer during the drag. Drop it on a `<dropZone>` to
+/// fire that zone's `onDrop`. See §1.4.
+const int wtDragItem             = 36;
+/// `<dropZone>` → Flutter `DragTarget<String>`. A drop target; when a
+/// `<dragItem>` is released over it, its `onDrop(dataId)` handler
+/// fires with the item's `dragData`. Highlights host-side while an
+/// item hovers — zero bridge traffic until the drop.
+const int wtDropZone             = 37;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick        = 0x01;
@@ -351,6 +361,10 @@ const int evRefresh      = 0x13;
 // Swipe-to-dismiss — a `<dismissible>` child was swiped away. The JS
 // app drops the item from its source list.
 const int evDismiss      = 0x14;
+// Drag-and-drop — a `<dragItem>` was released over a `<dropZone>`.
+// Dispatched to the zone's `onDrop` handler with the item's
+// `propDragData` string (eventArgStr).
+const int evDrop         = 0x15;
 
 // ── Event record layout (16 bytes per slot in the event ring) ────────
 //
@@ -465,6 +479,9 @@ const int propTitle           = 0x47;
 const int propHeroTag         = 0x48;
 // `<listTile>` secondary line (string) — the row's subtitle.
 const int propSubtitle        = 0x49;
+// `<dragItem>` payload — a string id carried to the `<dropZone>` that
+// receives the drop (delivered to its `onDrop` handler).
+const int propDragData        = 0x4A;
 
 // Image (string-valued)
 const int propImageSrc        = 0x60;

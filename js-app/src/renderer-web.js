@@ -86,6 +86,10 @@ const TAG_TO_HTML = {
   // <canvas> — a real DOM <canvas> element (the draw program would
   // replay onto its 2-D context; native-fast-path is the product).
   canvas:               'canvas',
+  // Drag-and-drop — plain divs on web (the drag session is host-side;
+  // HTML5 DnD parity is best-effort, not wired here).
+  dragItem:             'div',
+  dropZone:             'div',
 };
 
 // Spinner keyframes for <activityIndicator> — injected once.

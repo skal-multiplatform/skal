@@ -155,6 +155,8 @@ Widget _buildForType(NodeState node, SkalBridge bridge) {
     case wtSliverList:           return _buildSliverList(node, bridge);
     case wtSliverGrid:           return _buildSliverGrid(node, bridge);
     case wtCanvas:               return _buildCanvas(node);
+    case wtDragItem:             return _buildDragItem(node, bridge);
+    case wtDropZone:             return _buildDropZone(node, bridge);
     case wtCustom:               return _buildCustom(node, bridge);
     default:                     return const SizedBox.shrink();
   }
@@ -2908,6 +2910,66 @@ class _SkalPainter extends CustomPainter {
   @override
   bool shouldRepaint(_SkalPainter oldDelegate) =>
       oldDelegate.program != program;
+}
+
+// ── Drag-and-drop — Draggable / DragTarget ────────────────────────
+
+/// `<dragItem>` → Flutter `Draggable<String>`. Wraps its single child;
+/// `propDragData` is the string payload delivered to whichever
+/// `<dropZone>` the item is released over. A floating feedback follows
+/// the pointer during the drag; the in-place copy ghosts to 30%.
+Widget _buildDragItem(NodeState n, SkalBridge bridge) {
+  final childId = n.hasChildren ? n.childAt(0) : -1;
+  if (childId < 0) return const SizedBox.shrink();
+  final data = n.getPropStr(propDragData) ?? '';
+  Widget node() => SkalNode(nodeId: childId, bridge: bridge);
+  Widget inner = Draggable<String>(
+    data: data,
+    // feedback rides in the app Overlay — Material gives it a text
+    // style + lets it paint above everything.
+    feedback: Material(color: Colors.transparent, child: node()),
+    childWhenDragging: Opacity(opacity: 0.3, child: node()),
+    child: node(),
+  );
+  inner = _applyColdVisual(n, inner);
+  return _hotLayer(node: n, child: inner);
+}
+
+/// `<dropZone>` → Flutter `DragTarget<String>`. When a `<dragItem>` is
+/// released over it, `onDrop` fires with the item's `dragData`. While
+/// an item hovers the zone draws a faint highlight — entirely
+/// host-side; nothing crosses the bridge until the actual drop.
+Widget _buildDropZone(NodeState n, SkalBridge bridge) {
+  final handler = n.onDropHandlerId;
+  final childId = n.hasChildren ? n.childAt(0) : -1;
+  final Widget content = childId >= 0
+      ? SkalNode(nodeId: childId, bridge: bridge)
+      : const SizedBox.shrink();
+  Widget inner = DragTarget<String>(
+    onAcceptWithDetails: (details) {
+      if (handler != 0) {
+        bridge.dispatchEventStr(handler, details.data, eventKind: evDrop);
+      }
+    },
+    builder: (context, candidate, rejected) {
+      // Structurally STABLE — the DecoratedBox is always present, only
+      // its decoration toggles. Conditionally inserting/removing the
+      // box would re-parent (and so rebuild) the child subtree on
+      // every hover in / out. An empty BoxDecoration paints nothing.
+      return DecoratedBox(
+        decoration: candidate.isEmpty
+            ? const BoxDecoration()
+            : BoxDecoration(
+                color: const Color(0x1A0A84FF),
+                border:
+                    Border.all(color: const Color(0x880A84FF), width: 2),
+              ),
+        child: content,
+      );
+    },
+  );
+  inner = _applyColdVisual(n, inner);
+  return _hotLayer(node: n, child: inner);
 }
 
 // ── Hero — shared-element transitions ─────────────────────────────

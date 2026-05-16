@@ -172,6 +172,9 @@ export const WT_SLIVER_LIST             = 33;
 export const WT_SLIVER_GRID             = 34;
 // <canvas> — CustomPaint; the draw program rides opSetText.
 export const WT_CANVAS                  = 35;
+// Drag-and-drop — <dragItem> (Draggable) + <dropZone> (DragTarget).
+export const WT_DRAG_ITEM               = 36;
+export const WT_DROP_ZONE               = 37;
 
 // Event kinds
 export const EV_CLICK         = 0x01;
@@ -210,6 +213,9 @@ export const EV_SCALE_END     = 0x12;
 // Pull-to-refresh (onRefresh) + swipe-to-dismiss (onDismiss).
 export const EV_REFRESH       = 0x13;
 export const EV_DISMISS       = 0x14;
+// Drag-and-drop — a <dragItem> dropped on a <dropZone> (carries the
+// item's dragData string).
+export const EV_DROP          = 0x15;
 
 // Event-arg types — encoded in byte 1 of the event record. See
 // flutter/skal_flutter/lib/skal/wire.dart's `eventArg*` constants.
@@ -288,6 +294,8 @@ export const PROP_TITLE            = 0x47;
 export const PROP_HERO_TAG         = 0x48;
 // <listTile> subtitle (string).
 export const PROP_SUBTITLE         = 0x49;
+// <dragItem> payload — string id carried to the <dropZone>'s onDrop.
+export const PROP_DRAG_DATA        = 0x4A;
 
 // Image (string-valued)
 export const PROP_IMAGE_SRC        = 0x60;
@@ -665,6 +673,7 @@ KEY_TO_SLOT[PROP_RELEASE]          = 59;
 KEY_TO_SLOT[PROP_SUBTITLE]         = 60;
 KEY_TO_SLOT[PROP_TRAILING_ICON]    = 61;
 KEY_TO_SLOT[PROP_SLIVER_MODE]      = 62;
+KEY_TO_SLOT[PROP_DRAG_DATA]        = 63;
 
 // 64-slot row stride (was 32 — the extended widget set filled it).
 // KEY_TO_SLOT is an Int8Array, so slots must stay < 128.

@@ -430,6 +430,8 @@ class SkalBridge {
               node.onRefreshHandlerId = c;
             } else if (b == evDismiss) {
               node.onDismissHandlerId = c;
+            } else if (b == evDrop) {
+              node.onDropHandlerId = c;
             }
             node.coldDirty = true;
             touched.add(a);

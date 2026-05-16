@@ -18,6 +18,7 @@ import {
   ProgressBar, LazyGrid, Wrap, SafeArea, RichText, ReorderableListView,
   TextInput, Tabs, Tab, Hero, AnimatedList, CrossFade, ListTile, PageView,
   Dismissible, CustomScrollView, SliverAppBar, SliverList, SliverGrid, Canvas,
+  DragItem, DropZone,
 } from 'skal';
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
@@ -458,6 +459,7 @@ function UITab() {
   const [feed, setFeed]       = createSignal(['Item one', 'Item two', 'Item three', 'Item four']);
   let feedSeq = 0;
   const [canvasShapes, setCanvasShapes] = createSignal([]);
+  const [dropped, setDropped] = createSignal([]);
   const [dragRest, setDragRest] = createSignal('0, 0');
   const [panDelta, setPanDelta] = createSignal('—');
   const [pinch, setPinch]     = createSignal(1);
@@ -861,6 +863,40 @@ function UITab() {
         </Row>
         <Text
           label="Bars, a circle, a stroked path, text. The 4th bar tracks the Controls slider; the buttons append/clear circles — each click flips the canvasShapes signal, so the draw callback re-records and the host repaints. Static drawings cross the bridge exactly once."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      {/* ── Drag-and-drop — DragItem / DropZone ──────────────────── */}
+      <Section title="Drag-and-drop — DragItem onto DropZone">
+        <Row gap={8}>
+          <For each={['Apple', 'Banana', 'Cherry']}>
+            {(fruit) => (
+              <DragItem dragData={fruit}>
+                <Box background={PURPLE} cornerRadius={20} padding={12}>
+                  <Text label={fruit} fontSize={13} color="#FFFFFFFF" />
+                </Box>
+              </DragItem>
+            )}
+          </For>
+        </Row>
+        <DropZone onDrop={(d) => setDropped([...dropped(), d])}>
+          <Box width="fill" height={90} background={CHIP} cornerRadius={12} padding={16}>
+            <Text
+              label={dropped().length
+                ? `Basket: ${dropped().join(', ')}`
+                : 'Drag a chip into this zone'}
+              fontSize={13}
+              color={INK}
+            />
+          </Box>
+        </DropZone>
+        <Row gap={8}>
+          <Button label="Clear basket" onClick={() => setDropped([])} />
+        </Row>
+        <Text
+          label="Drag a fruit chip onto the zone — it highlights host-side while you hover; on release onDrop fires with the chip's dragData string. The whole drag is host-side; only the drop crosses the bridge."
           fontSize={11}
           color={SUBTLE}
         />

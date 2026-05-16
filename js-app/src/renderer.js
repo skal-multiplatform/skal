@@ -86,6 +86,9 @@ const TAG_TO_WIDGET = {
   sliverGrid:           B.WT_SLIVER_GRID,
   // <canvas draw={(ctx) => …}> — arbitrary 2-D drawing via CustomPaint.
   canvas:               B.WT_CANVAS,
+  // Drag-and-drop — <dragItem> carries dragData; <dropZone onDrop>.
+  dragItem:             B.WT_DRAG_ITEM,
+  dropZone:             B.WT_DROP_ZONE,
 };
 
 /**
@@ -216,6 +219,8 @@ const COLD_PROPS = {
   release:        [B.PROP_RELEASE,          'u32'],
   // <sliverAppBar sliverMode> — 0 normal / 1 pinned / 2 floating / 3 both.
   sliverMode:     [B.PROP_SLIVER_MODE,      'u32'],
+  // <dragItem dragData> — string id carried to a <dropZone>'s onDrop.
+  dragData:       [B.PROP_DRAG_DATA,        'str'],
 };
 
 const HOT_PROP_SETTERS = {
@@ -254,6 +259,9 @@ const HANDLER_EVENTS = {
   onScaleStart:  B.EV_SCALE_START,
   onScaleUpdate: B.EV_SCALE_UPDATE,
   onScaleEnd:    B.EV_SCALE_END,
+  // <dropZone onDrop> — a <dragItem> dropped on it; arg is the
+  // dropped item's `dragData` string.
+  onDrop:        B.EV_DROP,
 };
 
 // `animate.curve` name → wire enum (mirrors _curveFor in root.dart).

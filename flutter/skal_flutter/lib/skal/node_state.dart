@@ -159,6 +159,9 @@ class NodeState {
   // `Dismissible` must leave the tree).
   int onDismissHandlerId = 0;
   bool dismissed = false;
+  // `<dropZone onDrop=…>` — fired when a `<dragItem>` is released over
+  // this zone; the arg is the item's `propDragData` string.
+  int onDropHandlerId = 0;
   // Pan / drag gesture handlers (`<box onPanStart=… onPanUpdate=…
   // onPanEnd=…>`). onPanUpdate dispatches a (dx, dy) delta every drag
   // frame; with `draggable` set the host self-drives translation and

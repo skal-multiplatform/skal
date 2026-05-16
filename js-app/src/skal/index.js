@@ -607,3 +607,25 @@ export const SliverGrid = makeMissingMacroComponent('SliverGrid');
  * }>}
  */
 export const Canvas = makeMissingMacroComponent('Canvas');
+
+/**
+ * Draggable item. Flutter `Draggable`.
+ *
+ * Wraps a single child. `dragData` is a string id carried to whatever
+ * {@link DropZone} the item is released over. A floating copy follows
+ * the pointer during the drag.
+ *
+ * @type {Component<BaseProps & { dragData?: string }>}
+ */
+export const DragItem = makeMissingMacroComponent('DragItem');
+
+/**
+ * Drop target. Flutter `DragTarget`.
+ *
+ * Wraps a single child. When a {@link DragItem} is released over it,
+ * `onDrop(dataId)` fires with that item's `dragData`. The zone
+ * highlights host-side while an item hovers.
+ *
+ * @type {Component<BaseProps & { onDrop?: (dataId: string) => void }>}
+ */
+export const DropZone = makeMissingMacroComponent('DropZone');

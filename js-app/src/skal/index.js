@@ -370,3 +370,59 @@ export const RichText = makeMissingMacroComponent('RichText');
  *   onChange?: (v: string) => void, onSubmit?: (v: string) => void }>}
  */
 export const TextInput = makeMissingMacroComponent('TextInput');
+
+/**
+ * Screen-stack navigator. Flutter `Navigator(pages:)`.
+ *
+ * Children are {@link Screen} nodes — the current route stack. The JS
+ * app owns the stack (a signal); pushing/popping is just adding or
+ * removing a `<Screen>`. Backgrounded screens stay mounted (keep-alive
+ * — instant back, preserved scroll + state). `onPop(from)` fires when
+ * a route is popped by a back-gesture or the system back button — the
+ * handler should drop the top route from the stack.
+ *
+ * Most apps use `createRouter()` rather than driving `<Navigator>`
+ * directly — see skal-runtime.jsx.
+ *
+ * @type {Component<BaseProps & { onPop?: () => void }>}
+ */
+export const Navigator = makeMissingMacroComponent('Navigator');
+
+/**
+ * One route in a {@link Navigator}. Flutter `MaterialPage` /
+ * `CupertinoPage`. Its single child is the screen content.
+ * `presentation`: 0 = push (default), 1 = modal (a bottom-up
+ * full-screen page). A non-empty `title` adds an `AppBar` /
+ * `CupertinoNavigationBar` with an automatic back button.
+ *
+ * @type {Component<BaseProps & { presentation?: number, title?: string }>}
+ */
+export const Screen = makeMissingMacroComponent('Screen');
+
+/**
+ * Bottom tab bar. Flutter `IndexedStack` + `NavigationBar` /
+ * `CupertinoTabBar`.
+ *
+ * Children are {@link Tab} nodes. Every tab subtree is built once and
+ * kept alive (`IndexedStack`) — switching tabs never re-mounts; scroll
+ * position and signal state survive. Controlled: `activeTab` is the
+ * selected index, `onChange(index)` fires on a destination tap.
+ *
+ * Give `<Tabs>` an explicit `height` (or put it in a bounded parent)
+ * for the tab body to fill; without one it sizes to its largest tab.
+ *
+ * @type {Component<BaseProps & {
+ *   activeTab?: number, onChange?: (index: number) => void }>}
+ */
+export const Tabs = makeMissingMacroComponent('Tabs');
+
+/**
+ * One destination of a {@link Tabs}. `title` is the bar label, `icon`
+ * a name from the host icon table (`home`, `search`, `settings`,
+ * `person`, `favorite`, `star`, `list`, `mail`, `chat`, `bell`,
+ * `grid`, `calendar`, `camera`, `cart`, `explore`, `map`, …). Its
+ * single child is the tab body.
+ *
+ * @type {Component<BaseProps & { title?: string, icon?: string }>}
+ */
+export const Tab = makeMissingMacroComponent('Tab');

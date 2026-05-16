@@ -147,6 +147,12 @@ export const WT_SAFE_AREA               = 18;
 export const WT_RICH_TEXT               = 19;
 // TextField — host-pattern. See wire.dart's wtTextInput.
 export const WT_TEXT_INPUT              = 20;
+// Navigation — <navigator> (Navigator pages-API) + <screen> (a Page).
+export const WT_NAVIGATOR               = 21;
+export const WT_SCREEN                  = 22;
+// Tabs — <tabs> (IndexedStack + NavigationBar) + <tab> (one destination).
+export const WT_TABS                    = 23;
+export const WT_TAB                     = 24;
 
 // Event kinds
 export const EV_CLICK         = 0x01;
@@ -170,6 +176,8 @@ export const EV_DOUBLE_TAP    = 0x09;
 export const EV_SUBMIT        = 0x0A;
 // Reorder — <reorderableListView> drag completed; tuple (from, to).
 export const EV_REORDER       = 0x0B;
+// Navigator pop — <navigator> route popped via gesture / system back.
+export const EV_NAV_POP       = 0x0C;
 
 // Event-arg types — encoded in byte 1 of the event record. See
 // flutter/skal_flutter/lib/skal/wire.dart's `eventArg*` constants.
@@ -236,10 +244,15 @@ export const PROP_TEXT_ALIGN       = 0x43;
 export const PROP_LINE_HEIGHT      = 0x44;
 export const PROP_MAX_LINES        = 0x45;
 export const PROP_TEXT_OVERFLOW    = 0x46;
+// Screen / tab chrome title — AppBar title on <screen>, nav-bar label
+// on <tab>.
+export const PROP_TITLE            = 0x47;
 
 // Image (string-valued)
 export const PROP_IMAGE_SRC        = 0x60;
 export const PROP_CONTENT_SCALE    = 0x61;
+// <tab> nav-bar icon — a name string resolved host-side.
+export const PROP_ICON             = 0x62;
 
 // Input (string-valued except enums)
 export const PROP_PLACEHOLDER      = 0x80;
@@ -252,6 +265,8 @@ export const PROP_SLIDER_VALUE     = 0x85;
 export const PROP_SLIDER_MIN       = 0x86;
 export const PROP_SLIDER_MAX       = 0x87;
 export const PROP_PROGRESS         = 0x88;
+// <tabs> selected destination index (controlled).
+export const PROP_ACTIVE_TAB       = 0x89;
 
 // Behavior
 export const PROP_ENABLED          = 0xA0;
@@ -261,6 +276,8 @@ export const PROP_VISIBLE          = 0xA2;
 export const PROP_ANIM_DURATION    = 0xA3;
 export const PROP_ANIM_CURVE       = 0xA4;
 export const PROP_ANIM_DELAY       = 0xA5;
+// <screen> presentation — 0 = push, 1 = modal.
+export const PROP_PRESENTATION     = 0xA6;
 
 // Sentinel values for width/height u32 props.
 export const NO_VALUE     = -1 | 0;          // prop unset → host default
@@ -568,6 +585,10 @@ KEY_TO_SLOT[PROP_PROGRESS]         = 43;
 KEY_TO_SLOT[PROP_ANIM_DURATION]    = 44;
 KEY_TO_SLOT[PROP_ANIM_CURVE]       = 45;
 KEY_TO_SLOT[PROP_ANIM_DELAY]       = 46;
+KEY_TO_SLOT[PROP_PRESENTATION]     = 47;
+KEY_TO_SLOT[PROP_TITLE]            = 48;
+KEY_TO_SLOT[PROP_ICON]             = 49;
+KEY_TO_SLOT[PROP_ACTIVE_TAB]       = 50;
 
 // 64-slot row stride (was 32 — the extended widget set filled it).
 // KEY_TO_SLOT is an Int8Array, so slots must stay < 128.

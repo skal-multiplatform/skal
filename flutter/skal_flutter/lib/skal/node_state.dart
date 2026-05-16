@@ -137,6 +137,8 @@ class NodeState {
   int onSubmitHandlerId = 0;
   // `<reorderableListView onReorder=…>` — fired when a drag completes.
   int onReorderHandlerId = 0;
+  // `<navigator onPop=…>` — fired on a gesture / system-back pop.
+  int onPopHandlerId = 0;
 
   // ── Cold-prop storage (non-reactive, primitive-keyed) ──────────────
   // Widgets subscribe to [cold] then read these directly. The maps

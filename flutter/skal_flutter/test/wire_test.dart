@@ -90,7 +90,8 @@ void main() {
       expect(hEventWritePos, 24);
       expect(hEventReadPos, 28);
       expect(hLastDrainedSeq, 32);
-      expect(hLastDrainedWritePos, 40);
+      expect(hReplyHeapReadPos, 40);
+      expect(hReplyHeapWritePos, 44);
     });
 
     test('ring layout sizes', () {
@@ -98,15 +99,20 @@ void main() {
       expect(kOpRingOffset, 64);
       expect(kOpRingSize, 4 * 1024 * 1024);
       expect(kStringHeapOff, 64 + 4 * 1024 * 1024);
-      expect(kStringHeapSize, 1024 * 1024);
+      expect(kStringHeapSize, 768 * 1024); // trimmed 25% for the reply heap
+      // Reply heap sits between the string heap and the event ring —
+      // Dart-write / JS-read, carries RPC replies + error messages.
+      expect(kReplyHeapOff, kStringHeapOff + kStringHeapSize);
+      expect(kReplyHeapSize, 256 * 1024);
       expect(kBridgeSize, 6 * 1024 * 1024);
-      // Event ring occupies whatever's left of the 6 MiB buffer
-      // after header + op ring + string heap.
-      expect(kEventRingOffset, 64 + 4 * 1024 * 1024 + 1024 * 1024);
+      // Event ring occupies whatever's left of the 6 MiB buffer after
+      // header + op ring + string heap + reply heap.
+      expect(kEventRingOffset, kReplyHeapOff + kReplyHeapSize);
       expect(
         kEventRingOffset + kEventRingSize,
         kBridgeSize,
-        reason: 'header + op ring + string heap + event ring must fill 6 MiB',
+        reason: 'header + op ring + string heap + reply heap + event '
+            'ring must fill 6 MiB',
       );
     });
   });

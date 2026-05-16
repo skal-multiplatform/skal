@@ -14,6 +14,7 @@
 
 import { createSignal, createMemo, createEffect, onCleanup, For } from 'solid-js';
 import * as B from './bridge.js';
+import { Navigator, Screen } from 'skal';
 
 /**
  * Create a JSX-side handle for invoking imperative methods on a
@@ -248,4 +249,150 @@ export function ChunkedFor(props) {
   const sliced = createMemo(() => (props.each ?? []).slice(0, visible()));
 
   return <For each={sliced()}>{props.children}</For>;
+}
+
+/**
+ * createRouter — a screen-stack router over `<Navigator>` / `<Screen>`.
+ *
+ * The router owns the route stack (a signal). `routes` maps a route
+ * name to either a screen component, or `{ component, title }` — the
+ * `title` drives the screen's AppBar / nav-bar (NAVIGATION.md Phase 2).
+ * Each screen is rendered with the props `{ params, router }`.
+ *
+ * ```jsx
+ * const router = createRouter({
+ *   home:   (p) => <Home router={p.router} />,
+ *   detail: { component: (p) => <Detail id={p.params.id} />, title: 'Detail' },
+ * }, 'home');
+ *
+ * // in App:        <router.View />
+ * // from a screen: props.router.navigate('detail', { id: 5 })
+ * //                props.router.back()
+ * ```
+ *
+ * Push / pop just add / remove a route entry — and because <For> keys
+ * by the entry object's identity (which spread + slice preserve),
+ * backgrounded screens stay mounted: keep-alive, instant back, no
+ * re-mount. A back-gesture / system-back pop arrives via <Navigator>'s
+ * `onPop`, which calls `router.back()`.
+ *
+ * `navigate(name, params, { presentation: 'modal', title: '…' })`
+ * pushes a bottom-up modal page and/or overrides the route's title.
+ *
+ * Web URL linking (NAVIGATION.md Phase 3): pass `{ linking: true }` as
+ * the third arg. On the web target the launch URL's `#/route` hash
+ * picks the initial route (deep-link entry) and the top route is
+ * mirrored back into the hash (shareable / bookmarkable URLs). Inert
+ * on the Flutter target — there is no `window`. Full browser
+ * back/forward history integration is the remaining Phase 3 work.
+ */
+export function createRouter(routes, initial, options) {
+  // A route table entry is either a component function or
+  // `{ component, title }`. Normalize both reads through these.
+  const compFor = (name) => {
+    const r = routes[name];
+    return typeof r === 'function' ? r : (r && r.component) || null;
+  };
+  const defaultTitleFor = (name) => {
+    const r = routes[name];
+    return r && typeof r === 'object' ? r.title : undefined;
+  };
+
+  const linking = !!(options && options.linking);
+  const hasWindow = typeof window !== 'undefined';
+  // `#/name` → `name`, when `name` is a known route. Null otherwise.
+  const routeFromHash = () => {
+    if (!hasWindow) return null;
+    const h = (window.location.hash || '').replace(/^#\/?/, '');
+    const name = h.split('?')[0];
+    return name && routes[name] ? name : null;
+  };
+
+  let firstName = typeof initial === 'string'
+    ? initial
+    : (initial && initial.name) || Object.keys(routes)[0];
+  // Deep-link entry — a launch URL hash overrides the initial route.
+  if (linking) {
+    const fromUrl = routeFromHash();
+    if (fromUrl) firstName = fromUrl;
+  }
+  const [stack, setStack] = createSignal([
+    { name: firstName, params: {}, title: defaultTitleFor(firstName) },
+  ]);
+
+  const router = {
+    stack,
+    navigate(name, params, opts) {
+      setStack([
+        ...stack(),
+        {
+          name,
+          params: params || {},
+          presentation: opts && opts.presentation,
+          title: (opts && opts.title) !== undefined
+            ? opts.title
+            : defaultTitleFor(name),
+        },
+      ]);
+    },
+    back() {
+      const s = stack();
+      if (s.length > 1) setStack(s.slice(0, -1));
+    },
+    replace(name, params, opts) {
+      setStack([
+        ...stack().slice(0, -1),
+        {
+          name,
+          params: params || {},
+          title: (opts && opts.title) !== undefined
+            ? opts.title
+            : defaultTitleFor(name),
+        },
+      ]);
+    },
+    reset(name, params) {
+      setStack([
+        { name, params: params || {}, title: defaultTitleFor(name) },
+      ]);
+    },
+    canGoBack() {
+      return stack().length > 1;
+    },
+  };
+
+  // Mirror the top route into the URL hash so the address bar reflects
+  // where the user is (shareable links). `replaceState` — the router
+  // owns the stack, the URL just tracks it; we don't add browser
+  // history entries (that integration is the remaining Phase 3 item).
+  if (linking && hasWindow) {
+    createEffect(() => {
+      const s = stack();
+      const top = s[s.length - 1];
+      const want = '#/' + top.name;
+      if (window.location.hash !== want) {
+        window.history.replaceState({}, '', want);
+      }
+    });
+  }
+
+  router.View = () => (
+    <Navigator onPop={() => router.back()}>
+      <For each={stack()}>
+        {(entry) => {
+          const Comp = compFor(entry.name);
+          return (
+            <Screen
+              presentation={entry.presentation === 'modal' ? 1 : 0}
+              title={entry.title || ''}
+            >
+              {Comp ? <Comp params={entry.params || {}} router={router} /> : null}
+            </Screen>
+          );
+        }}
+      </For>
+    </Navigator>
+  );
+
+  return router;
 }

@@ -209,6 +209,24 @@ const int wtRichText             = 19;
 /// and `FocusNode`. `value`/`placeholder`/`keyboardType`/`secureEntry`
 /// props; `onChange` (per keystroke) + `onSubmit` (Enter) callbacks.
 const int wtTextInput            = 20;
+/// `<navigator>` → Flutter `Navigator(pages:)`. Children are `<screen>`
+/// nodes — the current route stack. The JS app owns the stack; the
+/// Navigator gives native push/pop transitions + screen keep-alive.
+const int wtNavigator            = 21;
+/// `<screen>` → one `MaterialPage` / `CupertinoPage`. Its single child
+/// is the screen content; `propPresentation` picks push vs modal. A
+/// `propTitle` on a `<screen>` adds an `AppBar` / `CupertinoNavigationBar`
+/// with an automatic back button.
+const int wtScreen               = 22;
+/// `<tabs>` → an `IndexedStack` (every tab subtree kept alive) above a
+/// `NavigationBar` / `CupertinoTabBar`. Children are `<tab>` nodes;
+/// `propActiveTab` selects the visible one; `onChange(index)` fires on
+/// a destination tap. See NAVIGATION.md Phase 3.
+const int wtTabs                 = 23;
+/// `<tab>` → one destination of a `<tabs>`. `propTitle` is the bar
+/// label and `propIcon` the bar icon (a name resolved by a host-side
+/// icon table); its single child is the tab body.
+const int wtTab                  = 24;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick        = 0x01;
@@ -240,6 +258,10 @@ const int evSubmit       = 0x0A;
 // Reorder — a `<reorderableListView>` drag completed. The tuple arg
 // carries (oldIndex, newIndex); the JS app reorders its source list.
 const int evReorder      = 0x0B;
+// Navigator pop — a `<navigator>` route popped via back-gesture or the
+// system back button. Dispatched to the navigator's `onPop` handler;
+// the JS app drops the top route from its stack.
+const int evNavPop       = 0x0C;
 
 // ── Event record layout (16 bytes per slot in the event ring) ────────
 //
@@ -338,10 +360,16 @@ const int propTextAlign       = 0x43;     // enum: 0=start 1=center 2=end 3=just
 const int propLineHeight      = 0x44;     // sp
 const int propMaxLines        = 0x45;
 const int propTextOverflow    = 0x46;     // enum: 0=clip 1=ellipsis 2=visible
+// Screen / tab chrome title (string). On a `<screen>` it drives the
+// AppBar; on a `<tab>` it is the navigation-bar destination label.
+const int propTitle           = 0x47;
 
 // Image (string-valued)
 const int propImageSrc        = 0x60;
 const int propContentScale    = 0x61;
+// `<tab>` navigation-bar icon — a name string ("home", "search", …)
+// resolved to an `IconData` by a host-side table (see `_iconFor`).
+const int propIcon            = 0x62;
 
 // Input
 const int propPlaceholder     = 0x80;
@@ -354,6 +382,8 @@ const int propSliderValue     = 0x85;   // f32 → propsF
 const int propSliderMin       = 0x86;   // f32 → propsF
 const int propSliderMax       = 0x87;   // f32 → propsF
 const int propProgress        = 0x88;   // f32; <0 = indeterminate
+// `<tabs>` selected destination index (u32; controlled, like propChecked).
+const int propActiveTab       = 0x89;
 
 // Behavior
 const int propEnabled         = 0xA0;
@@ -365,6 +395,9 @@ const int propVisible         = 0xA2;
 const int propAnimDuration    = 0xA3;   // ms; 0 = no animation
 const int propAnimCurve       = 0xA4;   // enum → curve table
 const int propAnimDelay       = 0xA5;   // ms before the tween starts
+// `<screen>` presentation — 0 = push (default), 1 = modal (a
+// bottom-up `fullscreenDialog` page).
+const int propPresentation    = 0xA6;
 
 // ── Sentinel values for width/height props ───────────────────────────
 // Encoded into PROP_WIDTH / PROP_HEIGHT instead of needing distinct

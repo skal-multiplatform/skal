@@ -137,6 +137,10 @@ Widget _buildForType(NodeState node, SkalBridge bridge) {
     case wtSafeArea:             return _buildSafeArea(node, bridge);
     case wtRichText:             return _buildRichText(node, bridge);
     case wtTextInput:            return _buildTextInput(node, bridge);
+    case wtNavigator:            return _buildNavigator(node, bridge);
+    case wtScreen:               return _buildScreen(node, bridge);
+    case wtTabs:                 return _buildTabs(node, bridge);
+    case wtTab:                  return _buildTab(node, bridge);
     case wtCustom:               return _buildCustom(node, bridge);
     default:                     return const SizedBox.shrink();
   }
@@ -1475,6 +1479,269 @@ TextInputType _keyboardTypeFor(int v) {
     case 4: return TextInputType.url;
     case 5: return TextInputType.multiline;
     default: return TextInputType.text;
+  }
+}
+
+// ── Navigation ────────────────────────────────────────────────────
+
+/// `<navigator>` → Flutter `Navigator(pages:)`. Each `<screen>` child
+/// becomes one page; the JS app owns the route stack, so a push is a
+/// new `<screen>` child and a pop is one removed. Backgrounded screens
+/// stay mounted — instant, state-preserving back. See NAVIGATION.md.
+Widget _buildNavigator(NodeState n, SkalBridge bridge) {
+  final width = n.getPropU32(propWidth, kNoValue);
+  final height = n.getPropU32(propHeight, kNoValue);
+  final cupertino = _isCupertino(bridge);
+  final popHandler = n.onPopHandlerId;
+
+  final pages = <Page<dynamic>>[];
+  for (final screenId in n.childIds) {
+    final screen = bridge.nodes[screenId];
+    if (screen == null) continue;
+    // A <screen>'s single child is the route content.
+    final contentId = screen.hasChildren ? screen.childAt(0) : -1;
+    Widget content = contentId >= 0
+        ? SkalNode(
+            nodeId: contentId,
+            bridge: bridge,
+            key: ValueKey<int>(contentId),
+          )
+        : const SizedBox.shrink();
+    // NAVIGATION.md Phase 2 — an optional AppBar / nav bar from a
+    // `<screen title>`. The bar's back button is automatic: Flutter
+    // shows it whenever the enclosing route can pop, and tapping it
+    // pops the page-based route → `onDidRemovePage` below → `evNavPop`.
+    final title = screen.getPropStr(propTitle);
+    if (title != null && title.isNotEmpty) {
+      content = _screenChrome(title, content, cupertino);
+    }
+    final modal = screen.getPropU32(propPresentation, 0) == 1;
+    pages.add(cupertino
+        ? CupertinoPage<dynamic>(
+            key: ValueKey<int>(screenId),
+            fullscreenDialog: modal,
+            child: content,
+          )
+        : MaterialPage<dynamic>(
+            key: ValueKey<int>(screenId),
+            fullscreenDialog: modal,
+            child: content,
+          ));
+  }
+  // A Navigator must always have at least one page.
+  if (pages.isEmpty) {
+    pages.add(const MaterialPage<dynamic>(child: SizedBox.shrink()));
+  }
+
+  Widget inner = Navigator(
+    pages: pages,
+    onDidRemovePage: (page) {
+      // Tell a gesture / system-back pop apart from a programmatic
+      // one: if the popped screen is STILL in the bridge's child
+      // list, JS hasn't removed it → a gesture pop → tell JS to catch
+      // up. If it's already gone, JS popped it and the pages-list
+      // diff did the removal — nothing to dispatch (no feedback loop).
+      final key = page.key;
+      if (key is ValueKey<int> && n.childIds.contains(key.value)) {
+        bridge.dispatchEvent(popHandler, eventKind: evNavPop);
+      }
+    },
+  );
+
+  // NAVIGATION.md Phase 2 — system-back arbitration. `<navigator>` is
+  // a NESTED Navigator, so the Android system back button reaches the
+  // app's ROOT Navigator first. `PopScope` registers with that root
+  // route: while this navigator has more than one screen it reports
+  // `canPop: false`, so the system back is intercepted (didPop ==
+  // false) and forwarded to JS as `evNavPop` — JS drops the top route,
+  // the pages diff runs the native pop. At one screen `canPop` is true
+  // and the system back falls through (exits the app / pops a parent).
+  //
+  // Dialog arbitration is automatic: `showDialog` pushes its route on
+  // the root Navigator ABOVE the route this PopScope is registered in,
+  // so a system back with a dialog open pops the dialog first and this
+  // PopScope never sees it (NAVIGATION.md §7).
+  inner = PopScope<dynamic>(
+    canPop: n.childCount <= 1,
+    onPopInvokedWithResult: (didPop, result) {
+      if (!didPop && popHandler != 0) {
+        bridge.dispatchEvent(popHandler, eventKind: evNavPop);
+      }
+    },
+    child: inner,
+  );
+  inner = _applyHeight(height, _applyWidth(width, inner));
+  return _hotLayer(node: n, child: inner);
+}
+
+/// Wrap a `<screen>`'s content in an AppBar / navigation bar carrying
+/// [title]. The bar's back button is implied automatically by Flutter
+/// when the route can pop. Material → `Scaffold` + `AppBar`; Cupertino
+/// → `CupertinoPageScaffold` + `CupertinoNavigationBar`.
+Widget _screenChrome(String title, Widget content, bool cupertino) {
+  if (cupertino) {
+    return CupertinoPageScaffold(
+      navigationBar: CupertinoNavigationBar(middle: Text(title)),
+      child: SafeArea(child: content),
+    );
+  }
+  return Scaffold(
+    appBar: AppBar(title: Text(title)),
+    body: content,
+  );
+}
+
+/// `<screen>` standalone — a screen is normally consumed by its parent
+/// `<navigator>`, which reads its content + presentation directly.
+/// Outside a navigator, just render the content so the tree stays
+/// valid.
+Widget _buildScreen(NodeState n, SkalBridge bridge) {
+  final children = _childWidgets(n, bridge);
+  return children.isEmpty ? const SizedBox.shrink() : children.first;
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────
+
+/// `<tabs activeTab={…} onChange={…}>` → an `IndexedStack` (every
+/// `<tab>` subtree built once and kept alive) above a Material
+/// `NavigationBar` / Cupertino `CupertinoTabBar`. NAVIGATION.md
+/// Phase 3.
+///
+/// Controlled, like the other Wave-2 controls: `activeTab` is the
+/// single source of truth, `onChange(index)` dispatches the user's
+/// tap, JS updates its signal and writes `activeTab` back.
+///
+/// Sizing: with an explicit `height` the tab body fills via an
+/// `Expanded`; without one the column is `MainAxisSize.min` and the
+/// body sizes to its largest tab — so a `<tabs>` is safe inside an
+/// unbounded-height parent.
+Widget _buildTabs(NodeState n, SkalBridge bridge) {
+  final width = n.getPropU32(propWidth, kNoValue);
+  final height = n.getPropU32(propHeight, kNoValue);
+  final cupertino = _isCupertino(bridge);
+  final handler = n.onChangeHandlerId;
+
+  final contents = <Widget>[];
+  final titles = <String>[];
+  final icons = <String>[];
+  for (final id in n.childIds) {
+    final tab = bridge.nodes[id];
+    if (tab == null) continue;
+    final contentId = tab.hasChildren ? tab.childAt(0) : -1;
+    contents.add(contentId >= 0
+        ? SkalNode(
+            nodeId: contentId,
+            bridge: bridge,
+            key: ValueKey<int>(contentId),
+          )
+        : const SizedBox.shrink());
+    titles.add(tab.getPropStr(propTitle) ?? '');
+    icons.add(tab.getPropStr(propIcon) ?? '');
+  }
+  if (contents.isEmpty) return const SizedBox.shrink();
+
+  // Material `NavigationBar` and `CupertinoTabBar` both assert at least
+  // two destinations. A single-`<tab>` `<tabs>` is degenerate — render
+  // just the one body, no bar, rather than tripping the assert.
+  if (contents.length < 2) {
+    Widget only = _applyColdVisual(n, contents.first);
+    only = _applyHeight(height, _applyWidth(width, only));
+    return _hotLayer(node: n, child: only);
+  }
+
+  final active = n.getPropU32(propActiveTab, 0).clamp(0, contents.length - 1);
+  void onSelect(int i) {
+    if (handler != 0) bridge.dispatchEventInt(handler, i);
+  }
+
+  final bool bounded = height != kNoValue && height != kWrapContent;
+
+  // IndexedStack builds + keeps ALL tab subtrees alive; only the
+  // selected one paints. That is the tab keep-alive guarantee —
+  // switching tabs never re-mounts, scroll + state survive.
+  //
+  // `sizing`: when the `<tabs>` has a bounded height the body fills it
+  // with TIGHT constraints (`StackFit.expand`) — required so a tab
+  // whose content is a scroller (`<listView>` / `<scrollView>`) gets a
+  // bounded height instead of an unconstrained one. Without a height
+  // the body sizes loosely to its largest tab.
+  final Widget body = IndexedStack(
+    index: active,
+    sizing: bounded ? StackFit.expand : StackFit.loose,
+    children: contents,
+  );
+
+  final Widget bar = cupertino
+      ? CupertinoTabBar(
+          currentIndex: active,
+          onTap: onSelect,
+          items: <BottomNavigationBarItem>[
+            for (var i = 0; i < titles.length; i++)
+              BottomNavigationBarItem(
+                icon: Icon(_iconFor(icons[i])),
+                label: titles[i],
+              ),
+          ],
+        )
+      : NavigationBar(
+          selectedIndex: active,
+          onDestinationSelected: onSelect,
+          destinations: <Widget>[
+            for (var i = 0; i < titles.length; i++)
+              NavigationDestination(
+                icon: Icon(_iconFor(icons[i])),
+                label: titles[i],
+              ),
+          ],
+        );
+
+  Widget inner = Column(
+    mainAxisSize: bounded ? MainAxisSize.max : MainAxisSize.min,
+    children: <Widget>[
+      bounded ? Expanded(child: body) : body,
+      bar,
+    ],
+  );
+
+  inner = _applyColdVisual(n, inner);
+  inner = _applyHeight(height, _applyWidth(width, inner));
+  return _hotLayer(node: n, child: inner);
+}
+
+/// `<tab>` standalone — normally consumed by its parent `<tabs>`,
+/// which reads its content + title + icon directly. Outside a `<tabs>`
+/// just render the content so the tree stays valid.
+Widget _buildTab(NodeState n, SkalBridge bridge) {
+  final children = _childWidgets(n, bridge);
+  return children.isEmpty ? const SizedBox.shrink() : children.first;
+}
+
+/// `<tab icon>` name → Flutter [IconData]. A small curated table —
+/// covers the common bottom-bar icons; unknown names fall back to a
+/// neutral dot so a typo is visible but never crashes.
+IconData _iconFor(String name) {
+  switch (name) {
+    case 'home':                   return Icons.home;
+    case 'search':                 return Icons.search;
+    case 'settings':               return Icons.settings;
+    case 'person': case 'profile': return Icons.person;
+    case 'favorite': case 'heart': return Icons.favorite;
+    case 'star':                   return Icons.star;
+    case 'list':                   return Icons.list;
+    case 'add':                    return Icons.add;
+    case 'bell': case 'notifications': return Icons.notifications;
+    case 'mail': case 'inbox':     return Icons.mail;
+    case 'chat': case 'message':   return Icons.chat_bubble;
+    case 'menu':                   return Icons.menu;
+    case 'grid':                   return Icons.grid_view;
+    case 'calendar':               return Icons.calendar_today;
+    case 'camera':                 return Icons.camera_alt;
+    case 'cart':                   return Icons.shopping_cart;
+    case 'explore': case 'compass': return Icons.explore;
+    case 'play':                   return Icons.play_circle;
+    case 'music':                  return Icons.music_note;
+    case 'map':                    return Icons.map;
+    default:                       return Icons.circle;
   }
 }
 

@@ -58,6 +58,13 @@ const TAG_TO_WIDGET = {
   richText:             B.WT_RICH_TEXT,
   // <textInput value=… placeholder=… onChange=… onSubmit=… />
   textInput:            B.WT_TEXT_INPUT,
+  // <navigator> stacks <screen> children with native push/pop.
+  navigator:            B.WT_NAVIGATOR,
+  screen:               B.WT_SCREEN,
+  // <tabs> holds <tab> destinations — IndexedStack keep-alive + a
+  // bottom NavigationBar. `activeTab` selects; onChange(index) fires.
+  tabs:                 B.WT_TABS,
+  tab:                  B.WT_TAB,
 };
 
 // ───────────────────────────────────────────────────────────────────────
@@ -133,6 +140,14 @@ const COLD_PROPS = {
   min:            [B.PROP_SLIDER_MIN,       'f32'],
   max:            [B.PROP_SLIDER_MAX,       'f32'],
   progress:       [B.PROP_PROGRESS,         'f32'],
+  // Navigation — <screen presentation>: 0 = push, 1 = modal.
+  presentation:   [B.PROP_PRESENTATION,     'u32'],
+  // <screen title> → AppBar title; <tab title> → nav-bar label.
+  title:          [B.PROP_TITLE,            'str'],
+  // <tab icon> → nav-bar icon (a name resolved host-side).
+  icon:           [B.PROP_ICON,             'str'],
+  // <tabs activeTab> → selected destination index (controlled).
+  activeTab:      [B.PROP_ACTIVE_TAB,       'u32'],
   // Behavior
   enabled:        [B.PROP_ENABLED,          'u32'],
   focusable:      [B.PROP_FOCUSABLE,        'u32'],
@@ -161,6 +176,7 @@ const HANDLER_EVENTS = {
   onChange:    B.EV_CHANGE,
   onSubmit:    B.EV_SUBMIT,
   onReorder:   B.EV_REORDER,
+  onPop:       B.EV_NAV_POP,
 };
 
 // `animate.curve` name → wire enum (mirrors _curveFor in root.dart).

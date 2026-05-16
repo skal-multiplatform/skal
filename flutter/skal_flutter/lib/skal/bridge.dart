@@ -391,6 +391,8 @@ class SkalBridge {
               node.onSubmitHandlerId = c;
             } else if (b == evReorder) {
               node.onReorderHandlerId = c;
+            } else if (b == evNavPop) {
+              node.onPopHandlerId = c;
             }
             node.coldDirty = true;
             touched.add(a);

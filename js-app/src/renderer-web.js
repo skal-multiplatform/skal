@@ -59,6 +59,13 @@ const TAG_TO_HTML = {
   richText:             'span',
   // <textInput> → <input>.
   textInput:            'input',
+  // <navigator>/<screen> — stacked divs; the last screen sits on top.
+  navigator:            'div',
+  screen:               'div',
+  // <tabs>/<tab> — a flex column of stacked tab panes (the host shows
+  // one at a time; on web all panes are present, CSS-degraded).
+  tabs:                 'div',
+  tab:                  'div',
 };
 
 // Spinner keyframes for <activityIndicator> — injected once.
@@ -226,6 +233,33 @@ function applyDefaults(el, tag) {
       s.borderRadius = '4px';
       s.fontSize = '14px';
       s.fontFamily = 'inherit';
+      break;
+    case 'navigator':
+      s.position = 'relative';
+      s.overflow = 'hidden';
+      s.boxSizing = 'border-box';
+      s.width = '100%';
+      break;
+    case 'screen':
+      // Stacked absolutely — DOM order is stack order, so the last
+      // <screen> covers the ones below it (keep-alive, no transition).
+      s.position = 'absolute';
+      s.inset = '0';
+      s.overflow = 'auto';
+      s.boxSizing = 'border-box';
+      s.background = '#FFFFFF';
+      break;
+    case 'tabs':
+      // Flex column — tab panes above, no host NavigationBar on web.
+      // Active-tab selection is a host-side concern; on web every pane
+      // is laid out (CSS-degraded parity, like reorder / virtualization).
+      s.display = 'flex';
+      s.flexDirection = 'column';
+      s.boxSizing = 'border-box';
+      break;
+    case 'tab':
+      s.display = 'block';
+      s.boxSizing = 'border-box';
       break;
   }
 }

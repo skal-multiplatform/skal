@@ -1,27 +1,40 @@
-// Skal — component demo.
+// Skal — demo app.
 //
-// Exercises every fast-path widget plus the three subsystems:
-// animation (`animate` prop), the design system (`setDesign`), and
-// the imperative dialog API (`showDialog` / `showActionSheet` /
-// `showSnackbar`).
+// Three bottom tabs (NAVIGATION.md Phase 3):
+//   • UI    — every fast-path widget, animation, design system, dialogs,
+//             nested navigation + tabs.
+//   • List  — the virtualized tweet feed (a 15 000-item stress source).
+//   • Libs  — codegen-wrapped third-party / custom widgets: QR code,
+//             shimmer, camera, counter, ticker (JS↔Dart RPC), stickers.
 //
-// JSX conventions used here:
-//   • Return a single root element (a <ListView>), never a fragment.
-//   • Reactive props use a DIRECT signal-call expression
-//     (`label={`x ${sig()}`}`), never an arrow wrapper — Solid's
-//     babel plugin must see the signal call to make it reactive.
-//   • <For> diffs lists into minimal bridge add/remove ops.
+// The root `<Tabs>` keeps every tab subtree alive (IndexedStack) — so
+// switching tabs never re-mounts; scroll position and signal state on
+// each tab survive.
 
-import { createSignal, For } from 'solid-js';
+import { createSignal, createMemo, For, Show } from 'solid-js';
 import {
-  Box, Column, Row, Text, Button, ListView,
+  Box, Column, Row, Text, Button, ListView, ScrollView,
   Image, Stack, Switch, Slider, Checkbox, ActivityIndicator,
   ProgressBar, LazyGrid, Wrap, SafeArea, RichText, ReorderableListView,
-  TextInput,
+  TextInput, Tabs, Tab,
 } from 'skal';
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
 } from './renderer.js';
+import { createRouter, createSkalRef } from './skal-runtime.jsx';
+// `skal-flutter` — codegen-wrapped widgets (custom adapters + pub.dev
+// packages). The separate import source tells the dev at a glance that
+// these are Flutter-bound, not portable Skal intrinsics. Auto-discovered
+// from the codegen manifests; see vite-plugin-skal-codegen.js.
+import {
+  Greeting,
+  Stickers,
+  Counter,
+  QrImageView,
+  ShimmerFromColors,
+  Camera,
+  Ticker,
+} from 'skal-flutter';
 
 // ── Palette — module scope so the bridge's prop-diff cache hits on
 //    identical color strings across every node. ───────────────────
@@ -55,7 +68,51 @@ function Section(props) {
   );
 }
 
-export default function App() {
+// ════════════════════════════════════════════════════════════════════
+// UI tab — the fast-path component demo.
+// ════════════════════════════════════════════════════════════════════
+
+// ── Navigation demo — two screens behind a createRouter() ─────────
+
+/** List screen — tapping a row pushes the detail screen. The route's
+ *  `title` ("Mailboxes") renders as the screen's AppBar. */
+function NavList(props) {
+  const rows = ['Inbox', 'Starred', 'Drafts', 'Archive'];
+  return (
+    <Column background={BG} padding={16} gap={8} height="fill">
+      <For each={rows}>
+        {(name) => (
+          <Box
+            background={CARD}
+            cornerRadius={8}
+            padding={12}
+            onTap={() => props.router.navigate('detail', { name }, { title: name })}
+          >
+            <Text label={`${name}   ›`} fontSize={14} color={INK} />
+          </Box>
+        )}
+      </For>
+    </Column>
+  );
+}
+
+/** Detail screen — pushed with a per-route `title`, so its AppBar
+ *  carries an automatic back button (NAVIGATION.md Phase 2). No manual
+ *  Back affordance needed; the list behind it stays mounted. */
+function NavDetail(props) {
+  return (
+    <Column background={BG} padding={16} gap={10} height="fill">
+      <Text label={props.name} fontSize={20} fontWeight={800} color={INK} />
+      <Text
+        label="The AppBar's ‹ back button (and the system back / swipe gesture) all pop this route. The list screen behind stayed mounted — back is instant, no re-render, scroll preserved."
+        fontSize={13}
+        color={SUBTLE}
+      />
+    </Column>
+  );
+}
+
+function UITab() {
   const [mode, setMode]       = createSignal('material');
   const [dark, setDark]       = createSignal(false);
   const [sw, setSw]           = createSignal(true);
@@ -69,6 +126,16 @@ export default function App() {
     ['First item', 'Second item', 'Third item', 'Fourth item'],
   );
 
+  // A screen-stack router for the Navigation section. The `list` route
+  // carries a static `title`; `detail` gets its title per-navigate.
+  const navRouter = createRouter({
+    list:   { component: (p) => <NavList router={p.router} />, title: 'Mailboxes' },
+    detail: (p) => <NavDetail name={p.params.name} router={p.router} />,
+  }, 'list');
+
+  // Bottom-tab demo — `activeTab` is the controlled selected index.
+  const [tab, setTab] = createSignal(0);
+
   // setDesign writes a wire op; the host rebuilds its MaterialApp
   // theme + CupertinoTheme in response.
   const applyDesign = (m, d) => {
@@ -77,8 +144,13 @@ export default function App() {
     setDesign(m, d ? 1 : 0);
   };
 
+  // ScrollView (eager / non-virtualized) — every Section is built up
+  // front. The page has a fixed, modest set of Sections (no <For> over
+  // a large array), so eager rendering keeps every Section's Flutter
+  // element + scroll position alive while scrolling, and the nested
+  // navigator / inner tabs never get torn down on scroll.
   return (
-    <ListView background={BG} padding={16} gap={14}>
+    <ScrollView background={BG} padding={16} gap={14}>
       <Text label="Skal — Component Demo" fontSize={24} fontWeight={800} color={INK} />
       <Text
         label="Every fast-path widget, plus animation, the design system, and dialogs."
@@ -362,6 +434,53 @@ export default function App() {
         <Text label={dialog()} fontSize={12} color={SUBTLE} />
       </Section>
 
+      {/* ── Navigation ──────────────────────────────────────────── */}
+      <Section title="Navigation — push / pop with keep-alive">
+        <Text
+          label="Tap a mailbox to push a screen; the AppBar back button (or system back) pops. Native transition; the screen behind stays mounted."
+          fontSize={11}
+          color={SUBTLE}
+        />
+        <Box height={320} borderWidth={1} borderColor={BORDER}>
+          <navRouter.View />
+        </Box>
+      </Section>
+
+      {/* ── Tabs ────────────────────────────────────────────────── */}
+      <Section title="Tabs — bottom bar with keep-alive">
+        <Text
+          label="Every tab subtree is built once and kept alive (IndexedStack) — switching never re-mounts; scroll & state survive."
+          fontSize={11}
+          color={SUBTLE}
+        />
+        <Box height={280} borderWidth={1} borderColor={BORDER} cornerRadius={8}>
+          <Tabs activeTab={tab()} onChange={setTab} height="fill">
+            <Tab title="Home" icon="home">
+              <Column background={BG} padding={16} gap={8} height="fill">
+                <Text label="Home" fontSize={20} fontWeight={800} color={INK} />
+                <Text
+                  label="Switch tabs and come back — this tab was never torn down."
+                  fontSize={13}
+                  color={SUBTLE}
+                />
+              </Column>
+            </Tab>
+            <Tab title="Search" icon="search">
+              <Column background={BG} padding={16} gap={8} height="fill">
+                <Text label="Search" fontSize={20} fontWeight={800} color={INK} />
+                <TextInput placeholder="Type to search…" />
+              </Column>
+            </Tab>
+            <Tab title="Profile" icon="person">
+              <Column background={BG} padding={16} gap={8} height="fill">
+                <Text label="Profile" fontSize={20} fontWeight={800} color={INK} />
+                <Text label={`active tab index: ${tab()}`} fontSize={13} color={SUBTLE} />
+              </Column>
+            </Tab>
+          </Tabs>
+        </Box>
+      </Section>
+
       {/* ── SafeArea ────────────────────────────────────────────── */}
       <Section title="SafeArea">
         <SafeArea>
@@ -375,7 +494,335 @@ export default function App() {
         </SafeArea>
       </Section>
 
-      <Text label="— end of demo —" fontSize={12} color={SUBTLE} />
+      <Text label="— end of UI demo —" fontSize={12} color={SUBTLE} />
+    </ScrollView>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// List tab — the virtualized tweet feed.
+// ════════════════════════════════════════════════════════════════════
+
+const TWEET_LINES = [
+  "Just shipped a new feature, feeling great about how it turned out 🚀",
+  "Hot take: the best APIs are the ones you don't have to read docs for",
+  "Spent the morning refactoring legacy code — so much cleaner now",
+  "There's no such thing as 'just a small change' in production code",
+  "If your tests are slow, that's a smell. Fast tests = good tests",
+  "Bun's startup time keeps surprising me, even after a year",
+  "Why is naming things still the hardest part of programming?",
+  "Found a 10× speedup in a critical path today. Profilers, not guesses",
+  "Reading 'The Art of Unix Programming' for the third time",
+  "Premature abstraction is somehow worse than premature optimization",
+  "Latency is a feature, throughput is an artifact of how you measure",
+  "Half of debugging is admitting your assumption was wrong",
+  "You don't ship the codebase you have. You ship the codebase you understand",
+  "Cache invalidation, naming things, off-by-one. The classics",
+  "Every config file format eventually grows a turing-complete templating layer",
+];
+
+// Pre-compute the tweet pool as {author, body, num} records. Sized at
+// 15000 so the "10000 (heap stress)" button has fresh source items to
+// mount — past the JS string-heap capacity, exercising the bridge's
+// spin-wait + reset path.
+const TWEETS = Array.from({ length: 15000 }, (_, i) => ({
+  author: `@user${(i * 2654435761) >>> 17}`,
+  body: TWEET_LINES[i % TWEET_LINES.length],
+  num: i + 1,
+}));
+
+const COUNT_BUTTONS = [50, 200, 500, 1000, 2000, 5000, 10000];
+
+// Tweet palette — module scope so the prop diff cache hits across cards.
+const T_AUTHOR        = '#FF1DA1F2';
+const T_BODY          = '#FF1F2937';
+const T_REACT_IDLE_BG = '#FFF1F5F9';
+const T_REACT_IDLE_FG = '#FF475569';
+const T_REACT_LIKE_BG = '#FF22C55E';
+const T_REACT_REPLY_BG = '#FFEF4444';
+const T_REACT_ON_FG   = '#FFFFFFFF';
+
+/** One tweet card. Each gets its own per-card signals (like state, like
+ *  count, …) — Solid's fine-grained tracking re-runs only the affected
+ *  button's effects on a tap, never a sibling card. */
+function Tweet(props) {
+  const [likes, setLikes]     = createSignal(0);
+  const [liked, setLiked]     = createSignal(false);
+  const [replies, setReplies] = createSignal(0);
+  const [replied, setReplied] = createSignal(false);
+
+  return (
+    <Column
+      background={CARD}
+      padding={12}
+      cornerRadius={10}
+      borderWidth={1}
+      borderColor={BORDER}
+      gap={6}
+    >
+      <Text fontWeight={700} fontSize={14} color={T_AUTHOR} label={`#${props.num} · ${props.author}`} />
+      <Text fontSize={14} color={T_BODY} maxLines={3} textOverflow={1} label={props.body} />
+      <Row gap={10}>
+        <Button
+          label={`♥ ${likes()}`}
+          fontSize={12}
+          padding={6}
+          cornerRadius={16}
+          background={liked() ? T_REACT_LIKE_BG : T_REACT_IDLE_BG}
+          color={liked() ? T_REACT_ON_FG : T_REACT_IDLE_FG}
+          onClick={() => {
+            const next = !liked();
+            setLiked(next);
+            setLikes(likes() + (next ? 1 : -1));
+          }}
+        />
+        <Button
+          label={`↩ ${replies()}`}
+          fontSize={12}
+          padding={6}
+          cornerRadius={16}
+          background={replied() ? T_REACT_REPLY_BG : T_REACT_IDLE_BG}
+          color={replied() ? T_REACT_ON_FG : T_REACT_IDLE_FG}
+          onClick={() => {
+            const next = !replied();
+            setReplied(next);
+            setReplies(replies() + (next ? 1 : -1));
+          }}
+        />
+      </Row>
+    </Column>
+  );
+}
+
+function ListTab() {
+  const [visibleTweets, setVisibleTweets] = createSignal(50);
+  const [tweetBenchMs, setTweetBenchMs]   = createSignal('');
+
+  // createMemo — recomputed only when visibleTweets changes. <For>
+  // diffs old vs new by identity, emitting the minimum add/remove ops.
+  const tweetsToShow = createMemo(() => TWEETS.slice(0, visibleTweets()));
+
+  // The control row scrolls together with the feed — matching the
+  // Twitter/X UX where the header scrolls away as you read.
+  return (
+    <ListView background={BG} padding={16} gap={12}>
+      <Text label="Tweet feed — virtualized" fontSize={24} fontWeight={800} color={INK} />
+      <Text
+        label="ListView.builder materializes only the visible window; the source pool is 15 000 items. Tap a count to mount N."
+        fontSize={13}
+        color={SUBTLE}
+      />
+      <Wrap gap={6}>
+        <For each={COUNT_BUTTONS}>
+          {(n) => (
+            <Button
+              label={`${n}`}
+              onClick={() => {
+                const t1 = performance.now();
+                try {
+                  setVisibleTweets(n);
+                  const ms = (performance.now() - t1).toFixed(2);
+                  setTweetBenchMs(`mounted ${n} in ${ms} ms`);
+                } catch (e) {
+                  const msg = (e && (e.message || String(e))) || 'unknown';
+                  setTweetBenchMs(`ERROR @ ${n}: ${msg}`);
+                }
+              }}
+            />
+          )}
+        </For>
+      </Wrap>
+      <Text
+        label={tweetBenchMs() || `showing ${visibleTweets()} tweets`}
+        fontSize={12}
+        color={SUBTLE}
+      />
+      <For each={tweetsToShow()}>
+        {(tweet) => (
+          <Tweet author={tweet.author} body={tweet.body} num={tweet.num} />
+        )}
+      </For>
     </ListView>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Libs tab — codegen-wrapped custom & third-party widgets.
+// ════════════════════════════════════════════════════════════════════
+
+function LibsTab() {
+  // Bridge-driven callback state — fed by the codegen-emitted dispatch
+  // calls inside Counter's generated adapter.
+  const [counterLog, setCounterLog] = createSignal('— waiting for counter events —');
+
+  // Imperative ref for the Ticker host. JSX calls `ticker.pause()`,
+  // `ticker.getValue()` (→ Promise), etc.; the Proxy emits
+  // OP_INVOKE_METHOD across the bridge.
+  const ticker = createSkalRef();
+  const [tickerLog, setTickerLog] = createSignal('— tap a button to RPC the Ticker —');
+  const [tickerUnsub, setTickerUnsub] = createSignal(null);
+
+  // The camera is started on demand — mounting <Camera> is what fires
+  // its host's initState (controller init); unmounting disposes it.
+  const [cameraOn, setCameraOn] = createSignal(false);
+
+  // ScrollView (eager) — Camera owns a controller that should not be
+  // torn down + re-initialized as it scrolls in and out of a lazy
+  // viewport, so this tab renders all children up front.
+  return (
+    <ScrollView background={BG} padding={16} gap={14}>
+      <Text label="Libraries — codegen-wrapped widgets" fontSize={24} fontWeight={800} color={INK} />
+      <Text
+        label="Custom adapters + real pub.dev packages, brought into JSX by skal_codegen. Imported from 'skal-flutter'."
+        fontSize={13}
+        color={SUBTLE}
+      />
+
+      {/* ── Custom adapter — Greeting ───────────────────────────── */}
+      <Section title="Greeting — hand-written adapter">
+        <Greeting name="Skal" color="#FF1DA1F2" fontSize={20} />
+      </Section>
+
+      {/* ── shimmer (pub.dev) ───────────────────────────────────── */}
+      <Section title="Shimmer — pub.dev, named-ctor wrap">
+        <Text
+          label="ShimmerFromColors — codegen-synthesized from the Shimmer.fromColors named constructor."
+          fontSize={11}
+          color={SUBTLE}
+        />
+        <ShimmerFromColors baseColor={0xFFBDBDBD} highlightColor={0xFFE0E0E0} period={1500}>
+          <Greeting name="loading…" color="#FF333333" fontSize={28} />
+        </ShimmerFromColors>
+      </Section>
+
+      {/* ── qr_flutter (pub.dev) ────────────────────────────────── */}
+      <Section title="QR code — qr_flutter, pub.dev wrap">
+        <QrImageView data="https://skal.dev" size={200} />
+        <Text label="QrImageView, generated against qr_flutter's class." fontSize={11} color={SUBTLE} />
+      </Section>
+
+      {/* ── camera (pub.dev, host pattern) ──────────────────────── */}
+      <Section title="Camera — host-pattern wrap (controller lifecycle)">
+        <Text
+          label="A synthesized _CameraHost owns the CameraController (init in initState, dispose on unmount). The controller initializes only once Start mounts <Camera> — no camera / permission → an inline error banner."
+          fontSize={11}
+          color={SUBTLE}
+        />
+        <Button
+          label={cameraOn() ? 'Stop camera' : 'Start camera'}
+          onClick={() => setCameraOn(!cameraOn())}
+        />
+        <Show when={cameraOn()}>
+          <Box background="#FF000000" padding={4} cornerRadius={8}>
+            <Camera resolutionIndex={1} />
+          </Box>
+        </Show>
+      </Section>
+
+      {/* ── Counter — typed callbacks ───────────────────────────── */}
+      <Section title="Counter — typed callbacks back to JSX">
+        <Counter
+          initial={0}
+          onChanged={(n) => setCounterLog(`onChanged(${n})`)}
+          onReset={() => setCounterLog('onReset()')}
+        />
+        <Text label={counterLog()} fontSize={13} color={INK} />
+      </Section>
+
+      {/* ── Ticker — JS → Dart imperative RPC ───────────────────── */}
+      <Section title="Ticker — JS → Dart imperative RPC">
+        <Ticker ref={ticker} intervalMs={500} />
+        <Wrap gap={6}>
+          <Button label="pause" onClick={async () => {
+            await ticker.pause();
+            setTickerLog('pause() ✓');
+          }} />
+          <Button label="resume" onClick={async () => {
+            await ticker.resume();
+            setTickerLog('resume() ✓');
+          }} />
+          <Button label="reset" onClick={async () => {
+            await ticker.reset();
+            setTickerLog('reset() ✓');
+          }} />
+          <Button label="+10" onClick={async () => {
+            await ticker.bump(10);
+            const v = await ticker.getValue();
+            setTickerLog(`bump(10), now getValue() → ${v}`);
+          }} />
+          <Button label="read" onClick={async () => {
+            const v = await ticker.getValue();
+            const paused = await ticker.isPaused();
+            setTickerLog(`getValue() → ${v}, isPaused() → ${paused}`);
+          }} />
+          <Button label="describe" onClick={async () => {
+            const s = await ticker.describe('hello from JSX');
+            setTickerLog(`describe() → ${s}`);
+          }} />
+          <Button label="snapshot" onClick={async () => {
+            const snap = await ticker.snapshot();
+            setTickerLog(
+              `snapshot() → value=${snap.value} paused=${snap.paused} ts=${snap.timestamp}`,
+            );
+          }} />
+          <Button label="sub/unsub" onClick={() => {
+            if (tickerUnsub()) {
+              tickerUnsub()();
+              setTickerUnsub(() => null);
+              setTickerLog('unsubscribed from ticks$');
+            } else {
+              const unsub = ticker.ticks$((v) => {
+                setTickerLog(`stream tick: ${v}`);
+              });
+              setTickerUnsub(() => unsub);
+              setTickerLog('subscribed to ticks$ — wait for emissions…');
+            }
+          }} />
+        </Wrap>
+        <Text label={tickerLog()} fontSize={13} color={INK} />
+      </Section>
+
+      {/* ── Stickers — multi-child + object-valued prop ─────────── */}
+      <Section title="Stickers — List<Widget> children + gradient prop">
+        <Stickers
+          gap={6}
+          padding={10}
+          gradient={{
+            type: 'linear',
+            colors: ['#FFFFE082', '#FFB0F0D0', '#FFB0E0FF'],
+            stops: [0, 0.5, 1],
+            begin: 'topLeft',
+            end: 'bottomRight',
+          }}
+        >
+          <Greeting name="multi-child A" color="#FF6B4F00" fontSize={14} />
+          <Greeting name="multi-child B" color="#FF6B4F00" fontSize={14} />
+          <Greeting name="multi-child C" color="#FF6B4F00" fontSize={14} />
+        </Stickers>
+      </Section>
+
+      <Text label="— end of Libs demo —" fontSize={12} color={SUBTLE} />
+    </ScrollView>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// App — three bottom tabs over the demo surfaces.
+// ════════════════════════════════════════════════════════════════════
+
+export default function App() {
+  const [appTab, setAppTab] = createSignal(0);
+  return (
+    <Tabs activeTab={appTab()} onChange={setAppTab} height="fill">
+      <Tab title="UI" icon="grid">
+        <UITab />
+      </Tab>
+      <Tab title="List" icon="list">
+        <ListTab />
+      </Tab>
+      <Tab title="Libs" icon="explore">
+        <LibsTab />
+      </Tab>
+    </Tabs>
   );
 }

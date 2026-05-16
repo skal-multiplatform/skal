@@ -99,6 +99,10 @@ const BUILT_IN_WIDGET_NAMES = {
   SafeArea:             'safeArea',
   RichText:             'richText',
   TextInput:            'textInput',
+  Navigator:            'navigator',
+  Screen:               'screen',
+  Tabs:                 'tabs',
+  Tab:                  'tab',
 };
 
 module.exports = function ({ types: t }) {

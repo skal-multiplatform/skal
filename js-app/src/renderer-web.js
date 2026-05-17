@@ -90,11 +90,17 @@ const TAG_TO_HTML = {
   // HTML5 DnD parity is best-effort, not wired here).
   dragItem:             'div',
   dropZone:             'div',
-  // §2 controls — radio → an <input>; the rest degrade to divs on web.
+  // §2 controls — radio → an <input>, dropdown → a native <select>;
+  // the rest degrade to divs on web.
   radio:                'input',
   chip:                 'div',
   segmentedButton:      'div',
   expansionTile:        'div',
+  dropdown:             'select',
+  stepper:              'div',
+  step:                 'div',
+  drawer:               'aside',
+  bottomSheet:          'div',
 };
 
 // Spinner keyframes for <activityIndicator> — injected once.
@@ -964,4 +970,24 @@ export function showSnackbar(spec) {
   // No native equivalent — log so the call is observable in dev.
   if (s.message) console.log('[skal] snackbar:', s.message);
   return Promise.resolve(null);
+}
+
+// Date / time pickers — web parity for §2. Best-effort with the
+// browser's native prompt (the Flutter target gets the real pickers).
+// Same wire shape: date → ISO `YYYY-MM-DD`, time → 24h `HH:MM`.
+export function showDatePicker(spec) {
+  spec = spec || {};
+  const def = typeof spec.initialDate === 'string' ? spec.initialDate : '';
+  const v = typeof window !== 'undefined'
+    ? window.prompt('Pick a date (YYYY-MM-DD)', def) : null;
+  return Promise.resolve(v && v.trim() ? v.trim() : null);
+}
+export function showTimePicker(spec) {
+  spec = spec || {};
+  const h = Number.isInteger(spec.initialHour) ? spec.initialHour : 12;
+  const m = Number.isInteger(spec.initialMinute) ? spec.initialMinute : 0;
+  const def = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  const v = typeof window !== 'undefined'
+    ? window.prompt('Pick a time (HH:MM)', def) : null;
+  return Promise.resolve(v && v.trim() ? v.trim() : null);
 }

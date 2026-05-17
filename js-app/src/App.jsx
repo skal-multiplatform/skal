@@ -18,10 +18,12 @@ import {
   ProgressBar, LazyGrid, Wrap, SafeArea, RichText, ReorderableListView,
   TextInput, Tabs, Tab, Hero, AnimatedList, CrossFade, ListTile, PageView,
   Dismissible, CustomScrollView, SliverAppBar, SliverList, SliverGrid, Canvas,
-  DragItem, DropZone, Radio, Chip, SegmentedButton, ExpansionTile,
+  DragItem, DropZone, Radio, Chip, SegmentedButton, ExpansionTile, Dropdown,
+  Stepper, Step, Drawer, BottomSheet,
 } from 'skal';
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
+  showDatePicker, showTimePicker,
 } from './renderer.js';
 import { createRouter, createSkalRef } from './skal-runtime.jsx';
 // `skal-flutter` — codegen-wrapped widgets (custom adapters + pub.dev
@@ -77,24 +79,40 @@ function Section(props) {
 // ── Navigation demo — two screens behind a createRouter() ─────────
 
 /** List screen — tapping a row pushes the detail screen. The route's
- *  `title` ("Mailboxes") renders as the screen's AppBar. */
+ *  `title` ("Mailboxes") renders as the screen's AppBar. A `<Drawer>`
+ *  sibling routes to the screen's Scaffold.drawer slot — the AppBar
+ *  hamburger + edge-swipe open it (host-owned, zero bridge traffic). */
 function NavList(props) {
   const rows = ['Inbox', 'Starred', 'Drafts', 'Archive'];
   return (
-    <Column background={BG} padding={16} gap={8} height="fill">
-      <For each={rows}>
-        {(name) => (
-          <Box
-            background={CARD}
-            cornerRadius={8}
-            padding={12}
-            onTap={() => props.router.navigate('detail', { name }, { title: name })}
-          >
-            <Text label={`${name}   ›`} fontSize={14} color={INK} />
-          </Box>
-        )}
-      </For>
-    </Column>
+    <>
+      <Column background={BG} padding={16} gap={8} height="fill">
+        <For each={rows}>
+          {(name) => (
+            <Box
+              background={CARD}
+              cornerRadius={8}
+              padding={12}
+              onTap={() => props.router.navigate('detail', { name }, { title: name })}
+            >
+              <Text label={`${name}   ›`} fontSize={14} color={INK} />
+            </Box>
+          )}
+        </For>
+      </Column>
+      <Drawer background={CARD}>
+        <Box padding={20} background={ACCENT}>
+          <Text label="Mail" fontSize={20} fontWeight={800} color="#FFFFFF" />
+        </Box>
+        <For each={rows}>
+          {(name) => (
+            <Box padding={14}>
+              <Text label={name} fontSize={14} color={INK} />
+            </Box>
+          )}
+        </For>
+      </Drawer>
+    </>
   );
 }
 
@@ -464,6 +482,8 @@ function UITab() {
   const [chosen, setChosen]   = createSignal([]);
   const [seg, setSeg]         = createSignal(0);
   const [expanded, setExpanded] = createSignal(false);
+  const [dd, setDd]           = createSignal(0);
+  const [step, setStep]       = createSignal(0);
   const [dragRest, setDragRest] = createSignal('0, 0');
   const [panDelta, setPanDelta] = createSignal('—');
   const [pinch, setPinch]     = createSignal(1);
@@ -472,6 +492,7 @@ function UITab() {
   // pinches then accumulate instead of snapping back to 1×.
   let pinchBase = 1;
   const [dialog, setDialog]   = createSignal('— try a dialog button —');
+  const [picked, setPicked]   = createSignal('— no date / time picked —');
   const [rows, setRows]       = createSignal(
     ['First item', 'Second item', 'Third item', 'Fourth item'],
   );
@@ -935,6 +956,14 @@ function UITab() {
           <Text label="Week" fontSize={13} />
           <Text label="Month" fontSize={13} />
         </SegmentedButton>
+        <Row gap={8}>
+          <Text label="Priority" fontSize={13} color={INK} />
+          <Dropdown activeTab={dd()} onChange={(i) => setDd(i)}>
+            <Text label="Low" fontSize={13} />
+            <Text label="Medium" fontSize={13} />
+            <Text label="High" fontSize={13} />
+          </Dropdown>
+        </Row>
         <Box background={CARD} cornerRadius={8} borderWidth={1} borderColor={BORDER}>
           <ExpansionTile title="Details" onChange={(e) => setExpanded(e)}>
             <Box padding={14} background={CHIP}>
@@ -943,10 +972,49 @@ function UITab() {
           </ExpansionTile>
         </Box>
         <Text
-          label={`size ${pickSize()} · chips ${chosen().join('/') || '—'} · segment ${['Day', 'Week', 'Month'][seg()]} · details ${expanded() ? 'open' : 'closed'}`}
+          label={`size ${pickSize()} · chips ${chosen().join('/') || '—'} · segment ${['Day', 'Week', 'Month'][seg()]} · priority ${['Low', 'Medium', 'High'][dd()]} · details ${expanded() ? 'open' : 'closed'}`}
           fontSize={11}
           color={SUBTLE}
         />
+      </Section>
+
+      {/* ── Stepper ─────────────────────────────────────────────── */}
+      <Section title="Stepper — multi-step flow">
+        <Stepper activeTab={step()} onChange={(i) => setStep(i)}>
+          <Step title="Account">
+            <Text label="Create your account — name, email, password." fontSize={12} color={SUBTLE} />
+          </Step>
+          <Step title="Profile">
+            <Text label="Add a photo and a short bio." fontSize={12} color={SUBTLE} />
+          </Step>
+          <Step title="Done">
+            <Text label="All set — review and finish." fontSize={12} color={SUBTLE} />
+          </Step>
+        </Stepper>
+        <Text label={`current step: ${step() + 1} of 3`} fontSize={11} color={SUBTLE} />
+      </Section>
+
+      {/* ── BottomSheet ─────────────────────────────────────────── */}
+      <Section title="BottomSheet — draggable / expandable">
+        <Box height={300} cornerRadius={12} background={CHIP}>
+          <Stack>
+            <Box width="fill" height="fill" padding={16}>
+              <Text label="A DraggableScrollableSheet — drag the sheet up, or scroll its list past the edge to expand it." fontSize={12} color={SUBTLE} />
+            </Box>
+            <BottomSheet initialSize={0.4} minSize={0.18} maxSize={0.95} background={CARD}>
+              <Box padding={16}>
+                <Text label="Sheet content — drag or scroll" fontSize={15} fontWeight={700} color={INK} />
+              </Box>
+              <For each={['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta', 'Eta', 'Theta']}>
+                {(r) => (
+                  <Box padding={14}>
+                    <Text label={r} fontSize={14} color={INK} />
+                  </Box>
+                )}
+              </For>
+            </BottomSheet>
+          </Stack>
+        </Box>
       </Section>
 
       {/* ── Gestures ────────────────────────────────────────────── */}
@@ -1077,6 +1145,27 @@ function UITab() {
           />
         </Row>
         <Text label={dialog()} fontSize={12} color={SUBTLE} />
+      </Section>
+
+      {/* ── Pickers ─────────────────────────────────────────────── */}
+      <Section title="Pickers — date · time">
+        <Row gap={8}>
+          <Button
+            label="Pick a date"
+            onClick={async () => {
+              const d = await showDatePicker({ initialDate: '2026-05-17' });
+              setPicked(`date → ${d ?? 'dismissed'}`);
+            }}
+          />
+          <Button
+            label="Pick a time"
+            onClick={async () => {
+              const t = await showTimePicker({ initialHour: 9, initialMinute: 30 });
+              setPicked(`time → ${t ?? 'dismissed'}`);
+            }}
+          />
+        </Row>
+        <Text label={picked()} fontSize={12} color={SUBTLE} />
       </Section>
 
       {/* ── Navigation ──────────────────────────────────────────── */}

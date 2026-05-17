@@ -185,6 +185,11 @@ Widget _buildForType(NodeState node, SkalBridge bridge, BuildContext context) {
     case wtChip:                 return _buildChip(node, bridge);
     case wtSegmentedButton:      return _buildSegmentedButton(node, bridge);
     case wtExpansionTile:        return _buildExpansionTile(node, bridge);
+    case wtDropdown:             return _buildDropdown(node, bridge);
+    case wtStepper:              return _buildStepper(node, bridge);
+    case wtStep:                 return _buildStep(node, bridge);
+    case wtDrawer:               return _buildDrawer(node, bridge);
+    case wtBottomSheet:          return _buildBottomSheet(node, bridge);
     case wtCustom:               return _buildCustom(node, bridge);
     default:                     return const SizedBox.shrink();
   }
@@ -2182,6 +2187,167 @@ Widget _buildExpansionTile(NodeState n, SkalBridge bridge) {
   return _hotLayer(node: n, child: inner);
 }
 
+/// `<dropdown activeTab={…} onChange={…}>` → Flutter `DropdownButton`
+/// — a single-select menu. Each child is one option's label widget;
+/// `activeTab` is the selected index and `onChange(index)` fires on a
+/// pick. Material-only (like `<chip>` / `<radio>`): `DropdownButton`
+/// renders acceptably under Cupertino, and an iOS wheel variant can
+/// follow later if needed.
+Widget _buildDropdown(NodeState n, SkalBridge bridge) {
+  final count = n.childCount;
+  if (count == 0) return const SizedBox.shrink();
+  final active = n.getPropU32(propActiveTab, 0).clamp(0, count - 1);
+  final enabled = n.getPropU32(propEnabled, 1) != 0;
+  final handler = n.onChangeHandlerId;
+
+  Widget optionLabel(int i) {
+    final cid = n.childAt(i);
+    return SkalNode(nodeId: cid, bridge: bridge, key: ValueKey<int>(cid));
+  }
+
+  Widget inner = DropdownButton<int>(
+    value: active,
+    isDense: true,
+    items: <DropdownMenuItem<int>>[
+      for (var i = 0; i < count; i++)
+        DropdownMenuItem<int>(value: i, child: optionLabel(i)),
+    ],
+    onChanged: (enabled && handler != 0)
+        ? (v) {
+            if (v != null) bridge.dispatchEventInt(handler, v);
+          }
+        : null,
+  );
+  inner = _applyColdVisual(n, inner);
+  return _hotLayer(node: n, child: inner);
+}
+
+/// `<stepper activeTab={…} axis={…} onChange={…}>` → Flutter `Stepper`
+/// — a multi-step flow. Each child is a `<step>` carrying a `title` and
+/// one content child. `activeTab` is the current step; `onChange(i)`
+/// fires on a step tap, or on the continue / cancel buttons (which
+/// report the adjacent index). The app owns the index — Skal keeps the
+/// host stateless here, consistent with `<tabs>`.
+Widget _buildStepper(NodeState n, SkalBridge bridge) {
+  final count = n.childCount;
+  if (count == 0) return const SizedBox.shrink();
+  final current = n.getPropU32(propActiveTab, 0).clamp(0, count - 1);
+  final handler = n.onChangeHandlerId;
+  final horizontal = n.getPropU32(propAxis, 0) == 1;
+
+  void go(int i) {
+    if (handler != 0) bridge.dispatchEventInt(handler, i.clamp(0, count - 1));
+  }
+
+  Step stepFor(int i) {
+    final stepId = n.childAt(i);
+    final stepNode = bridge.nodes[stepId];
+    final title = stepNode?.getPropStr(propTitle) ?? 'Step ${i + 1}';
+    return Step(
+      title: Text(title),
+      // The step's content is rendered through SkalNode → _buildStep,
+      // which returns the step's single child.
+      content: SkalNode(
+        nodeId: stepId, bridge: bridge, key: ValueKey<int>(stepId)),
+      isActive: i <= current,
+      state: i < current
+          ? StepState.complete
+          : (i == current ? StepState.editing : StepState.indexed),
+    );
+  }
+
+  Widget inner = Stepper(
+    type: horizontal ? StepperType.horizontal : StepperType.vertical,
+    currentStep: current,
+    onStepTapped: go,
+    onStepContinue: () => go(current + 1),
+    onStepCancel: () => go(current - 1),
+    steps: <Step>[for (var i = 0; i < count; i++) stepFor(i)],
+  );
+  inner = _applyColdVisual(n, inner);
+  return _hotLayer(node: n, child: inner);
+}
+
+/// `<step>` → the content slot of a `<stepper>`. Like `<tab>`, it
+/// renders its single child; the `title` prop is read by the parent
+/// `<stepper>` builder, not here.
+Widget _buildStep(NodeState n, SkalBridge bridge) {
+  final children = _childWidgets(n, bridge);
+  return children.isEmpty ? const SizedBox.shrink() : children.first;
+}
+
+/// `<drawer>` → Flutter `Drawer` — the slide-in side panel. Consumed by
+/// the `<navigator>` (routed into `Scaffold.drawer`); a standalone
+/// `<drawer>` outside a screen still renders so the tree stays valid.
+/// Children stack in a scrolling `ListView` — typically `<listTile>`s.
+///
+/// Under Cupertino the Material 3 drawer treatment is stripped — no
+/// elevation shadow, square edge (no rounded trailing corner), an iOS
+/// grouped-background surface — so the panel reads as a neutral
+/// slide-over. iOS has no native drawer pattern, so design-neutral is
+/// the closest honest match (see FLUTTER_COMPONENTS_TODO_2.md §2 / §3).
+Widget _buildDrawer(NodeState n, SkalBridge bridge) {
+  final bg = n.getPropU32(propBgColor, 0);
+  final cupertino = bridge.isCupertino;
+  return Drawer(
+    backgroundColor: bg != 0
+        ? _argb(bg)
+        : (cupertino
+            ? (_isDark(bridge)
+                ? const Color(0xFF1C1C1E)
+                : const Color(0xFFF2F2F7))
+            : null),
+    elevation: cupertino ? 0 : null,
+    shape: cupertino ? const RoundedRectangleBorder() : null,
+    child: ListView(
+      padding: EdgeInsets.zero,
+      children: _childWidgets(n, bridge),
+    ),
+  );
+}
+
+/// `<bottomSheet initialSize minSize maxSize>` → Flutter
+/// `DraggableScrollableSheet` — a draggable, expandable bottom sheet.
+/// Place it inside a `<stack>`: it pins to the bottom and the user
+/// drags it between `minSize` and `maxSize` (0..1 height fractions).
+/// The children stack in a `ListView` bound to the sheet's own
+/// `ScrollController`, so scrolling the list past its edge keeps
+/// driving the expand / collapse gesture seamlessly.
+Widget _buildBottomSheet(NodeState n, SkalBridge bridge) {
+  // Order the fractions so min ≤ initial ≤ max — DraggableScrollableSheet
+  // asserts this, and a malformed prop set should degrade, not crash.
+  final maxS = n.getPropF32(propSheetMax, 0.9).clamp(0.0, 1.0);
+  final minS = n.getPropF32(propSheetMin, 0.25).clamp(0.0, maxS);
+  final initial = n.getPropF32(propSheetInitial, 0.4).clamp(minS, maxS);
+  final bg = n.getPropU32(propBgColor, 0);
+  final corner = n.getPropU32(propCornerRadius, 16);
+
+  Widget inner = DraggableScrollableSheet(
+    initialChildSize: initial,
+    minChildSize: minS,
+    maxChildSize: maxS,
+    builder: (context, scrollController) {
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          color: bg != 0 ? _argb(bg) : Theme.of(context).canvasColor,
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(corner.toDouble()),
+          ),
+          boxShadow: const [
+            BoxShadow(color: Color(0x33000000), blurRadius: 8),
+          ],
+        ),
+        child: ListView(
+          controller: scrollController,
+          padding: EdgeInsets.zero,
+          children: _childWidgets(n, bridge),
+        ),
+      );
+    },
+  );
+  return _hotLayer(node: n, child: inner);
+}
+
 /// `<slider value={…} min={…} max={…} onChange={…} />` → a stateful
 /// [_SkalSlider] host (uncontrolled while dragging, controlled
 /// otherwise).
@@ -2411,8 +2577,19 @@ Widget _buildNavigator(NodeState n, SkalBridge bridge) {
   for (final screenId in n.childIds) {
     final screen = bridge.nodes[screenId];
     if (screen == null) continue;
-    // A <screen>'s single child is the route content.
-    final contentId = screen.hasChildren ? screen.childAt(0) : -1;
+    // Split the screen's children: the first non-drawer child is the
+    // route content; an optional `<drawer>` child routes to the
+    // Scaffold's drawer slot rather than rendering inline.
+    int contentId = -1;
+    int drawerId = -1;
+    for (final cid in screen.childIds) {
+      final c = bridge.nodes[cid];
+      if (c != null && c.type == wtDrawer) {
+        drawerId = cid;
+      } else if (contentId < 0) {
+        contentId = cid;
+      }
+    }
     Widget content = contentId >= 0
         ? SkalNode(
             nodeId: contentId,
@@ -2424,9 +2601,18 @@ Widget _buildNavigator(NodeState n, SkalBridge bridge) {
     // `<screen title>`. The bar's back button is automatic: Flutter
     // shows it whenever the enclosing route can pop, and tapping it
     // pops the page-based route → `onDidRemovePage` below → `evNavPop`.
-    final title = screen.getPropStr(propTitle);
-    if (title != null && title.isNotEmpty) {
-      content = _screenChrome(title, content, cupertino);
+    // A `<drawer>` child also needs a Scaffold, so chrome is built when
+    // EITHER a title or a drawer is present.
+    final title = screen.getPropStr(propTitle) ?? '';
+    final Widget? drawer = drawerId >= 0
+        ? SkalNode(
+            nodeId: drawerId,
+            bridge: bridge,
+            key: ValueKey<int>(drawerId),
+          )
+        : null;
+    if (title.isNotEmpty || drawer != null) {
+      content = _screenChrome(title, content, cupertino, drawer: drawer);
     }
     final modal = screen.getPropU32(propPresentation, 0) == 1;
     // ANIMATION.md §10 — `<screen transition>`: 1 fade, 2 none. 0 keeps
@@ -2498,19 +2684,55 @@ Widget _buildNavigator(NodeState n, SkalBridge bridge) {
   return _hotLayer(node: n, child: inner);
 }
 
-/// Wrap a `<screen>`'s content in an AppBar / navigation bar carrying
-/// [title]. The bar's back button is implied automatically by Flutter
-/// when the route can pop. Material → `Scaffold` + `AppBar`; Cupertino
-/// → `CupertinoPageScaffold` + `CupertinoNavigationBar`.
-Widget _screenChrome(String title, Widget content, bool cupertino) {
+/// Wrap a `<screen>`'s content in chrome carrying [title] and an
+/// optional [drawer].
+///
+/// Material → `Scaffold` + `AppBar` (the `AppBar` is omitted when
+/// [title] is empty). The back button and, when [drawer] is set, the
+/// hamburger are added by the `AppBar` automatically — so a titleless
+/// Material drawer screen has no hamburger and opens by edge-swipe.
+///
+/// Cupertino → `CupertinoPageScaffold` + `CupertinoNavigationBar`; the
+/// visible chrome stays iOS. A `<drawer>` still needs a Material
+/// `Scaffold` to own the drawer slot + the edge-swipe gesture, so a
+/// drawer screen wraps the Cupertino scaffold in a bare `Scaffold`
+/// (drawer slot only, no `AppBar`). The Cupertino nav bar has no
+/// auto-hamburger, so an explicit `leading` button is added whenever
+/// [drawer] is set.
+Widget _screenChrome(
+  String title,
+  Widget content,
+  bool cupertino, {
+  Widget? drawer,
+}) {
   if (cupertino) {
-    return CupertinoPageScaffold(
-      navigationBar: CupertinoNavigationBar(middle: Text(title)),
+    // The visible chrome stays iOS — a `CupertinoNavigationBar`. A
+    // drawer needs a Material `Scaffold` to own the drawer slot + the
+    // edge-swipe gesture, so a drawer screen wraps the Cupertino
+    // scaffold in a bare `Scaffold` (no AppBar of its own). The drawer
+    // has no auto-hamburger here (that is an `AppBar` feature), so we
+    // add an explicit one to the nav bar's `leading` slot.
+    final cupertinoScaffold = CupertinoPageScaffold(
+      navigationBar: CupertinoNavigationBar(
+        middle: Text(title),
+        leading: drawer == null
+            ? null
+            : Builder(
+                builder: (ctx) => CupertinoButton(
+                  padding: EdgeInsets.zero,
+                  onPressed: () => Scaffold.of(ctx).openDrawer(),
+                  child: const Icon(CupertinoIcons.bars),
+                ),
+              ),
+      ),
       child: SafeArea(child: content),
     );
+    if (drawer == null) return cupertinoScaffold;
+    return Scaffold(drawer: drawer, body: cupertinoScaffold);
   }
   return Scaffold(
-    appBar: AppBar(title: Text(title)),
+    appBar: title.isNotEmpty ? AppBar(title: Text(title)) : null,
+    drawer: drawer,
     body: content,
   );
 }

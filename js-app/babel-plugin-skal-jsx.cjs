@@ -120,6 +120,11 @@ const BUILT_IN_WIDGET_NAMES = {
   Chip:                 'chip',
   SegmentedButton:      'segmentedButton',
   ExpansionTile:        'expansionTile',
+  Dropdown:             'dropdown',
+  Stepper:              'stepper',
+  Step:                 'step',
+  Drawer:               'drawer',
+  BottomSheet:          'bottomSheet',
 };
 
 module.exports = function ({ types: t }) {

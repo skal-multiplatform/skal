@@ -317,6 +317,29 @@ const int wtSegmentedButton      = 40;
 /// expanded; `onChange(bool)` fires on expand / collapse. The open
 /// state is host-owned (uncontrolled).
 const int wtExpansionTile        = 41;
+/// `<dropdown>` → Flutter `DropdownButton` — a single-select menu.
+/// Children are the option label widgets; `propActiveTab` is the
+/// selected index and `onChange(index)` fires on a pick.
+const int wtDropdown             = 42;
+/// `<stepper>` → Flutter `Stepper` — a multi-step flow. Children are
+/// `<step>` nodes; `propActiveTab` is the current step, `propAxis`
+/// picks vertical (0) / horizontal (1), and `onChange(index)` fires on
+/// a step tap or a continue / cancel button.
+const int wtStepper              = 43;
+/// `<step>` → one step of a `<stepper>`. `propTitle` is the step
+/// header; its single child is the step body shown when current.
+const int wtStep                 = 44;
+/// `<drawer>` → Flutter `Drawer` — the slide-in side panel. Valid as a
+/// child of a `<screen>`: the `<navigator>` routes it to that screen's
+/// `Scaffold.drawer` slot (so Flutter owns the edge-swipe gesture + the
+/// AppBar hamburger). Its children stack in a scrolling `ListView`.
+const int wtDrawer               = 45;
+/// `<bottomSheet>` → Flutter `DraggableScrollableSheet` — a draggable,
+/// expandable bottom sheet. Place it as a child of a `<stack>`: it pins
+/// to the bottom and the user drags it between `propSheetMin` and
+/// `propSheetMax`. Children stack in a scroll view whose scroll drives
+/// the expand gesture.
+const int wtBottomSheet          = 46;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick        = 0x01;
@@ -577,6 +600,13 @@ const int propRelease         = 0xAE;
 // pinned (header stays when collapsed), 2 floating (reappears on any
 // scroll-up), 3 pinned + floating.
 const int propSliverMode      = 0xAF;
+// `<bottomSheet>` extent fractions (f32 → propsF, 0..1 of the available
+// height) — the DraggableScrollableSheet's initial / minimum / maximum
+// size. Set once at mount; intentionally NOT in bridge.js's KEY_TO_SLOT
+// (mount-once props don't need the diff cache).
+const int propSheetInitial    = 0xB0;
+const int propSheetMin        = 0xB1;
+const int propSheetMax        = 0xB2;
 
 // ── Sentinel values for width/height props ───────────────────────────
 // Encoded into PROP_WIDTH / PROP_HEIGHT instead of needing distinct

@@ -175,11 +175,19 @@ export const WT_CANVAS                  = 35;
 // Drag-and-drop — <dragItem> (Draggable) + <dropZone> (DragTarget).
 export const WT_DRAG_ITEM               = 36;
 export const WT_DROP_ZONE               = 37;
-// §2 controls — radio, chip, segmented button, expansion tile.
+// §2 controls — radio, chip, segmented button, expansion tile, dropdown.
 export const WT_RADIO                   = 38;
 export const WT_CHIP                    = 39;
 export const WT_SEGMENTED_BUTTON        = 40;
 export const WT_EXPANSION_TILE          = 41;
+export const WT_DROPDOWN                = 42;
+// §2 — multi-step flow: <stepper> holds <step> children.
+export const WT_STEPPER                 = 43;
+export const WT_STEP                    = 44;
+// §2 — <drawer> side panel: a <screen> child routed to Scaffold.drawer.
+export const WT_DRAWER                  = 45;
+// §2 — <bottomSheet>: a draggable / expandable DraggableScrollableSheet.
+export const WT_BOTTOM_SHEET            = 46;
 
 // Event kinds
 export const EV_CLICK         = 0x01;
@@ -355,6 +363,11 @@ export const PROP_SPRING           = 0xAD;
 export const PROP_RELEASE          = 0xAE;
 // <sliverAppBar> scroll mode — 0 normal, 1 pinned, 2 floating, 3 both.
 export const PROP_SLIVER_MODE      = 0xAF;
+// <bottomSheet> extent fractions (f32, 0..1) — initial / min / max size
+// of the DraggableScrollableSheet. Mount-once props — see KEY_TO_SLOT.
+export const PROP_SHEET_INITIAL    = 0xB0;
+export const PROP_SHEET_MIN        = 0xB1;
+export const PROP_SHEET_MAX        = 0xB2;
 
 // Sentinel values for width/height u32 props.
 export const NO_VALUE     = -1 | 0;          // prop unset → host default
@@ -679,6 +692,11 @@ KEY_TO_SLOT[PROP_SUBTITLE]         = 60;
 KEY_TO_SLOT[PROP_TRAILING_ICON]    = 61;
 KEY_TO_SLOT[PROP_SLIVER_MODE]      = 62;
 KEY_TO_SLOT[PROP_DRAG_DATA]        = 63;
+// PROP_SHEET_INITIAL / MIN / MAX (0xB0-0xB2) are deliberately NOT
+// registered here: a `<bottomSheet>`'s extent fractions are set once at
+// mount, so they gain nothing from the per-write diff cache. Leaving
+// them out avoids growing the 64-slot stride for every node. They still
+// work — an unregistered key takes the uncached setProp* path.
 
 // 64-slot row stride (was 32 — the extended widget set filled it).
 // KEY_TO_SLOT is an Int8Array, so slots must stay < 128.
@@ -998,6 +1016,25 @@ export function showActionSheet(spec) {
 export function showSnackbar(spec) {
   const s = typeof spec === 'string' ? { message: spec } : (spec || {});
   return invokeMethod(ROOT_NODE_ID, 'showSnackbar', [JSON.stringify(s)]);
+}
+
+/**
+ * Imperative date / time pickers — §2. Like the dialog API, each call
+ * is an RPC on the root node and returns a Promise.
+ *
+ *   showDatePicker({ initialDate?, firstDate?, lastDate? })
+ *     — dates are ISO `YYYY-MM-DD` strings. Resolves to an ISO date
+ *       string, or null if dismissed.
+ *   showTimePicker({ initialHour?, initialMinute? })
+ *     — ints. Resolves to a 24-hour `HH:MM` string, or null if dismissed.
+ */
+export function showDatePicker(spec) {
+  return invokeMethod(
+    ROOT_NODE_ID, 'showDatePicker', [JSON.stringify(spec || {})]);
+}
+export function showTimePicker(spec) {
+  return invokeMethod(
+    ROOT_NODE_ID, 'showTimePicker', [JSON.stringify(spec || {})]);
 }
 
 // ───────────────────────────────────────────────────────────────────────

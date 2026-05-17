@@ -679,3 +679,68 @@ export const SegmentedButton = makeMissingMacroComponent('SegmentedButton');
  * }>}
  */
 export const ExpansionTile = makeMissingMacroComponent('ExpansionTile');
+
+/**
+ * Single-select dropdown menu. Flutter `DropdownButton`.
+ *
+ * Each child is one option's label. `activeTab` is the selected
+ * index; `onChange(index)` fires on a pick.
+ *
+ * @type {Component<BaseProps & {
+ *   activeTab?: number, onChange?: (index: number) => void,
+ *   enabled?: boolean,
+ * }>}
+ */
+export const Dropdown = makeMissingMacroComponent('Dropdown');
+
+/**
+ * Multi-step flow. Flutter `Stepper`.
+ *
+ * Children are `<Step>` nodes. `activeTab` is the current step index;
+ * `axis` picks vertical (0) or horizontal (1). `onChange(index)` fires
+ * on a step tap or a continue / cancel button — the app owns the index.
+ *
+ * @type {Component<BaseProps & {
+ *   activeTab?: number, axis?: number,
+ *   onChange?: (index: number) => void,
+ * }>}
+ */
+export const Stepper = makeMissingMacroComponent('Stepper');
+
+/**
+ * One step of a `<Stepper>`. Flutter `Step`.
+ *
+ * `title` is the step header; the single child is the step body,
+ * shown when this step is the current one.
+ *
+ * @type {Component<BaseProps & { title?: string }>}
+ */
+export const Step = makeMissingMacroComponent('Step');
+
+/**
+ * Slide-in side navigation panel. Flutter `Drawer`.
+ *
+ * Place a `<Drawer>` as a child of a `<Screen>` (alongside the screen
+ * content). The navigator routes it to that screen's `Scaffold.drawer`
+ * slot — Flutter then owns the edge-swipe gesture and, when the screen
+ * has a title bar, the automatic hamburger button. The drawer's
+ * children stack in a scrolling list — typically `<ListTile>` rows.
+ *
+ * @type {Component<BaseProps>}
+ */
+export const Drawer = makeMissingMacroComponent('Drawer');
+
+/**
+ * Draggable, expandable bottom sheet. Flutter `DraggableScrollableSheet`.
+ *
+ * Place a `<BottomSheet>` as a child of a `<Stack>`: it pins to the
+ * bottom and the user drags it between `minSize` and `maxSize`.
+ * `initialSize` / `minSize` / `maxSize` are 0..1 fractions of the
+ * available height. Children stack in a scroll view whose own scroll
+ * drives the expand gesture.
+ *
+ * @type {Component<BaseProps & {
+ *   initialSize?: number, minSize?: number, maxSize?: number,
+ * }>}
+ */
+export const BottomSheet = makeMissingMacroComponent('BottomSheet');

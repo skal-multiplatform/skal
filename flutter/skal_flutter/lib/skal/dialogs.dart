@@ -51,6 +51,10 @@ void installAppDispatcher(SkalBridge bridge) {
         return _showActionSheet(bridge, spec);
       case 'showSnackbar':
         return _showSnackbar(spec);
+      case 'showDatePicker':
+        return _showDatePicker(bridge, spec);
+      case 'showTimePicker':
+        return _showTimePicker(bridge, spec);
       default:
         throw 'skal: unknown app method "$method"';
     }
@@ -175,4 +179,143 @@ Future<Object?> _showSnackbar(Map<String, dynamic> spec) {
   skalScaffoldMessengerKey.currentState
       ?.showSnackBar(SnackBar(content: Text(message)));
   return Future<Object?>.value();
+}
+
+/// Parse an ISO `YYYY-MM-DD` (or full ISO-8601) string into a DateTime,
+/// or null when absent / malformed.
+DateTime? _parseIsoDate(Object? v) =>
+    (v is String && v.isNotEmpty) ? DateTime.tryParse(v) : null;
+
+/// `YYYY-MM-DD` — the wire shape the JS side both sends and receives.
+String _isoDate(DateTime d) =>
+    '${d.year.toString().padLeft(4, '0')}-'
+    '${d.month.toString().padLeft(2, '0')}-'
+    '${d.day.toString().padLeft(2, '0')}';
+
+/// A Cupertino wheel picker in a bottom modal popup, with a
+/// Cancel / Done bar. [pickerBuilder] receives the `onDateTimeChanged`
+/// callback to wire into a `CupertinoDatePicker`; the latest value is
+/// captured and returned when Done is tapped (null on Cancel / barrier
+/// dismiss). Shared by the date and time variants.
+Future<DateTime?> _cupertinoWheelPicker(
+  BuildContext ctx,
+  Widget Function(ValueChanged<DateTime>) pickerBuilder,
+  DateTime initial,
+) {
+  DateTime selected = initial;
+  return showCupertinoModalPopup<DateTime>(
+    context: ctx,
+    builder: (c) => Container(
+      height: 300,
+      color: CupertinoColors.systemBackground.resolveFrom(c),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                CupertinoButton(
+                  onPressed: () => Navigator.of(c).pop(),
+                  child: const Text('Cancel'),
+                ),
+                CupertinoButton(
+                  onPressed: () => Navigator.of(c).pop(selected),
+                  child: const Text('Done'),
+                ),
+              ],
+            ),
+            Expanded(child: pickerBuilder((d) => selected = d)),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// Imperative date picker — §2. Spec: `{initialDate?, firstDate?,
+/// lastDate?}` (all ISO `YYYY-MM-DD`). Resolves to an ISO date string,
+/// or null on dismiss. Adaptive: Material `showDatePicker` calendar
+/// dialog, or a `CupertinoDatePicker` wheel under Cupertino — matching
+/// the adaptive `showDialog` / `showActionSheet` in this file.
+Future<Object?> _showDatePicker(
+    SkalBridge bridge, Map<String, dynamic> spec) async {
+  final ctx = skalNavigatorKey.currentContext;
+  if (ctx == null) return null;
+  final now = DateTime.now();
+  final first = _parseIsoDate(spec['firstDate']) ?? DateTime(now.year - 100);
+  final last = _parseIsoDate(spec['lastDate']) ?? DateTime(now.year + 100);
+  var initial = _parseIsoDate(spec['initialDate']) ?? now;
+  // Both pickers assert initialDate ∈ [firstDate, lastDate].
+  if (initial.isBefore(first)) initial = first;
+  if (initial.isAfter(last)) initial = last;
+
+  final DateTime? picked;
+  if (bridge.isCupertino) {
+    picked = await _cupertinoWheelPicker(
+      ctx,
+      (onChanged) => CupertinoDatePicker(
+        mode: CupertinoDatePickerMode.date,
+        initialDateTime: initial,
+        minimumDate: first,
+        maximumDate: last,
+        onDateTimeChanged: onChanged,
+      ),
+      initial,
+    );
+  } else {
+    picked = await showDatePicker(
+      context: ctx,
+      initialDate: initial,
+      firstDate: first,
+      lastDate: last,
+    );
+  }
+  return picked == null ? null : _isoDate(picked);
+}
+
+/// Imperative time picker — §2. Spec: `{initialHour?, initialMinute?}`
+/// (ints). Resolves to a 24-hour `HH:MM` string, or null on dismiss.
+/// Adaptive: Material `showTimePicker` clock dialog, or a
+/// `CupertinoDatePicker` time wheel under Cupertino.
+Future<Object?> _showTimePicker(
+    SkalBridge bridge, Map<String, dynamic> spec) async {
+  final ctx = skalNavigatorKey.currentContext;
+  if (ctx == null) return null;
+  final now = TimeOfDay.now();
+  final h = spec['initialHour'];
+  final m = spec['initialMinute'];
+  final initial = TimeOfDay(
+    hour: h is num ? h.toInt().clamp(0, 23) : now.hour,
+    minute: m is num ? m.toInt().clamp(0, 59) : now.minute,
+  );
+
+  int hour;
+  int minute;
+  if (bridge.isCupertino) {
+    final n = DateTime.now();
+    // CupertinoDatePicker works in DateTime — anchor the time wheel to
+    // today; only the hour / minute components are read back.
+    final initialDT =
+        DateTime(n.year, n.month, n.day, initial.hour, initial.minute);
+    final picked = await _cupertinoWheelPicker(
+      ctx,
+      (onChanged) => CupertinoDatePicker(
+        mode: CupertinoDatePickerMode.time,
+        initialDateTime: initialDT,
+        onDateTimeChanged: onChanged,
+      ),
+      initialDT,
+    );
+    if (picked == null) return null;
+    hour = picked.hour;
+    minute = picked.minute;
+  } else {
+    final picked = await showTimePicker(context: ctx, initialTime: initial);
+    if (picked == null) return null;
+    hour = picked.hour;
+    minute = picked.minute;
+  }
+  return '${hour.toString().padLeft(2, '0')}:'
+      '${minute.toString().padLeft(2, '0')}';
 }

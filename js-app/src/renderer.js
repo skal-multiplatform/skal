@@ -90,11 +90,23 @@ const TAG_TO_WIDGET = {
   dragItem:             B.WT_DRAG_ITEM,
   dropZone:             B.WT_DROP_ZONE,
   // §2 controls — radio / chip take checked + onChange; segmentedButton
-  // takes activeTab + onChange; expansionTile takes title + onChange.
+  // and dropdown take activeTab + onChange; expansionTile takes
+  // title + onChange.
   radio:                B.WT_RADIO,
   chip:                 B.WT_CHIP,
   segmentedButton:      B.WT_SEGMENTED_BUTTON,
   expansionTile:        B.WT_EXPANSION_TILE,
+  dropdown:             B.WT_DROPDOWN,
+  // <stepper> holds <step> children — a multi-step flow. activeTab is
+  // the current step; onChange(index) fires on tap / continue / cancel.
+  stepper:              B.WT_STEPPER,
+  step:                 B.WT_STEP,
+  // <drawer> — a slide-in side panel; place it as a <screen> child and
+  // the navigator routes it to that screen's Scaffold.drawer slot.
+  drawer:               B.WT_DRAWER,
+  // <bottomSheet> — a draggable / expandable sheet; place inside a
+  // <stack>. initialSize / minSize / maxSize are 0..1 height fractions.
+  bottomSheet:          B.WT_BOTTOM_SHEET,
 };
 
 /**
@@ -200,6 +212,10 @@ const COLD_PROPS = {
   min:            [B.PROP_SLIDER_MIN,       'f32'],
   max:            [B.PROP_SLIDER_MAX,       'f32'],
   progress:       [B.PROP_PROGRESS,         'f32'],
+  // <bottomSheet> extent fractions (0..1) — mount-once config.
+  initialSize:    [B.PROP_SHEET_INITIAL,    'f32'],
+  minSize:        [B.PROP_SHEET_MIN,        'f32'],
+  maxSize:        [B.PROP_SHEET_MAX,        'f32'],
   // Navigation — <screen presentation>: 0 = push, 1 = modal.
   presentation:   [B.PROP_PRESENTATION,     'u32'],
   // <screen title> → AppBar title; <tab title> → nav-bar label.
@@ -849,8 +865,10 @@ export const {
 // App-facing imperative API — design system selection + dialogs.
 // Re-exported so user code imports it from the same module as the
 // renderer.
-export { setDesign, showDialog, showActionSheet, showSnackbar }
-  from './bridge.js';
+export {
+  setDesign, showDialog, showActionSheet, showSnackbar,
+  showDatePicker, showTimePicker,
+} from './bridge.js';
 
 // ───────────────────────────────────────────────────────────────────────
 // The root host node. Pre-creates the bridge node with id=ROOT_NODE_ID

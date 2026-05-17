@@ -118,6 +118,15 @@
  *   lifts. `'glide'` carries the fling velocity and decelerates to
  *   rest (friction); `'springBack'` springs home to the origin. Only
  *   applies alongside `draggable`.
+ * @property {(over: boolean) => void} [onHover]  pointer enter / exit
+ *   (desktop / web) — `true` on enter, `false` on exit.
+ * @property {(combo: string) => void} [onKey]  a key pressed while the
+ *   widget is focused — arg is a normalized combo string, e.g.
+ *   `"meta+s"`, `"escape"`, `"arrow up"`. The widget takes focus on
+ *   mount and on click; put `onKey` on a top-level container for
+ *   app shortcuts.
+ * @property {string} [semanticLabel]  accessibility label — wraps the
+ *   widget in a Semantics node so screen readers announce it.
  */
 
 /**
@@ -225,7 +234,9 @@ export const Button = makeMissingMacroComponent('Button');
  * (settings page, small form). For long feeds (>50 items) prefer
  * {@link ListView}, which virtualizes its children.
  *
- * @type {Component<BaseProps>}
+ * `scrollbar` adds an always-visible, draggable scrollbar (desktop).
+ *
+ * @type {Component<BaseProps & { scrollbar?: boolean }>}
  */
 export const ScrollView = makeMissingMacroComponent('ScrollView');
 
@@ -246,7 +257,9 @@ export const ScrollView = makeMissingMacroComponent('ScrollView');
  * another vertical scroller (e.g. a `ScrollView`) collapses its
  * height to 0 because the inner viewport can't bound itself.
  *
- * @type {Component<BaseProps>}
+ * `scrollbar` adds an always-visible, draggable scrollbar (desktop).
+ *
+ * @type {Component<BaseProps & { scrollbar?: boolean }>}
  */
 export const ListView = makeMissingMacroComponent('ListView');
 
@@ -744,3 +757,26 @@ export const Drawer = makeMissingMacroComponent('Drawer');
  * }>}
  */
 export const BottomSheet = makeMissingMacroComponent('BottomSheet');
+
+/**
+ * Blur / frosted-glass layer. Flutter `BackdropFilter`.
+ *
+ * Blurs whatever is painted *behind* it — place a `<BackdropFilter>`
+ * inside a `<Stack>`, above the content you want frosted. Its own
+ * children (if any) render un-blurred on top, e.g. a translucent tint
+ * box. `blurRadius` is the blur sigma in logical pixels.
+ *
+ * @type {Component<BaseProps & { blurRadius?: number }>}
+ */
+export const BackdropFilter = makeMissingMacroComponent('BackdropFilter');
+
+/**
+ * Bounded pinch-zoom + pan. Flutter `InteractiveViewer`.
+ *
+ * Wraps a single child and lets the user pinch-zoom and drag it within
+ * `minScale` / `maxScale` bounds — the batteries-included version of
+ * raw scale gestures (photos, maps, diagrams).
+ *
+ * @type {Component<BaseProps & { minScale?: number, maxScale?: number }>}
+ */
+export const InteractiveViewer = makeMissingMacroComponent('InteractiveViewer');

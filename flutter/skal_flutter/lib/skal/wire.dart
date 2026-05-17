@@ -340,6 +340,15 @@ const int wtDrawer               = 45;
 /// `propSheetMax`. Children stack in a scroll view whose scroll drives
 /// the expand gesture.
 const int wtBottomSheet          = 46;
+/// `<backdropFilter>` → Flutter `BackdropFilter` — a blur / frosted-
+/// glass layer. Blurs whatever is painted behind it; place it inside a
+/// `<stack>` over the content to frost. `propBlurRadius` is the blur
+/// sigma; the child (if any) is the un-blurred overlay (e.g. a tint).
+const int wtBackdropFilter       = 47;
+/// `<interactiveViewer>` → Flutter `InteractiveViewer` — bounded
+/// pinch-zoom + pan of its single child. `propMinScale` / `propMaxScale`
+/// clamp the zoom.
+const int wtInteractiveViewer    = 48;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick        = 0x01;
@@ -405,6 +414,15 @@ const int evDismiss      = 0x14;
 // Dispatched to the zone's `onDrop` handler with the item's
 // `propDragData` string (eventArgStr).
 const int evDrop         = 0x15;
+// Pointer hover — `onHover` on a container. A `MouseRegion`
+// enter / exit, dispatched as a bool (true on enter, false on exit).
+// Desktop / web affordance. See FLUTTER_COMPONENTS_TODO_2.md §3.
+const int evHover        = 0x16;
+// Keyboard — `onKey` on a container. A `KeyDownEvent` while the node
+// is focused (it takes focus on mount and on click), dispatched as a
+// normalized combo string: "meta+s", "escape", "arrow up". The JS app
+// builds any shortcut layer on top. See FLUTTER_COMPONENTS_TODO_2.md §3.
+const int evKey          = 0x17;
 
 // ── Event record layout (16 bytes per slot in the event ring) ────────
 //
@@ -522,6 +540,10 @@ const int propSubtitle        = 0x49;
 // `<dragItem>` payload — a string id carried to the `<dropZone>` that
 // receives the drop (delivered to its `onDrop` handler).
 const int propDragData        = 0x4A;
+// Accessibility label (string) — wraps ANY node in a `Semantics` widget
+// so screen readers announce it. Applied generically in `SkalNode`.
+// See FLUTTER_COMPONENTS_TODO_2.md §3.
+const int propSemanticLabel   = 0x4B;
 
 // Image (string-valued)
 const int propImageSrc        = 0x60;
@@ -607,6 +629,17 @@ const int propSliverMode      = 0xAF;
 const int propSheetInitial    = 0xB0;
 const int propSheetMin        = 0xB1;
 const int propSheetMax        = 0xB2;
+// `<scrollView>` / `<listView>` explicit scrollbar — 0 off (default),
+// 1 on. Wraps the scroller in a `Scrollbar` with an owned controller so
+// the thumb is always visible and draggable (desktop especially).
+// Mount-once; not in KEY_TO_SLOT. See FLUTTER_COMPONENTS_TODO_2.md §3.
+const int propScrollbar       = 0xB3;
+// `<backdropFilter>` blur sigma (logical px). Mount-once; not in
+// KEY_TO_SLOT.
+const int propBlurRadius      = 0xB4;
+// `<interactiveViewer>` zoom clamps (f32 → propsF). Mount-once.
+const int propMinScale        = 0xB5;
+const int propMaxScale        = 0xB6;
 
 // ── Sentinel values for width/height props ───────────────────────────
 // Encoded into PROP_WIDTH / PROP_HEIGHT instead of needing distinct

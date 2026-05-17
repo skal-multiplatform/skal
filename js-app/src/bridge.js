@@ -188,6 +188,9 @@ export const WT_STEP                    = 44;
 export const WT_DRAWER                  = 45;
 // §2 — <bottomSheet>: a draggable / expandable DraggableScrollableSheet.
 export const WT_BOTTOM_SHEET            = 46;
+// §3 polish — <backdropFilter> blur layer, <interactiveViewer> zoom/pan.
+export const WT_BACKDROP_FILTER         = 47;
+export const WT_INTERACTIVE_VIEWER      = 48;
 
 // Event kinds
 export const EV_CLICK         = 0x01;
@@ -229,6 +232,10 @@ export const EV_DISMISS       = 0x14;
 // Drag-and-drop — a <dragItem> dropped on a <dropZone> (carries the
 // item's dragData string).
 export const EV_DROP          = 0x15;
+// Pointer hover — onHover on a container; bool (true enter / false exit).
+export const EV_HOVER         = 0x16;
+// Keyboard — onKey on a focused container; a normalized combo string.
+export const EV_KEY           = 0x17;
 
 // Event-arg types — encoded in byte 1 of the event record. See
 // flutter/skal_flutter/lib/skal/wire.dart's `eventArg*` constants.
@@ -309,6 +316,9 @@ export const PROP_HERO_TAG         = 0x48;
 export const PROP_SUBTITLE         = 0x49;
 // <dragItem> payload — string id carried to the <dropZone>'s onDrop.
 export const PROP_DRAG_DATA        = 0x4A;
+// Accessibility label — wraps any node in a Semantics widget.
+// Mount-once; not in KEY_TO_SLOT.
+export const PROP_SEMANTIC_LABEL   = 0x4B;
 
 // Image (string-valued)
 export const PROP_IMAGE_SRC        = 0x60;
@@ -368,6 +378,14 @@ export const PROP_SLIVER_MODE      = 0xAF;
 export const PROP_SHEET_INITIAL    = 0xB0;
 export const PROP_SHEET_MIN        = 0xB1;
 export const PROP_SHEET_MAX        = 0xB2;
+// <scrollView> / <listView> explicit scrollbar — 0 off, 1 on.
+// Mount-once — see KEY_TO_SLOT note.
+export const PROP_SCROLLBAR        = 0xB3;
+// <backdropFilter> blur sigma (px); <interactiveViewer> zoom clamps.
+// Mount-once.
+export const PROP_BLUR_RADIUS      = 0xB4;
+export const PROP_MIN_SCALE        = 0xB5;
+export const PROP_MAX_SCALE        = 0xB6;
 
 // Sentinel values for width/height u32 props.
 export const NO_VALUE     = -1 | 0;          // prop unset → host default

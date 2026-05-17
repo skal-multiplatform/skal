@@ -457,6 +457,10 @@ class SkalBridge {
               node.onDismissHandlerId = c;
             } else if (b == evDrop) {
               node.onDropHandlerId = c;
+            } else if (b == evHover) {
+              node.onHoverHandlerId = c;
+            } else if (b == evKey) {
+              node.onKeyHandlerId = c;
             }
             node.coldDirty = true;
             touched.add(a);

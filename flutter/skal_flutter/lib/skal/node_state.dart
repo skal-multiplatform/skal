@@ -162,6 +162,12 @@ class NodeState {
   // `<dropZone onDrop=…>` — fired when a `<dragItem>` is released over
   // this zone; the arg is the item's `propDragData` string.
   int onDropHandlerId = 0;
+  // `<box onHover=…>` — pointer enter / exit (MouseRegion); the arg is
+  // a bool (true on enter, false on exit).
+  int onHoverHandlerId = 0;
+  // `<box onKey=…>` — key pressed while focused; the arg is a
+  // normalized combo string ("meta+s", "escape", "arrow up").
+  int onKeyHandlerId = 0;
   // Pan / drag gesture handlers (`<box onPanStart=… onPanUpdate=…
   // onPanEnd=…>`). onPanUpdate dispatches a (dx, dy) delta every drag
   // frame; with `draggable` set the host self-drives translation and

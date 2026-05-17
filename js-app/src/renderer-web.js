@@ -101,6 +101,8 @@ const TAG_TO_HTML = {
   step:                 'div',
   drawer:               'aside',
   bottomSheet:          'div',
+  backdropFilter:       'div',
+  interactiveViewer:    'div',
 };
 
 // Spinner keyframes for <activityIndicator> — injected once.

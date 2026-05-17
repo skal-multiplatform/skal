@@ -125,6 +125,8 @@ const BUILT_IN_WIDGET_NAMES = {
   Step:                 'step',
   Drawer:               'drawer',
   BottomSheet:          'bottomSheet',
+  BackdropFilter:       'backdropFilter',
+  InteractiveViewer:    'interactiveViewer',
 };
 
 module.exports = function ({ types: t }) {

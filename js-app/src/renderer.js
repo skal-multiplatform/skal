@@ -107,6 +107,10 @@ const TAG_TO_WIDGET = {
   // <bottomSheet> — a draggable / expandable sheet; place inside a
   // <stack>. initialSize / minSize / maxSize are 0..1 height fractions.
   bottomSheet:          B.WT_BOTTOM_SHEET,
+  // §3 polish — <backdropFilter blurRadius> frosts what's behind it
+  // (place in a <stack>); <interactiveViewer> pinch-zooms its child.
+  backdropFilter:       B.WT_BACKDROP_FILTER,
+  interactiveViewer:    B.WT_INTERACTIVE_VIEWER,
 };
 
 /**
@@ -243,6 +247,14 @@ const COLD_PROPS = {
   sliverMode:     [B.PROP_SLIVER_MODE,      'u32'],
   // <dragItem dragData> — string id carried to a <dropZone>'s onDrop.
   dragData:       [B.PROP_DRAG_DATA,        'str'],
+  // <scrollView scrollbar> / <listView scrollbar> — always-on scrollbar.
+  scrollbar:      [B.PROP_SCROLLBAR,        'u32'],
+  // <backdropFilter blurRadius> blur sigma; <interactiveViewer> clamps.
+  blurRadius:     [B.PROP_BLUR_RADIUS,      'u32'],
+  minScale:       [B.PROP_MIN_SCALE,        'f32'],
+  maxScale:       [B.PROP_MAX_SCALE,        'f32'],
+  // Accessibility — wraps any widget in a Semantics node.
+  semanticLabel:  [B.PROP_SEMANTIC_LABEL,   'str'],
 };
 
 const HOT_PROP_SETTERS = {
@@ -284,6 +296,12 @@ const HANDLER_EVENTS = {
   // <dropZone onDrop> — a <dragItem> dropped on it; arg is the
   // dropped item's `dragData` string.
   onDrop:        B.EV_DROP,
+  // onHover — pointer enter / exit on a container (desktop / web).
+  // The handler gets a bool: true on enter, false on exit.
+  onHover:       B.EV_HOVER,
+  // onKey — a key pressed while the container is focused. The handler
+  // gets a normalized combo string ("meta+s", "escape", "arrow up").
+  onKey:         B.EV_KEY,
 };
 
 // `animate.curve` name → wire enum (mirrors _curveFor in root.dart).

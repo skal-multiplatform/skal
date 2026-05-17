@@ -19,7 +19,7 @@ import {
   TextInput, Tabs, Tab, Hero, AnimatedList, CrossFade, ListTile, PageView,
   Dismissible, CustomScrollView, SliverAppBar, SliverList, SliverGrid, Canvas,
   DragItem, DropZone, Radio, Chip, SegmentedButton, ExpansionTile, Dropdown,
-  Stepper, Step, Drawer, BottomSheet,
+  Stepper, Step, Drawer, BottomSheet, BackdropFilter, InteractiveViewer,
 } from 'skal';
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
@@ -484,6 +484,8 @@ function UITab() {
   const [expanded, setExpanded] = createSignal(false);
   const [dd, setDd]           = createSignal(0);
   const [step, setStep]       = createSignal(0);
+  const [hovered, setHovered] = createSignal(false);
+  const [lastKey, setLastKey] = createSignal('—');
   const [dragRest, setDragRest] = createSignal('0, 0');
   const [panDelta, setPanDelta] = createSignal('—');
   const [pinch, setPinch]     = createSignal(1);
@@ -530,7 +532,7 @@ function UITab() {
 
   function homeScreen(router) {
     return (
-    <ScrollView background={BG} padding={16} gap={14}>
+    <ScrollView background={BG} padding={16} gap={14} scrollbar>
       <Text label="Skal — Component Demo" fontSize={24} fontWeight={800} color={INK} />
       <Text
         label="Every fast-path widget, plus animation, the design system, and dialogs."
@@ -1015,6 +1017,79 @@ function UITab() {
             </BottomSheet>
           </Stack>
         </Box>
+      </Section>
+
+      {/* ── Effects — blur & zoom ───────────────────────────────── */}
+      <Section title="Effects — BackdropFilter · InteractiveViewer">
+        <Stack>
+          <Image
+            src="https://picsum.photos/seed/skalblur/300/160"
+            width={300}
+            height={160}
+            contentScale={1}
+            cornerRadius={10}
+          />
+          <Box top={0} left={150} width={150} height={160}>
+            <BackdropFilter blurRadius={12}>
+              <Box width={150} height={160} background="#33FFFFFF" />
+            </BackdropFilter>
+          </Box>
+        </Stack>
+        <Text label="The right half is frosted by a BackdropFilter." fontSize={11} color={SUBTLE} />
+        <Box height={200} cornerRadius={12} background={CHIP}>
+          <InteractiveViewer minScale={1} maxScale={4}>
+            <Image
+              src="https://picsum.photos/seed/skalzoom/320/200"
+              width={320}
+              height={200}
+              contentScale={1}
+            />
+          </InteractiveViewer>
+        </Box>
+        <Text label="Pinch / scroll-wheel to zoom the image, drag to pan." fontSize={11} color={SUBTLE} />
+      </Section>
+
+      {/* ── Hover & accessibility ───────────────────────────────── */}
+      <Section title="Hover — onHover · semanticLabel">
+        <Box
+          padding={16}
+          cornerRadius={10}
+          background={hovered() ? ACCENT : CARD}
+          borderWidth={1}
+          borderColor={BORDER}
+          onHover={(over) => setHovered(over)}
+          semanticLabel="A hoverable demo card"
+        >
+          <Text
+            label={hovered() ? 'Hovering — pointer is over the card' : 'Move the pointer over this card'}
+            fontSize={14}
+            color={hovered() ? '#FFFFFF' : INK}
+          />
+        </Box>
+        <Text
+          label="onHover fires on pointer enter/exit (desktop/web). semanticLabel wraps the card in a Semantics node for screen readers."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      {/* ── Keyboard ────────────────────────────────────────────── */}
+      <Section title="Keyboard — onKey">
+        <Box
+          padding={16}
+          cornerRadius={10}
+          background={CARD}
+          borderWidth={1}
+          borderColor={BORDER}
+          onKey={(combo) => setLastKey(combo)}
+        >
+          <Text label={`last key: ${lastKey()}`} fontSize={14} color={INK} />
+        </Box>
+        <Text
+          label="Click the card to focus it, then press keys (⌘S, Escape, arrows). onKey reports a normalized combo string; build any shortcut layer on it."
+          fontSize={11}
+          color={SUBTLE}
+        />
       </Section>
 
       {/* ── Gestures ────────────────────────────────────────────── */}

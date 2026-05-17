@@ -37,12 +37,14 @@
 import 'dart:async' show Completer, Timer;
 import 'dart:convert' show jsonDecode;
 import 'dart:io' show File;
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 
 import 'bridge.dart';
 import 'memoizing_listenable_builder.dart';
@@ -125,7 +127,16 @@ class SkalNode extends StatelessWidget {
     if (node == null) return const SizedBox.shrink();
     return MemoizingListenableBuilder(
       listenable: node.cold,
-      builder: (context) => _buildForType(node, bridge, context),
+      builder: (context) {
+        final built = _buildForType(node, bridge, context);
+        // Accessibility — a `semanticLabel` on ANY node wraps it in a
+        // `Semantics` so screen readers announce it. Done here, once,
+        // rather than in every builder. Inside the memoized builder, so
+        // it costs nothing until the node's cold notifier fires.
+        final label = node.getPropStr(propSemanticLabel);
+        if (label == null || label.isEmpty) return built;
+        return Semantics(label: label, child: built);
+      },
     );
   }
 }
@@ -190,6 +201,8 @@ Widget _buildForType(NodeState node, SkalBridge bridge, BuildContext context) {
     case wtStep:                 return _buildStep(node, bridge);
     case wtDrawer:               return _buildDrawer(node, bridge);
     case wtBottomSheet:          return _buildBottomSheet(node, bridge);
+    case wtBackdropFilter:       return _buildBackdropFilter(node, bridge);
+    case wtInteractiveViewer:    return _buildInteractiveViewer(node, bridge);
     case wtCustom:               return _buildCustom(node, bridge);
     default:                     return const SizedBox.shrink();
   }
@@ -426,6 +439,127 @@ Widget _applyColdVisual(NodeState n, Widget child, {int defaultPadding = 0}) {
     out = DecoratedBox(decoration: decoration()!, child: out);
   }
   return out;
+}
+
+/// Wrap [child] in a `MouseRegion` when an `onHover` handler is bound —
+/// dispatches `onHover(true)` on pointer-enter, `onHover(false)` on
+/// exit (a desktop / web affordance). A `MouseRegion` is a pointer
+/// listener, not a gesture recognizer, so it composes freely alongside
+/// [_applyGestures] without entering the arena. No handler → [child] is
+/// returned untouched, so the common case pays for no extra widget.
+Widget _applyHover(NodeState n, SkalBridge bridge, Widget child) {
+  final hover = n.onHoverHandlerId;
+  if (hover == 0) return child;
+  return MouseRegion(
+    onEnter: (_) =>
+        bridge.dispatchEventBool(hover, true, eventKind: evHover),
+    onExit: (_) =>
+        bridge.dispatchEventBool(hover, false, eventKind: evHover),
+    child: child,
+  );
+}
+
+/// Wrap [child] in a [_SkalFocus] host when an `onKey` handler is
+/// bound — every `KeyDownEvent` while the node is focused fires `onKey`
+/// with a normalized combo string ("meta+s", "escape", "arrow up").
+/// No handler → [child] is returned untouched.
+Widget _applyFocus(NodeState n, SkalBridge bridge, Widget child) {
+  final key = n.onKeyHandlerId;
+  if (key == 0) return child;
+  return _SkalFocus(bridge: bridge, handlerId: key, child: child);
+}
+
+/// Logical keys that are themselves modifiers — a `KeyDownEvent` for
+/// one of these is filtered out of `onKey` so a bare ⌘ / Shift press
+/// doesn't dispatch a junk combo (`"meta+meta left"`). The modifier
+/// still rides the NEXT real key, picked up from `HardwareKeyboard`.
+// Not `const` — `LogicalKeyboardKey` overrides `==`, so it can't be a
+// const-set element; a top-level `final` set is built once on first use.
+final Set<LogicalKeyboardKey> _modifierKeys = <LogicalKeyboardKey>{
+  LogicalKeyboardKey.shiftLeft,
+  LogicalKeyboardKey.shiftRight,
+  LogicalKeyboardKey.controlLeft,
+  LogicalKeyboardKey.controlRight,
+  LogicalKeyboardKey.altLeft,
+  LogicalKeyboardKey.altRight,
+  LogicalKeyboardKey.metaLeft,
+  LogicalKeyboardKey.metaRight,
+};
+
+/// Stateful `Focus` host for `<box onKey>`. Owns a `FocusNode` so it
+/// can re-request focus on a pointer-down — making the node behave like
+/// any clickable desktop control. A bare `Focus` is NOT click-focusable
+/// (it only takes focus via `autofocus`, once, or Tab traversal), so an
+/// `onKey` node would silently stop receiving keys the moment focus
+/// moved elsewhere. The owned node also survives cold rebuilds with its
+/// focus state intact.
+///
+/// Click-to-focus rides a `Listener` (`onPointerDown`), not a
+/// `GestureDetector` — a `Listener` never enters the gesture arena, so
+/// it can't steal an `onTap` the same node might also carry. `autofocus`
+/// is kept so the primitive also works with no click; with several
+/// `onKey` nodes in one focus scope only the first wins the autofocus.
+class _SkalFocus extends StatefulWidget {
+  const _SkalFocus({
+    required this.bridge,
+    required this.handlerId,
+    required this.child,
+  });
+
+  final SkalBridge bridge;
+  final int handlerId;
+  final Widget child;
+
+  @override
+  State<_SkalFocus> createState() => _SkalFocusState();
+}
+
+class _SkalFocusState extends State<_SkalFocus> {
+  final FocusNode _node = FocusNode(debugLabel: 'skal onKey');
+
+  @override
+  void dispose() {
+    _node.dispose();
+    super.dispose();
+  }
+
+  KeyEventResult _onKeyEvent(FocusNode _, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    // A bare modifier press is its own KeyDownEvent — skip it so `onKey`
+    // doesn't emit a junk "meta+meta left" combo. The modifier still
+    // rides the NEXT real key via `hk` below.
+    if (_modifierKeys.contains(event.logicalKey)) {
+      return KeyEventResult.ignored;
+    }
+    final hk = HardwareKeyboard.instance;
+    final parts = <String>[];
+    if (hk.isControlPressed) parts.add('ctrl');
+    if (hk.isShiftPressed) parts.add('shift');
+    if (hk.isAltPressed) parts.add('alt');
+    if (hk.isMetaPressed) parts.add('meta');
+    final label = event.logicalKey.keyLabel;
+    parts.add(label.isEmpty ? 'unknown' : label.toLowerCase());
+    widget.bridge
+        .dispatchEventStr(widget.handlerId, parts.join('+'), eventKind: evKey);
+    // `ignored` — onKey observes the key, it doesn't consume it.
+    return KeyEventResult.ignored;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      focusNode: _node,
+      autofocus: true,
+      onKeyEvent: _onKeyEvent,
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (_) => _node.requestFocus(),
+        child: widget.child,
+      ),
+    );
+  }
 }
 
 /// Wrap [child] in a [GestureDetector] when the node has any gesture
@@ -1521,6 +1655,8 @@ Widget _buildBox(NodeState n, SkalBridge bridge) {
   inner = _applyColdVisual(n, inner);
   inner = _applyHeight(height, _applyWidth(width, inner));
   inner = _applyGestures(n, bridge, inner);
+  inner = _applyHover(n, bridge, inner);
+  inner = _applyFocus(n, bridge, inner);
   return _hotLayer(node: n, child: inner);
 }
 
@@ -1571,6 +1707,8 @@ Widget _buildStack(NodeState n, SkalBridge bridge) {
   inner = _applyColdVisual(n, inner);
   inner = _applyHeight(height, _applyWidth(width, inner));
   inner = _applyGestures(n, bridge, inner);
+  inner = _applyHover(n, bridge, inner);
+  inner = _applyFocus(n, bridge, inner);
   return _hotLayer(node: n, child: inner);
 }
 
@@ -1627,35 +1765,41 @@ Widget _buildListView(NodeState n, SkalBridge bridge) {
   // it doesn't fight the scroll viewport's content extent.
   final pad = _paddingFor(n, 16);
 
-  Widget inner = ListView.builder(
-    scrollDirection: axis,
-    padding: pad,
-    // With pull-to-refresh on, force always-scrollable physics so the
-    // RefreshIndicator can be pulled even when the rows don't fill the
-    // viewport (a plain ListView won't overscroll a short list).
-    physics: n.onRefreshHandlerId != 0
-        ? const AlwaysScrollableScrollPhysics()
-        : null,
-    // For interspersed-gap rendering we double the slot count and
-    // alternate: even = real child, odd = gap. Cheaper than building
-    // a Column-per-row with gap inside. The gap box runs along the
-    // scroll axis.
-    itemCount: count == 0 ? 0 : (count * 2 - 1),
-    itemBuilder: (_, i) {
-      if (i.isOdd) {
-        return axis == Axis.horizontal
-            ? SizedBox(width: gap.toDouble())
-            : SizedBox(height: gap.toDouble());
-      }
-      // O(1) on list-backed ListChildList for the visible window.
-      final childId = n.childAt(i ~/ 2);
-      return SkalNode(
-        nodeId: childId,
-        bridge: bridge,
-        key: ValueKey<int>(childId),
+  // With pull-to-refresh on, force always-scrollable physics so the
+  // RefreshIndicator can be pulled even when the rows don't fill the
+  // viewport (a plain ListView won't overscroll a short list).
+  final ScrollPhysics? physics = n.onRefreshHandlerId != 0
+      ? const AlwaysScrollableScrollPhysics()
+      : null;
+  ListView buildList(ScrollController? c) => ListView.builder(
+        controller: c,
+        scrollDirection: axis,
+        padding: pad,
+        physics: physics,
+        // For interspersed-gap rendering we double the slot count and
+        // alternate: even = real child, odd = gap. Cheaper than building
+        // a Column-per-row with gap inside. The gap box runs along the
+        // scroll axis.
+        itemCount: count == 0 ? 0 : (count * 2 - 1),
+        itemBuilder: (_, i) {
+          if (i.isOdd) {
+            return axis == Axis.horizontal
+                ? SizedBox(width: gap.toDouble())
+                : SizedBox(height: gap.toDouble());
+          }
+          // O(1) on list-backed ListChildList for the visible window.
+          final childId = n.childAt(i ~/ 2);
+          return SkalNode(
+            nodeId: childId,
+            bridge: bridge,
+            key: ValueKey<int>(childId),
+          );
+        },
       );
-    },
-  );
+
+  Widget inner = n.getPropU32(propScrollbar, 0) != 0
+      ? _SkalScrollbar(builder: buildList)
+      : buildList(null);
 
   // Pull-to-refresh — wrap the ListView itself so the RefreshIndicator
   // finds a Scrollable directly under it.
@@ -1766,6 +1910,40 @@ Widget _buildReorderableListView(NodeState n, SkalBridge bridge) {
   return _hotLayer(node: n, child: inner);
 }
 
+/// Wraps a scroll widget in an always-visible, draggable `Scrollbar`
+/// (the `scrollbar` prop on `<scrollView>` / `<listView>`). Stateful so
+/// the owned `ScrollController` — and thus the scroll offset — survives
+/// the parent's cold rebuilds. `thumbVisibility: true` requires a
+/// controller, which is why this can't be a plain wrapping function.
+class _SkalScrollbar extends StatefulWidget {
+  const _SkalScrollbar({required this.builder});
+
+  /// Builds the scroll widget — MUST attach the given controller to it.
+  final Widget Function(ScrollController) builder;
+
+  @override
+  State<_SkalScrollbar> createState() => _SkalScrollbarState();
+}
+
+class _SkalScrollbarState extends State<_SkalScrollbar> {
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scrollbar(
+      controller: _controller,
+      thumbVisibility: true,
+      child: widget.builder(_controller),
+    );
+  }
+}
+
 Widget _buildScrollView(NodeState n, SkalBridge bridge) {
   final alignment = n.getPropU32(propAlignment, -1);
   final gap = n.getPropU32(propGap, 8);
@@ -1797,15 +1975,28 @@ Widget _buildScrollView(NodeState n, SkalBridge bridge) {
           children: spaced,
         );
 
-  Widget inner = SingleChildScrollView(
-    scrollDirection: axis,
-    // See _buildListView — pull-to-refresh needs an always-scrollable
-    // viewport so a short page can still be overscrolled.
-    physics: n.onRefreshHandlerId != 0
-        ? const AlwaysScrollableScrollPhysics()
-        : null,
-    child: flex,
-  );
+  // See _buildListView — pull-to-refresh needs an always-scrollable
+  // viewport so a short page can still be overscrolled.
+  final ScrollPhysics? physics = n.onRefreshHandlerId != 0
+      ? const AlwaysScrollableScrollPhysics()
+      : null;
+  Widget inner;
+  if (n.getPropU32(propScrollbar, 0) != 0) {
+    inner = _SkalScrollbar(
+      builder: (c) => SingleChildScrollView(
+        controller: c,
+        scrollDirection: axis,
+        physics: physics,
+        child: flex,
+      ),
+    );
+  } else {
+    inner = SingleChildScrollView(
+      scrollDirection: axis,
+      physics: physics,
+      child: flex,
+    );
+  }
   inner = _withRefresh(n, bridge, inner);
 
   inner = _applyColdVisual(n, inner, defaultPadding: 16);
@@ -2348,6 +2539,68 @@ Widget _buildBottomSheet(NodeState n, SkalBridge bridge) {
   return _hotLayer(node: n, child: inner);
 }
 
+/// `<backdropFilter blurRadius={…}>` → Flutter `BackdropFilter` — a
+/// blur / frosted-glass layer. The blur applies to whatever is painted
+/// behind it, so place a `<backdropFilter>` inside a `<stack>` above
+/// the content to frost. Its own children render un-blurred on top
+/// (e.g. a translucent tint). Wrapped in a `ClipRect` so the blur is
+/// bounded to this widget's box rather than bleeding across the layer.
+Widget _buildBackdropFilter(NodeState n, SkalBridge bridge) {
+  final width = n.getPropU32(propWidth, kNoValue);
+  final height = n.getPropU32(propHeight, kNoValue);
+  final radius = n.getPropU32(propBlurRadius, 8).toDouble();
+  final children = _childWidgets(n, bridge);
+  final Widget? content = children.isEmpty
+      ? null
+      : (children.length == 1
+          ? children.first
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: children,
+            ));
+  Widget inner = ClipRect(
+    child: BackdropFilter(
+      filter: ImageFilter.blur(sigmaX: radius, sigmaY: radius),
+      child: content,
+    ),
+  );
+  inner = _applyColdVisual(n, inner);
+  inner = _applyHeight(height, _applyWidth(width, inner));
+  return _hotLayer(node: n, child: inner);
+}
+
+/// `<interactiveViewer minScale maxScale>` → Flutter `InteractiveViewer`
+/// — bounded pinch-zoom + pan of its single child.
+Widget _buildInteractiveViewer(NodeState n, SkalBridge bridge) {
+  final width = n.getPropU32(propWidth, kNoValue);
+  final height = n.getPropU32(propHeight, kNoValue);
+  // InteractiveViewer asserts 0 < minScale <= maxScale — clamp a
+  // malformed prop set rather than letting it crash.
+  var minScale = n.getPropF32(propMinScale, 0.8);
+  if (minScale <= 0) minScale = 0.8;
+  var maxScale = n.getPropF32(propMaxScale, 4.0);
+  if (maxScale < minScale) maxScale = minScale;
+  final children = _childWidgets(n, bridge);
+  final Widget content = children.isEmpty
+      ? const SizedBox.shrink()
+      : (children.length == 1
+          ? children.first
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: children,
+            ));
+  Widget inner = InteractiveViewer(
+    minScale: minScale,
+    maxScale: maxScale,
+    child: content,
+  );
+  inner = _applyColdVisual(n, inner);
+  inner = _applyHeight(height, _applyWidth(width, inner));
+  return _hotLayer(node: n, child: inner);
+}
+
 /// `<slider value={…} min={…} max={…} onChange={…} />` → a stateful
 /// [_SkalSlider] host (uncontrolled while dragging, controlled
 /// otherwise).
@@ -2460,6 +2713,8 @@ Widget _buildWrap(NodeState n, SkalBridge bridge) {
   inner = _applyColdVisual(n, inner);
   inner = _applyHeight(height, _applyWidth(width, inner));
   inner = _applyGestures(n, bridge, inner);
+  inner = _applyHover(n, bridge, inner);
+  inner = _applyFocus(n, bridge, inner);
   return _hotLayer(node: n, child: inner);
 }
 

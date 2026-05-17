@@ -89,6 +89,12 @@ const TAG_TO_WIDGET = {
   // Drag-and-drop — <dragItem> carries dragData; <dropZone onDrop>.
   dragItem:             B.WT_DRAG_ITEM,
   dropZone:             B.WT_DROP_ZONE,
+  // §2 controls — radio / chip take checked + onChange; segmentedButton
+  // takes activeTab + onChange; expansionTile takes title + onChange.
+  radio:                B.WT_RADIO,
+  chip:                 B.WT_CHIP,
+  segmentedButton:      B.WT_SEGMENTED_BUTTON,
+  expansionTile:        B.WT_EXPANSION_TILE,
 };
 
 /**
@@ -689,7 +695,8 @@ const _renderer = createRenderer({
     // node's text content. Same OP_SET_TEXT for both; renderer-side
     // semantic is identical (the widget composable consumes
     // `node.text.value`).
-    if (name === 'label' && (node.tag === 'button' || node.tag === 'text')) {
+    if (name === 'label' &&
+        (node.tag === 'button' || node.tag === 'text' || node.tag === 'chip')) {
       const s = value == null ? '' : String(value);
       B.setText(node.id, s);
       B.scheduleCommit();

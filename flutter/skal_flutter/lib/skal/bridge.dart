@@ -32,7 +32,8 @@
 import 'dart:collection';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
 
 import '../skal_ffi.dart';
 import 'node_state.dart';
@@ -127,6 +128,30 @@ class SkalBridge {
   /// Fires when opSetDesign changes either field — SkalApp rebuilds
   /// the MaterialApp theme + CupertinoTheme in response.
   final NodeNotifier designChanged = NodeNotifier();
+
+  /// True when the active design system resolves to Cupertino.
+  ///
+  /// `designMode` 2 (adaptive) resolves to Cupertino on iOS / macOS and
+  /// Material elsewhere; mode 1 is always Cupertino, mode 0 always
+  /// Material. Single source of truth — the renderer (`root.dart`) and
+  /// the imperative dialog API (`dialogs.dart`) both branch on this so a
+  /// dialog never disagrees with the surrounding controls.
+  ///
+  /// Read as an init-time flag: the renderer caches the branch per node
+  /// (`MemoizingListenableBuilder`) and nothing depends on it reactively,
+  /// so switching Material ↔ Cupertino mid-app will not refresh
+  /// already-built nodes. Set the mode once at startup.
+  bool get isCupertino {
+    switch (designMode) {
+      case 1:
+        return true;
+      case 2:
+        final p = defaultTargetPlatform;
+        return p == TargetPlatform.iOS || p == TargetPlatform.macOS;
+      default:
+        return false;
+    }
+  }
 
   /// App-level RPC dispatcher for the root node — backs the imperative
   /// dialog API (skal/dialogs.dart). Held on the bridge (not just the

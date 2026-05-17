@@ -629,3 +629,53 @@ export const DragItem = makeMissingMacroComponent('DragItem');
  * @type {Component<BaseProps & { onDrop?: (dataId: string) => void }>}
  */
 export const DropZone = makeMissingMacroComponent('DropZone');
+
+/**
+ * Single radio button. Flutter `Radio`.
+ *
+ * `checked` is its selected state; a tap fires `onChange(true)`. The
+ * app owns the group — its handler clears the other radios' `checked`.
+ *
+ * @type {Component<BaseProps & {
+ *   checked?: boolean, onChange?: (selected: boolean) => void,
+ * }>}
+ */
+export const Radio = makeMissingMacroComponent('Radio');
+
+/**
+ * Selectable chip. Flutter `FilterChip`.
+ *
+ * `label` is the chip text, `checked` the selected state;
+ * `onChange(bool)` fires on a tap.
+ *
+ * @type {Component<BaseProps & {
+ *   label?: string, checked?: boolean,
+ *   onChange?: (selected: boolean) => void,
+ * }>}
+ */
+export const Chip = makeMissingMacroComponent('Chip');
+
+/**
+ * Single-select segmented control. Flutter `SegmentedButton`.
+ *
+ * Each child is one segment's label. `activeTab` is the selected
+ * index; `onChange(index)` fires on a tap.
+ *
+ * @type {Component<BaseProps & {
+ *   activeTab?: number, onChange?: (index: number) => void,
+ * }>}
+ */
+export const SegmentedButton = makeMissingMacroComponent('SegmentedButton');
+
+/**
+ * Accordion / disclosure row. Flutter `ExpansionTile`.
+ *
+ * `title` is the always-visible header; the children are the body
+ * revealed when expanded. `onChange(bool)` fires on expand / collapse.
+ * The open state is managed host-side.
+ *
+ * @type {Component<BaseProps & {
+ *   title?: string, onChange?: (expanded: boolean) => void,
+ * }>}
+ */
+export const ExpansionTile = makeMissingMacroComponent('ExpansionTile');

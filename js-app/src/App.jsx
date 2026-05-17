@@ -18,7 +18,7 @@ import {
   ProgressBar, LazyGrid, Wrap, SafeArea, RichText, ReorderableListView,
   TextInput, Tabs, Tab, Hero, AnimatedList, CrossFade, ListTile, PageView,
   Dismissible, CustomScrollView, SliverAppBar, SliverList, SliverGrid, Canvas,
-  DragItem, DropZone,
+  DragItem, DropZone, Radio, Chip, SegmentedButton, ExpansionTile,
 } from 'skal';
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
@@ -460,6 +460,10 @@ function UITab() {
   let feedSeq = 0;
   const [canvasShapes, setCanvasShapes] = createSignal([]);
   const [dropped, setDropped] = createSignal([]);
+  const [pickSize, setPickSize] = createSignal('M');
+  const [chosen, setChosen]   = createSignal([]);
+  const [seg, setSeg]         = createSignal(0);
+  const [expanded, setExpanded] = createSignal(false);
   const [dragRest, setDragRest] = createSignal('0, 0');
   const [panDelta, setPanDelta] = createSignal('—');
   const [pinch, setPinch]     = createSignal(1);
@@ -897,6 +901,49 @@ function UITab() {
         </Row>
         <Text
           label="Drag a fruit chip onto the zone — it highlights host-side while you hover; on release onDrop fires with the chip's dragData string. The whole drag is host-side; only the drop crosses the bridge."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+
+      {/* ── More controls — radio / chip / segmented / accordion ── */}
+      <Section title="More controls — radio · chip · segmented · accordion">
+        <Row gap={16}>
+          <For each={['S', 'M', 'L']}>
+            {(size) => (
+              <Row gap={2}>
+                <Radio checked={pickSize() === size} onChange={() => setPickSize(size)} />
+                <Text label={size} fontSize={13} color={INK} />
+              </Row>
+            )}
+          </For>
+        </Row>
+        <Row gap={8}>
+          <For each={['Red', 'Green', 'Blue']}>
+            {(c) => (
+              <Chip
+                label={c}
+                checked={chosen().includes(c)}
+                onChange={(on) =>
+                  setChosen(on ? [...chosen(), c] : chosen().filter((x) => x !== c))}
+              />
+            )}
+          </For>
+        </Row>
+        <SegmentedButton activeTab={seg()} onChange={(i) => setSeg(i)}>
+          <Text label="Day" fontSize={13} />
+          <Text label="Week" fontSize={13} />
+          <Text label="Month" fontSize={13} />
+        </SegmentedButton>
+        <Box background={CARD} cornerRadius={8} borderWidth={1} borderColor={BORDER}>
+          <ExpansionTile title="Details" onChange={(e) => setExpanded(e)}>
+            <Box padding={14} background={CHIP}>
+              <Text label="Body content revealed by the accordion — host-owned open state, host-side expand animation." fontSize={12} color={SUBTLE} />
+            </Box>
+          </ExpansionTile>
+        </Box>
+        <Text
+          label={`size ${pickSize()} · chips ${chosen().join('/') || '—'} · segment ${['Day', 'Week', 'Month'][seg()]} · details ${expanded() ? 'open' : 'closed'}`}
           fontSize={11}
           color={SUBTLE}
         />

@@ -39,7 +39,6 @@ import 'dart:convert' show jsonDecode;
 import 'dart:io' show File;
 
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
@@ -89,10 +88,23 @@ class _SkalRootState extends State<SkalRoot>
 
   @override
   Widget build(BuildContext context) {
-    return SkalNode(
-      nodeId: kRootNodeId,
-      bridge: widget.bridge,
-      key: const ValueKey<int>(kRootNodeId),
+    // _SkalBrightness carries the live design brightness as an
+    // InheritedWidget. SkalRoot rebuilds on every setDesign (main.dart's
+    // designChanged ListenableBuilder cascades into it), so this token
+    // changes then — and the <text> nodes that depend on it rebuild to
+    // re-pick their brightness-derived default color.
+    //
+    // Material vs Cupertino mode is deliberately NOT carried here: it is
+    // an init-time flag, not a reactive input. The control builders read
+    // it via bridge.isCupertino as a cached build-time branch. Switching
+    // mode mid-app is unsupported by design — set it once at startup.
+    return _SkalBrightness(
+      brightness: widget.bridge.designBrightness,
+      child: SkalNode(
+        nodeId: kRootNodeId,
+        bridge: widget.bridge,
+        key: const ValueKey<int>(kRootNodeId),
+      ),
     );
   }
 }
@@ -113,12 +125,24 @@ class SkalNode extends StatelessWidget {
     if (node == null) return const SizedBox.shrink();
     return MemoizingListenableBuilder(
       listenable: node.cold,
-      builder: (_) => _buildForType(node, bridge),
+      builder: (context) => _buildForType(node, bridge, context),
     );
   }
 }
 
-Widget _buildForType(NodeState node, SkalBridge bridge) {
+Widget _buildForType(NodeState node, SkalBridge bridge, BuildContext context) {
+  // <text> is the one builder that reads the design brightness directly
+  // (_buildText picks a light/dark default foreground color). Register a
+  // dependency on _SkalBrightness so a setDesign() brightness toggle
+  // rebuilds exactly those nodes — Flutter's InheritedWidget mechanism,
+  // the same one `Theme` uses. Every other builder either ignores
+  // brightness or gets it for free via the real `Theme`/`CupertinoTheme`.
+  //
+  // Material vs Cupertino mode is NOT a dependency: it is an init flag,
+  // resolved via bridge.isCupertino as a cached build-time branch.
+  if (node.type == wtText) {
+    context.dependOnInheritedWidgetOfExactType<_SkalBrightness>();
+  }
   switch (node.type) {
     case wtBox:                  return _buildBox(node, bridge);
     case wtColumn:               return _buildColumn(node, bridge);
@@ -157,6 +181,10 @@ Widget _buildForType(NodeState node, SkalBridge bridge) {
     case wtCanvas:               return _buildCanvas(node);
     case wtDragItem:             return _buildDragItem(node, bridge);
     case wtDropZone:             return _buildDropZone(node, bridge);
+    case wtRadio:                return _buildRadio(node, bridge);
+    case wtChip:                 return _buildChip(node, bridge);
+    case wtSegmentedButton:      return _buildSegmentedButton(node, bridge);
+    case wtExpansionTile:        return _buildExpansionTile(node, bridge);
     case wtCustom:               return _buildCustom(node, bridge);
     default:                     return const SizedBox.shrink();
   }
@@ -217,24 +245,33 @@ Widget _buildCustom(NodeState n, SkalBridge bridge) {
 /// `Color(0xAARRGGBB)` constructor exactly: high byte = alpha.
 Color _argb(int v) => Color(v);
 
-/// True when the active design system (set via `setDesign` from JS,
-/// see §10.1) is Cupertino. `adaptive` mode (2) resolves to Cupertino
-/// on iOS / macOS, Material elsewhere. The ~6 control builders branch
-/// on this; structural widgets are design-agnostic.
-bool _isCupertino(SkalBridge bridge) {
-  switch (bridge.designMode) {
-    case 1:
-      return true;
-    case 2:
-      final p = defaultTargetPlatform;
-      return p == TargetPlatform.iOS || p == TargetPlatform.macOS;
-    default:
-      return false;
-  }
-}
-
 /// True when the design brightness is dark.
 bool _isDark(SkalBridge bridge) => bridge.designBrightness == 1;
+
+/// Brightness dependency token. [SkalRoot] rebuilds this whenever JS
+/// calls `setDesign` (the `MaterialApp` in main.dart already rebuilds
+/// then, and that cascades into `SkalRoot`). `<text>` nodes register a
+/// dependency on it in [_buildForType] via
+/// `dependOnInheritedWidgetOfExactType`, so a brightness toggle rebuilds
+/// exactly them — the same way `Theme` propagates.
+///
+/// Only brightness lives here. Material ↔ Cupertino mode is an init-time
+/// flag: the control builders read it via `bridge.isCupertino` as a
+/// build-time branch cached by `MemoizingListenableBuilder`. Switching
+/// mode mid-app is unsupported by design — no widget ever moves between
+/// Material and Cupertino at runtime, so that reactivity is pure waste.
+class _SkalBrightness extends InheritedWidget {
+  const _SkalBrightness({
+    required this.brightness,
+    required super.child,
+  });
+
+  final int brightness;
+
+  @override
+  bool updateShouldNotify(_SkalBrightness oldWidget) =>
+      oldWidget.brightness != brightness;
+}
 
 /// Apply a width prop (one of the layout sentinels NO_VALUE /
 /// FILL_MAX / WRAP_CONTENT, or a literal dp value).
@@ -1341,7 +1378,7 @@ class _SkalTextFieldState extends State<_SkalTextField> {
         ? (v) => bridge.dispatchEventStr(submitHandler, v, eventKind: evSubmit)
         : null;
 
-    if (_isCupertino(bridge)) {
+    if (bridge.isCupertino) {
       return CupertinoTextField(
         controller: _controller,
         focusNode: _focusNode,
@@ -1424,7 +1461,7 @@ class _SkalSliderState extends State<_SkalSlider> {
       setState(() => _dragValue = null); // hand control back to `value`
     }
 
-    if (_isCupertino(bridge)) {
+    if (bridge.isCupertino) {
       return CupertinoSlider(
         value: value,
         min: min,
@@ -1889,7 +1926,7 @@ Widget _buildButton(NodeState n, SkalBridge bridge) {
       : null;
 
   Widget widget;
-  if (_isCupertino(bridge)) {
+  if (bridge.isCupertino) {
     widget = CupertinoButton(
       onPressed: onPressed,
       color: bg != 0 ? _argb(bg) : null,
@@ -2016,7 +2053,7 @@ Widget _buildSwitch(NodeState n, SkalBridge bridge) {
   final void Function(bool)? onChanged = (enabled && handler != 0)
       ? (v) => bridge.dispatchEventBool(handler, v)
       : null;
-  final Widget widget = _isCupertino(bridge)
+  final Widget widget = bridge.isCupertino
       ? CupertinoSwitch(value: value, onChanged: onChanged)
       : Switch(value: value, onChanged: onChanged);
   return _hotLayer(node: n, child: widget);
@@ -2031,10 +2068,118 @@ Widget _buildCheckbox(NodeState n, SkalBridge bridge) {
   final void Function(bool?)? onChanged = (enabled && handler != 0)
       ? (v) => bridge.dispatchEventBool(handler, v ?? false)
       : null;
-  final Widget widget = _isCupertino(bridge)
+  final Widget widget = bridge.isCupertino
       ? CupertinoCheckbox(value: value, onChanged: onChanged)
       : Checkbox(value: value, onChanged: onChanged);
   return _hotLayer(node: n, child: widget);
+}
+
+/// `<radio checked={…} onChange={…} />` → Flutter `Radio`. A lone
+/// radio button: `checked` is its selected state, a tap dispatches
+/// `onChange(true)`. The JS app owns the group — its handler clears
+/// the other radios' `checked`. (Skal's controlled-component model:
+/// the radio never self-toggles; JS is the source of truth.)
+Widget _buildRadio(NodeState n, SkalBridge bridge) {
+  final value = n.getPropU32(propChecked, 0) != 0;
+  final handler = n.onChangeHandlerId;
+  // RadioGroup is the current API — `groupValue` / `onChanged` moved
+  // off `Radio` itself (deprecated after Flutter 3.32). A lone Skal
+  // `<radio>` is one Radio wrapped in its own RadioGroup. RadioGroup's
+  // `onChanged` is non-nullable, so it's always present; it only
+  // dispatches when an `onChange` handler is actually bound.
+  return _hotLayer(
+    node: n,
+    child: RadioGroup<int>(
+      groupValue: value ? 1 : 0,
+      onChanged: (_) {
+        if (handler != 0) bridge.dispatchEventBool(handler, true);
+      },
+      child: const Radio<int>(value: 1),
+    ),
+  );
+}
+
+/// `<chip label={…} checked={…} onChange={…} />` → Flutter `FilterChip`
+/// — a selectable chip. `label` is its text (rides `opSetText` into
+/// `node.text`), `checked` the selected state, `onChange(bool)` fires
+/// on a tap.
+Widget _buildChip(NodeState n, SkalBridge bridge) {
+  final selected = n.getPropU32(propChecked, 0) != 0;
+  final enabled = n.getPropU32(propEnabled, 1) != 0;
+  final handler = n.onChangeHandlerId;
+  Widget inner = FilterChip(
+    label: Text(n.text),
+    selected: selected,
+    onSelected: (enabled && handler != 0)
+        ? (v) => bridge.dispatchEventBool(handler, v)
+        : null,
+  );
+  return _hotLayer(node: n, child: inner);
+}
+
+/// `<segmentedButton activeTab={…} onChange={…}>` → Flutter
+/// `SegmentedButton` — a single-select row of segments. Each child is
+/// one segment's label widget; `activeTab` is the selected index and
+/// `onChange(index)` fires on a tap.
+Widget _buildSegmentedButton(NodeState n, SkalBridge bridge) {
+  final count = n.childCount;
+  if (count == 0) return const SizedBox.shrink();
+  final active = n.getPropU32(propActiveTab, 0).clamp(0, count - 1);
+  final handler = n.onChangeHandlerId;
+
+  Widget segLabel(int i) {
+    final cid = n.childAt(i);
+    return SkalNode(nodeId: cid, bridge: bridge, key: ValueKey<int>(cid));
+  }
+
+  Widget inner;
+  if (bridge.isCupertino) {
+    // iOS has a native segmented control — keep this widget in line
+    // with the rest of the adaptive control set (switch / checkbox /
+    // activity indicator all branch on the global design system).
+    inner = CupertinoSlidingSegmentedControl<int>(
+      groupValue: active,
+      children: <int, Widget>{
+        for (var i = 0; i < count; i++) i: segLabel(i),
+      },
+      onValueChanged: (v) {
+        if (v != null && handler != 0) bridge.dispatchEventInt(handler, v);
+      },
+    );
+  } else {
+    inner = SegmentedButton<int>(
+      segments: <ButtonSegment<int>>[
+        for (var i = 0; i < count; i++)
+          ButtonSegment<int>(value: i, label: segLabel(i)),
+      ],
+      selected: <int>{active},
+      showSelectedIcon: false,
+      onSelectionChanged: handler != 0
+          ? (sel) => bridge.dispatchEventInt(handler, sel.first)
+          : null,
+    );
+  }
+  inner = _applyColdVisual(n, inner);
+  return _hotLayer(node: n, child: inner);
+}
+
+/// `<expansionTile title={…} onChange={…}>` → Flutter `ExpansionTile`
+/// — an accordion row. `title` is the header; the children are the
+/// body revealed when expanded; `onChange(bool)` fires on each
+/// expand / collapse. The open state is host-owned (uncontrolled) —
+/// the expand animation runs host-side.
+Widget _buildExpansionTile(NodeState n, SkalBridge bridge) {
+  final title = n.getPropStr(propTitle) ?? '';
+  final handler = n.onChangeHandlerId;
+  Widget inner = ExpansionTile(
+    title: Text(title),
+    onExpansionChanged: handler != 0
+        ? (b) => bridge.dispatchEventBool(handler, b)
+        : null,
+    children: _childWidgets(n, bridge),
+  );
+  inner = _applyColdVisual(n, inner);
+  return _hotLayer(node: n, child: inner);
 }
 
 /// `<slider value={…} min={…} max={…} onChange={…} />` → a stateful
@@ -2057,7 +2202,7 @@ Widget _buildActivityIndicator(NodeState n, SkalBridge bridge) {
       (size == kNoValue || size == kFillMax || size == kWrapContent)
           ? 24.0
           : size.toDouble();
-  final Widget indicator = _isCupertino(bridge)
+  final Widget indicator = bridge.isCupertino
       ? CupertinoActivityIndicator(color: color != 0 ? _argb(color) : null)
       : CircularProgressIndicator(
           strokeWidth: 3,
@@ -2259,7 +2404,7 @@ class _FadePage<T> extends Page<T> {
 Widget _buildNavigator(NodeState n, SkalBridge bridge) {
   final width = n.getPropU32(propWidth, kNoValue);
   final height = n.getPropU32(propHeight, kNoValue);
-  final cupertino = _isCupertino(bridge);
+  final cupertino = bridge.isCupertino;
   final popHandler = n.onPopHandlerId;
 
   final pages = <Page<dynamic>>[];
@@ -2397,7 +2542,7 @@ Widget _buildScreen(NodeState n, SkalBridge bridge) {
 Widget _buildTabs(NodeState n, SkalBridge bridge) {
   final width = n.getPropU32(propWidth, kNoValue);
   final height = n.getPropU32(propHeight, kNoValue);
-  final cupertino = _isCupertino(bridge);
+  final cupertino = bridge.isCupertino;
   final handler = n.onChangeHandlerId;
 
   final contents = <Widget>[];

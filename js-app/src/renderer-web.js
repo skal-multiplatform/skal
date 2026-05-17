@@ -90,6 +90,11 @@ const TAG_TO_HTML = {
   // HTML5 DnD parity is best-effort, not wired here).
   dragItem:             'div',
   dropZone:             'div',
+  // §2 controls — radio → an <input>; the rest degrade to divs on web.
+  radio:                'input',
+  chip:                 'div',
+  segmentedButton:      'div',
+  expansionTile:        'div',
 };
 
 // Spinner keyframes for <activityIndicator> — injected once.

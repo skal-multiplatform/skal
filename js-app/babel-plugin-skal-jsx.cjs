@@ -116,6 +116,10 @@ const BUILT_IN_WIDGET_NAMES = {
   Canvas:               'canvas',
   DragItem:             'dragItem',
   DropZone:             'dropZone',
+  Radio:                'radio',
+  Chip:                 'chip',
+  SegmentedButton:      'segmentedButton',
+  ExpansionTile:        'expansionTile',
 };
 
 module.exports = function ({ types: t }) {

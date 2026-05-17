@@ -85,7 +85,7 @@ Future<Object?> _showDialog(SkalBridge bridge, Map<String, dynamic> spec) {
   final message = spec['message'] as String?;
   final actions = _actions(spec);
 
-  if (bridge.designMode == 1) {
+  if (bridge.isCupertino) {
     return showCupertinoDialog<Object?>(
       context: ctx,
       builder: (c) => CupertinoAlertDialog(
@@ -125,7 +125,7 @@ Future<Object?> _showActionSheet(
   final title = spec['title'] as String?;
   final actions = _actions(spec);
 
-  if (bridge.designMode == 1) {
+  if (bridge.isCupertino) {
     return showCupertinoModalPopup<Object?>(
       context: ctx,
       builder: (c) => CupertinoActionSheet(

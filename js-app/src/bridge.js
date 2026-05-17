@@ -175,6 +175,11 @@ export const WT_CANVAS                  = 35;
 // Drag-and-drop — <dragItem> (Draggable) + <dropZone> (DragTarget).
 export const WT_DRAG_ITEM               = 36;
 export const WT_DROP_ZONE               = 37;
+// §2 controls — radio, chip, segmented button, expansion tile.
+export const WT_RADIO                   = 38;
+export const WT_CHIP                    = 39;
+export const WT_SEGMENTED_BUTTON        = 40;
+export const WT_EXPANSION_TILE          = 41;
 
 // Event kinds
 export const EV_CLICK         = 0x01;

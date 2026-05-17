@@ -300,6 +300,23 @@ const int wtDragItem             = 36;
 /// fires with the item's `dragData`. Highlights host-side while an
 /// item hovers — zero bridge traffic until the drop.
 const int wtDropZone             = 37;
+/// `<radio>` → Flutter `Radio` — a single radio button. `propChecked`
+/// is its selected state, `onChange(true)` fires on a tap; the JS app
+/// owns the group (clears the others). See §2.
+const int wtRadio                = 38;
+/// `<chip>` → Flutter `FilterChip` — a selectable chip. The `label`
+/// prop is its text, `propChecked` the selected state, `onChange(bool)`
+/// fires on a tap.
+const int wtChip                 = 39;
+/// `<segmentedButton>` → Flutter `SegmentedButton` — a row of segments
+/// with one selected. Children are the segment labels; `propActiveTab`
+/// selects, `onChange(index)` fires on a tap.
+const int wtSegmentedButton      = 40;
+/// `<expansionTile>` → Flutter `ExpansionTile` — an accordion row.
+/// `propTitle` is the header, children are the body revealed when
+/// expanded; `onChange(bool)` fires on expand / collapse. The open
+/// state is host-owned (uncontrolled).
+const int wtExpansionTile        = 41;
 
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick        = 0x01;

@@ -3142,6 +3142,7 @@ IconData _iconFor(String name) {
     case 'play':                   return Icons.play_circle;
     case 'music':                  return Icons.music_note;
     case 'map':                    return Icons.map;
+    case 'code': case 'terminal':  return Icons.code;
     default:                       return Icons.circle;
   }
 }

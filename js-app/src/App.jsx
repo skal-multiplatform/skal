@@ -11,7 +11,7 @@
 // switching tabs never re-mounts; scroll position and signal state on
 // each tab survive.
 
-import { createSignal, createMemo, For } from 'solid-js';
+import { createSignal, createMemo, For, onMount } from 'solid-js';
 import {
   Box, Column, Row, Text, Button, ListView, ScrollView,
   Image, Stack, Switch, Slider, Checkbox, ActivityIndicator,
@@ -1629,6 +1629,362 @@ function LibsTab() {
 // App — three bottom tabs over the demo surfaces.
 // ════════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════════
+// JS tab — probes the embedded bun + JSC runtime: Web Crypto, Bun APIs,
+// standard JS. Each probe is timed and its response logged, so the tab
+// doubles as a live capability report — Bun / bun:sqlite probes show an
+// error (not a crash) when the runtime doesn't expose them.
+// ════════════════════════════════════════════════════════════════════
+
+const _hex = (bytes) =>
+  Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+
+// Dynamically import a built-in module (`bun:sqlite`, `node:fs`, …).
+//
+// The bundle is evaluated as a CLASSIC SCRIPT — Bun__REPL__evaluate runs
+// it as a JSC `Program` — so there is NO `require` in scope. Dynamic
+// `import()` still works: it routes through the runtime's module loader
+// even from a classic script. The `import()` is built inside a
+// `new Function` so neither bundler (vite nor `bun build`) ever parses
+// it — they can't try, and fail, to resolve the specifier at build time,
+// and rollup never sees a dynamic import in an IIFE bundle.
+const _dynImport = new Function('m', 'return import(m);');
+const _importMod = (name) => _dynImport(name);
+// Pick a member from an imported module namespace, tolerating both a
+// named export and one nested under `default` (CJS-interop shape).
+const _pick = (mod, key) =>
+  (mod && mod[key]) || (mod && mod.default && mod.default[key]) || undefined;
+
+// Each probe: { label, run }. `run` is sync or async and returns a
+// string (the "response"); a throw is caught and shown as an error.
+const JS_PROBE_GROUPS = [
+  {
+    title: 'Web Crypto — crypto.subtle (global, native)',
+    probes: [
+      { label: 'crypto.randomUUID()', run: () => crypto.randomUUID() },
+      {
+        label: 'crypto.getRandomValues — 16 bytes',
+        run: () => {
+          const a = new Uint8Array(16);
+          crypto.getRandomValues(a);
+          return _hex(a);
+        },
+      },
+      {
+        label: 'crypto.subtle.digest — SHA-256 of 64 KB',
+        run: async () => {
+          const data = new Uint8Array(65536);
+          crypto.getRandomValues(data);
+          const h = await crypto.subtle.digest('SHA-256', data);
+          return _hex(new Uint8Array(h)).slice(0, 32) + '…';
+        },
+      },
+      {
+        label: 'crypto.subtle — AES-GCM encrypt + decrypt',
+        run: async () => {
+          const key = await crypto.subtle.generateKey(
+            { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+          const iv = crypto.getRandomValues(new Uint8Array(12));
+          const msg = new TextEncoder().encode('hello from skal');
+          const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, msg);
+          const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+          return `${ct.byteLength}-byte ct → "${new TextDecoder().decode(pt)}"`;
+        },
+      },
+    ],
+  },
+  {
+    title: 'Bun runtime — degrades gracefully if absent',
+    probes: [
+      {
+        label: 'Bun.version',
+        run: () => {
+          if (typeof Bun === 'undefined') throw new Error('Bun global not present');
+          return `Bun ${Bun.version}` +
+            (Bun.revision ? ` (${Bun.revision.slice(0, 7)})` : '');
+        },
+      },
+      {
+        label: 'Bun.nanoseconds()',
+        run: () => {
+          if (typeof Bun === 'undefined') throw new Error('Bun global not present');
+          return `${Bun.nanoseconds()} ns since process start`;
+        },
+      },
+      {
+        label: "Bun.hash('the quick brown fox')",
+        run: () => {
+          if (typeof Bun === 'undefined') throw new Error('Bun global not present');
+          return String(Bun.hash('the quick brown fox'));
+        },
+      },
+      {
+        label: "new Bun.CryptoHasher('sha256')",
+        run: () => {
+          if (typeof Bun === 'undefined' || !Bun.CryptoHasher) {
+            throw new Error('Bun.CryptoHasher not present');
+          }
+          const h = new Bun.CryptoHasher('sha256');
+          h.update('hello from skal');
+          return h.digest('hex').slice(0, 32) + '…';
+        },
+      },
+      {
+        label: 'bun:sqlite — in-memory query',
+        run: async () => {
+          const mod = await _importMod('bun:' + 'sqlite');
+          const Database = _pick(mod, 'Database') || mod.default;
+          if (typeof Database !== 'function') {
+            throw new Error('bun:sqlite imported, but no Database constructor');
+          }
+          const db = new Database(':memory:');
+          db.run('CREATE TABLE t (id INTEGER, name TEXT)');
+          db.run("INSERT INTO t VALUES (1, 'skal')");
+          const row = db.query('SELECT name FROM t WHERE id = ?').get(1);
+          db.close();
+          return `select → ${JSON.stringify(row)}`;
+        },
+      },
+    ],
+  },
+  {
+    title: 'Node compatibility — node: builtins',
+    probes: [
+      {
+        label: 'process — platform / arch / version',
+        run: () => {
+          if (typeof process === 'undefined') {
+            throw new Error('process global not present');
+          }
+          return `${process.platform} ${process.arch} · ` +
+            `${process.version || '(no version)'}`;
+        },
+      },
+      {
+        label: "node:crypto — createHash('sha256')",
+        run: async () => {
+          const createHash = _pick(await _importMod('node:' + 'crypto'), 'createHash');
+          if (!createHash) throw new Error('node:crypto has no createHash');
+          return createHash('sha256').update('hello from skal')
+            .digest('hex').slice(0, 32) + '…';
+        },
+      },
+      {
+        label: 'node:crypto — randomBytes(16)',
+        run: async () => {
+          const randomBytes = _pick(await _importMod('node:' + 'crypto'), 'randomBytes');
+          if (!randomBytes) throw new Error('node:crypto has no randomBytes');
+          return randomBytes(16).toString('hex');
+        },
+      },
+      {
+        label: 'node:os — platform / arch / cpus',
+        run: async () => {
+          const os = await _importMod('node:' + 'os');
+          const platform = _pick(os, 'platform');
+          const arch = _pick(os, 'arch');
+          const cpus = _pick(os, 'cpus');
+          if (!platform) throw new Error('node:os has no platform()');
+          return `${platform()} ${arch()} · ${cpus().length} cpus`;
+        },
+      },
+      {
+        label: 'node:path — join + normalize',
+        run: async () => {
+          const join = _pick(await _importMod('node:' + 'path'), 'join');
+          if (!join) throw new Error('node:path has no join');
+          return join('/a/b', '..', 'c', './d.txt');
+        },
+      },
+      {
+        label: 'Buffer — from / toString',
+        run: () => {
+          if (typeof Buffer === 'undefined') {
+            throw new Error('Buffer global not present');
+          }
+          return `hex = ${Buffer.from('skal', 'utf8').toString('hex')}`;
+        },
+      },
+      {
+        label: 'node:fs — temp write + read',
+        run: async () => {
+          const fs = await _importMod('node:' + 'fs');
+          const os = await _importMod('node:' + 'os');
+          const path = await _importMod('node:' + 'path');
+          const writeFileSync = _pick(fs, 'writeFileSync');
+          const readFileSync = _pick(fs, 'readFileSync');
+          const unlinkSync = _pick(fs, 'unlinkSync');
+          const tmpdir = _pick(os, 'tmpdir');
+          const join = _pick(path, 'join');
+          if (!writeFileSync || !readFileSync || !tmpdir || !join) {
+            throw new Error('node:fs / os / path missing an expected member');
+          }
+          const file = join(tmpdir(), `skal-probe-${Date.now()}.txt`);
+          writeFileSync(file, 'skal fs probe');
+          const back = readFileSync(file, 'utf8');
+          try { if (unlinkSync) unlinkSync(file); } catch (_) { /* best effort */ }
+          return `wrote + read back "${back}"`;
+        },
+      },
+    ],
+  },
+  {
+    title: 'Standard JS & Web APIs',
+    probes: [
+      {
+        label: 'JSON stringify + parse — 1000-object array',
+        run: () => {
+          const obj = Array.from({ length: 1000 },
+            (_, i) => ({ id: i, name: 'item' + i, ok: i % 2 === 0 }));
+          const s = JSON.stringify(obj);
+          const back = JSON.parse(s);
+          return `${s.length} bytes · ${back.length} items round-tripped`;
+        },
+      },
+      {
+        label: 'TextEncoder / TextDecoder round-trip',
+        run: () => {
+          const bytes = new TextEncoder().encode('skal 🚀 unicode ✓');
+          return `${bytes.length} bytes → "${new TextDecoder().decode(bytes)}"`;
+        },
+      },
+      {
+        label: 'structuredClone — nested object',
+        run: () => {
+          if (typeof structuredClone === 'undefined') {
+            throw new Error('structuredClone not present');
+          }
+          const c = structuredClone({ a: 1, nested: { b: [1, 2, 3] } });
+          return `cloned → nested.b = ${JSON.stringify(c.nested.b)}`;
+        },
+      },
+      {
+        label: 'setTimeout — 20 ms timer (see duration)',
+        run: async () => {
+          if (typeof setTimeout === 'undefined') {
+            throw new Error('setTimeout not present');
+          }
+          await new Promise((res) => setTimeout(res, 20));
+          return 'timer fired — measured duration ≈ requested 20 ms';
+        },
+      },
+      {
+        label: 'tight compute loop — 5,000,000 iterations',
+        run: () => {
+          let sum = 0;
+          for (let i = 0; i < 5_000_000; i++) sum += i % 7;
+          return `sum = ${sum}`;
+        },
+      },
+    ],
+  },
+];
+
+// A probe that hangs — e.g. a never-settling import() — must not stall
+// the rest of the harness, so each runs under a timeout. The cap is far
+// above any real probe (the slowest, a 5M-iteration loop, is tens of ms
+// even interpreted).
+const _PROBE_TIMEOUT_MS = 3000;
+
+function _runProbe(p) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`timed out after ${_PROBE_TIMEOUT_MS} ms`)),
+      _PROBE_TIMEOUT_MS);
+  });
+  // Promise.resolve().then(...) folds a synchronous throw in run() into
+  // a rejection, so the race handles sync and async probes alike.
+  return Promise.race([
+    Promise.resolve().then(() => p.run()),
+    timeout,
+  ]).finally(() => clearTimeout(timer));
+}
+
+function JsTab() {
+  // label → { ms, response, ok }
+  const [results, setResults] = createSignal({});
+  const [running, setRunning] = createSignal(false);
+
+  const now = () =>
+    (typeof performance !== 'undefined' && performance.now)
+      ? performance.now()
+      : Date.now();
+
+  async function runAll() {
+    if (running()) return;
+    setRunning(true);
+    setResults({});
+    for (const group of JS_PROBE_GROUPS) {
+      for (const p of group.probes) {
+        const t0 = now();
+        let response;
+        let ok = true;
+        try {
+          response = String(await _runProbe(p));
+        } catch (e) {
+          response = (e && e.message) ? e.message : String(e);
+          ok = false;
+        }
+        const ms = now() - t0;
+        setResults((prev) => ({ ...prev, [p.label]: { ms, response, ok } }));
+      }
+    }
+    setRunning(false);
+  }
+
+  // The root <Tabs> is an IndexedStack — every tab mounts at startup, so
+  // this runs once on app launch and the log is ready when the tab opens.
+  onMount(() => { runAll(); });
+
+  return (
+    <ScrollView background={BG} padding={16} gap={14} scrollbar>
+      <Text label="JS runtime — probes & timings" fontSize={24} fontWeight={800} color={INK} />
+      <Text
+        label="Each function runs in the embedded bun + JSC runtime; its duration and response are logged. Bun / bun:sqlite probes report an error (not a crash) if the runtime doesn't expose them."
+        fontSize={13}
+        color={SUBTLE}
+      />
+      <Button label={running() ? 'Running…' : 'Re-run all probes'} onClick={runAll} />
+      <For each={JS_PROBE_GROUPS}>
+        {(group) => (
+          <Section title={group.title}>
+            <For each={group.probes}>
+              {(p) => {
+                const r = () => results()[p.label];
+                const resp = () => {
+                  const v = r();
+                  if (!v) return 'not run yet';
+                  return v.response.length > 110
+                    ? v.response.slice(0, 110) + '…'
+                    : v.response;
+                };
+                return (
+                  <Column gap={2}>
+                    <Text label={p.label} fontSize={13} fontWeight={700} color={INK} />
+                    <Text
+                      label={r() ? `${r().ms.toFixed(3)} ms` : '—'}
+                      fontSize={11}
+                      fontWeight={700}
+                      color={ACCENT}
+                    />
+                    <Text
+                      label={resp()}
+                      fontSize={12}
+                      maxLines={3}
+                      color={r() ? (r().ok ? SUBTLE : RED) : SUBTLE}
+                    />
+                  </Column>
+                );
+              }}
+            </For>
+          </Section>
+        )}
+      </For>
+    </ScrollView>
+  );
+}
+
 export default function App() {
   const [appTab, setAppTab] = createSignal(0);
   return (
@@ -1641,6 +1997,9 @@ export default function App() {
       </Tab>
       <Tab title="Libs" icon="explore">
         <LibsTab />
+      </Tab>
+      <Tab title="JS" icon="code">
+        <JsTab />
       </Tab>
     </Tabs>
   );

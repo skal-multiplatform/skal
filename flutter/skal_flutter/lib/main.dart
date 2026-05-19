@@ -89,6 +89,22 @@ void main() async {
   }
   final tCreate1 = bootClock.elapsedMicroseconds;
 
+  // ── 1b. Prewarm the native store ────────────────────────────────────
+  //
+  // Opening the store (segment scan → keydir) is native and schema-free,
+  // so kick it off on a background thread now — it overlaps the bytecode
+  // extraction + bundle evaluation below. The JS side's __skal_store_open
+  // picks up the prewarmed handle; if this fails the store just opens
+  // synchronously on first use. The directory must match what the JS
+  // store requests: getDataDir() resolves to <appSupport>/skal-store and
+  // the native engine lives in its skal-native/ subdirectory.
+  try {
+    final support = await getApplicationSupportDirectory();
+    skal.prewarmStore('${support.path}/skal-store/skal-native');
+  } catch (_) {
+    // best-effort — JS opens the store itself if prewarm didn't happen
+  }
+
   // ── 2 + 3. Load and evaluate the JS bundle ──────────────────────────
   //
   // Two paths:

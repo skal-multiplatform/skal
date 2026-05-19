@@ -119,12 +119,14 @@ LDFLAGS=(
   -Wl,--undefined=skal_free_string
   -Wl,--undefined=skal_acquire_bridge
   -Wl,--undefined=skal_wake_js
+  -Wl,--undefined=skal_prewarm_store
   -Wl,--export-dynamic-symbol=skal_create_runtime
   -Wl,--export-dynamic-symbol=skal_dispose_runtime
   -Wl,--export-dynamic-symbol=skal_evaluate
   -Wl,--export-dynamic-symbol=skal_free_string
   -Wl,--export-dynamic-symbol=skal_acquire_bridge
   -Wl,--export-dynamic-symbol=skal_wake_js
+  -Wl,--export-dynamic-symbol=skal_prewarm_store
 
   -lc -lm -llog
 )

@@ -17,9 +17,11 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Directory;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'bridge.dart';
 import 'wire.dart';
@@ -55,6 +57,8 @@ void installAppDispatcher(SkalBridge bridge) {
         return _showDatePicker(bridge, spec);
       case 'showTimePicker':
         return _showTimePicker(bridge, spec);
+      case 'getDataDir':
+        return _getDataDir();
       default:
         throw 'skal: unknown app method "$method"';
     }
@@ -179,6 +183,22 @@ Future<Object?> _showSnackbar(Map<String, dynamic> spec) {
   skalScaffoldMessengerKey.currentState
       ?.showSnackBar(SnackBar(content: Text(message)));
   return Future<Object?>.value();
+}
+
+/// A writable data directory for the JS persistence store. The embedded
+/// JS runtime's `os.tmpdir()` falls back to `/tmp` (its env carries no
+/// `$TMPDIR`), which the macOS app sandbox forbids — so the store asks
+/// the host, which resolves the real sandbox-container path via
+/// `path_provider`. Returns the absolute path, or '' on failure.
+Future<Object?> _getDataDir() async {
+  try {
+    final base = await getApplicationSupportDirectory();
+    final dir = Directory('${base.path}/skal-store');
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+    return dir.path;
+  } catch (_) {
+    return '';
+  }
 }
 
 /// Parse an ISO `YYYY-MM-DD` (or full ISO-8601) string into a DateTime,

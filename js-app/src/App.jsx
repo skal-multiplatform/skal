@@ -26,6 +26,7 @@ import {
   showDatePicker, showTimePicker,
 } from './renderer.js';
 import { createRouter, createSkalRef } from './skal-runtime.jsx';
+import { createSkalStore } from './skal/store/store.js';
 // `skal-flutter` — codegen-wrapped widgets (custom adapters + pub.dev
 // packages). The separate import source tells the dev at a glance that
 // these are Flutter-bound, not portable Skal intrinsics. Auto-discovered
@@ -1985,6 +1986,153 @@ function JsTab() {
   );
 }
 
+// ════════════════════════════════════════════════════════════════════
+// Store tab — the reactive, log-structured, granular persistence layer.
+// One module-scope store; createSkalStore kicks off async init (opens
+// the backend, rebuilds the keydir, loads eager elements) at app start.
+// ════════════════════════════════════════════════════════════════════
+
+const demoStore = createSkalStore({
+  counter: { kind: 'scalar',     persist: true,  default: 0 },
+  note:    { kind: 'scalar',     persist: true,  default: '' },
+  scratch: { kind: 'scalar',     persist: false, default: '' },
+  items:   { kind: 'collection', persist: true,  lazy: false, window: 50 },
+  archive: { kind: 'collection', persist: true,  lazy: true },
+});
+
+function StoreTab() {
+  const items = demoStore.collection('items');
+  const archive = demoStore.collection('archive');
+  let bulkSeq = 1;
+
+  // statsTick() subscribes the line to every flush / compact.
+  const statsText = () => {
+    demoStore.statsTick();
+    const s = demoStore.engineStats();
+    const f = demoStore.flushInfo();
+    return `${s.records} records · ${s.segments} segments · `
+      + `${s.deadBytes} dead bytes · seq ${s.seq} · `
+      + `${f.count} flushes (last ${f.lastMs.toFixed(1)} ms) · `
+      + `${demoStore.pending()} pending`;
+  };
+
+  return (
+    <ScrollView background={BG} padding={16} gap={14} scrollbar>
+      <Text label="Reactive store — log-structured · granular · persistent" fontSize={23} fontWeight={800} color={INK} />
+      <Text
+        label={`Backend: ${demoStore.backendKind()}`}
+        fontSize={14}
+        fontWeight={800}
+        color={(demoStore.backendKind() === 'mmap' || demoStore.backendKind() === 'fs')
+          ? GREEN : ORANGE}
+      />
+      <Text label={`how: ${demoStore.backendDiag()}`} fontSize={11} color={SUBTLE} maxLines={4} />
+      {demoStore.initError()
+        ? <Text label={`init error: ${demoStore.initError()}`} fontSize={11} color={RED} maxLines={4} />
+        : null}
+      <Text
+        label={(demoStore.backendKind() === 'mmap' || demoStore.backendKind() === 'fs')
+          ? 'Persisted to disk — change values, quit, and re-run to verify they survive a restart.'
+          : 'In-memory fallback — data resets on restart. The "how" line above says why no disk backend was used.'}
+        fontSize={12}
+        color={SUBTLE}
+      />
+
+      {/* ── Scalars ──────────────────────────────────────────────── */}
+      <Section title="Scalars — persisted vs memory-only">
+        <Row gap={10}>
+          <Button label="counter + 1" onClick={() => demoStore.set('counter', demoStore.get('counter') + 1)} />
+          <Text label={`counter = ${demoStore.get('counter')}`} fontSize={16} fontWeight={800} color={ACCENT} />
+        </Row>
+        <Text label="note — persist:true (survives restart)" fontSize={11} color={SUBTLE} />
+        <TextInput value={demoStore.get('note')} placeholder="persisted text…" onChange={(v) => demoStore.set('note', v)} />
+        <Text label="scratch — persist:false (memory only, gone on restart)" fontSize={11} color={SUBTLE} />
+        <TextInput value={demoStore.get('scratch')} placeholder="memory-only text…" onChange={(v) => demoStore.set('scratch', v)} />
+      </Section>
+
+      {/* ── Collection ───────────────────────────────────────────── */}
+      <Section title="Collection — items (windowed · delta-logged)">
+        <Row gap={8}>
+          <Button label="Add 1" onClick={() => items.add({ text: 'item ' + Date.now() })} />
+          <Button label="Add 1000" onClick={() => {
+            const recs = [];
+            for (let i = 0; i < 1000; i++) recs.push({ text: 'bulk #' + (bulkSeq++) });
+            items.addMany(recs);
+          }} />
+        </Row>
+        <Row gap={8}>
+          <Button label="Edit first" onClick={() => {
+            const l = items.list();
+            if (l.length) items.update(l[0]._id, { text: 'edited @ ' + Date.now() });
+          }} />
+          <Button label="Remove first" onClick={() => {
+            const l = items.list();
+            if (l.length) items.remove(l[0]._id);
+          }} />
+          <Button label="Clear" onClick={() => items.clear()} />
+        </Row>
+        <Text label={`${items.count()} total — only the ${items.window().size}-row window lives in RAM; an edit writes one ~tiny delta frame`} fontSize={12} fontWeight={700} color={ACCENT} />
+        <Row gap={8}>
+          <Button label="◀ Prev" onClick={() => {
+            const w = items.window();
+            items.setWindow(w.start - w.size);
+          }} />
+          <Button label="Next ▶" onClick={() => {
+            const w = items.window();
+            if (w.start + w.size < w.total) items.setWindow(w.start + w.size);
+          }} />
+          <Text label={(() => {
+            const w = items.window();
+            return w.total === 0
+              ? 'window: empty'
+              : `window: rows ${w.start + 1}–${w.start + w.shown} of ${w.total}`;
+          })()} fontSize={12} color={SUBTLE} />
+        </Row>
+        <Box height={240} cornerRadius={10} background={CHIP}>
+          <ListView scrollbar>
+            <For each={items.list()}>
+              {(rec) => (
+                <Box padding={9} background={CARD} cornerRadius={6} borderWidth={1} borderColor={BORDER}>
+                  <Text label={`#${rec._id} — ${rec.text}`} fontSize={12} color={INK} />
+                </Box>
+              )}
+            </For>
+          </ListView>
+        </Box>
+      </Section>
+
+      {/* ── Lazy collection ──────────────────────────────────────── */}
+      <Section title="Lazy collection — archive (loaded on demand)">
+        <Row gap={8}>
+          <Button label={archive.loaded() ? 'Loaded ✓' : 'Load archive'} onClick={() => archive.load()} />
+          <Button label="Add to archive" onClick={() => archive.add({ text: 'archived ' + Date.now() })} />
+        </Row>
+        <Text
+          label={archive.loaded()
+            ? `${archive.count()} archived records (read from disk on access)`
+            : 'not loaded — a lazy element reads nothing from disk until asked'}
+          fontSize={12}
+          color={SUBTLE}
+        />
+      </Section>
+
+      {/* ── Engine ───────────────────────────────────────────────── */}
+      <Section title="Engine — segmented append log">
+        <Text label={statsText()} fontSize={11} color={SUBTLE} maxLines={3} />
+        <Row gap={8}>
+          <Button label="Flush now" onClick={() => demoStore.flushNow()} />
+          <Button label="Compact" onClick={() => demoStore.compact()} />
+        </Row>
+        <Text
+          label="Writes are debounced + batched; compaction reclaims dead frames one segment at a time."
+          fontSize={11}
+          color={SUBTLE}
+        />
+      </Section>
+    </ScrollView>
+  );
+}
+
 export default function App() {
   const [appTab, setAppTab] = createSignal(0);
   return (
@@ -2000,6 +2148,9 @@ export default function App() {
       </Tab>
       <Tab title="JS" icon="code">
         <JsTab />
+      </Tab>
+      <Tab title="Store" icon="storage">
+        <StoreTab />
       </Tab>
     </Tabs>
   );

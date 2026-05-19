@@ -1,10 +1,10 @@
 // dart:ffi bindings for libskal's C ABI.
 //
 // libskal bundles an entire bun + JavaScriptCore runtime (~87 MB on
-// arm64). The six exported entry points (`skal_create_runtime`,
+// arm64). The seven exported entry points (`skal_create_runtime`,
 // `skal_dispose_runtime`, `skal_evaluate`, `skal_free_string`,
-// `skal_acquire_bridge`, `skal_wake_js`) are what dart:ffi binds to;
-// the contract is in native/ios/skal.h.
+// `skal_acquire_bridge`, `skal_wake_js`, `skal_prewarm_store`) are
+// what dart:ffi binds to; the contract is in native/ios/skal.h.
 //
 // Two things matter for performance:
 //
@@ -111,6 +111,11 @@ typedef _NWakeJs = Void Function(Int64);
 typedef _WakeJs = void Function(int);
 final _WakeJs _wakeJs = _lib.lookupFunction<_NWakeJs, _WakeJs>('skal_wake_js');
 
+typedef _NPrewarmStore = Void Function(Int64, Pointer<Uint8>, IntPtr);
+typedef _PrewarmStore = void Function(int, Pointer<Uint8>, int);
+final _PrewarmStore _prewarmStore = _lib
+    .lookupFunction<_NPrewarmStore, _PrewarmStore>('skal_prewarm_store');
+
 // ──────────────────────────────────────────────────────────────────────
 // Dart-side ergonomics.
 // ──────────────────────────────────────────────────────────────────────
@@ -210,6 +215,22 @@ class Skal {
   }
 
   void wakeJs() => _wakeJs(handle);
+
+  /// Begin opening the native store on a background thread so its
+  /// segment scan overlaps JS runtime init + bundle evaluation. Call
+  /// once, right after create(), with the directory the JS side will
+  /// request. Best-effort — `__skal_store_open` falls back to a
+  /// synchronous open if the prewarm hasn't run or failed.
+  void prewarmStore(String dir) {
+    final bytes = utf8.encode(dir);
+    final ptr = calloc<Uint8>(bytes.length);
+    try {
+      ptr.asTypedList(bytes.length).setAll(0, bytes);
+      _prewarmStore(handle, ptr, bytes.length);
+    } finally {
+      calloc.free(ptr);
+    }
+  }
 
   void dispose() => _disposeRuntime(handle);
 }

@@ -93,6 +93,19 @@ extern fn JSObjectCallAsFunction(
     exception: ?*?JSValueRef,
 ) ?JSValueRef;
 
+// Extra JSC C API used by the native store host functions — reading
+// arguments (numbers, strings, typed arrays) and producing results
+// (numbers, ArrayBuffers, null).
+extern fn JSValueMakeNull(ctx: JSContextRef) JSValueRef;
+extern fn JSValueMakeUndefined(ctx: JSContextRef) JSValueRef;
+extern fn JSValueToNumber(ctx: JSContextRef, value: JSValueRef, exception: ?*?JSValueRef) f64;
+extern fn JSValueToStringCopy(ctx: JSContextRef, value: JSValueRef, exception: ?*?JSValueRef) ?JSStringRef;
+extern fn JSStringGetMaximumUTF8CStringSize(string: JSStringRef) usize;
+extern fn JSStringGetUTF8CString(string: JSStringRef, buffer: [*]u8, bufferSize: usize) usize;
+extern fn JSValueToObject(ctx: JSContextRef, value: JSValueRef, exception: ?*?JSValueRef) ?JSObjectRef;
+extern fn JSObjectGetTypedArrayBytesPtr(ctx: JSContextRef, object: JSObjectRef, exception: ?*?JSValueRef) ?*anyopaque;
+extern fn JSObjectGetTypedArrayLength(ctx: JSContextRef, object: JSObjectRef, exception: ?*?JSValueRef) usize;
+
 // ───────────────────────────────────────────────────────────────────────
 // Bun's REPL evaluation entry. Defined in
 // vendor/bun/src/jsc/bindings/bindings.cpp:6370.
@@ -160,6 +173,11 @@ const Runtime = struct {
     /// per-click parse + compile cost of `Bun__REPL__evaluate` against a
     /// source string. Saves ~50 µs per click on the JS thread.
     drain_fn: ?JSObjectRef = null,
+    /// Optional prewarmed store. The host calls `skal_prewarm_store` at
+    /// launch so the native segment scan overlaps JS VM init + bundle
+    /// eval; `__skal_store_open` then picks up the result. Null when the
+    /// host didn't prewarm (other platforms / fallback).
+    prewarm: ?*StorePrewarm = null,
 
     fn init(allocator: std.mem.Allocator) !*Runtime {
         const self = try allocator.create(Runtime);
@@ -262,6 +280,9 @@ fn installBridgeGlobals(vm: *jsc.VirtualMachine) void {
     defer JSStringRelease(name);
     const fn_obj = JSObjectMakeFunctionWithCallback(ctx, name, acquireBridgeBuffer_jsCallback);
     JSObjectSetProperty(ctx, global_obj, name, @ptrCast(fn_obj), 0, null);
+
+    // __skal_store_* — the native log-structured store engine.
+    installStoreGlobals(ctx, global_obj);
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -495,6 +516,534 @@ fn skal_wake_js(handle: i64) callconv(.c) void {
     rt.vm.eventLoop().enqueueTaskConcurrent(&task.concurrent);
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Native store engine — a log-structured key/value store in Zig, exposed
+// to JS as globalThis.__skal_store_* host functions. js-app's engine.js
+// uses it as the NativeLogStore backend when present. Value bytes are
+// opaque (the JS codec owns encoding). Frame format matches frame.js:
+//   crc u32 · seq u32 · flags u8 · keyLen u16 · valLen u32 · key · value
+// Segments are 256 KiB fixed-size mmap'd files; the keydir maps a key to
+// its newest frame; keydir keys are slices into the segment mappings
+// (stable — v1 never unmaps or compacts).
+// ═══════════════════════════════════════════════════════════════════════
+
+// Default (minimum) segment size. A segment is normally this big and
+// holds many frames; a single frame larger than this gets its own
+// segment sized exactly to it — so a value of any size is storable,
+// bounded only by device storage, never rejected.
+const STORE_SEG_SIZE: usize = 256 * 1024;
+const STORE_FRAME_HEADER: usize = 15;
+const STORE_FLAG_TOMBSTONE: u8 = 1;
+
+const store_crc32_table: [256]u32 = blk: {
+    @setEvalBranchQuota(20000);
+    var t: [256]u32 = undefined;
+    for (0..256) |n| {
+        var c: u32 = @intCast(n);
+        for (0..8) |_| {
+            c = if (c & 1 != 0) 0xEDB88320 ^ (c >> 1) else c >> 1;
+        }
+        t[n] = c;
+    }
+    break :blk t;
+};
+
+fn storeCrc32(bytes: []const u8) u32 {
+    var c: u32 = 0xFFFFFFFF;
+    for (bytes) |b| c = store_crc32_table[(c ^ b) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFF;
+}
+
+const StoreFrame = struct {
+    seq: u32,
+    flags: u8,
+    total: usize,
+    key: []const u8,
+    value: []const u8,
+};
+
+// Decode the frame at `off`. `verify` re-checks the CRC (recovery scan
+// needs it to stop at zero padding; the keydir-located read path skips
+// it). Returns null on a torn / zero / corrupt frame.
+fn storeDecodeFrame(bytes: []const u8, off: usize, verify: bool) ?StoreFrame {
+    if (off + STORE_FRAME_HEADER > bytes.len) return null;
+    const crc = std.mem.readInt(u32, bytes[off..][0..4], .little);
+    const seq = std.mem.readInt(u32, bytes[off + 4 ..][0..4], .little);
+    const flags = bytes[off + 8];
+    const key_len = std.mem.readInt(u16, bytes[off + 9 ..][0..2], .little);
+    const val_len = std.mem.readInt(u32, bytes[off + 11 ..][0..4], .little);
+    const total = STORE_FRAME_HEADER + @as(usize, key_len) + @as(usize, val_len);
+    if (off + total > bytes.len) return null;
+    if (verify and storeCrc32(bytes[off + 4 .. off + total]) != crc) return null;
+    const ks = off + STORE_FRAME_HEADER;
+    const vs = ks + key_len;
+    return .{
+        .seq = seq,
+        .flags = flags,
+        .total = total,
+        .key = bytes[ks..vs],
+        .value = bytes[vs .. off + total],
+    };
+}
+
+// Encode a frame directly into `dst` at `off`. `dst` must have room.
+fn storeWriteFrame(dst: []u8, off: usize, seq: u32, flags: u8, key: []const u8, value: []const u8) usize {
+    const total = STORE_FRAME_HEADER + key.len + value.len;
+    std.mem.writeInt(u32, dst[off + 4 ..][0..4], seq, .little);
+    dst[off + 8] = flags;
+    std.mem.writeInt(u16, dst[off + 9 ..][0..2], @intCast(key.len), .little);
+    std.mem.writeInt(u32, dst[off + 11 ..][0..4], @intCast(value.len), .little);
+    @memcpy(dst[off + STORE_FRAME_HEADER ..][0..key.len], key);
+    @memcpy(dst[off + STORE_FRAME_HEADER + key.len ..][0..value.len], value);
+    std.mem.writeInt(u32, dst[off..][0..4], storeCrc32(dst[off + 4 .. off + total]), .little);
+    return total;
+}
+
+const StoreEntry = struct { seg: u32, off: u32, len: u32, seq: u32 };
+
+const StoreSegment = struct {
+    id: u32,
+    mapped: []u8,
+    cursor: usize,
+    capacity: usize,
+    dead: usize = 0, // reclaimable bytes (superseded frames + tombstones)
+};
+
+const SkalStore = struct {
+    allocator: std.mem.Allocator,
+    dir: []u8,
+    keydir: std.StringHashMapUnmanaged(StoreEntry) = .{},
+    segments: std.ArrayListUnmanaged(StoreSegment) = .{},
+    // segment id → index into `segments` — compaction drops segments
+    // from the middle, so ids are not dense and can't index directly.
+    seg_index: std.AutoHashMapUnmanaged(u32, usize) = .{},
+    seq: u32 = 0,
+    dead: u64 = 0,
+    // Reusable scratch for get() results — grown on demand, never freed;
+    // JS consumes each result synchronously before the next get.
+    get_scratch: []u8 = &[_]u8{},
+
+    // Map segment `id`. When `create`, the file is made `capacity` bytes
+    // (caller passes max(SEG_SIZE, frameTotal) so an oversized frame
+    // gets a segment sized to fit). For an existing segment `capacity`
+    // is ignored — the on-disk file size IS the capacity.
+    fn mapSegment(self: *SkalStore, id: u32, capacity: usize, create: bool) !StoreSegment {
+        var pbuf: [1024]u8 = undefined;
+        const path = try std.fmt.bufPrint(&pbuf, "{s}/seg-{d:0>5}.log", .{ self.dir, id });
+        const file = if (create)
+            try std.fs.createFileAbsolute(path, .{ .read = true, .truncate = false })
+        else
+            try std.fs.openFileAbsolute(path, .{ .mode = .read_write });
+        defer file.close();
+        const fsize: usize = @intCast((try file.stat()).size);
+        // For an existing segment the on-disk size is the capacity — but
+        // grow a truncated / zero-byte file (a crash between create and
+        // setEndPos) back to SEG_SIZE so mmap never sees a 0-length file.
+        const want = if (create) capacity else @max(fsize, STORE_SEG_SIZE);
+        if (fsize < want) try file.setEndPos(want);
+        const mapped = try std.posix.mmap(
+            null,
+            want,
+            std.posix.PROT.READ | std.posix.PROT.WRITE,
+            .{ .TYPE = .SHARED },
+            file.handle,
+            0,
+        );
+        var cursor: usize = 0;
+        while (cursor < want) {
+            const f = storeDecodeFrame(mapped, cursor, true) orelse break;
+            cursor += f.total;
+        }
+        return .{ .id = id, .mapped = mapped, .cursor = cursor, .capacity = want, .dead = 0 };
+    }
+
+    // Resolve a segment id to its (live) StoreSegment, or null if dropped.
+    fn segById(self: *SkalStore, id: u32) ?*StoreSegment {
+        const idx = self.seg_index.get(id) orelse return null;
+        return &self.segments.items[idx];
+    }
+
+    // Account `n` reclaimable bytes against segment `seg_id` (and the
+    // store total) — drives compaction's "worst segment" pick.
+    fn markDead(self: *SkalStore, seg_id: u32, n: usize) void {
+        if (self.segById(seg_id)) |seg| seg.dead += n;
+        self.dead += n;
+    }
+
+    fn rebuildSegIndex(self: *SkalStore) void {
+        self.seg_index.clearRetainingCapacity();
+        for (self.segments.items, 0..) |seg, i| {
+            self.seg_index.put(self.allocator, seg.id, i) catch {};
+        }
+    }
+
+    fn replayInto(self: *SkalStore, idx: usize) !void {
+        const seg_id = self.segments.items[idx].id;
+        const mapped = self.segments.items[idx].mapped;
+        const limit = self.segments.items[idx].cursor;
+        var off: usize = 0;
+        while (off < limit) {
+            const f = storeDecodeFrame(mapped, off, true) orelse break;
+            // Remove any prior entry first — its frame is now dead, and
+            // dropping it also discards the stale key slice so the
+            // keydir key always points into the newest frame's segment.
+            if (self.keydir.fetchRemove(f.key)) |prev| {
+                self.markDead(prev.value.seg, prev.value.len);
+            }
+            if (f.flags & STORE_FLAG_TOMBSTONE != 0) {
+                self.markDead(seg_id, f.total);
+            } else {
+                try self.keydir.put(self.allocator, f.key, .{
+                    .seg = seg_id,
+                    .off = @intCast(off),
+                    .len = @intCast(f.total),
+                    .seq = f.seq,
+                });
+            }
+            if (f.seq > self.seq) self.seq = f.seq;
+            off += f.total;
+        }
+    }
+
+    fn open(allocator: std.mem.Allocator, dir: []const u8) !*SkalStore {
+        const self = try allocator.create(SkalStore);
+        errdefer allocator.destroy(self);
+        self.* = .{ .allocator = allocator, .dir = try allocator.dupe(u8, dir) };
+        try std.fs.cwd().makePath(dir);
+
+        var ids = std.ArrayListUnmanaged(u32){};
+        defer ids.deinit(allocator);
+        {
+            var d = try std.fs.openDirAbsolute(dir, .{ .iterate = true });
+            defer d.close();
+            var it = d.iterate();
+            while (try it.next()) |ent| {
+                if (ent.name.len == 13 and
+                    std.mem.startsWith(u8, ent.name, "seg-") and
+                    std.mem.endsWith(u8, ent.name, ".log"))
+                {
+                    const n = std.fmt.parseInt(u32, ent.name[4..9], 10) catch continue;
+                    try ids.append(allocator, n);
+                }
+            }
+        }
+        std.mem.sort(u32, ids.items, {}, std.sort.asc(u32));
+
+        // Map every segment (on-disk size = capacity) and index it, then
+        // replay in id order so the newest frame for a key wins. An
+        // empty store starts with no segment — writeRaw creates segment
+        // 0 on the first write, sized to that first frame.
+        for (ids.items) |id| {
+            const seg = try self.mapSegment(id, 0, false);
+            try self.segments.append(allocator, seg);
+            try self.seg_index.put(allocator, id, self.segments.items.len - 1);
+        }
+        for (0..self.segments.items.len) |i| try self.replayInto(i);
+        return self;
+    }
+
+    fn activeSeg(self: *SkalStore) *StoreSegment {
+        return &self.segments.items[self.segments.items.len - 1];
+    }
+
+    fn writeRaw(self: *SkalStore, flags: u8, key: []const u8, value: []const u8) !StoreEntry {
+        self.seq += 1;
+        const total = STORE_FRAME_HEADER + key.len + value.len;
+        // A new segment is needed when there is none yet, or the frame
+        // doesn't fit the active one. The new segment is sized to
+        // max(SEG_SIZE, total) — so a frame of any size always fits.
+        const need_new = self.segments.items.len == 0 or
+            (self.activeSeg().cursor + total > self.activeSeg().capacity);
+        if (need_new) {
+            const new_id: u32 = if (self.segments.items.len == 0)
+                0
+            else
+                self.activeSeg().id + 1;
+            const ns = try self.mapSegment(new_id, @max(STORE_SEG_SIZE, total), true);
+            try self.segments.append(self.allocator, ns);
+            try self.seg_index.put(self.allocator, new_id, self.segments.items.len - 1);
+        }
+        const seg = self.activeSeg();
+        const off = seg.cursor;
+        _ = storeWriteFrame(seg.mapped, off, self.seq, flags, key, value);
+        seg.cursor += total;
+        return .{ .seg = seg.id, .off = @intCast(off), .len = @intCast(total), .seq = self.seq };
+    }
+
+    fn put(self: *SkalStore, key: []const u8, value: []const u8) !void {
+        const e = try self.writeRaw(0, key, value);
+        const seg = self.segById(e.seg) orelse return error.SegmentMissing;
+        const kslice = seg.mapped[e.off + STORE_FRAME_HEADER .. e.off + STORE_FRAME_HEADER + key.len];
+        // Remove the prior entry, THEN insert — so the keydir key is
+        // always a slice into the *current* frame's segment. (fetchPut
+        // would keep the stale first-inserted key, which can point into
+        // a segment compaction later drops → a dangling pointer.)
+        if (self.keydir.fetchRemove(key)) |old| {
+            self.markDead(old.value.seg, old.value.len);
+        }
+        try self.keydir.put(self.allocator, kslice, e);
+    }
+
+    fn del(self: *SkalStore, key: []const u8) !void {
+        if (self.keydir.fetchRemove(key)) |kv| {
+            self.markDead(kv.value.seg, kv.value.len);   // superseded frame
+            const te = try self.writeRaw(STORE_FLAG_TOMBSTONE, key, "");
+            self.markDead(te.seg, te.len);               // tombstone is reclaimable
+        }
+    }
+
+    // Returns the value slice (into a segment mapping) or null.
+    fn get(self: *SkalStore, key: []const u8) ?[]const u8 {
+        const e = self.keydir.get(key) orelse return null;
+        const seg = self.segById(e.seg) orelse return null;
+        const f = storeDecodeFrame(seg.mapped, e.off, false) orelse return null;
+        if (f.flags & STORE_FLAG_TOMBSTONE != 0) return null;
+        return f.value;
+    }
+
+    // Reclaim the worst dead-heavy sealed segment: copy its live frames
+    // forward into the active segment, then unmap + delete it. One
+    // segment per call — bounded, incremental. Re-putting a live frame
+    // re-keys it with a slice into the *new* segment, so once the loop
+    // finishes nothing references `worst` and it is safe to drop.
+    fn compact(self: *SkalStore) !bool {
+        if (self.segments.items.len < 2) return false;
+        const active_id = self.activeSeg().id;
+        var worst_idx: ?usize = null;
+        var worst_dead: usize = 0;
+        for (self.segments.items, 0..) |seg, i| {
+            if (seg.id == active_id) continue;
+            if (seg.dead > worst_dead) {
+                worst_dead = seg.dead;
+                worst_idx = i;
+            }
+        }
+        const wi = worst_idx orelse return false;
+        const worst = self.segments.items[wi]; // value copy — stable across puts
+        if (worst.dead * 5 < worst.capacity * 2) return false; // <40% dead — skip
+        // `segments` is kept id-ascending, so index 0 is the oldest
+        // segment. A tombstone may only be DROPPED when no older segment
+        // could still hold a pre-delete frame for its key — i.e. when
+        // `worst` is the oldest. Otherwise the tombstone is forwarded so
+        // a reopen still sees the deletion (no resurrection).
+        const worst_is_oldest = (wi == 0);
+
+        var off: usize = 0;
+        while (off < worst.cursor) {
+            const f = storeDecodeFrame(worst.mapped, off, false) orelse break;
+            if (f.flags & STORE_FLAG_TOMBSTONE != 0) {
+                // Forward the tombstone only when the deletion must be
+                // preserved: an older segment may still hold a
+                // pre-delete frame (`!worst_is_oldest`) AND the key was
+                // not re-added since (keydir miss). An obsolete
+                // tombstone — key oldest, or key re-added — is dropped.
+                if (!worst_is_oldest and self.keydir.get(f.key) == null) {
+                    const te = try self.writeRaw(STORE_FLAG_TOMBSTONE, f.key, "");
+                    self.markDead(te.seg, te.len); // forwarded — itself reclaimable
+                }
+            } else if (self.keydir.get(f.key)) |e| {
+                if (e.seg == worst.id and e.off == off) {
+                    _ = self.keydir.remove(f.key); // drop the slice into `worst`
+                    try self.put(f.key, f.value);  // re-key into a live segment
+                }
+            }
+            off += f.total;
+        }
+
+        if (self.dead >= worst.dead) self.dead -= worst.dead;
+        std.posix.munmap(@alignCast(worst.mapped));
+        var pbuf: [1024]u8 = undefined;
+        const path = std.fmt.bufPrint(&pbuf, "{s}/seg-{d:0>5}.log", .{ self.dir, worst.id }) catch unreachable;
+        std.fs.deleteFileAbsolute(path) catch {};
+        _ = self.segments.orderedRemove(wi);
+        self.rebuildSegIndex();
+        return true;
+    }
+};
+
+// ── Store prewarm ──────────────────────────────────────────────────
+// Opening the store (segment scan → keydir) is native, schema-free and
+// thread-independent. The host kicks it off on a background thread at
+// launch via skal_prewarm_store — overlapping JS VM init + bundle eval.
+// __skal_store_open picks up the prewarmed handle, blocking only on the
+// tail of the scan if it hasn't finished.
+const StorePrewarm = struct {
+    allocator: std.mem.Allocator,
+    dir: []u8,
+    done: std.Thread.ResetEvent = .{},
+    store: ?*SkalStore = null,
+};
+
+fn prewarmThreadMain(pw: *StorePrewarm) void {
+    pw.store = SkalStore.open(pw.allocator, pw.dir) catch null;
+    pw.done.set();
+}
+
+// C ABI — begin opening the native store on a background thread. Call
+// once, right after skal_create_runtime, with the directory the JS side
+// will request. Best-effort: any failure just means __skal_store_open
+// opens synchronously instead.
+fn skal_prewarm_store(handle: i64, dir_ptr: [*]const u8, dir_len: usize) callconv(.c) void {
+    if (handle == 0 or dir_len == 0) return;
+    const rt: *Runtime = @ptrFromInt(@as(usize, @intCast(handle)));
+    if (rt.prewarm != null) return; // already prewarming
+    const alloc = skalAllocator();
+    const pw = alloc.create(StorePrewarm) catch return;
+    pw.* = .{
+        .allocator = alloc,
+        .dir = alloc.dupe(u8, dir_ptr[0..dir_len]) catch {
+            alloc.destroy(pw);
+            return;
+        },
+    };
+    rt.prewarm = pw;
+    const t = std.Thread.spawn(.{}, prewarmThreadMain, .{pw}) catch {
+        pw.done.set(); // no background thread — open lazily on first use
+        return;
+    };
+    t.detach();
+}
+
+fn skalStoreFromArg(ctx: JSContextRef, v: JSValueRef) ?*SkalStore {
+    const n = JSValueToNumber(ctx, v, null);
+    if (!(n > 0)) return null;
+    return @ptrFromInt(@as(usize, @intFromFloat(n)));
+}
+
+// Copy a JS string argument into a freshly allocated buffer (caller frees).
+fn skalStoreArgString(ctx: JSContextRef, v: JSValueRef) ?[]u8 {
+    const js_str = JSValueToStringCopy(ctx, v, null) orelse return null;
+    defer JSStringRelease(js_str);
+    const max = JSStringGetMaximumUTF8CStringSize(js_str);
+    const buf = bun.default_allocator.alloc(u8, max) catch return null;
+    const n = JSStringGetUTF8CString(js_str, buf.ptr, max); // includes NUL
+    return buf[0 .. if (n > 0) n - 1 else 0];
+}
+
+// View the bytes of a JS Uint8Array argument (no copy).
+fn skalStoreArgBytes(ctx: JSContextRef, v: JSValueRef) []const u8 {
+    const obj = JSValueToObject(ctx, v, null) orelse return "";
+    const ptr = JSObjectGetTypedArrayBytesPtr(ctx, obj, null) orelse return "";
+    const len = JSObjectGetTypedArrayLength(ctx, obj, null);
+    const p: [*]const u8 = @ptrCast(ptr);
+    return p[0..len];
+}
+
+fn skalStoreFreeDeallocator(bytes: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+    if (bytes) |b| free(b);
+}
+
+// __skal_store_open(dir: string) -> handle number (0 on failure)
+fn store_open_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, args: [*]const JSValueRef, _: ?*?JSValueRef) callconv(.c) ?JSValueRef {
+    if (argc < 1) return JSValueMakeNumber(ctx, 0);
+    const dir = skalStoreArgString(ctx, args[0]) orelse return JSValueMakeNumber(ctx, 0);
+    defer bun.default_allocator.free(dir);
+    // Use the host's prewarmed store when it matches this directory —
+    // blocking only on the tail of the background scan if still running.
+    if (active_runtime) |rt| {
+        if (rt.prewarm) |pw| {
+            if (std.mem.eql(u8, pw.dir, dir)) {
+                rt.prewarm = null; // consume — a later open is independent
+                pw.done.wait();
+                const store = pw.store orelse
+                    (SkalStore.open(bun.default_allocator, dir) catch
+                    return JSValueMakeNumber(ctx, 0));
+                return JSValueMakeNumber(ctx, @floatFromInt(@intFromPtr(store)));
+            }
+        }
+    }
+    const store = SkalStore.open(bun.default_allocator, dir) catch return JSValueMakeNumber(ctx, 0);
+    return JSValueMakeNumber(ctx, @floatFromInt(@intFromPtr(store)));
+}
+
+// __skal_store_put(handle, key: string, value: Uint8Array)
+fn store_put_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, args: [*]const JSValueRef, _: ?*?JSValueRef) callconv(.c) ?JSValueRef {
+    if (argc >= 3) {
+        if (skalStoreFromArg(ctx, args[0])) |store| {
+            if (skalStoreArgString(ctx, args[1])) |key| {
+                defer bun.default_allocator.free(key);
+                store.put(key, skalStoreArgBytes(ctx, args[2])) catch {};
+            }
+        }
+    }
+    return JSValueMakeUndefined(ctx);
+}
+
+// __skal_store_del(handle, key: string)
+fn store_del_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, args: [*]const JSValueRef, _: ?*?JSValueRef) callconv(.c) ?JSValueRef {
+    if (argc >= 2) {
+        if (skalStoreFromArg(ctx, args[0])) |store| {
+            if (skalStoreArgString(ctx, args[1])) |key| {
+                defer bun.default_allocator.free(key);
+                store.del(key) catch {};
+            }
+        }
+    }
+    return JSValueMakeUndefined(ctx);
+}
+
+// __skal_store_get(handle, key: string) -> ArrayBuffer | null
+fn store_get_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, args: [*]const JSValueRef, _: ?*?JSValueRef) callconv(.c) ?JSValueRef {
+    if (argc < 2) return JSValueMakeNull(ctx);
+    const store = skalStoreFromArg(ctx, args[0]) orelse return JSValueMakeNull(ctx);
+    const key = skalStoreArgString(ctx, args[1]) orelse return JSValueMakeNull(ctx);
+    defer bun.default_allocator.free(key);
+    const value = store.get(key) orelse return JSValueMakeNull(ctx);
+    // Copy the value out of the mapping into the store's reusable scratch
+    // buffer (grown on demand), then hand JS a no-copy ArrayBuffer over
+    // it — no deallocator, no per-read malloc/free. Safe because JS
+    // decodeValue() consumes the result synchronously before the next
+    // get() can overwrite the scratch.
+    if (store.get_scratch.len < value.len) {
+        if (store.get_scratch.len > 0) bun.default_allocator.free(store.get_scratch);
+        store.get_scratch = bun.default_allocator.alloc(u8, value.len) catch {
+            store.get_scratch = &[_]u8{};
+            return JSValueMakeNull(ctx);
+        };
+    }
+    @memcpy(store.get_scratch[0..value.len], value);
+    const ab = JSObjectMakeArrayBufferWithBytesNoCopy(ctx, store.get_scratch.ptr, value.len, null, null, null);
+    return @ptrCast(ab);
+}
+
+// __skal_store_compact(handle) -> 1 if a segment was reclaimed, else 0
+fn store_compact_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, args: [*]const JSValueRef, _: ?*?JSValueRef) callconv(.c) ?JSValueRef {
+    if (argc < 1) return JSValueMakeNumber(ctx, 0);
+    const store = skalStoreFromArg(ctx, args[0]) orelse return JSValueMakeNumber(ctx, 0);
+    const did = store.compact() catch false;
+    return JSValueMakeNumber(ctx, if (did) 1 else 0);
+}
+
+// __skal_store_stats(handle) -> ArrayBuffer of 4×u32 [records, segments, dead, seq]
+fn store_stats_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, args: [*]const JSValueRef, _: ?*?JSValueRef) callconv(.c) ?JSValueRef {
+    if (argc < 1) return JSValueMakeNull(ctx);
+    const store = skalStoreFromArg(ctx, args[0]) orelse return JSValueMakeNull(ctx);
+    const buf = malloc(16) orelse return JSValueMakeNull(ctx);
+    const dst: [*]u8 = @ptrCast(buf);
+    std.mem.writeInt(u32, dst[0..4], @intCast(store.keydir.count()), .little);
+    std.mem.writeInt(u32, dst[4..8], @intCast(store.segments.items.len), .little);
+    std.mem.writeInt(u32, dst[8..12], @truncate(store.dead), .little);
+    std.mem.writeInt(u32, dst[12..16], store.seq, .little);
+    const ab = JSObjectMakeArrayBufferWithBytesNoCopy(ctx, buf, 16, skalStoreFreeDeallocator, null, null);
+    return @ptrCast(ab);
+}
+
+fn installStoreFn(ctx: JSContextRef, global_obj: JSObjectRef, name_z: [*:0]const u8, cb: JSObjectCallAsFunctionCallback) void {
+    const name = JSStringCreateWithUTF8CString(name_z);
+    defer JSStringRelease(name);
+    const fn_obj = JSObjectMakeFunctionWithCallback(ctx, name, cb);
+    JSObjectSetProperty(ctx, global_obj, name, @ptrCast(fn_obj), 0, null);
+}
+
+fn installStoreGlobals(ctx: JSContextRef, global_obj: JSObjectRef) void {
+    installStoreFn(ctx, global_obj, "__skal_store_open", store_open_cb);
+    installStoreFn(ctx, global_obj, "__skal_store_put", store_put_cb);
+    installStoreFn(ctx, global_obj, "__skal_store_get", store_get_cb);
+    installStoreFn(ctx, global_obj, "__skal_store_del", store_del_cb);
+    installStoreFn(ctx, global_obj, "__skal_store_compact", store_compact_cb);
+    installStoreFn(ctx, global_obj, "__skal_store_stats", store_stats_cb);
+}
+
 comptime {
     // C ABI exports — dart:ffi consumer.
     @export(&skal_create_runtime, .{ .name = "skal_create_runtime", .linkage = .strong });
@@ -503,4 +1052,5 @@ comptime {
     @export(&skal_free_string, .{ .name = "skal_free_string", .linkage = .strong });
     @export(&skal_acquire_bridge, .{ .name = "skal_acquire_bridge", .linkage = .strong });
     @export(&skal_wake_js, .{ .name = "skal_wake_js", .linkage = .strong });
+    @export(&skal_prewarm_store, .{ .name = "skal_prewarm_store", .linkage = .strong });
 }

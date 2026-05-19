@@ -1055,6 +1055,16 @@ export function showTimePicker(spec) {
     ROOT_NODE_ID, 'showTimePicker', [JSON.stringify(spec || {})]);
 }
 
+/**
+ * The host's writable data directory for the persistence store. The
+ * embedded runtime's `os.tmpdir()` can't see the macOS sandbox
+ * container, so the store asks the host (which resolves it via
+ * `path_provider`). Resolves to an absolute path, or '' on failure.
+ */
+export function getAppDataDir() {
+  return invokeMethod(ROOT_NODE_ID, 'getDataDir', []);
+}
+
 // ───────────────────────────────────────────────────────────────────────
 // Custom-widget machinery — name-keyed props + handlers + create.
 //

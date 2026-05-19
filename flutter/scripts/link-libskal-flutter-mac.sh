@@ -81,6 +81,7 @@ _skal_evaluate
 _skal_free_string
 _skal_acquire_bridge
 _skal_wake_js
+_skal_prewarm_store
 EOF
 
 LDFLAGS=(
@@ -101,6 +102,7 @@ LDFLAGS=(
   -Wl,-u,_skal_free_string
   -Wl,-u,_skal_acquire_bridge
   -Wl,-u,_skal_wake_js
+  -Wl,-u,_skal_prewarm_store
   -licucore
   -lresolv
 )

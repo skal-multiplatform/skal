@@ -5,9 +5,10 @@
  * Skal C ABI — the surface dart:ffi (and any future C/C++/Swift
  * embedder) talks to.
  *
- * Six entry points: create a runtime, evaluate JS source, acquire the
- * shared bridge memory region, wake the JS worker for event dispatch,
- * free result strings, dispose the runtime.
+ * Seven entry points: create a runtime, evaluate JS source, acquire
+ * the shared bridge memory region, wake the JS worker for event
+ * dispatch, free result strings, dispose the runtime, and prewarm the
+ * native store on a background thread.
  *
  * Semantics:
  *   - `skal_acquire_bridge` returns a raw pointer + length to a 2 MiB
@@ -68,6 +69,14 @@ void skal_acquire_bridge(int64_t handle, void** out_ptr, size_t* out_len);
  * into the event ring. Called once per dispatched event; cheap and
  * lock-free. */
 void skal_wake_js(int64_t handle);
+
+/* Begin opening the native key/value store on a background thread, so
+ * its segment scan overlaps JS runtime init + bundle evaluation. Call
+ * once, right after skal_create_runtime, passing the directory the JS
+ * side will later request via __skal_store_open. `dir` is UTF-8, NOT
+ * null-terminated; `dir_len` is its byte length. Best-effort — any
+ * failure just means the store opens synchronously on first use. */
+void skal_prewarm_store(int64_t handle, const char* dir, size_t dir_len);
 
 #ifdef __cplusplus
 }

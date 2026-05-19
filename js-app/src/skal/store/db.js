@@ -31,8 +31,18 @@ import { encodeValue, decodeValue } from './codec.js';
 import { getAppDataDir } from '../../bridge.js';
 
 const FLUSH_DEBOUNCE_MS = 60;
-// LRU cap on memoized proxy nodes (see makeNode).
+// LRU cap on memoized proxy nodes (see makeNode). Deliberately moderate:
+// a larger cap was measured to *regress* large-collection throughput
+// 2-3x — it retains the whole proxy graph, so heap + GC pressure
+// outweighs the higher hit rate. The trade-off: a <For> over a
+// collection larger than this re-creates rows on change (such lists
+// should virtualize anyway). Covers realistic non-virtualized lists.
 const NODE_MEMO_MAX = 8192;
+
+// Sentinel stored in `dirty` for a collection index frame. The actual
+// { ids, nextId } is computed once at flush time from live state, not
+// rebuilt on every push — see doFlush. Keeps push O(1) instead of O(n).
+const INDEX_DIRTY = Symbol('skal.indexDirty');
 
 // `state[STORE]` → a control handle (ready / flushNow / stats).
 export const STORE = Symbol.for('skal.store');
@@ -124,8 +134,13 @@ export function createSkalStore(initState, config = {}) {
 
   // ── engine + debounced write batching ──────────────────────────────
   let engine = null;
-  const dirty = new Map();          // 'k:<key>' → bytes (null ⇒ delete)
+  // 'k:<key>' → encoded bytes | null (delete) | INDEX_DIRTY (recompute).
+  const dirty = new Map();
   const nextIds = new Map();        // collection storeKey → next element id
+  // Memoized "is this storeKey a collection?" — splice maintains it
+  // incrementally so a push burst skips the O(n) _isColl rescan. Any
+  // wholesale array write deletes the entry so the next splice re-derives.
+  const collCache = new Map();
   let flushTimer = null;
   let flushCount = 0;
 
@@ -143,11 +158,24 @@ export function createSkalStore(initState, config = {}) {
   function doFlush() {
     if (!engine || dirty.size === 0) return;
     for (const [key, val] of dirty) {
-      // `val` is encoded bytes, null (delete), or — for index frames —
-      // a raw { ids, nextId } object encoded here so a burst of pushes
-      // collapses to a single encode of the final index, not one per.
-      if (val === null) engine.del(key);
-      else engine.put(key, val instanceof Uint8Array ? val : encodeValue(val));
+      // `val` is encoded bytes, null (delete), or INDEX_DIRTY — a
+      // collection index frame whose { ids, nextId } is built from
+      // live state right here, so a burst of N pushes encodes the
+      // index once at flush instead of rebuilding it on every push.
+      if (val === null) {
+        engine.del(key);
+      } else if (val === INDEX_DIRTY) {
+        const sk = key.slice(2, -2);                 // 'k:' + sk + '#x'
+        const a = readSolid(sk === '' ? [] : sk.split('.'));
+        if (Array.isArray(a)) {
+          engine.put(key, encodeValue({
+            ids: a.map((e) => e && e._id),
+            nextId: nextIds.get(sk) || (a.length + 1),
+          }));
+        }
+      } else {
+        engine.put(key, val);
+      }
     }
     dirty.clear();
     engine.flush();
@@ -241,9 +269,7 @@ export function createSkalStore(initState, config = {}) {
         encodeValue(readSolid(elInfo.solidPath)));
     } else if (_isColl(value)) {
       for (const el of value) dirty.set('k:' + sk + '.' + el._id, encodeValue(el));
-      dirty.set('k:' + sk + '#x', {
-        ids: value.map((e) => e._id), nextId: nextIds.get(sk) || (value.length + 1),
-      });
+      dirty.set('k:' + sk + '#x', INDEX_DIRTY);
     } else if (_isObj(value)) {
       // Recurse per leaf, skipping non-persist subtrees — staging a
       // whole object (a parent write, or a migration replacing the
@@ -283,6 +309,7 @@ export function createSkalStore(initState, config = {}) {
     const r = resolvePath(sp);
     if (r.path.indexOf(-1) >= 0) return;          // target element is gone
     setState(...r.path, v);
+    if (Array.isArray(v)) collCache.delete(sk);   // wholesale array write
     const pol = policyFor(sk);
     if (!elInfo && pol.lazy) touchFaulted(sk);    // the write loaded it
     if (pol.persist) { stageAt(sp, sk, elInfo, v); scheduleFlush(); }
@@ -389,6 +416,7 @@ export function createSkalStore(initState, config = {}) {
         if (elInfo) stageAt(sp, sk, elInfo, null);          // re-stage element
         else if (policyFor(childSk).persist) tombstoneTree(childSk, old);
         dropMemo([childSk]);                       // subtree proxies are gone
+        collCache.delete(childSk);                 // its array (if any) is gone
         scheduleFlush();
         return true;
       },
@@ -417,7 +445,15 @@ export function createSkalStore(initState, config = {}) {
         ins = items.map((e) => (_isObj(e) && e._id == null
           ? { ...e, _id: genId(sk) } : e));
       }
-      setAt(sp, produce((x) => { x.splice(start, delCount, ...ins); }));
+      // Append (push) is the hot path: set the new indices directly so
+      // it costs O(items), not an O(n) produce-splice over the whole
+      // tracked array. Any other splice (mid-array, deletion) takes the
+      // general produce route.
+      if (delCount === 0 && start === len && ins.length > 0) {
+        for (let i = 0; i < ins.length; i++) setAt([...sp, len + i], ins[i]);
+      } else {
+        setAt(sp, produce((x) => { x.splice(start, delCount, ...ins); }));
+      }
       // Tombstone removed records + drop their memoized proxies. Runs
       // unconditionally (not gated on the post-splice array still being
       // a collection) so a splice that empties or degrades the array
@@ -432,15 +468,25 @@ export function createSkalStore(initState, config = {}) {
         }
         dropMemo(prefixes);
       }
-      if (!elInfo && _isColl(arr())) {
-        // collection: write inserted records, refresh the index —
-        // untouched records stay untouched.
+      // Is `sk` a collection? Cached + maintained incrementally so a
+      // push burst skips the O(n) _isColl rescan: derive once from the
+      // pre-splice array, then a non-object insert is the only thing
+      // that can degrade it. Removals never change collection-ness.
+      let isColl = false;
+      if (!elInfo) {
+        const cached = collCache.get(sk);
+        isColl = cached === undefined ? _isColl(a) : cached;
+        if (isColl) isColl = ins.every(_isObj);
+        collCache.set(sk, isColl);
+      }
+      if (isColl) {
+        // collection: write inserted records, mark the index dirty.
+        // Untouched records stay untouched; the index frame is rebuilt
+        // once at flush (doFlush), not on every push.
         for (const it of ins) {
           if (it && it._id != null) dirty.set('k:' + sk + '.' + it._id, encodeValue(it));
         }
-        dirty.set('k:' + sk + '#x', {
-          ids: arr().map((e) => e._id), nextId: nextIds.get(sk) || 1,
-        });
+        dirty.set('k:' + sk + '#x', INDEX_DIRTY);
         scheduleFlush();
       } else {
         persist();
@@ -454,10 +500,9 @@ export function createSkalStore(initState, config = {}) {
     // Array.prototype bound to the Solid array and throw on mutation.)
     function reorderBy(fn, indexOnly) {
       setAt(sp, produce(fn));
-      if (indexOnly && !elInfo && _isColl(arr())) {
-        dirty.set('k:' + sk + '#x', {
-          ids: arr().map((e) => e._id), nextId: nextIds.get(sk) || 1,
-        });
+      const coll = collCache.get(sk);
+      if (indexOnly && !elInfo && (coll === undefined ? _isColl(arr()) : coll)) {
+        dirty.set('k:' + sk + '#x', INDEX_DIRTY);
         scheduleFlush();
       } else {
         persist();
@@ -513,6 +558,7 @@ export function createSkalStore(initState, config = {}) {
       set(_t, key, value) {
         if (key === 'length') {
           setAt(sp, produce((x) => { x.length = +value; }));
+          collCache.delete(sk);            // truncate/extend may degrade it
           persist();
           return true;
         }
@@ -524,7 +570,9 @@ export function createSkalStore(initState, config = {}) {
             v = { ...value, _id: (old && old._id != null) ? old._id : genId(sk) };
           }
           setAt(sp, i, v);
-          if (!elInfo && _isColl(arr()) && v && v._id != null) {
+          const coll = !elInfo && _isColl(arr());
+          if (!elInfo) collCache.set(sk, coll);     // refresh the cache
+          if (coll && v && v._id != null) {
             dirty.set('k:' + sk + '.' + v._id, encodeValue(v));
             scheduleFlush();
           } else {
@@ -629,6 +677,7 @@ export function createSkalStore(initState, config = {}) {
   function hydrateArray(sp, sk) {
     if (!policyFor(sk).persist
       || dirty.has('k:' + sk + '#x') || dirty.has('k:' + sk)) return;
+    collCache.delete(sk);                  // array replaced — re-derive later
     const idxBytes = engine.get('k:' + sk + '#x');
     if (idxBytes != null) {                          // a persisted collection
       const idx = decodeValue(idxBytes);             // { ids, nextId }
@@ -686,6 +735,7 @@ export function createSkalStore(initState, config = {}) {
         if (_isObj(next)) {
           for (const k of oldKeys) dirty.set('k:' + k, null);  // tombstone old layout
           ensureIds(next, '');
+          collCache.clear();                                    // tree replaced
           setAt([], next);                                      // replace live tree
           stageAt([], '', null, next);                          // write new layout
           migrated = true;

@@ -45,6 +45,10 @@ const _isNumKey = (k) => typeof k === 'string' && /^(0|[1-9]\d*)$/.test(k);
 // Dotted store key — no leading dot for a root-level child.
 const _join = (sk, key) => (sk ? sk + '.' + key : key);
 
+// High-resolution clock for the init timing log.
+const _now = () => (typeof performance !== 'undefined' && performance.now
+  ? performance.now() : Date.now());
+
 function _clone(v) {
   if (Array.isArray(v)) return v.map(_clone);
   if (_isObj(v)) {
@@ -55,9 +59,14 @@ function _clone(v) {
   return v;
 }
 
-// Fetch the host's writable directory, retried — the RPC dispatcher may
-// lag the first few ticks after the JS bundle runs.
+// Fetch the host's writable directory. The host installs it as a
+// global (`__skal_data_dir`) before the bundle runs — read that
+// synchronously and skip the RPC entirely. The retried RPC below is
+// the fallback for hosts that don't inject it (web / older builds);
+// the dispatcher may lag the first few ticks after the bundle runs.
 async function fetchDataDir() {
+  const injected = globalThis.__skal_data_dir;
+  if (typeof injected === 'string' && injected.length) return injected;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const d = await Promise.race([
@@ -110,6 +119,8 @@ export function createSkalStore(initState, config = {}) {
   const [state, setState] = createSolidStore(_clone(initState));
   const [ready, setReady] = createSignal(false);
   const [backendKind, setBackendKind] = createSignal('…');
+  // init() timing breakdown, set once init completes (null until then).
+  const [initTiming, setInitTiming] = createSignal(null);
 
   // ── engine + debounced write batching ──────────────────────────────
   let engine = null;
@@ -281,6 +292,7 @@ export function createSkalStore(initState, config = {}) {
   const ctrl = {
     ready,
     backendKind,
+    initTiming,
     flushNow,
     version: () => cfg.version,
     pending: () => dirty.size,
@@ -634,8 +646,14 @@ export function createSkalStore(initState, config = {}) {
   }
 
   async function init() {
+    // Timing breakdown — all of init() runs async, off the first-paint
+    // path, but the engine-open + hydrate work still costs JS-thread
+    // time shortly after launch. Logged so it can be measured.
+    const t0 = _now();
+    let tDir = t0, tOpen = t0, tMig = t0;
     try {
       const dataDir = await fetchDataDir();
+      tDir = _now();
       if (typeof globalThis.__skal_store_open === 'function' && dataDir) {
         const ns = new NativeLogStore(dataDir + '/' + cfg.name);
         ns.open();
@@ -648,6 +666,8 @@ export function createSkalStore(initState, config = {}) {
         engine = ls;
         setBackendKind(backend.kind);
       }
+
+      tOpen = _now();
 
       // ── version / migration ──────────────────────────────────────
       let meta = null;
@@ -677,11 +697,23 @@ export function createSkalStore(initState, config = {}) {
           encodeValue({ version: cfg.version, shape: _clone(initState) }));
       }
 
+      tMig = _now();
       if (!migrated) hydrate(initState, [], '');
       scheduleFlush();
     } catch (_) {
       // The store still works in-memory; the failure is non-fatal.
     }
+    const tEnd = _now();
+    const s = engine && engine.stats ? engine.stats() : null;
+    const r1 = (x) => Math.round(x * 10) / 10;
+    setInitTiming({
+      total: r1(tEnd - t0),
+      dir: r1(tDir - t0),         // waiting on the host data-dir RPC
+      open: r1(tOpen - tDir),     // engine open
+      migrate: r1(tMig - tOpen),  // version migration (0 if none)
+      hydrate: r1(tEnd - tMig),   // eager hydrate from disk
+      records: s ? s.records : 0,
+    });
     setReady(true);
   }
   init();

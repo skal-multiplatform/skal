@@ -80,9 +80,24 @@ void main() async {
   // qr_flutter + shimmer both round-trip cleanly through codegen.
   packages_gen.registerAll();
 
-  // ── 1. Create the bun runtime ───────────────────────────────────────
+  // ── 1. Resolve the data dir, then create the bun runtime ────────────
+  //
+  // The base data dir (<appSupport>/skal-store) is resolved up front and
+  // handed to the runtime, which installs it as globalThis.__skal_data_dir.
+  // That lets the JS store read it synchronously — skipping the async
+  // getDataDir() RPC, whose reply otherwise can't be serviced until the
+  // JS thread goes idle (hundreds of ms into boot).
+  String dataDir = '';
+  try {
+    final support = await getApplicationSupportDirectory();
+    dataDir = '${support.path}/skal-store';
+    Directory(dataDir).createSync(recursive: true);
+  } catch (_) {
+    // best-effort — JS falls back to the getDataDir RPC
+  }
+
   final tCreate0 = bootClock.elapsedMicroseconds;
-  final skal = Skal.create();
+  final skal = Skal.create(dataDir);
   if (skal == null) {
     runApp(const _ErrorApp(message: 'skal_create_runtime returned 0'));
     return;
@@ -96,13 +111,13 @@ void main() async {
   // extraction + bundle evaluation below. The JS side's __skal_store_open
   // picks up the prewarmed handle; if this fails the store just opens
   // synchronously on first use. The directory must match what the JS
-  // store requests: getDataDir() resolves to <appSupport>/skal-store and
-  // the native engine lives in its skal-native/ subdirectory.
-  try {
-    final support = await getApplicationSupportDirectory();
-    skal.prewarmStore('${support.path}/skal-store/skal-native');
-  } catch (_) {
-    // best-effort — JS opens the store itself if prewarm didn't happen
+  // store opens — <dataDir>/<cfg.name>, and the store's name is 'store'.
+  if (dataDir.isNotEmpty) {
+    try {
+      skal.prewarmStore('$dataDir/store');
+    } catch (_) {
+      // best-effort — JS opens the store itself if prewarm didn't happen
+    }
   }
 
   // ── 2 + 3. Load and evaluate the JS bundle ──────────────────────────

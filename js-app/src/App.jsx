@@ -2019,6 +2019,12 @@ function StoreTab() {
     const base = s ? `${s.records} records · ${s.segments} segments` : 'engine: …';
     return `${base} · ${ctl.pending()} pending · ${ctl.flushes()} flushes`;
   };
+  const initLine = () => {
+    const t = ctl.initTiming();
+    if (!t) return 'init: running…';
+    return `init total ${t.total}ms — dir-RPC ${t.dir} · open ${t.open}`
+      + ` · migrate ${t.migrate} · hydrate ${t.hydrate} (${t.records} records)`;
+  };
 
   return (
     <ScrollView background={BG} padding={16} gap={14} scrollbar>
@@ -2096,6 +2102,7 @@ function StoreTab() {
       {/* ── Engine status ────────────────────────────────────────── */}
       <Section title="Engine">
         <Text label={engineLine()} fontSize={11} color={SUBTLE} maxLines={2} />
+        <Text label={initLine()} fontSize={11} color={SUBTLE} maxLines={2} />
         <Button label="Flush now" onClick={() => ctl.flushNow()} />
         <Text
           label="Writes are debounced + batched into one engine flush; reads are pure in-memory."

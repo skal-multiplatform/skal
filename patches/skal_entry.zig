@@ -98,6 +98,7 @@ extern fn JSObjectCallAsFunction(
 // (numbers, ArrayBuffers, null).
 extern fn JSValueMakeNull(ctx: JSContextRef) JSValueRef;
 extern fn JSValueMakeUndefined(ctx: JSContextRef) JSValueRef;
+extern fn JSValueMakeString(ctx: JSContextRef, string: JSStringRef) JSValueRef;
 extern fn JSValueToNumber(ctx: JSContextRef, value: JSValueRef, exception: ?*?JSValueRef) f64;
 extern fn JSValueToStringCopy(ctx: JSContextRef, value: JSValueRef, exception: ?*?JSValueRef) ?JSStringRef;
 extern fn JSStringGetMaximumUTF8CStringSize(string: JSStringRef) usize;
@@ -178,13 +179,22 @@ const Runtime = struct {
     /// eval; `__skal_store_open` then picks up the result. Null when the
     /// host didn't prewarm (other platforms / fallback).
     prewarm: ?*StorePrewarm = null,
+    /// Host-provided base data directory (<appSupport>/skal-store).
+    /// Installed as `globalThis.__skal_data_dir` so the JS store reads
+    /// it synchronously instead of an async getDataDir() RPC. Empty
+    /// when the host didn't supply one. NUL-terminated for the JSC API.
+    data_dir: [:0]const u8 = "",
 
-    fn init(allocator: std.mem.Allocator) !*Runtime {
+    fn init(allocator: std.mem.Allocator, data_dir: []const u8) !*Runtime {
         const self = try allocator.create(Runtime);
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
             .bridge = try Bridge.init(allocator),
+            .data_dir = if (data_dir.len > 0)
+                (allocator.dupeZ(u8, data_dir) catch "")
+            else
+                "",
         };
         self.worker_thread = try std.Thread.spawn(.{}, workerMain, .{self});
         self.ready.wait();
@@ -283,6 +293,27 @@ fn installBridgeGlobals(vm: *jsc.VirtualMachine) void {
 
     // __skal_store_* — the native log-structured store engine.
     installStoreGlobals(ctx, global_obj);
+
+    // __skal_data_dir — the host's base data directory, as a plain
+    // string global. Lets the JS store read it synchronously instead
+    // of an async getDataDir() RPC during boot. Absent when the host
+    // supplied no directory (JS then falls back to the RPC).
+    if (active_runtime) |rt| {
+        if (rt.data_dir.len > 0) {
+            const dd_name = JSStringCreateWithUTF8CString("__skal_data_dir");
+            defer JSStringRelease(dd_name);
+            const dd_val = JSStringCreateWithUTF8CString(rt.data_dir.ptr);
+            defer JSStringRelease(dd_val);
+            JSObjectSetProperty(
+                ctx,
+                global_obj,
+                dd_name,
+                JSValueMakeString(ctx, dd_val),
+                0,
+                null,
+            );
+        }
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -412,8 +443,9 @@ fn skalAllocator() std.mem.Allocator {
 // can call into the runtime. See native/ios/skal.h for the contract.
 // ───────────────────────────────────────────────────────────────────────
 
-fn skal_create_runtime() callconv(.c) i64 {
-    const rt = Runtime.init(skalAllocator()) catch return 0;
+fn skal_create_runtime(dir_ptr: ?[*]const u8, dir_len: usize) callconv(.c) i64 {
+    const data_dir: []const u8 = if (dir_ptr) |p| p[0..dir_len] else "";
+    const rt = Runtime.init(skalAllocator(), data_dir) catch return 0;
     return @intCast(@intFromPtr(rt));
 }
 

@@ -62,8 +62,8 @@ final DynamicLibrary _lib = () {
 // Naming convention: `_N` = native C signature, no underscore = Dart side.
 // ──────────────────────────────────────────────────────────────────────
 
-typedef _NCreateRuntime = Int64 Function();
-typedef _CreateRuntime = int Function();
+typedef _NCreateRuntime = Int64 Function(Pointer<Uint8>, IntPtr);
+typedef _CreateRuntime = int Function(Pointer<Uint8>, int);
 final _CreateRuntime _createRuntime =
     _lib.lookupFunction<_NCreateRuntime, _CreateRuntime>('skal_create_runtime');
 
@@ -143,8 +143,22 @@ class Skal {
 
   Skal._(this.handle, this.bridgePtr, this.bridgeLen) : bridge = bridgePtr.asTypedList(bridgeLen);
 
-  static Skal? create() {
-    final h = _createRuntime();
+  /// [dataDir] is the host's base data directory. libskal installs it
+  /// as `globalThis.__skal_data_dir` so the JS store reads it
+  /// synchronously instead of an async RPC. Pass '' to opt out.
+  static Skal? create(String dataDir) {
+    final dirBytes = utf8.encode(dataDir);
+    // calloc<Uint8>(0) is undefined — allocate at least one byte.
+    final dirPtr = calloc<Uint8>(dirBytes.isEmpty ? 1 : dirBytes.length);
+    final int h;
+    try {
+      if (dirBytes.isNotEmpty) {
+        dirPtr.asTypedList(dirBytes.length).setAll(0, dirBytes);
+      }
+      h = _createRuntime(dirPtr, dirBytes.length);
+    } finally {
+      calloc.free(dirPtr);
+    }
     if (h == 0) return null;
 
     final outPtr = calloc<Pointer<Void>>();

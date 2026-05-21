@@ -112,30 +112,6 @@ Fix idea: maintain a path-tree (radix tree) of registered effect
 paths so descendant lookup is O(prefix-depth · branch-factor)
 instead of O(total-paths). Only worth doing if profiling shows it.
 
-### `arrayProxy.set` numeric key calls `_isColl(arr())` per write
-[`db.js`](js-app/src/skal/store/db.js) — `arrayProxy.set`, numeric
-key branch.
-
-The splice path uses `collCache` to skip the O(n) rescan; the direct
-index-assign path doesn't. Direct index assign on collections is
-uncommon (most code splices/pushes), so this isn't a hot path. Fix:
-add the same collCache-with-incremental-update treatment that splice
-uses.
-
-### Symmetric hydrate shape divergence
-[`db.js`](js-app/src/skal/store/db.js) — `hydrate`, primitive
-branch.
-
-The asymmetric case ("disk says primitive where initState says
-object") is fixed: hydrate now skips the recursion and schedules a
-prefix-tombstone. The symmetric case ("disk says object where
-initState says primitive") is unfixed: hydrate sets the live value
-to the disk-loaded object but doesn't recurse into its shape, so
-any deeper leaf-overrides written under it are silently dropped.
-
-Plausibility is low — devs typically type initState faithfully — so
-this is deferred. Fix when it manifests.
-
 ---
 
 ## Smaller things

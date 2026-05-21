@@ -896,8 +896,22 @@ export function createSkalStore(initState, config = {}) {
             v = { ...value, _id: (old && old._id != null) ? old._id : genId(sk) };
           }
           setAt(sp, i, v);
-          const coll = !elInfo && _isColl(arr());
-          if (!elInfo) collCache.set(sk, coll);     // refresh the cache
+          // Cached collection-ness, maintained incrementally — same
+          // shape as splice's collCache update: derive once if cold,
+          // then on a single index-assign the array can only DEGRADE
+          // (was-coll AND new value is an object → still coll; was-
+          // coll AND new value is non-object → degrades). Promotion
+          // (non-coll → coll via one slot upgrade) isn't detected
+          // here, but wholesale-array writes / length changes
+          // invalidate the cache, so the next access re-derives.
+          // Avoids an O(n) _isColl rescan on every index assign.
+          let coll = false;
+          if (!elInfo) {
+            const cached = collCache.get(sk);
+            coll = cached === undefined ? _isColl(arr()) : cached;
+            if (coll && !_isObj(v)) coll = false;
+            collCache.set(sk, coll);
+          }
           if (coll && v && v._id != null) {
             dirty.set('k:' + _join(sk, v._id), encodeFrame(v));
             scheduleFlush();
@@ -1039,7 +1053,17 @@ export function createSkalStore(initState, config = {}) {
         if (!pol.persist || pol.lazy) continue;   // lazy leaf → faults on access
         if (dirty.has('k:' + childSk)) continue;  // app already wrote it
         const b = engine.get('k:' + childSk);
-        if (b != null) setAt(childSp, decodeFrame(b));
+        if (b != null) {
+          const decoded = decodeFrame(b);
+          setAt(childSp, decoded);
+          // Symmetric to the object branch above: persisted shape may
+          // have upgraded (e.g. initState declared `config: ""` and
+          // the app later did `state.config = {complex: 'obj'}`, then
+          // `state.config.complex = 'new'` writing a deeper leaf
+          // override at `k:config.complex`). Recurse on the loaded
+          // shape so any deeper overrides under it get overlaid.
+          if (_isObj(decoded)) hydrate(decoded, childSp, childSk);
+        }
       }
     }
   }

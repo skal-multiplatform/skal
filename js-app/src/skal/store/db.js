@@ -442,7 +442,7 @@ export function createSkalStore(initState, config = {}) {
     // exact storeKey. Wholesale assigns (v is object/array) also fire
     // descendant observers — replacing `sub` invalidates effects on
     // `sub.s5` etc. Primitive-leaf writes skip the descendant walk.
-    if (sk && _skalEffectMap.size > 0) {
+    if (sk && _skalEffectPaths > 0) {
       _skalNotify(sk, v !== null && typeof v === 'object');
     }
     // Skip the policyFor lookup entirely when neither lazy nor non-
@@ -485,7 +485,17 @@ export function createSkalStore(initState, config = {}) {
   // and removed — the per-write JS↔native crossing on `_skalNotify`
   // cost more than the JS Map operations it replaced, causing a 14×
   // regression on 1k-write propagation. See FastStorage.md Lesson 5.
-  const _skalEffectMap = new Map();   // storeKey → Set<SkalEffect>
+  // Path-segment trie: register/notify are O(depth + descendant nodes)
+  // rather than O(total registered paths). Each node holds:
+  //   effects:  Set<SkalEffect> | null — effects observing THIS exact path
+  //   children: Map<segment, Node>  | null — children keyed by next segment
+  //
+  // Previous shape was Map<storeKey, Set<Effect>> with a `for (const [k, _]
+  // of map) if (k.startsWith(prefix)) ...` descendant walk on every
+  // wholesale write — O(total paths). Fine for typical stores
+  // (10s–100s of paths); the trie keeps it bounded at scale (10k+).
+  const _skalTrie = { effects: null, children: null };
+  let _skalEffectPaths = 0;            // count of distinct registered paths — hot-path bail-out
   let _skalDirty = new Set();
   let _skalFlushPending = false;
 
@@ -530,31 +540,87 @@ export function createSkalStore(initState, config = {}) {
       }
     }
   }
+  // Register `eff` as observing `path` (dotted storeKey, or '' for root).
+  // Walks the trie, allocating Maps/Sets lazily.
+  function _skalRegister(eff, path) {
+    let n = _skalTrie;
+    if (path !== '') {
+      const segs = path.split('.');
+      for (const seg of segs) {
+        if (!n.children) n.children = new Map();
+        let child = n.children.get(seg);
+        if (!child) { child = { effects: null, children: null }; n.children.set(seg, child); }
+        n = child;
+      }
+    }
+    if (!n.effects) n.effects = new Set();
+    if (!n.effects.has(eff)) { n.effects.add(eff); _skalEffectPaths++; }
+  }
+  // Deregister `eff` from `path`. Walks the trail down then prunes empty
+  // nodes on the way back up so disposed effects don't leak trie nodes.
+  function _skalDeregister(eff, path) {
+    if (path === '') {
+      if (_skalTrie.effects && _skalTrie.effects.delete(eff)) {
+        _skalEffectPaths--;
+        if (_skalTrie.effects.size === 0) _skalTrie.effects = null;
+      }
+      return;
+    }
+    const segs = path.split('.');
+    const trail = [_skalTrie];
+    let n = _skalTrie;
+    for (const seg of segs) {
+      if (!n.children) return;
+      const child = n.children.get(seg);
+      if (!child) return;
+      trail.push(child);
+      n = child;
+    }
+    if (n.effects && n.effects.delete(eff)) {
+      _skalEffectPaths--;
+      if (n.effects.size === 0) n.effects = null;
+    }
+    // Prune empty nodes bottom-up: stop at the first node that still has
+    // effects or non-empty children.
+    for (let i = trail.length - 1; i > 0; i--) {
+      const node = trail[i];
+      if (node.effects || (node.children && node.children.size > 0)) break;
+      const parent = trail[i - 1];
+      parent.children.delete(segs[i - 1]);
+      if (parent.children.size === 0) parent.children = null;
+    }
+  }
+  // Recursively mark every effect under `n`. Used for wholesale-write
+  // descendant notify.
+  function _skalMarkSubtree(n) {
+    if (n.effects) _skalMarkDirtySet(n.effects);
+    if (n.children) {
+      for (const [, child] of n.children) _skalMarkSubtree(child);
+    }
+  }
   // Notify effects observing `sk`. With `includeDescendants`, also notify
   // effects observing any `sk.*` path — used for wholesale writes and
   // subtree deletes, where the structural change invalidates everything
-  // beneath. The descendant walk is O(distinct paths) per call; gated on
-  // `_skalEffectMap.size > 0` at the caller to avoid the iter cost when
-  // no effects are registered.
+  // beneath. Trie walk: O(depth + descendant nodes), independent of total
+  // registered path count. Callers gate on `_skalEffectPaths > 0` to
+  // skip the walk entirely when nothing is registered.
   function _skalNotify(sk, includeDescendants) {
-    const set = _skalEffectMap.get(sk);
-    if (set) _skalMarkDirtySet(set);
-    if (includeDescendants) {
-      if (sk === '') {
-        // Root subtree: every registered path is a descendant.
-        // Only used for root-array splice / wholesale root reassign,
-        // both rare. The O(map.size) walk is acceptable.
-        for (const [, descSet] of _skalEffectMap) {
-          if (descSet !== set) _skalMarkDirtySet(descSet);
-        }
-      } else {
-        const prefix = sk + '.';
-        for (const [k, descSet] of _skalEffectMap) {
-          if (k.startsWith(prefix)) _skalMarkDirtySet(descSet);
-        }
+    let n = _skalTrie;
+    if (sk !== '') {
+      const segs = sk.split('.');
+      for (const seg of segs) {
+        if (!n.children) return;          // no nodes at this depth → nothing here or below
+        const next = n.children.get(seg);
+        if (!next) return;
+        n = next;
       }
     }
-    if (set || includeDescendants) _skalScheduleFlush();
+    if (!n.effects && (!includeDescendants || !n.children)) return;
+    if (n.effects) _skalMarkDirtySet(n.effects);
+    if (includeDescendants && n.children) {
+      for (const [, child] of n.children) _skalMarkSubtree(child);
+    }
+    _skalScheduleFlush();
   }
   function createSkalEffect(paths, fn) {
     // Pre-parse paths once: storeKey string + segment array for readSolid.
@@ -565,27 +631,16 @@ export function createSkalStore(initState, config = {}) {
       _vals: new Array(paths.length),
       _dirty: false, _disposed: false,
     };
-    for (let i = 0; i < paths.length; i++) {
-      const p = paths[i];
-      let set = _skalEffectMap.get(p);
-      if (!set) { set = new Set(); _skalEffectMap.set(p, set); }
-      set.add(eff);
-    }
+    for (let i = 0; i < paths.length; i++) _skalRegister(eff, paths[i]);
     const dispose = () => {
       if (eff._disposed) return;
       eff._disposed = true;
-      for (let i = 0; i < eff._paths.length; i++) {
-        const set = _skalEffectMap.get(eff._paths[i]);
-        if (set) {
-          set.delete(eff);
-          if (set.size === 0) _skalEffectMap.delete(eff._paths[i]);
-        }
-      }
+      for (let i = 0; i < eff._paths.length; i++) _skalDeregister(eff, eff._paths[i]);
     };
     // Initial run is synchronous. If fn throws here, we must still
-    // tear down the registrations we just put in `_skalEffectMap` —
-    // otherwise the effect orphans and keeps getting marked dirty
-    // forever on subsequent writes, with no way to remove it.
+    // tear down the registrations we just put in the trie — otherwise
+    // the effect orphans and keeps getting marked dirty forever on
+    // subsequent writes, with no way to remove it.
     try { _skalRun(eff); }
     catch (e) { dispose(); throw e; }
     return dispose;
@@ -716,7 +771,7 @@ export function createSkalStore(initState, config = {}) {
         // Declared-dep effects: deleting a subtree always invalidates
         // descendants too (e.g. `delete s.user` should fire effects on
         // 'user.name'). Pass `true` for the prefix walk.
-        if (childSk && _skalEffectMap.size > 0) _skalNotify(childSk, true);
+        if (childSk && _skalEffectPaths > 0) _skalNotify(childSk, true);
         scheduleFlush();
         return true;
       },
@@ -801,7 +856,7 @@ export function createSkalStore(initState, config = {}) {
       }
       // Declared-dep effects: a splice changes array structure; notify
       // observers on this path + descendants (element-paths beneath).
-      if (_skalEffectMap.size > 0) _skalNotify(sk, true);
+      if (_skalEffectPaths > 0) _skalNotify(sk, true);
       return removed;
     }
 
@@ -820,7 +875,7 @@ export function createSkalStore(initState, config = {}) {
       }
       // Reorder + fill + copyWithin can change values at any index;
       // notify the array path with descendants.
-      if (_skalEffectMap.size > 0) _skalNotify(sk, true);
+      if (_skalEffectPaths > 0) _skalNotify(sk, true);
       return arr();
     }
 
@@ -862,12 +917,24 @@ export function createSkalStore(initState, config = {}) {
               return makeNode(elSp, elSk,
                 { solidPath: elSp, storeKey: elSk }, false);
             }
-            // in-element nested array (rides the element frame) — index.
             const childSk = _join(sk, key);
             const idxSp = [...sp, i];
+            if (elInfo) {
+              // Nested array (or non-collection array) inside an existing
+              // element — writes ride that element's frame.
+              return makeNode(idxSp, childSk, elInfo, Array.isArray(el));
+            }
+            // Non-collection array of objects (mixed-type arrays, or
+            // objects placed via raw produce that lack _id). The array
+            // is persisted as one whole-array frame at sk; writes inside
+            // an element MUST re-stage that whole-array frame — not a
+            // phantom `items.0` frame, which the persisted `items` blob
+            // would overwrite on rehydrate. So the synthetic elInfo
+            // points at the PARENT array (sp/sk), not at the element
+            // (idxSp/childSk). Cost: O(array size) per write inside the
+            // element. Correctness over perf for the degenerate case.
             return makeNode(idxSp, childSk,
-              elInfo || { solidPath: idxSp, storeKey: childSk },
-              Array.isArray(el));
+              { solidPath: sp, storeKey: sk }, Array.isArray(el));
           }
           return el;
         }
@@ -885,7 +952,7 @@ export function createSkalStore(initState, config = {}) {
           persist();
           // Truncate/extend can change values at any index — notify with
           // descendants so element-path observers see the change.
-          if (_skalEffectMap.size > 0) _skalNotify(sk, true);
+          if (_skalEffectPaths > 0) _skalNotify(sk, true);
           return true;
         }
         if (_isNumKey(key)) {
@@ -926,7 +993,7 @@ export function createSkalStore(initState, config = {}) {
           // element at all anymore), observers on `items.<oldId>` see
           // the value vanish or change identity — fire them too with
           // descendants so they rerun and read the new shape.
-          if (_skalEffectMap.size > 0) {
+          if (_skalEffectPaths > 0) {
             const isObj = v !== null && typeof v === 'object';
             _skalNotify(_join(sk, key), isObj);
             const newId = (v && v._id != null) ? v._id : null;

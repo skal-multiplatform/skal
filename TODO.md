@@ -78,42 +78,6 @@ schema would close that gap.
 
 ---
 
-## Store (`createSkalStore`) — known rough edges
-
-Items found during review of the `native-store-engine` work. None are
-critical — the store is correct for typical usage — but each is a sharp
-edge that would bite a specific pattern.
-
-### Phantom element frames for `_id`-less objects in non-collection arrays
-[`db.js`](js-app/src/skal/store/db.js) — `arrayProxy.get`, numeric key
-branch.
-
-When an array contains objects-without-`_id` (degenerate case —
-arrays mixed with primitives, or objects placed via raw `produce`),
-`arrayProxy.get` creates a synthetic `elInfo` so writes inside the
-element re-stage a `items.0` frame. But the persisted whole-array
-frame at `'items'` remains the source of truth on disk — the
-`items.0` frame is an orphan.
-
-Manifests only for degenerate arrays. Fix: detect the case, either
-upgrade the array to a real collection (give every element an `_id`)
-or skip the synthetic `elInfo` and stage through the parent frame.
-
-### `_skalNotify` descendant walk is O(`_skalEffectMap.size`)
-[`db.js`](js-app/src/skal/store/db.js) — `_skalNotify`, descendant
-branch.
-
-Every wholesale write at sk walks the full effect map for keys
-starting with `sk.`. Fine for typical stores (10s–100s of effect
-paths); could matter for an app with 10,000+ declared-dep effects
-AND frequent wholesale writes.
-
-Fix idea: maintain a path-tree (radix tree) of registered effect
-paths so descendant lookup is O(prefix-depth · branch-factor)
-instead of O(total-paths). Only worth doing if profiling shows it.
-
----
-
 ## Smaller things
 
 ### `<lazyColumn>` alignment support

@@ -84,18 +84,6 @@ Items found during review of the `native-store-engine` work. None are
 critical — the store is correct for typical usage — but each is a sharp
 edge that would bite a specific pattern.
 
-### Replacing a collection element with a different `_id` via direct index assign
-[`db.js`](js-app/src/skal/store/db.js) — `arrayProxy.set`, numeric key.
-
-`items[3] = {_id: 99, ...}` when `items[3]._id` was previously `42`
-notifies declared-dep effects observing `items.3` and `items.99` but
-NOT `items.42`. Effects on the old id-path see the value vanish
-silently on their next read but get no rerun signal.
-
-Most code uses splice rather than direct index assign, so this is
-edge-case. Fix: capture the old element's `_id` before the write and
-notify both the old and new id-paths.
-
 ### Phantom element frames for `_id`-less objects in non-collection arrays
 [`db.js`](js-app/src/skal/store/db.js) — `arrayProxy.get`, numeric key
 branch.

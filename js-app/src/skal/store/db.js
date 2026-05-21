@@ -907,12 +907,19 @@ export function createSkalStore(initState, config = {}) {
           // Notify on the specific index and the element-id path (if it
           // is a collection). Descendants under v are included when v
           // is an object (e.g. setting `items[3] = newObj` should fire
-          // observers on `items.3.foo` if any).
+          // observers on `items.3.foo` if any). If a prior element at
+          // this index had a DIFFERENT `_id` (or v isn't a collection
+          // element at all anymore), observers on `items.<oldId>` see
+          // the value vanish or change identity — fire them too with
+          // descendants so they rerun and read the new shape.
           if (_skalEffectMap.size > 0) {
             const isObj = v !== null && typeof v === 'object';
             _skalNotify(_join(sk, key), isObj);
-            if (coll && v && v._id != null) {
-              _skalNotify(_join(sk, v._id), isObj);
+            const newId = (v && v._id != null) ? v._id : null;
+            if (coll && newId != null) _skalNotify(_join(sk, newId), isObj);
+            const oldId = (old && old._id != null) ? old._id : null;
+            if (oldId != null && oldId !== newId) {
+              _skalNotify(_join(sk, oldId), true);
             }
           }
           return true;

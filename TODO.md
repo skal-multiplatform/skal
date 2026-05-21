@@ -78,6 +78,27 @@ schema would close that gap.
 
 ---
 
+## Considered and rejected (revisit when profiling shows it)
+
+### Trie for `_skalNotify` descendant walk
+[`db.js`](js-app/src/skal/store/db.js) — `_skalNotify`, descendant
+branch.
+
+Currently `_skalNotify(sk, true)` walks the full `_skalEffectMap` for
+keys starting with `sk + '.'` — O(total registered paths). Tried a
+path-segment trie in [74148b9](https://github.com/andrepimenta/skal/commit/74148b9)
+which makes the descendant walk O(depth + matched), but the trie's
+per-effect register cost rose from O(1) Map.set to O(depth) trie walk.
+For typical Skal stores (10s–100s of registered paths), the flat-scan
+descendant walk was already <5 µs, so the trade ended up a wash or
+slightly negative.
+
+Reverted in the commit following 74148b9. Revisit when profiling
+shows the descendant walk as a real cost — most likely an app with
+10k+ declared-dep effects + frequent wholesale writes.
+
+---
+
 ## Smaller things
 
 ### `<lazyColumn>` alignment support

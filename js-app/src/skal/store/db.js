@@ -27,7 +27,6 @@
 import { createSignal, untrack } from 'solid-js';
 import { createStore as createSolidStore, produce } from 'solid-js/store';
 import { LogStore, NativeLogStore, openBackend } from './engine.js';
-import { encodeValue, decodeValue } from './codec.js';
 import { getAppDataDir } from '../../bridge.js';
 
 const FLUSH_DEBOUNCE_MS = 60;
@@ -43,6 +42,21 @@ const NODE_MEMO_MAX = 8192;
 // { ids, nextId } is computed once at flush time from live state, not
 // rebuilt on every push — see doFlush. Keeps push O(1) instead of O(n).
 const INDEX_DIRTY = Symbol('skal.indexDirty');
+
+// ── frame codec — JSON ──────────────────────────────────────────────
+// JSC's JSON.stringify / JSON.parse are heavily-optimized native C++
+// and beat any JS-implemented codec at every size: faster encode,
+// faster decode, *and* more compact on disk for typical app data
+// (no per-value type tag + 4-byte length prefix).
+const _textEnc = new TextEncoder();
+const _textDec = new TextDecoder();
+
+function encodeFrame(value) {
+  return _textEnc.encode(JSON.stringify(value));
+}
+function decodeFrame(bytes) {
+  return JSON.parse(_textDec.decode(bytes));
+}
 
 // `state[STORE]` → a control handle (ready / flushNow / stats).
 export const STORE = Symbol.for('skal.store');
@@ -100,6 +114,21 @@ export function createSkalStore(initState, config = {}) {
     migrate: config.migrate || null,
   };
 
+  // Pre-compute "does the config define ANY lazy / non-persist paths?"
+  // The hot-path get/set traps short-circuit policy lookups entirely
+  // when the answer is no — the overwhelmingly common case, since most
+  // apps just use the eager+persist default. Each `policyFor` call is
+  // a Map.get plus a property access; eliminated entirely here.
+  let hasLazyPaths = false;
+  let hasNonPersistPaths = false;
+  if (cfg.paths) {
+    for (const rule in cfg.paths) {
+      const p = cfg.paths[rule];
+      if (p && p.lazy === true) hasLazyPaths = true;
+      if (p && p.persist === false) hasNonPersistPaths = true;
+    }
+  }
+
   // Resolve { persist, lazy } for a dotted path. Every matching config
   // rule applies least-specific → most-specific (children inherit).
   // Memoized — config is immutable, and this runs on every get/set.
@@ -141,6 +170,11 @@ export function createSkalStore(initState, config = {}) {
   // incrementally so a push burst skips the O(n) _isColl rescan. Any
   // wholesale array write deletes the entry so the next splice re-derives.
   const collCache = new Map();
+  // Subtrees needing a native prefix-tombstone at flush. A wholesale
+  // object/array assign at sk invalidates any prior leaf-override
+  // frames under sk.* on disk — del_prefix clears them in one native
+  // call, off the per-key JS loop.
+  const pendingDelPrefix = new Set();
   let flushTimer = null;
   let flushCount = 0;
 
@@ -156,7 +190,14 @@ export function createSkalStore(initState, config = {}) {
       FLUSH_DEBOUNCE_MS);
   }
   function doFlush() {
-    if (!engine || dirty.size === 0) return;
+    if (!engine || (dirty.size === 0 && pendingDelPrefix.size === 0)) return;
+    // Sweep stale leaf overrides on subtrees that were wholesale-
+    // reassigned (or wholesale-deleted) since the last flush. Runs
+    // in native — one call per subtree, no per-key JS loop.
+    if (pendingDelPrefix.size > 0 && engine.delPrefix) {
+      for (const sk of pendingDelPrefix) engine.delPrefix(sk);
+      pendingDelPrefix.clear();
+    }
     for (const [key, val] of dirty) {
       // `val` is encoded bytes, null (delete), or INDEX_DIRTY — a
       // collection index frame whose { ids, nextId } is built from
@@ -168,7 +209,7 @@ export function createSkalStore(initState, config = {}) {
         const sk = key.slice(2, -2);                 // 'k:' + sk + '#x'
         const a = readSolid(sk === '' ? [] : sk.split('.'));
         if (Array.isArray(a)) {
-          engine.put(key, encodeValue({
+          engine.put(key, encodeFrame({
             ids: a.map((e) => e && e._id),
             nextId: nextIds.get(sk) || (a.length + 1),
           }));
@@ -216,11 +257,73 @@ export function createSkalStore(initState, config = {}) {
     }
     return { path, value: cur };
   }
-  function readSolid(sp) { return resolvePath(sp).value; }
+  // resolvePath also produces `path`; readSolid callers only care about
+  // `.value`, so this path-less variant skips the array + wrapper allocs.
+  // Hot read paths route through here, not through resolvePath.
+  function readSolid(sp) {
+    let cur = state;
+    for (let i = 0; i < sp.length; i++) {
+      const seg = sp[i];
+      if (seg !== null && typeof seg === 'object') {
+        let idx = -1;
+        if (Array.isArray(cur)) {
+          const h = seg.hint;
+          if (h >= 0 && h < cur.length && cur[h] && cur[h]._id === seg.__id) {
+            idx = h;
+          } else {
+            idx = cur.findIndex((e) => e && e._id === seg.__id);
+            seg.hint = idx;
+          }
+        }
+        cur = idx < 0 ? undefined : cur[idx];
+      } else {
+        cur = (cur == null) ? undefined : cur[seg];
+      }
+      if (cur == null) return undefined;
+    }
+    return cur;
+  }
+  // Walk `sp` and then read [key] on the resolved node — without
+  // allocating a child-path array. The hot get trap uses this so a
+  // primitive-leaf read costs ZERO new allocations (no `[...sp, key]`
+  // and no resolvePath wrapper object).
+  function readSolidChildValue(sp, key) {
+    let cur = state;
+    for (let i = 0; i < sp.length; i++) {
+      const seg = sp[i];
+      if (seg !== null && typeof seg === 'object') {
+        let idx = -1;
+        if (Array.isArray(cur)) {
+          const h = seg.hint;
+          if (h >= 0 && h < cur.length && cur[h] && cur[h]._id === seg.__id) {
+            idx = h;
+          } else {
+            idx = cur.findIndex((e) => e && e._id === seg.__id);
+            seg.hint = idx;
+          }
+        }
+        cur = idx < 0 ? undefined : cur[idx];
+      } else {
+        cur = (cur == null) ? undefined : cur[seg];
+      }
+      if (cur == null) return undefined;
+    }
+    return cur[key];
+  }
   function setAt(sp, ...args) {
-    const r = resolvePath(sp);
-    if (r.path.indexOf(-1) >= 0) return;               // target no longer exists
-    setState(...r.path, ...args);
+    // Fast path: skip resolvePath's array allocation when sp has no
+    // object (id-addressed) segments. Hot deletes / produce-mutations
+    // route through here.
+    for (let i = 0; i < sp.length; i++) {
+      const seg = sp[i];
+      if (seg !== null && typeof seg === 'object') {
+        const r = resolvePath(sp);
+        if (r.path.indexOf(-1) >= 0) return;          // target gone
+        setState(...r.path, ...args);
+        return;
+      }
+    }
+    setState(...sp, ...args);
   }
 
   // ── lazy faulting + LRU eviction ────────────────────────────────────
@@ -254,7 +357,7 @@ export function createSkalStore(initState, config = {}) {
     if (Array.isArray(readSolid(sp))) hydrateArray(sp, sk);
     else {
       const b = engine.get('k:' + sk);
-      if (b != null) setAt(sp, decodeValue(b));
+      if (b != null) setAt(sp, decodeFrame(b));
     }
     touchFaulted(sk);
   }
@@ -266,22 +369,31 @@ export function createSkalStore(initState, config = {}) {
   function stageAt(sp, sk, elInfo, value) {
     if (elInfo) {
       dirty.set('k:' + elInfo.storeKey,
-        encodeValue(readSolid(elInfo.solidPath)));
-    } else if (_isColl(value)) {
-      for (const el of value) dirty.set('k:' + sk + '.' + el._id, encodeValue(el));
+        encodeFrame(readSolid(elInfo.solidPath)));
+      return;
+    }
+    if (_isColl(value)) {
+      for (const el of value) {
+        dirty.set('k:' + _join(sk, el._id), encodeFrame(el));
+      }
       dirty.set('k:' + sk + '#x', INDEX_DIRTY);
-    } else if (_isObj(value)) {
-      // Recurse per leaf, skipping non-persist subtrees — staging a
-      // whole object (a parent write, or a migration replacing the
-      // tree) must still honour a nested `persist: false`.
+      return;
+    }
+    if (sk === '' && _isObj(value)) {
+      // Root: still recurse per top-level key, so the root isn't one
+      // giant frame and embedded collections at top level keep their
+      // own structure. Non-persist top-level keys are skipped.
       for (const k of Object.keys(value)) {
         const childSk = _join(sk, k);
         if (!policyFor(childSk).persist) continue;
         stageAt([...sp, k], childSk, null, value[k]);
       }
-    } else {
-      dirty.set('k:' + sk, encodeValue(value));   // primitive / array-of-primitives
+      return;
     }
+    // Auto-blob: one frame at `sk` encoding the whole value, whether
+    // it's a primitive or a deep object. Leaf overrides ride on top
+    // (see writeAt's pendingDelPrefix on wholesale assigns).
+    dirty.set('k:' + sk, encodeFrame(value));
   }
 
   // Tombstone every frame `value` occupied at storeKey `sk` — used when a
@@ -289,15 +401,17 @@ export function createSkalStore(initState, config = {}) {
   function tombstoneTree(sk, value) {
     if (_isColl(value)) {
       for (const el of value) {
-        if (el && el._id != null) dirty.set('k:' + sk + '.' + el._id, null);
+        if (el && el._id != null) dirty.set('k:' + _join(sk, el._id), null);
       }
       dirty.set('k:' + sk + '#x', null);
-    } else if (Array.isArray(value)) {
-      dirty.set('k:' + sk, null);
-    } else if (_isObj(value)) {
-      for (const k of Object.keys(value)) tombstoneTree(_join(sk, k), value[k]);
-    } else {
-      dirty.set('k:' + sk, null);
+      return;
+    }
+    // For any other value: tombstone the frame at sk. If it was an
+    // object/array it may have descendants (leaf override frames or a
+    // collection's element frames) — del_prefix clears them natively.
+    dirty.set('k:' + sk, null);
+    if (sk && value !== null && typeof value === 'object') {
+      pendingDelPrefix.add(sk);
     }
   }
 
@@ -306,13 +420,175 @@ export function createSkalStore(initState, config = {}) {
     if (!elInfo && _isColl(value)) {
       v = value.map((e) => (e._id != null ? e : { ...e, _id: genId(sk) }));
     }
-    const r = resolvePath(sp);
-    if (r.path.indexOf(-1) >= 0) return;          // target element is gone
-    setState(...r.path, v);
+    // Fast path: when sp contains only string/number segments (no
+    // {__id, hint} element addresses), the resolved path IS sp itself —
+    // no need to allocate a new path array via resolvePath. Most writes
+    // hit this path. Only collection-element writes need resolvePath's
+    // id-to-index translation.
+    let needsResolve = false;
+    for (let i = 0; i < sp.length; i++) {
+      const seg = sp[i];
+      if (seg !== null && typeof seg === 'object') { needsResolve = true; break; }
+    }
+    if (needsResolve) {
+      const r = resolvePath(sp);
+      if (r.path.indexOf(-1) >= 0) return;         // target element gone
+      setState(...r.path, v);
+    } else {
+      setState(...sp, v);
+    }
     if (Array.isArray(v)) collCache.delete(sk);   // wholesale array write
-    const pol = policyFor(sk);
-    if (!elInfo && pol.lazy) touchFaulted(sk);    // the write loaded it
-    if (pol.persist) { stageAt(sp, sk, elInfo, v); scheduleFlush(); }
+    // Parallel declared-dep effects: notify any registered for this
+    // exact storeKey. Wholesale assigns (v is object/array) also fire
+    // descendant observers — replacing `sub` invalidates effects on
+    // `sub.s5` etc. Primitive-leaf writes skip the descendant walk.
+    if (sk && _skalEffectMap.size > 0) {
+      _skalNotify(sk, v !== null && typeof v === 'object');
+    }
+    // Skip the policyFor lookup entirely when neither lazy nor non-
+    // persist paths exist — the common case. Default policy is
+    // {persist: true, lazy: false}, so we can assume it.
+    let shouldPersist = true;
+    if (hasLazyPaths || hasNonPersistPaths) {
+      const pol = policyFor(sk);
+      if (!elInfo && pol.lazy) touchFaulted(sk);  // the write loaded it
+      shouldPersist = pol.persist;
+    }
+    if (shouldPersist) {
+      // Wholesale object/array assign at a non-root key: clear any
+      // prior leaf-override frames under sk.* on disk. The native
+      // del_prefix runs in one call, so the JS thread isn't looping.
+      if (!elInfo && sk && v !== null && typeof v === 'object') {
+        pendingDelPrefix.add(sk);
+      }
+      stageAt(sp, sk, elInfo, v);
+      scheduleFlush();
+    }
+  }
+
+  // ── parallel reactive primitive — declared-dep effects ────────────
+  // A flat alternative to Solid's createEffect, where the user declares
+  // the dep paths upfront instead of discovering them via tracked reads.
+  // Mount cost drops dramatically because:
+  //   - We don't run the effect fn just to discover deps (no proxy reads
+  //     during dep collection — the paths ARE the deps)
+  //   - Each dep is registered via one Map.set, not a proxy trap +
+  //     Solid signal traversal + Computation node allocation
+  //   - On rerun, the fn receives a values snapshot directly, bypassing
+  //     the wrapping proxy on the read path
+  //
+  // Trade-off vs Solid effects: the dep set is static — the user must
+  // know the paths upfront. For dynamic-dep effects, use Solid's
+  // createEffect (which we still support).
+  //
+  // History: a native (Zig) backing for the dep graph was attempted
+  // and removed — the per-write JS↔native crossing on `_skalNotify`
+  // cost more than the JS Map operations it replaced, causing a 14×
+  // regression on 1k-write propagation. See FastStorage.md Lesson 5.
+  const _skalEffectMap = new Map();   // storeKey → Set<SkalEffect>
+  let _skalDirty = new Set();
+  let _skalFlushPending = false;
+
+  function _skalScheduleFlush() {
+    if (_skalFlushPending) return;
+    _skalFlushPending = true;
+    queueMicrotask(_skalFlush);
+  }
+  function _skalFlush() {
+    _skalFlushPending = false;
+    // Snapshot dirty set so reruns adding to _skalDirty don't double-fire
+    // in this same tick.
+    const batch = _skalDirty;
+    _skalDirty = new Set();
+    for (const eff of batch) {
+      if (eff._disposed) continue;
+      eff._dirty = false;
+      // Per-effect try/catch: one effect throwing must NOT prevent the
+      // rest of the batch from running. Bubbling out would also leak
+      // _skalFlushPending state (already cleared above) and silently
+      // drop subsequent reruns.
+      try { _skalRun(eff); }
+      catch (e) { console.error('[skal] effect threw:', e); }
+    }
+  }
+  function _skalRun(eff) {
+    const sps = eff._sps;
+    // Reused values array — allocated once at effect creation. User
+    // code MUST treat `vals` as a single-tick parameter: do not retain
+    // the reference past the callback. The next rerun overwrites it in
+    // place. (We rebind in-place rather than allocating per rerun so a
+    // 1k-write burst doesn't garbage-collect 1k arrays.)
+    const vals = eff._vals;
+    for (let i = 0; i < sps.length; i++) vals[i] = readSolid(sps[i]);
+    eff._fn(vals);
+  }
+  function _skalMarkDirtySet(set) {
+    for (const eff of set) {
+      if (!eff._dirty) {
+        eff._dirty = true;
+        _skalDirty.add(eff);
+      }
+    }
+  }
+  // Notify effects observing `sk`. With `includeDescendants`, also notify
+  // effects observing any `sk.*` path — used for wholesale writes and
+  // subtree deletes, where the structural change invalidates everything
+  // beneath. The descendant walk is O(distinct paths) per call; gated on
+  // `_skalEffectMap.size > 0` at the caller to avoid the iter cost when
+  // no effects are registered.
+  function _skalNotify(sk, includeDescendants) {
+    const set = _skalEffectMap.get(sk);
+    if (set) _skalMarkDirtySet(set);
+    if (includeDescendants) {
+      if (sk === '') {
+        // Root subtree: every registered path is a descendant.
+        // Only used for root-array splice / wholesale root reassign,
+        // both rare. The O(map.size) walk is acceptable.
+        for (const [, descSet] of _skalEffectMap) {
+          if (descSet !== set) _skalMarkDirtySet(descSet);
+        }
+      } else {
+        const prefix = sk + '.';
+        for (const [k, descSet] of _skalEffectMap) {
+          if (k.startsWith(prefix)) _skalMarkDirtySet(descSet);
+        }
+      }
+    }
+    if (set || includeDescendants) _skalScheduleFlush();
+  }
+  function createSkalEffect(paths, fn) {
+    // Pre-parse paths once: storeKey string + segment array for readSolid.
+    const sps = new Array(paths.length);
+    for (let i = 0; i < paths.length; i++) sps[i] = paths[i].split('.');
+    const eff = {
+      _fn: fn, _paths: paths, _sps: sps,
+      _vals: new Array(paths.length),
+      _dirty: false, _disposed: false,
+    };
+    for (let i = 0; i < paths.length; i++) {
+      const p = paths[i];
+      let set = _skalEffectMap.get(p);
+      if (!set) { set = new Set(); _skalEffectMap.set(p, set); }
+      set.add(eff);
+    }
+    const dispose = () => {
+      if (eff._disposed) return;
+      eff._disposed = true;
+      for (let i = 0; i < eff._paths.length; i++) {
+        const set = _skalEffectMap.get(eff._paths[i]);
+        if (set) {
+          set.delete(eff);
+          if (set.size === 0) _skalEffectMap.delete(eff._paths[i]);
+        }
+      }
+    };
+    // Initial run is synchronous. If fn throws here, we must still
+    // tear down the registrations we just put in `_skalEffectMap` —
+    // otherwise the effect orphans and keeps getting marked dirty
+    // forever on subsequent writes, with no way to remove it.
+    try { _skalRun(eff); }
+    catch (e) { dispose(); throw e; }
+    return dispose;
   }
 
   // ── control handle ─────────────────────────────────────────────────
@@ -326,6 +602,7 @@ export function createSkalStore(initState, config = {}) {
     flushes: () => flushCount,
     resident: () => faulted.size,
     engineStats: () => (engine && engine.stats ? engine.stats() : null),
+    createEffect: createSkalEffect,   // declared-dep effects
   };
 
   // ── the proxy ──────────────────────────────────────────────────────
@@ -341,8 +618,12 @@ export function createSkalStore(initState, config = {}) {
     if (isArray === undefined) isArray = Array.isArray(readSolid(sp));
     const hit = nodeMemo.get(sk);
     if (hit !== undefined && hit.isArray === isArray) {
-      nodeMemo.delete(sk);                 // LRU touch — re-insert as newest
-      nodeMemo.set(sk, hit);
+      // Insertion-order eviction WITHOUT an LRU touch — the touch
+      // (Map.delete + Map.set on every hit) was measured as ~0.4 µs of
+      // pure overhead per read in the hot path. With NODE_MEMO_MAX=8192
+      // and typical app stores in the hundreds-to-low-thousands of
+      // paths, the eviction cap almost never triggers, so strict-LRU
+      // buys nothing in practice.
       return hit.node;
     }
     const node = isArray
@@ -375,28 +656,33 @@ export function createSkalStore(initState, config = {}) {
       get(_t, key) {
         if (key === STORE) return ctrl;
         if (typeof key === 'symbol') return undefined;
-        const childSp = [...sp, key];
-        const childSk = _join(sk, key);
-        // Lazy: a leaf or collection under a lazy path faults on first
-        // touch — untracked, so the load isn't itself a reactive write.
-        // Skipped inside an element (elInfo) — an element loads whole,
-        // so per-field faulting is meaningless and would also blow up
-        // the policy cache with one entry per element id.
-        if (!elInfo && !faulted.has(childSk) && policyFor(childSk).lazy) {
-          const cur = readSolid(childSp);
-          if (cur === null || typeof cur !== 'object' || Array.isArray(cur)) {
-            untrack(() => faultIn(childSp, childSk));
+        // Lazy fault-in: only walk the policy + faulted maps when the
+        // store actually has lazy paths configured. For the common case
+        // (no lazy), this branch is dead — saves ~0.4 µs/read with no
+        // memory cost.
+        if (hasLazyPaths && !elInfo) {
+          const childSk = sk ? sk + '.' + key : key;
+          if (!faulted.has(childSk) && policyFor(childSk).lazy) {
+            untrack(() => faultIn(sp.length === 0 ? [key] : [...sp, key],
+              childSk));
           }
         }
-        const child = readSolid(childSp);
+        // Walk sp + read [key] in one pass — no childSp array alloc on
+        // the primitive-leaf hot path. childSp / childSk are computed
+        // lazily below ONLY when the result is an object (needed for
+        // makeNode). Saves ~0.5 µs/read for primitive leaves.
+        const child = readSolidChildValue(sp, key);
         if (child !== null && typeof child === 'object') {
-          return makeNode(childSp, childSk, elInfo, Array.isArray(child));
+          const childSp = sp.length === 0 ? [key] : [...sp, key];
+          return makeNode(childSp, sk ? sk + '.' + key : key, elInfo,
+            Array.isArray(child));
         }
         return child;
       },
       set(_t, key, value) {
         if (typeof key === 'symbol') return false;
-        writeAt([...sp, key], _join(sk, key), elInfo, value);
+        writeAt(sp.length === 0 ? [key] : [...sp, key],
+          sk ? sk + '.' + key : key, elInfo, value);
         return true;
       },
       has(_t, key) { const o = readSolid(sp); return o != null && key in o; },
@@ -410,13 +696,27 @@ export function createSkalStore(initState, config = {}) {
       },
       deleteProperty(_t, key) {
         if (typeof key === 'symbol') return false;
-        const childSk = _join(sk, key);
-        const old = readSolid([...sp, key]);     // capture before deletion
+        const childSk = sk ? sk + '.' + key : key;
+        const childSp = sp.length === 0 ? [key] : [...sp, key];
+        const old = readSolid(childSp);            // capture before deletion
         setAt(sp, produce((o) => { if (o != null) delete o[key]; }));
         if (elInfo) stageAt(sp, sk, elInfo, null);          // re-stage element
-        else if (policyFor(childSk).persist) tombstoneTree(childSk, old);
-        dropMemo([childSk]);                       // subtree proxies are gone
-        collCache.delete(childSk);                 // its array (if any) is gone
+        else if (!hasNonPersistPaths || policyFor(childSk).persist) {
+          tombstoneTree(childSk, old);
+        }
+        // Only sweep the proxy-node memo + collCache when the deleted
+        // value was an object/array — primitives are never memoized
+        // and never had a collection cache entry. The dropMemo sweep
+        // is O(memo size), so this skip is the biggest win on the
+        // hot "delete a primitive leaf" path.
+        if (old !== null && typeof old === 'object') {
+          dropMemo([childSk]);
+          collCache.delete(childSk);
+        }
+        // Declared-dep effects: deleting a subtree always invalidates
+        // descendants too (e.g. `delete s.user` should fire effects on
+        // 'user.name'). Pass `true` for the prefix walk.
+        if (childSk && _skalEffectMap.size > 0) _skalNotify(childSk, true);
         scheduleFlush();
         return true;
       },
@@ -427,7 +727,12 @@ export function createSkalStore(initState, config = {}) {
     const arr = () => readSolid(sp) || [];
 
     const persist = () => {
-      if (policyFor(sk).persist || elInfo) stageAt(sp, sk, elInfo, arr());
+      // Flag-gate the policyFor lookup: default policy is persist=true,
+      // so when no non-persist paths are configured we can assume it
+      // without consulting the cache. Same shape as writeAt's gate.
+      if (elInfo || !hasNonPersistPaths || policyFor(sk).persist) {
+        stageAt(sp, sk, elInfo, arr());
+      }
       scheduleFlush();
     };
 
@@ -462,8 +767,9 @@ export function createSkalStore(initState, config = {}) {
         const prefixes = [];
         for (const r of removed) {
           if (r && r._id != null) {
-            dirty.set('k:' + sk + '.' + r._id, null);
-            prefixes.push(sk + '.' + r._id);
+            const rSk = _join(sk, r._id);
+            dirty.set('k:' + rSk, null);
+            prefixes.push(rSk);
           }
         }
         dropMemo(prefixes);
@@ -484,13 +790,18 @@ export function createSkalStore(initState, config = {}) {
         // Untouched records stay untouched; the index frame is rebuilt
         // once at flush (doFlush), not on every push.
         for (const it of ins) {
-          if (it && it._id != null) dirty.set('k:' + sk + '.' + it._id, encodeValue(it));
+          if (it && it._id != null) {
+            dirty.set('k:' + _join(sk, it._id), encodeFrame(it));
+          }
         }
         dirty.set('k:' + sk + '#x', INDEX_DIRTY);
         scheduleFlush();
       } else {
         persist();
       }
+      // Declared-dep effects: a splice changes array structure; notify
+      // observers on this path + descendants (element-paths beneath).
+      if (_skalEffectMap.size > 0) _skalNotify(sk, true);
       return removed;
     }
 
@@ -507,6 +818,9 @@ export function createSkalStore(initState, config = {}) {
       } else {
         persist();
       }
+      // Reorder + fill + copyWithin can change values at any index;
+      // notify the array path with descendants.
+      if (_skalEffectMap.size > 0) _skalNotify(sk, true);
       return arr();
     }
 
@@ -530,19 +844,26 @@ export function createSkalStore(initState, config = {}) {
           return mutators[key];
         }
         if (_isNumKey(key)) {
+          // Keep using `arr()[i]` here: making arrayProxy also call
+          // `readSolidChildValue` made the function polymorphic across
+          // its callers and measurably regressed objectProxy reads
+          // (the function couldn't be inlined as aggressively). The
+          // arrayProxy hot path is rarely a bottleneck — arrays are
+          // iterated via <For>, not read in tight loops.
+          const a = arr();
           const i = +key;
-          const el = arr()[i];
+          const el = a[i];
           if (el !== null && typeof el === 'object') {
             if (!elInfo && el._id != null) {
               // top-level collection element — address by stable id, so
               // the proxy survives splices that shift its index.
-              const elSk = sk + '.' + el._id;
+              const elSk = _join(sk, el._id);
               const elSp = [...sp, { __id: el._id, hint: i }];
               return makeNode(elSp, elSk,
                 { solidPath: elSp, storeKey: elSk }, false);
             }
             // in-element nested array (rides the element frame) — index.
-            const childSk = sk + '.' + key;
+            const childSk = _join(sk, key);
             const idxSp = [...sp, i];
             return makeNode(idxSp, childSk,
               elInfo || { solidPath: idxSp, storeKey: childSk },
@@ -551,15 +872,20 @@ export function createSkalStore(initState, config = {}) {
           return el;
         }
         // inherited read methods (map/filter/forEach/find/…): bind to
-        // the live array so they iterate the real values.
-        const v = arr()[key];
-        return typeof v === 'function' ? v.bind(arr()) : v;
+        // the live array so they iterate the real values. Hoist arr()
+        // to a single call so .bind doesn't trigger a second readSolid.
+        const a = arr();
+        const v = a[key];
+        return typeof v === 'function' ? v.bind(a) : v;
       },
       set(_t, key, value) {
         if (key === 'length') {
           setAt(sp, produce((x) => { x.length = +value; }));
           collCache.delete(sk);            // truncate/extend may degrade it
           persist();
+          // Truncate/extend can change values at any index — notify with
+          // descendants so element-path observers see the change.
+          if (_skalEffectMap.size > 0) _skalNotify(sk, true);
           return true;
         }
         if (_isNumKey(key)) {
@@ -573,10 +899,21 @@ export function createSkalStore(initState, config = {}) {
           const coll = !elInfo && _isColl(arr());
           if (!elInfo) collCache.set(sk, coll);     // refresh the cache
           if (coll && v && v._id != null) {
-            dirty.set('k:' + sk + '.' + v._id, encodeValue(v));
+            dirty.set('k:' + _join(sk, v._id), encodeFrame(v));
             scheduleFlush();
           } else {
             persist();
+          }
+          // Notify on the specific index and the element-id path (if it
+          // is a collection). Descendants under v are included when v
+          // is an object (e.g. setting `items[3] = newObj` should fire
+          // observers on `items.3.foo` if any).
+          if (_skalEffectMap.size > 0) {
+            const isObj = v !== null && typeof v === 'object';
+            _skalNotify(_join(sk, key), isObj);
+            if (coll && v && v._id != null) {
+              _skalNotify(_join(sk, v._id), isObj);
+            }
           }
           return true;
         }
@@ -611,17 +948,18 @@ export function createSkalStore(initState, config = {}) {
       const idxB = engine.get('k:' + sk + '#x');
       if (idxB != null) {
         keys.push(sk + '#x');
-        const idx = decodeValue(idxB);
+        const idx = decodeFrame(idxB);
         const out = [];
         for (const id of idx.ids || []) {
-          keys.push(sk + '.' + id);
-          const b = engine.get('k:' + sk + '.' + id);
-          if (b != null) out.push(decodeValue(b));
+          const eSk = _join(sk, id);
+          keys.push(eSk);
+          const b = engine.get('k:' + eSk);
+          if (b != null) out.push(decodeFrame(b));
         }
         return out;
       }
       const whole = engine.get('k:' + sk);
-      if (whole != null) { keys.push(sk); return decodeValue(whole); }
+      if (whole != null) { keys.push(sk); return decodeFrame(whole); }
       return _clone(shape);
     }
     if (_isObj(shape)) {
@@ -632,7 +970,7 @@ export function createSkalStore(initState, config = {}) {
       return out;
     }
     const b = engine.get('k:' + sk);
-    if (b != null) { keys.push(sk); return decodeValue(b); }
+    if (b != null) { keys.push(sk); return decodeFrame(b); }
     return shape;                                    // the old default
   }
 
@@ -664,12 +1002,37 @@ export function createSkalStore(initState, config = {}) {
       if (Array.isArray(v)) {
         if (pol.persist && !pol.lazy) hydrateArray(childSp, childSk);
       } else if (_isObj(v)) {
-        hydrate(v, childSp, childSk);             // leaves decide individually
+        // Auto-blob: a wholesale assign at this path is stored as one
+        // frame here; load it first, then recurse to overlay any
+        // deeper-stored leaf overrides on top.
+        //
+        // Shape divergence: the persisted value may not be an object
+        // anymore (e.g. a later `state.user = "alice"` or
+        // `state.user = null` overwrote an object with a primitive).
+        // Detect that and skip the recursion — descending into a non-
+        // object parent would try to write child paths against it via
+        // setState('user', 'name', …), which fails. Any leaf-override
+        // frames under childSk.* are orphans from the previous shape;
+        // schedule a native prefix-tombstone so they don't haunt the
+        // next run.
+        let recurse = true;
+        if (pol.persist && !pol.lazy && !dirty.has('k:' + childSk)) {
+          const b = engine.get('k:' + childSk);
+          if (b != null) {
+            const decoded = decodeFrame(b);
+            setAt(childSp, decoded);
+            if (!_isObj(decoded)) {
+              recurse = false;
+              if (engine.delPrefix) pendingDelPrefix.add(childSk);
+            }
+          }
+        }
+        if (recurse) hydrate(v, childSp, childSk);
       } else {
         if (!pol.persist || pol.lazy) continue;   // lazy leaf → faults on access
         if (dirty.has('k:' + childSk)) continue;  // app already wrote it
         const b = engine.get('k:' + childSk);
-        if (b != null) setAt(childSp, decodeValue(b));
+        if (b != null) setAt(childSp, decodeFrame(b));
       }
     }
   }
@@ -680,18 +1043,18 @@ export function createSkalStore(initState, config = {}) {
     collCache.delete(sk);                  // array replaced — re-derive later
     const idxBytes = engine.get('k:' + sk + '#x');
     if (idxBytes != null) {                          // a persisted collection
-      const idx = decodeValue(idxBytes);             // { ids, nextId }
+      const idx = decodeFrame(idxBytes);             // { ids, nextId }
       nextIds.set(sk, idx.nextId || 1);
       const els = [];
       for (const id of idx.ids || []) {
-        const b = engine.get('k:' + sk + '.' + id);
-        if (b != null) els.push(decodeValue(b));
+        const b = engine.get('k:' + _join(sk, id));
+        if (b != null) els.push(decodeFrame(b));
       }
       setAt(sp, els);
       return;
     }
     const whole = engine.get('k:' + sk);             // a whole-frame array
-    if (whole != null) setAt(sp, decodeValue(whole));
+    if (whole != null) setAt(sp, decodeFrame(whole));
   }
 
   async function init() {
@@ -704,11 +1067,21 @@ export function createSkalStore(initState, config = {}) {
       const dataDir = await fetchDataDir();
       tDir = _now();
       if (typeof globalThis.__skal_store_open === 'function' && dataDir) {
-        const ns = new NativeLogStore(dataDir + '/' + cfg.name);
-        ns.open();
-        engine = ns;
-        setBackendKind('native');
-      } else {
+        // Native open can fail (disk full, sandbox denied us write, the
+        // dir path is bogus). Don't let that pin us to memory-only —
+        // fall through to the JS LogStore so we still get real
+        // persistence (memory-only is a LAST resort, not the first
+        // non-native fallback).
+        try {
+          const ns = new NativeLogStore(dataDir + '/' + cfg.name);
+          ns.open();
+          engine = ns;
+          setBackendKind('native');
+        } catch (_) {
+          engine = null;
+        }
+      }
+      if (!engine) {
         const backend = await openBackend(dataDir);
         const ls = new LogStore(backend);
         ls.open();
@@ -721,7 +1094,7 @@ export function createSkalStore(initState, config = {}) {
       // ── version / migration ──────────────────────────────────────
       let meta = null;
       const mb = engine.get('k:#meta');
-      if (mb != null) { try { meta = decodeValue(mb); } catch (_) { meta = null; } }
+      if (mb != null) { try { meta = decodeFrame(mb); } catch (_) { meta = null; } }
       const storedVersion = meta ? (meta.version | 0) : 0;
       let migrated = false;
 
@@ -744,7 +1117,7 @@ export function createSkalStore(initState, config = {}) {
       // Record the baseline / new version (only when it changed).
       if (!meta || storedVersion !== cfg.version) {
         dirty.set('k:#meta',
-          encodeValue({ version: cfg.version, shape: _clone(initState) }));
+          encodeFrame({ version: cfg.version, shape: _clone(initState) }));
       }
 
       tMig = _now();

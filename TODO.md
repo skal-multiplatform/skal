@@ -78,6 +78,78 @@ schema would close that gap.
 
 ---
 
+## Store (`createSkalStore`) — known rough edges
+
+Items found during review of the `native-store-engine` work. None are
+critical — the store is correct for typical usage — but each is a sharp
+edge that would bite a specific pattern.
+
+### Replacing a collection element with a different `_id` via direct index assign
+[`db.js`](js-app/src/skal/store/db.js) — `arrayProxy.set`, numeric key.
+
+`items[3] = {_id: 99, ...}` when `items[3]._id` was previously `42`
+notifies declared-dep effects observing `items.3` and `items.99` but
+NOT `items.42`. Effects on the old id-path see the value vanish
+silently on their next read but get no rerun signal.
+
+Most code uses splice rather than direct index assign, so this is
+edge-case. Fix: capture the old element's `_id` before the write and
+notify both the old and new id-paths.
+
+### Phantom element frames for `_id`-less objects in non-collection arrays
+[`db.js`](js-app/src/skal/store/db.js) — `arrayProxy.get`, numeric key
+branch.
+
+When an array contains objects-without-`_id` (degenerate case —
+arrays mixed with primitives, or objects placed via raw `produce`),
+`arrayProxy.get` creates a synthetic `elInfo` so writes inside the
+element re-stage a `items.0` frame. But the persisted whole-array
+frame at `'items'` remains the source of truth on disk — the
+`items.0` frame is an orphan.
+
+Manifests only for degenerate arrays. Fix: detect the case, either
+upgrade the array to a real collection (give every element an `_id`)
+or skip the synthetic `elInfo` and stage through the parent frame.
+
+### `_skalNotify` descendant walk is O(`_skalEffectMap.size`)
+[`db.js`](js-app/src/skal/store/db.js) — `_skalNotify`, descendant
+branch.
+
+Every wholesale write at sk walks the full effect map for keys
+starting with `sk.`. Fine for typical stores (10s–100s of effect
+paths); could matter for an app with 10,000+ declared-dep effects
+AND frequent wholesale writes.
+
+Fix idea: maintain a path-tree (radix tree) of registered effect
+paths so descendant lookup is O(prefix-depth · branch-factor)
+instead of O(total-paths). Only worth doing if profiling shows it.
+
+### `arrayProxy.set` numeric key calls `_isColl(arr())` per write
+[`db.js`](js-app/src/skal/store/db.js) — `arrayProxy.set`, numeric
+key branch.
+
+The splice path uses `collCache` to skip the O(n) rescan; the direct
+index-assign path doesn't. Direct index assign on collections is
+uncommon (most code splices/pushes), so this isn't a hot path. Fix:
+add the same collCache-with-incremental-update treatment that splice
+uses.
+
+### Symmetric hydrate shape divergence
+[`db.js`](js-app/src/skal/store/db.js) — `hydrate`, primitive
+branch.
+
+The asymmetric case ("disk says primitive where initState says
+object") is fixed: hydrate now skips the recursion and schedules a
+prefix-tombstone. The symmetric case ("disk says object where
+initState says primitive") is unfixed: hydrate sets the live value
+to the disk-loaded object but doesn't recurse into its shape, so
+any deeper leaf-overrides written under it are silently dropped.
+
+Plausibility is low — devs typically type initState faithfully — so
+this is deferred. Fix when it manifests.
+
+---
+
 ## Smaller things
 
 ### `<lazyColumn>` alignment support

@@ -605,6 +605,20 @@ export class LogStore {
     this._keydir.delete(key);
   }
 
+  // Tombstone every keydir key starting with `prefix.` or `prefix#`.
+  // Used by db.js's wholesale-assign + tombstoneTree paths to clear
+  // stale leaf-override frames in one call.
+  delPrefix(prefix) {
+    if (!prefix) return;
+    const dot = prefix + '.';
+    const hash = prefix + '#';
+    const victims = [];
+    for (const key of this._keydir.keys()) {
+      if (key.startsWith(dot) || key.startsWith(hash)) victims.push(key);
+    }
+    for (const key of victims) this.del(key);
+  }
+
   get(key) {                              // → Uint8Array | null
     const e = this._keydir.get(key);
     if (!e) return null;
@@ -737,6 +751,14 @@ export class NativeLogStore {
 
   put(key, value) { globalThis.__skal_store_put(this._h, key, value); }
   del(key) { globalThis.__skal_store_del(this._h, key); }
+
+  // Tombstone every native-keydir entry under `prefix.` or `prefix#`
+  // in a single native call — used by db.js when a wholesale assign
+  // invalidates leaf overrides under that subtree.
+  delPrefix(prefix) {
+    const fn = globalThis.__skal_store_del_prefix;
+    if (typeof fn === 'function') fn(this._h, prefix);
+  }
 
   get(key) {                              // → Uint8Array | null
     const ab = globalThis.__skal_store_get(this._h, key);

@@ -824,6 +824,39 @@ const SkalStore = struct {
         }
     }
 
+    /// Tombstone every key starting with `prefix.` or `prefix#` — the
+    /// subtree under `prefix`. Called from JS via __skal_store_del_prefix
+    /// when a wholesale assign at `prefix` invalidates leaf-override
+    /// frames below it. Runs in one native call; no per-key JS loop.
+    fn delPrefix(self: *SkalStore, prefix: []const u8) !void {
+        if (prefix.len == 0 or prefix.len > 255) return;
+        var dot_buf: [256]u8 = undefined;
+        var hash_buf: [256]u8 = undefined;
+        @memcpy(dot_buf[0..prefix.len], prefix);
+        dot_buf[prefix.len] = '.';
+        @memcpy(hash_buf[0..prefix.len], prefix);
+        hash_buf[prefix.len] = '#';
+        const dot_prefix = dot_buf[0 .. prefix.len + 1];
+        const hash_prefix = hash_buf[0 .. prefix.len + 1];
+
+        // Collect victims first — del() removes from the keydir, which
+        // would invalidate the iterator if we deleted in-place.
+        var victims: std.ArrayListUnmanaged([]const u8) = .{};
+        defer victims.deinit(self.allocator);
+        var it = self.keydir.keyIterator();
+        while (it.next()) |kp| {
+            const k = kp.*;
+            if (std.mem.startsWith(u8, k, dot_prefix) or
+                std.mem.startsWith(u8, k, hash_prefix))
+            {
+                try victims.append(self.allocator, k);
+            }
+        }
+        for (victims.items) |key| {
+            self.del(key) catch {};
+        }
+    }
+
     // Returns the value slice (into a segment mapping) or null.
     fn get(self: *SkalStore, key: []const u8) ?[]const u8 {
         const e = self.keydir.get(key) orelse return null;
@@ -1014,6 +1047,20 @@ fn store_del_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, 
     return JSValueMakeUndefined(ctx);
 }
 
+// __skal_store_del_prefix(handle, prefix: string) — tombstone every
+// keydir entry under prefix.* / prefix#* in one native call.
+fn store_del_prefix_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, args: [*]const JSValueRef, _: ?*?JSValueRef) callconv(.c) ?JSValueRef {
+    if (argc >= 2) {
+        if (skalStoreFromArg(ctx, args[0])) |store| {
+            if (skalStoreArgString(ctx, args[1])) |prefix| {
+                defer bun.default_allocator.free(prefix);
+                store.delPrefix(prefix) catch {};
+            }
+        }
+    }
+    return JSValueMakeUndefined(ctx);
+}
+
 // __skal_store_get(handle, key: string) -> ArrayBuffer | null
 fn store_get_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, args: [*]const JSValueRef, _: ?*?JSValueRef) callconv(.c) ?JSValueRef {
     if (argc < 2) return JSValueMakeNull(ctx);
@@ -1072,6 +1119,7 @@ fn installStoreGlobals(ctx: JSContextRef, global_obj: JSObjectRef) void {
     installStoreFn(ctx, global_obj, "__skal_store_put", store_put_cb);
     installStoreFn(ctx, global_obj, "__skal_store_get", store_get_cb);
     installStoreFn(ctx, global_obj, "__skal_store_del", store_del_cb);
+    installStoreFn(ctx, global_obj, "__skal_store_del_prefix", store_del_prefix_cb);
     installStoreFn(ctx, global_obj, "__skal_store_compact", store_compact_cb);
     installStoreFn(ctx, global_obj, "__skal_store_stats", store_stats_cb);
 }

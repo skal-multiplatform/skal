@@ -193,9 +193,13 @@ export function createSkalStore(initState, config = {}) {
     if (!engine || (dirty.size === 0 && pendingDelPrefix.size === 0)) return;
     // Sweep stale leaf overrides on subtrees that were wholesale-
     // reassigned (or wholesale-deleted) since the last flush. Runs
-    // in native — one call per subtree, no per-key JS loop.
-    if (pendingDelPrefix.size > 0 && engine.delPrefix) {
-      for (const sk of pendingDelPrefix) engine.delPrefix(sk);
+    // in native — one call per subtree, no per-key JS loop. Always
+    // clear the set, even when the engine doesn't support delPrefix —
+    // otherwise it would grow unbounded on every wholesale write.
+    if (pendingDelPrefix.size > 0) {
+      if (engine.delPrefix) {
+        for (const sk of pendingDelPrefix) engine.delPrefix(sk);
+      }
       pendingDelPrefix.clear();
     }
     for (const [key, val] of dirty) {
@@ -472,10 +476,17 @@ export function createSkalStore(initState, config = {}) {
   // Mount cost drops dramatically because:
   //   - We don't run the effect fn just to discover deps (no proxy reads
   //     during dep collection — the paths ARE the deps)
-  //   - Each dep is registered via one Map.set, not a proxy trap +
-  //     Solid signal traversal + Computation node allocation
+  //   - Each dep is registered via one Map.set per path (no Solid
+  //     Computation node, no proxy trap traversal)
   //   - On rerun, the fn receives a values snapshot directly, bypassing
   //     the wrapping proxy on the read path
+  //
+  // Notify costs:
+  //   - Exact-path notify: O(1) Map.get
+  //   - Wholesale-write notify (includeDescendants): O(_skalEffectMap.size)
+  //     — a flat scan checking `path.startsWith(sk + '.')`. Acceptable
+  //     for typical stores (10s–100s of paths); see TODO.md for the
+  //     considered-and-rejected trie alternative.
   //
   // Trade-off vs Solid effects: the dep set is static — the user must
   // know the paths upfront. For dynamic-dep effects, use Solid's
@@ -563,6 +574,15 @@ export function createSkalStore(initState, config = {}) {
     }
     if (set || includeDescendants) _skalScheduleFlush();
   }
+  // Public API (exposed as `state[STORE].createEffect(paths, fn)`):
+  //   • paths: string[] of dotted storeKeys to observe (static — no
+  //     conditional / dynamic deps; use Solid's createEffect for those)
+  //   • fn:    (vals: any[]) => void, called once synchronously at
+  //            registration and again whenever any observed path changes.
+  //            ⚠️  `vals` is reused across reruns — read or destructure
+  //                values out, but do NOT retain the array reference past
+  //                the callback. The next rerun overwrites it in place.
+  //   returns: dispose function — call to deregister + tear down.
   function createSkalEffect(paths, fn) {
     // Pre-parse paths once: storeKey string + segment array for readSolid.
     const sps = new Array(paths.length);
@@ -861,7 +881,25 @@ export function createSkalStore(initState, config = {}) {
           const i = +key;
           const el = a[i];
           if (el !== null && typeof el === 'object') {
-            if (!elInfo && el._id != null) {
+            // Is the array as a whole actually a collection (every
+            // element an object with `_id`)? For MIXED arrays — some
+            // elements with `_id`, some primitives — el._id might be
+            // non-null on this element, but the array still persists
+            // as one whole-array frame at sk, NOT as a collection
+            // with per-element frames. Routing to per-element
+            // addressing in that case would write a phantom frame
+            // the rehydrate-from-whole-array would silently drop.
+            let arrIsColl = false;
+            if (!elInfo) {
+              const cached = collCache.get(sk);
+              if (cached === undefined) {
+                arrIsColl = _isColl(arr());
+                collCache.set(sk, arrIsColl);   // amortize the O(n) rescan
+              } else {
+                arrIsColl = cached;
+              }
+            }
+            if (arrIsColl && el._id != null) {
               // top-level collection element — address by stable id, so
               // the proxy survives splices that shift its index.
               const elSk = _join(sk, el._id);
@@ -877,14 +915,19 @@ export function createSkalStore(initState, config = {}) {
               return makeNode(idxSp, childSk, elInfo, Array.isArray(el));
             }
             // Non-collection array of objects (mixed-type arrays, or
-            // objects placed via raw produce that lack _id). The array
-            // is persisted as one whole-array frame at sk; writes inside
+            // objects placed via raw produce that lack _id, or a mixed
+            // array where SOME elements have `_id`). The array is
+            // persisted as one whole-array frame at sk; writes inside
             // an element MUST re-stage that whole-array frame — not a
-            // phantom `items.0` frame, which the persisted `items` blob
-            // would overwrite on rehydrate. So the synthetic elInfo
-            // points at the PARENT array (sp/sk), not at the element
-            // (idxSp/childSk). Cost: O(array size) per write inside the
-            // element. Correctness over perf for the degenerate case.
+            // phantom `items.0` (or `items.<id>`) frame, which the
+            // persisted `items` blob would overwrite on rehydrate. So
+            // the synthetic elInfo points at the PARENT array (sp/sk),
+            // not at the element. Cost: O(array size) per write inside
+            // the element. Correctness over perf for the degenerate
+            // case. Note: mixed arrays don't auto-promote to
+            // collection — once classified non-collection, stays so
+            // until a wholesale `state.items = [...]` reassign
+            // invalidates collCache.
             return makeNode(idxSp, childSk,
               { solidPath: sp, storeKey: sk }, Array.isArray(el));
           }
@@ -899,8 +942,32 @@ export function createSkalStore(initState, config = {}) {
       },
       set(_t, key, value) {
         if (key === 'length') {
-          setAt(sp, produce((x) => { x.length = +value; }));
+          const newLen = +value;
+          // If truncating a collection, capture the elements about to be
+          // dropped so their per-element frames get tombstoned (and the
+          // memoized proxies dropped). Without this the element frames
+          // at `items.<id>` orphan on disk — the new index frame won't
+          // reference them, but the keydir entries linger until
+          // compaction. Same treatment splice gives its `removed` list.
+          let removed = null;
+          if (!elInfo && newLen < arr().length) {
+            const cached = collCache.get(sk);
+            const wasColl = cached === undefined ? _isColl(arr()) : cached;
+            if (wasColl) removed = arr().slice(newLen);
+          }
+          setAt(sp, produce((x) => { x.length = newLen; }));
           collCache.delete(sk);            // truncate/extend may degrade it
+          if (removed) {
+            const prefixes = [];
+            for (const r of removed) {
+              if (r && r._id != null) {
+                const rSk = _join(sk, r._id);
+                dirty.set('k:' + rSk, null);
+                prefixes.push(rSk);
+              }
+            }
+            dropMemo(prefixes);
+          }
           persist();
           // Truncate/extend can change values at any index — notify with
           // descendants so element-path observers see the change.

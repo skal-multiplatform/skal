@@ -266,7 +266,7 @@ const int wtDismissible          = 30;
 /// a sliver type (`wtSliverAppBar` / `wtSliverList` / `wtSliverGrid`)
 /// is placed directly; any other child is wrapped in a
 /// `SliverToBoxAdapter`. This is the only place sliver widgets are
-/// valid. See FLUTTER_COMPONENTS_TODO_2.md §1.1.
+/// valid. See DONE_OR_STALE/FLUTTER_COMPONENTS_TODO_2.md §1.1.
 const int wtCustomScrollView     = 31;
 /// `<sliverAppBar>` → Flutter `SliverAppBar` — the collapsing /
 /// parallax header. `propTitle` is the bar title, `propHeight` the
@@ -288,7 +288,7 @@ const int wtSliverGrid           = 34;
 /// parses that program once and replays it onto the `Canvas`, only
 /// repainting when the program string changes — so a static drawing
 /// costs ONE bridge write and zero per-frame traffic. No new op: the
-/// draw program rides `opSetText`. See FLUTTER_COMPONENTS_TODO_2.md §1.2.
+/// draw program rides `opSetText`. See DONE_OR_STALE/FLUTTER_COMPONENTS_TODO_2.md §1.2.
 const int wtCanvas               = 35;
 /// `<dragItem>` → Flutter `Draggable<String>`. Wraps one child, carries
 /// the `propDragData` string id, and shows a floating feedback widget
@@ -416,12 +416,12 @@ const int evDismiss      = 0x14;
 const int evDrop         = 0x15;
 // Pointer hover — `onHover` on a container. A `MouseRegion`
 // enter / exit, dispatched as a bool (true on enter, false on exit).
-// Desktop / web affordance. See FLUTTER_COMPONENTS_TODO_2.md §3.
+// Desktop / web affordance. See DONE_OR_STALE/FLUTTER_COMPONENTS_TODO_2.md §3.
 const int evHover        = 0x16;
 // Keyboard — `onKey` on a container. A `KeyDownEvent` while the node
 // is focused (it takes focus on mount and on click), dispatched as a
 // normalized combo string: "meta+s", "escape", "arrow up". The JS app
-// builds any shortcut layer on top. See FLUTTER_COMPONENTS_TODO_2.md §3.
+// builds any shortcut layer on top. See DONE_OR_STALE/FLUTTER_COMPONENTS_TODO_2.md §3.
 const int evKey          = 0x17;
 
 // ── Event record layout (16 bytes per slot in the event ring) ────────
@@ -542,7 +542,7 @@ const int propSubtitle        = 0x49;
 const int propDragData        = 0x4A;
 // Accessibility label (string) — wraps ANY node in a `Semantics` widget
 // so screen readers announce it. Applied generically in `SkalNode`.
-// See FLUTTER_COMPONENTS_TODO_2.md §3.
+// See DONE_OR_STALE/FLUTTER_COMPONENTS_TODO_2.md §3.
 const int propSemanticLabel   = 0x4B;
 
 // Image (string-valued)
@@ -632,7 +632,7 @@ const int propSheetMax        = 0xB2;
 // `<scrollView>` / `<listView>` explicit scrollbar — 0 off (default),
 // 1 on. Wraps the scroller in a `Scrollbar` with an owned controller so
 // the thumb is always visible and draggable (desktop especially).
-// Mount-once; not in KEY_TO_SLOT. See FLUTTER_COMPONENTS_TODO_2.md §3.
+// Mount-once; not in KEY_TO_SLOT. See DONE_OR_STALE/FLUTTER_COMPONENTS_TODO_2.md §3.
 const int propScrollbar       = 0xB3;
 // `<backdropFilter>` blur sigma (logical px). Mount-once; not in
 // KEY_TO_SLOT.

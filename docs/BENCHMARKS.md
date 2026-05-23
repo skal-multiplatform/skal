@@ -65,7 +65,7 @@ and 200-distinct workloads.
 
 ### The bench code
 
-The Skal side lived at `js-app/src/skal/RenderBench.jsx` before
+The Skal side lived at `packages/skal-js/src/skal/RenderBench.jsx` before
 removal — full source preserved here. The RN counterpart was a
 near-identical file at
 `Skal-RN-Comparison/app/(tabs)/render.tsx` in the sibling repo;
@@ -241,10 +241,10 @@ export default function RenderBench() {
 }
 ```
 
-To re-run: drop this file at `js-app/src/skal/RenderBench.jsx`,
+To re-run: drop this file at `packages/skal-js/src/skal/RenderBench.jsx`,
 import + add a `<Tab title="Render"><RenderBench /></Tab>` in
 `App.jsx`, restore the `benchReport` RPC case in
-`flutter/skal_flutter/lib/skal/dialogs.dart` (it just
+`packages/skal_flutter/lib/skal/dialogs.dart` (it just
 `debugPrint`s each line with a `SKAL-BENCH ` prefix), rebuild the
 JS bundle and the APK.
 
@@ -314,7 +314,7 @@ be free."**
 
 ### The bench code — harness + the realistic-frame sub-bench
 
-The Skal side lived at `js-app/src/skal/store/bench.js` (~840
+The Skal side lived at `packages/skal-js/src/skal/store/bench.js` (~840
 lines, seven sub-benches sharing one harness). The full file isn't
 inlined here — the harness pattern + one representative sub-bench
 shows the shape; the rest of the file applies the same pattern to
@@ -542,7 +542,7 @@ imports at the top of the bench above (`createSolidStore`,
 The MMKV bench is the Dart-side companion to `bench.js`. Both target
 the same physical device (Android emulator) so the comparison is
 on-device-comparable, not a cross-device estimate. Lived at
-`flutter/skal_flutter/lib/mmkv_bench.dart`:
+`examples/kitchen-sink/flutter-host/lib/mmkv_bench.dart`:
 
 ```dart
 // mmkv_bench.dart — DEBUG-ONLY MMKV stress bench, mirrors bench.js so
@@ -674,7 +674,7 @@ Future<void> runMmkvBench() async {
 }
 ```
 
-To re-run: drop this file at `flutter/skal_flutter/lib/mmkv_bench.dart`,
+To re-run: drop this file at `examples/kitchen-sink/flutter-host/lib/mmkv_bench.dart`,
 add `mmkv: ^2.4.0` to `pubspec.yaml`, run `flutter pub get`, then
 hook it from `main.dart` with `Future.delayed(const Duration(seconds: 8), runMmkvBench);`.
 
@@ -699,7 +699,7 @@ hook it from `main.dart` with `Future.delayed(const Duration(seconds: 8), runMmk
 | 1 leaf · 1k writes · propagation          | 1090.5 | **535.5** | ↓ 51% |
 | 200 distinct mutations                    | 1057.9 | **391.2** | ↓ 63% |
 
-The Phase 1+2 changes (all in [`js-app/src/skal/store/db.js`](js-app/src/skal/store/db.js))
+The Phase 1+2 changes (all in [`packages/skal-js/src/skal/store/db.js`](packages/skal-js/src/skal/store/db.js))
 are zero-memory and have no API change. Each named optimization is
 documented in [FastStorage.md § What we built](FastStorage.md).
 
@@ -711,9 +711,9 @@ To resurrect the bench:
 
 1. Drop the source files above back into the tree at the indicated
    paths (`bench.js`, `RenderBench.jsx`, `mmkv_bench.dart`).
-2. Restore deps: `zustand: ^5.0.13` in `js-app/package.json` (for
+2. Restore deps: `zustand: ^5.0.13` in `packages/skal-js/package.json` (for
    the pure-libraries section of `bench.js`); `mmkv: ^2.4.0` in
-   `flutter/skal_flutter/pubspec.yaml` (for the MMKV bench).
+   `examples/kitchen-sink/flutter-host/pubspec.yaml` (for the MMKV bench).
 3. Re-wire entry points: `runBench()` from `App.jsx`'s root
    `onMount` (delay ~2.5 s); `<RenderBench />` as a Tab; the
    `benchReport` case in `dialogs.dart`; `runMmkvBench` from

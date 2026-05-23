@@ -6,9 +6,9 @@ the bridge as first-class wire ops, distinct from the codegen-wrapped
 pub.dev widgets.
 
 For the codegen pipeline that wraps third-party packages see
-[`WRAPPING_PUB_PACKAGES.md`](WRAPPING_PUB_PACKAGES.md) and
-[`TODO_FLUTTER_LIBS.md`](TODO_FLUTTER_LIBS.md). For platform plumbing
-see [`TODO_PLATFORMS.md`](TODO_PLATFORMS.md).
+[`WRAPPING_PUB_PACKAGES.md`](WRAPPING_PUB_PACKAGES.md). For platform
+plumbing see [`TODO_PLATFORMS.md`](TODO_PLATFORMS.md). Open codegen
+items are in [`TODO.md`](TODO.md) § Codegen polish.
 
 ---
 

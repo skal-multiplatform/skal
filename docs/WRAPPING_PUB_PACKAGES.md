@@ -26,9 +26,9 @@ want to expose a Flutter package's widget to JSX.
 
 All four patterns share the same five-step ritual:
 
-1. Add the package to `flutter/skal_flutter/pubspec.yaml` + `flutter pub get`
+1. Add the package to `examples/kitchen-sink/flutter-host/pubspec.yaml` + `flutter pub get`
 2. (Patterns C/D only) Write a tiny factory function in `lib/adapters/<name>_factory.dart`
-3. Declare the wrap in `flutter/skal_flutter/lib/skal_codegen.yaml`
+3. Declare the wrap in `examples/kitchen-sink/flutter-host/lib/skal_codegen.yaml`
 4. Run `dart run build_runner build`
 5. Import the synthesized symbol from `'skal-flutter'` in your JSX
 
@@ -49,7 +49,7 @@ controller, no lifecycle. Most pure-UI packages fit here.
 **1. Add the pubspec dependency.**
 
 ```yaml
-# flutter/skal_flutter/pubspec.yaml
+# examples/kitchen-sink/flutter-host/pubspec.yaml
 dependencies:
   qr_flutter: ^4.1.0
 ```
@@ -59,7 +59,7 @@ Run `flutter pub get`.
 **2. List the package in the marker file.**
 
 ```yaml
-# flutter/skal_flutter/lib/skal_codegen.yaml
+# examples/kitchen-sink/flutter-host/lib/skal_codegen.yaml
 packages:
   - qr_flutter
 ```
@@ -67,7 +67,7 @@ packages:
 **3. Regenerate.**
 
 ```bash
-cd flutter/skal_flutter
+cd examples/kitchen-sink/flutter-host
 dart run build_runner build
 ```
 
@@ -179,7 +179,7 @@ whole integration. It's specific to the package's API (call
 `availableCameras()`, pick one, construct + initialize the controller):
 
 ```dart
-// flutter/skal_flutter/lib/adapters/camera_factory.dart
+// examples/kitchen-sink/flutter-host/lib/adapters/camera_factory.dart
 import 'package:camera/camera.dart';
 
 Future<CameraController> createCamera({
@@ -206,13 +206,13 @@ injects `await` in the synthesized initState.
 **3. Declare the host.**
 
 ```yaml
-# flutter/skal_flutter/lib/skal_codegen.yaml
+# examples/kitchen-sink/flutter-host/lib/skal_codegen.yaml
 packages:
   - camera                          # listed so analyzer can resolve types
 hosts:
   Camera:                                   # JSX symbol name
     widget: CameraPreview                   # widget class to wrap
-    factory: package:skal_flutter/adapters/camera_factory.dart#createCamera
+    factory: package:kitchen_sink/adapters/camera_factory.dart#createCamera
 ```
 
 **4. Regenerate + import.**
@@ -343,7 +343,7 @@ After ANY change to:
 - A factory function's signature
 - A wrapped package's version (controller method signatures change)
 
-…run `dart run build_runner build` from `flutter/skal_flutter/`. It
+…run `dart run build_runner build` from `examples/kitchen-sink/flutter-host/`. It
 re-emits `lib/skal_codegen.g.dart` + `lib/skal_codegen.json`. The
 Vite plugin watches the JSON manifest, so `vite dev` picks up the
 new symbols on next `bun run build`.
@@ -374,8 +374,8 @@ For internal contributors:
   emission shape; the test harness auto-diffs the generator's output
   against the saved `.expected.dart`.
 - **JS-side runtime** — `packages/skal-js/src/bridge.js` for wire encode/decode,
-  `js-app/src/renderer.js` for the Solid universal-renderer hooks,
-  `js-app/src/skal-runtime.jsx` for the public `createSkalRef` API.
+  `packages/skal-js/src/renderer.js` for the Solid universal-renderer hooks,
+  `packages/skal-js/src/skal-runtime.jsx` for the public `createSkalRef` API.
 - **The bridge buffer layout** — 6 MiB shared region:
   - 64 B header (seq counters, write positions)
   - 4 MiB op ring (JS write, Dart read)

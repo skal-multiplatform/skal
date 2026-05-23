@@ -5,8 +5,8 @@ the dylib's `__text` segment and not much else. This doc is the
 runbook for turning that into a source line.
 
 The unstripped sibling is the load-bearing part of every platform's
-link script — `flutter/scripts/link-libskal-flutter.sh` (Android),
-`flutter/scripts/link-libskal-flutter-mac.sh` (macOS),
+link script — `scripts/link-libskal-flutter.sh` (Android),
+`scripts/link-libskal-flutter-mac.sh` (macOS),
 `scripts/link-skal-iossim.sh`, and `scripts/link-skal-ios.sh` all keep
 it next to the stripped output:
 
@@ -159,7 +159,7 @@ pre-stamp dylib too if that's what you happen to have around.
 ## Verifying you have the right unstripped binary
 
 Every native lib produced by Skal embeds a build-id (Android:
-`--build-id=sha1` in `flutter/scripts/link-libskal-flutter.sh`;
+`--build-id=sha1` in `scripts/link-libskal-flutter.sh`;
 macOS: linker default, computed from the input hashes). The crash
 log includes it; if your local unstripped's
 build-id doesn't match, **don't trust the line numbers** — they'll

@@ -173,7 +173,7 @@ Store, Web is an "also-ship" channel. CanvasKit isn't justifiable
 when we already have:
 
 - Solid.js's standard DOM renderer (`solid-js/web`)
-- `js-app/src/renderer-web.js` already wired to use it
+- `packages/skal-js/src/renderer-web.js` already wired to use it
 - Same JSX, same components, same skal-app bundle — different
   imports decided at build time via vite alias
 

@@ -3,7 +3,7 @@
 How props flow from JSX, through the JS-side bridge encoder, across
 the shared 2 MiB region, into Flutter widgets — end to end. This is
 an architecture overview; the source of truth for the wire format is
-`flutter/skal_flutter/lib/skal/wire.dart` and `js-app/src/bridge.js`,
+`packages/skal_flutter/lib/skal/wire.dart` and `packages/skal-js/src/bridge.js`,
 which are kept in sync.
 
 For the perf decision log see [`PERFORMANCE.md`](PERFORMANCE.md).
@@ -106,11 +106,11 @@ event kind (byte 0) + handler id (bytes 4-7). On dispatch the host
 bumps `event_seq` and calls `skal_wake_js` to nudge the JS worker.
 
 Full constants:
-- `flutter/skal_flutter/lib/skal/wire.dart` (host side)
-- `js-app/src/bridge.js` (JS side)
+- `packages/skal_flutter/lib/skal/wire.dart` (host side)
+- `packages/skal-js/src/bridge.js` (JS side)
 
 These MUST match value-for-value. The
-`flutter/skal_flutter/test/wire_test.dart` snapshot test asserts
+`packages/skal_flutter/test/wire_test.dart` snapshot test asserts
 every constant; if it fails, the JS side has drifted.
 
 ## 3. Host side — `NodeState`
@@ -160,12 +160,12 @@ The hot-prop wrapper (`_HotLayer`) lives INSIDE the cached widget
 and subscribes to `node.hot`. Surrounding builders never see the
 hot notifier.
 
-Source: `flutter/skal_flutter/lib/skal/node_state.dart`,
-`flutter/skal_flutter/lib/skal/root.dart`.
+Source: `packages/skal_flutter/lib/skal/node_state.dart`,
+`packages/skal_flutter/lib/skal/root.dart`.
 
 ## 4. JS side — encoder + diff cache
 
-`js-app/src/bridge.js`:
+`packages/skal-js/src/bridge.js`:
 
 - `setPropU32(nodeId, key, value)` — checks the per-node diff
   cache; if the value is unchanged, skips the wire write entirely.

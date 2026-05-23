@@ -2476,7 +2476,7 @@ Widget _buildStep(NodeState n, SkalBridge bridge) {
 /// elevation shadow, square edge (no rounded trailing corner), an iOS
 /// grouped-background surface — so the panel reads as a neutral
 /// slide-over. iOS has no native drawer pattern, so design-neutral is
-/// the closest honest match (see FLUTTER_COMPONENTS_TODO_2.md §2 / §3).
+/// the closest honest match (see DONE_OR_STALE/FLUTTER_COMPONENTS_TODO_2.md §2 / §3).
 Widget _buildDrawer(NodeState n, SkalBridge bridge) {
   final bg = n.getPropU32(propBgColor, 0);
   final cupertino = bridge.isCupertino;

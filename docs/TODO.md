@@ -17,7 +17,7 @@ runs `bun run build` with a system bun by mistake), JSC silently
 rejects the bytecode at runtime and falls back to parsing — no
 error, just a cold-launch perf regression.
 
-`js-app/scripts/find-vendored-bun.sh` enforces the right bun at
+`examples/kitchen-sink/scripts/find-vendored-bun.sh` enforces the right bun at
 build time. Add a complementary RUNTIME check: emit a marker file
 alongside the bytecode containing the bun build commit hash; libskal
 exposes its expected hash via a new C ABI; the loader logs a warning
@@ -26,11 +26,11 @@ on mismatch.
 See `docs/bytecode-cache.md` § "JSC version coupling".
 
 ### iOS Frameworks/ dylib regeneration on bun rebuild
-`flutter/skal_flutter/ios/Frameworks/{iphonesimulator,iphoneos}/libskal.dylib`
+`examples/kitchen-sink/flutter-host/ios/Frameworks/{iphonesimulator,iphoneos}/libskal.dylib`
 are checked-in copies of `build/skal-iossim/libskal.dylib` /
 `build/skal-ios-device/libskal.dylib`. If you rebuild bun for iOS
 without re-copying, the Flutter iOS build ships a stale dylib. Add
-this to `flutter/Makefile`'s `bundle` target (or a new `sync-ios`
+this to `examples/kitchen-sink/Makefile`'s `bundle` target (or a new `sync-ios`
 target).
 
 ### Background-isolate asset extraction
@@ -68,7 +68,7 @@ at build time, how its calls cross the bridge, how event-back
 callbacks deliver results.
 
 ### Web target — Flutter→DOM consistency
-The Web target uses `js-app/src/renderer-web.js` which maps
+The Web target uses `packages/skal-js/src/renderer-web.js` which maps
 `<column>` etc. to `<div>` plus inline styles. The mapping is
 hand-maintained and lags behind the Flutter side. Specifically:
 adding a new widget type means three edits — `wire.dart`,
@@ -81,7 +81,7 @@ schema would close that gap.
 ## Considered and rejected (revisit when profiling shows it)
 
 ### Trie for `_skalNotify` descendant walk
-[`db.js`](js-app/src/skal/store/db.js) — `_skalNotify`, descendant
+[`db.js`](../packages/skal-js/src/skal/store/db.js) — `_skalNotify`, descendant
 branch.
 
 Currently `_skalNotify(sk, true)` walks the full `_skalEffectMap` for
@@ -126,3 +126,35 @@ Flutter hot reload the entire SkalRoot tree gets recreated but the
 bridge's `nodes` map persists — listeners from the old tree are
 leaked. Not critical for production builds (no hot reload there)
 but worth a clean shutdown path.
+
+---
+
+## Codegen polish
+
+Carried over from the archived [`TODO_FLUTTER_LIBS.md`](DONE_OR_STALE/TODO_FLUTTER_LIBS.md) —
+small, mechanical extensions to add as real pub packages surface needs.
+
+### More value types
+`Curve`, `BorderSide` (per-side `Border`), `DecorationImage`, `Locale`,
+`IconData`, plus `BoxShadow` (list form). Each is a ~30 min branch in
+`packages/skal_codegen/lib/src/type_mapper.dart` — same pattern as
+the existing `Gradient` / `BoxDecoration` / `TextStyle` encoders.
+
+### Per-package codegen subdirectories
+The flat output `lib/skal_codegen.g.dart` works fine while a host wraps
+10-20 packages. Past 50+ it would help to split outputs per source
+package.
+
+### Source maps for generated code
+Stack traces inside an emitted adapter point at the `.g.dart` file
+(useful) but not back at the source widget class. A source-map would
+close the loop. In practice the Dart errors already include line
+numbers in the generated file, so this is a polish item.
+
+### Hot-reload of generated code
+Codegen runs in ~1s; incremental doesn't add value today. Revisit if
+the host package list grows past ~50.
+
+### RPC over network / out-of-process Dart side
+Would require rethinking the shared-memory bridge as a transport-
+agnostic channel. Feasibility study only — not in any current slice.

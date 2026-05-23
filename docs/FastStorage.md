@@ -403,7 +403,7 @@ see [`BENCHMARKS.md`](BENCHMARKS.md).
 
 ## What we built — Phase 1 + Phase 2 optimizations
 
-All changes in [`db.js`](js-app/src/skal/store/db.js), zero memory
+All changes in [`db.js`](packages/skal-js/src/skal/store/db.js), zero memory
 scaling, no API change, Solid still underneath.
 
 ### Phase 1 (zero-memory)
@@ -1078,7 +1078,7 @@ in practice).
 
 ### 1. Ship Phase 1+2 (done)
 
-All changes in [`db.js`](js-app/src/skal/store/db.js). Zero memory
+All changes in [`db.js`](packages/skal-js/src/skal/store/db.js). Zero memory
 cost, no API change, ~50% mount improvement, ~50-80% improvement on
 hot-path reads and frame propagation.
 

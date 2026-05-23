@@ -71,7 +71,7 @@ None of those steps require:
   integration are the new work.
 
 ### 1.4 Web
-- ✓ Solid + DOM via `js-app/src/renderer-web.js` + `vite.config.web.js`
+- ✓ Solid + DOM via `packages/skal-js/src/renderer-web.js` + `vite.config.web.js`
 - ◇ Production build pipeline: `vite build --config vite.config.web.js`
   produces a `dist/` static site, but it's not part of the
   Makefile yet.
@@ -110,7 +110,7 @@ implementations. Wiring them into Skal:
 
 ~50 LOC of Dart per plugin once the dispatcher is built. The
 dispatcher itself is ~200 LOC and lives in
-`flutter/skal_flutter/lib/skal/plugins.dart` (not yet written).
+`packages/skal_flutter/lib/skal/plugins.dart` (not yet written).
 
 ## 3. SDK distribution
 
@@ -130,7 +130,7 @@ or similar. Flutter shells pick them up via the same Frameworks/
 pattern we use now.
 
 ### 3.2 `skal` CLI
-The orchestration that today lives in `flutter/Makefile` becomes a
+The orchestration that today lives in `examples/kitchen-sink/Makefile` becomes a
 proper CLI:
 
 ```

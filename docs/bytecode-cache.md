@@ -77,7 +77,7 @@ module loader directly with no `vm.Script` wrapper overhead.
 ## Build pipeline
 
 ```
-js-app/src/*.jsx                                                       (source)
+packages/skal-js/src/*.jsx                                                       (source)
         │
         ▼ vite build (with vite-plugin-solid in universal mode)
 android-app/.../assets/skal-app.js                                     (IIFE, ~18 KB — debug)
@@ -90,7 +90,7 @@ android-app/.../assets/skal-app.cjs.jsc                                (bytecode
 APK with all three files in assets/
 ```
 
-The pipeline is wired in `js-app/package.json`:
+The pipeline is wired in `packages/skal-js/package.json`:
 
 ```json
 "scripts": {
@@ -111,7 +111,7 @@ plain IIFE because they want hot-reload-friendliness.
 
 ## Runtime path
 
-`flutter/skal_flutter/lib/main.dart` switches on `kReleaseMode`:
+`examples/kitchen-sink/flutter-host/lib/main.dart` switches on `kReleaseMode`:
 
 ```dart
 if (kReleaseMode) {
@@ -198,7 +198,7 @@ libskal.so:      built from vendor/bun at commit 6d0d86b71a... (same commit)
 
 When you upgrade `vendor/bun` to a newer commit, you **must** also rebuild
 `libskal.so` AND regenerate the bytecode (just running `bun run build` in
-`js-app/` re-runs the bytecode pass). If only one is updated, JSC will
+`packages/skal-js/` (and the consuming app) re-runs the bytecode pass). If only one is updated, JSC will
 reject the bytecode at load time and silently fall back to parsing — no
 crash, but no perf win either.
 
@@ -267,14 +267,14 @@ adb shell run-as com.skal.bench rm files/skal-app.cjs.jsc
 
 | Path | Role |
 |---|---|
-| `js-app/src/*.jsx` | Solid app source |
-| `js-app/vite.config.js` | Vite + vite-plugin-solid (universal renderer mode) |
-| `js-app/package.json` | Build orchestration (vite + bun build) |
+| `packages/skal-js/src/*.jsx` | Solid app source |
+| `examples/kitchen-sink/vite.config.js` | Vite + vite-plugin-solid (universal renderer mode) |
+| `packages/skal-js/package.json` | Build orchestration (vite + bun build) |
 | `android-app/.../assets/skal-app.js` | Vite IIFE — debug eval target |
 | `android-app/.../assets/skal-app.cjs` | bun-built CJS wrapper — release eval target |
 | `android-app/.../assets/skal-app.cjs.jsc` | bytecode for the .cjs |
-| `flutter/skal_flutter/lib/skal_ffi.dart` | `Skal.evaluate(source)` — both debug and release call through this; the release loader IIFE just happens to be `await import('file://...')` |
-| `flutter/skal_flutter/lib/main.dart` | `kReleaseMode` switch + asset extraction |
+| `packages/skal_flutter/lib/skal_ffi.dart` | `Skal.evaluate(source)` — both debug and release call through this; the release loader IIFE just happens to be `await import('file://...')` |
+| `examples/kitchen-sink/flutter-host/lib/main.dart` | `kReleaseMode` switch + asset extraction |
 | `vendor/bun/src/jsc/bindings/ZigSourceProvider.cpp` | (bun internal) `extern "C"` bytecode generator + loader plumbing — what makes Layer 2 possible without us writing C++ |
 | `vendor/bun/src/jsc/ModuleLoader.zig` | (bun internal) auto-discovers adjacent `.jsc` files when source has `@bun-cjs` marker |
 

@@ -57,7 +57,7 @@ Workload: 5000-tweet feed scroll:
 | ✓ | Bun + JSC via static-linked libskal | core architecture | No platform-channel serialization. dart:ffi calls into a single shared library. |
 | ✓ | Permanent shared 2 MiB ArrayBuffer between JS and host | core architecture | Zero-copy. JS writes ops, host reads. Atomic seq counter publishes per-frame batches. |
 | ✓ | Fixed 16-byte ops + separate string heap | `wire.dart` + `bridge.js` | Switch dispatch on a u8 + 3 i32 reads. No length-prefixed strings inline. |
-| ✓ | Typed prop categories (u32 / f32 / string distinct opcodes) | `wire.dart`, `js-app/src/bridge.js` | No polymorphic ValueKind tag per prop. Opcode encodes the type. |
+| ✓ | Typed prop categories (u32 / f32 / string distinct opcodes) | `wire.dart`, `packages/skal-js/src/bridge.js` | No polymorphic ValueKind tag per prop. Opcode encodes the type. |
 | ✓ | Hot / cold prop split | `OP_SET_OPACITY` etc. | A 60 fps opacity tween bypasses the cold-prop machinery entirely. |
 | ✓ | Per-microtask op batching JS-side | `bridge.js scheduleCommit` | One FFI hop carries N mutations. |
 | ✓ | JS-side traversal pointers (parent / firstChild / nextSibling) | `renderer.js makeNode` | Solid's `getParentNode` / `getNextSibling` are zero-FFI. |
@@ -106,7 +106,7 @@ Workload: 5000-tweet feed scroll:
 ### 3. Bytecode version-check at runtime
 - **Status:** ◇ pending
 - **Impact:** Medium correctness. The "silent invalidation" footgun
-  documented in `js-app/scripts/find-vendored-bun.sh` is real. A
+  documented in `examples/kitchen-sink/scripts/find-vendored-bun.sh` is real. A
   version-mismatched .jsc falls back to parsing — no error, just a
   cold-launch regression.
 - **Cost:** Medium. Emit a marker file alongside the bytecode
@@ -150,7 +150,7 @@ Workload: 5000-tweet feed scroll:
 ## Build pipeline correctness
 
 ### 8. Vendored-bun-only bytecode generation
-- **Status:** ✓ enforced via `js-app/scripts/find-vendored-bun.sh`
+- **Status:** ✓ enforced via `examples/kitchen-sink/scripts/find-vendored-bun.sh`
 - **Why:** JSC bytecode is tied to a specific JSC version. The
   version libskal links against IS the vendored one. If a
   developer's system `$PATH` bun is used (e.g. 1.3.13 by accident),
@@ -159,7 +159,7 @@ Workload: 5000-tweet feed scroll:
   with no error.
 
 ### 9. `make release` orchestrates the full chain
-- **Status:** ✓ landed (`flutter/Makefile`)
+- **Status:** ✓ landed (`examples/kitchen-sink/Makefile`)
 - **Why:** The chain `JS source → bundle → bytecode → APK` has 3
   hops with cache-staleness footguns at each. Make's mtime check
   handles it.

@@ -1,0 +1,36 @@
+name: __APP_NAME_SNAKE__
+description: A Skal app.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # The Skal framework — pulled in as a workspace package via path.
+  skal_flutter:
+    path: ../../../packages/skal_flutter
+
+  # path_provider — extracts the bytecode .cjs + .cjs.jsc pair out
+  # of the bundle into the app's getApplicationSupportDirectory() so
+  # bun's module loader can read them from a real filesystem path.
+  path_provider: ^2.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  # The JS bundle — produced by `bun run build` in the parent dir.
+  # Three artifacts: source, CJS wrapper, JSC bytecode.
+  assets:
+    - assets/skal-app.js
+    - assets/skal-app.cjs
+    - assets/skal-app.cjs.jsc

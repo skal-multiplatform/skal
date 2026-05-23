@@ -22,7 +22,7 @@
 #   Re-stamping is enough.
 #
 # Unique requirements vs the Desktop macOS link:
-#   * Compiles native/ios/skal_iossim_shim.c — provides __clear_cache,
+#   * Compiles packages/skal_native/ios/skal_iossim_shim.c — provides __clear_cache,
 #     which iOS Simulator's libSystem doesn't export but bun's .o
 #     files reference (macOS libSystem.B does export it).
 #   * `-Wl,-U,___clear_cache` for per-symbol flat-namespace lookup so
@@ -102,7 +102,7 @@ SHIM_O="${SKAL_BUILD}/skal_iossim_shim.o"
   -mmacosx-version-min=26 \
   -O2 -fno-pic -fno-pie \
   -o "${SHIM_O}" \
-  "${SKAL_ROOT}/native/ios/skal_iossim_shim.c"
+  "${SKAL_ROOT}/packages/skal_native/ios/skal_iossim_shim.c"
 echo "${SHIM_O}" >> "${INPUTS_FILE}"
 
 # ── Exported-symbols list (C ABI for dart:ffi) ────────────────────────

@@ -1,0 +1,18 @@
+{
+  "name": "skal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Skal JS framework — bridge, Solid universal renderer, store, runtime primitives.",
+  "exports": {
+    ".": "./src/skal/index.js",
+    "./renderer": "./src/renderer.js",
+    "./renderer-web": "./src/renderer-web.js",
+    "./runtime": "./src/skal-runtime.jsx",
+    "./store": "./src/skal/store/db.js",
+    "./bridge": "./src/bridge.js"
+  },
+  "dependencies": {
+    "solid-js": "^1.9.12"
+  }
+}

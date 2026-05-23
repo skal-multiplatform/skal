@@ -440,7 +440,7 @@ fn skalAllocator() std.mem.Allocator {
 // ───────────────────────────────────────────────────────────────────────
 // C ABI exports — the surface dart:ffi binds against. Plain C signatures
 // so any non-JS embedder (Flutter, an FFI client, a C test harness)
-// can call into the runtime. See native/ios/skal.h for the contract.
+// can call into the runtime. See packages/skal_native/include/skal.h for the contract.
 // ───────────────────────────────────────────────────────────────────────
 
 fn skal_create_runtime(dir_ptr: ?[*]const u8, dir_len: usize) callconv(.c) i64 {
@@ -550,7 +550,7 @@ fn skal_wake_js(handle: i64) callconv(.c) void {
 
 // ═══════════════════════════════════════════════════════════════════════
 // Native store engine — a log-structured key/value store in Zig, exposed
-// to JS as globalThis.__skal_store_* host functions. js-app's engine.js
+// to JS as globalThis.__skal_store_* host functions. The skal package's engine.js
 // uses it as the NativeLogStore backend when present. Value bytes are
 // opaque (the JS codec owns encoding). Frame format matches frame.js:
 //   crc u32 · seq u32 · flags u8 · keyLen u16 · valLen u32 · key · value

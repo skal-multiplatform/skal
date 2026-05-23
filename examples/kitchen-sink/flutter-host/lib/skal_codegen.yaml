@@ -1,0 +1,47 @@
+# Marker file consumed by skal_codegen's build_runner Builder.
+#
+# Lists pub.dev packages whose Widget classes should be wrapped as
+# Skal custom widgets. Each package gets walked by the codegen
+# (lib/ recursive), Widget classes detected, adapters emitted into
+# the single output file `lib/skal_codegen.g.dart`.
+#
+# `hosts:` declares JSX symbols backed by stateful controller-host
+# adapters — the codegen synthesizes a StatefulWidget wrapper around
+# a dev-provided factory function that constructs the controller
+# (sync or async). Used for widgets whose required constructor params
+# can't be encoded over the bridge (CameraController, animation
+# controllers, plugin-channel-backed objects in general).
+#
+# Re-run `dart run build_runner build` after editing this file.
+
+packages:
+  - qr_flutter
+  - shimmer
+  # `camera` is listed so the analyzer can resolve its types when
+  # processing the host config below, but no widget from it is
+  # auto-wrapped — CameraPreview is a host target (next section).
+  - camera
+
+hosts:
+  # JSX symbol name. `<Camera cameraName="…" resolutionIndex={…} />`
+  Camera:
+    # The pub-package Widget class the synthesized host wraps. Its
+    # constructor must take the factory's return-type as a first
+    # positional arg (CameraPreview's case: `CameraPreview(this.controller, …)`).
+    widget: CameraPreview
+    # Reference to the dev-written factory function:
+    #   `<importUri>#<topLevelFnName>`
+    # Codegen resolves the function via the analyzer, walks its
+    # parameters → JSX props, infers async/sync from the return type,
+    # wraps a StatefulWidget around the call.
+    factory: package:kitchen_sink/adapters/camera_factory.dart#createCamera
+
+  # Local stateful-widget host — Ticker. Same host-pattern machinery as
+  # Camera, but the controller (TickController) is plain-Dart with no
+  # plugin dependencies, so it actually renders + ticks on macOS.
+  # Exposes pause/resume/reset/getValue/isPaused/bump as JSX-side RPC
+  # methods via the imperative ref API (see
+  # examples/kitchen-sink/src/App.jsx for the consumer side).
+  Ticker:
+    widget: TickView
+    factory: package:kitchen_sink/adapters/ticker.dart#createTicker

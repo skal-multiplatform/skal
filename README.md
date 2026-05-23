@@ -14,7 +14,7 @@ This is **"RN but actually fast"** — Solid + bun beat React + Hermes on the JS
 permanent shared ArrayBuffer beats RN's old MessageQueue serialization on the bridge side;
 pub.dev's plugin ecosystem covers every native capability you'd otherwise need to bridge by hand.
 
-See [`ENGINE_CHOICE.md`](ENGINE_CHOICE.md) for the full decision matrix.
+See [`docs/ENGINE_CHOICE.md`](docs/ENGINE_CHOICE.md) for the full decision matrix.
 
 ## Status
 
@@ -27,7 +27,7 @@ See [`ENGINE_CHOICE.md`](ENGINE_CHOICE.md) for the full decision matrix.
 | **Linux / Windows Desktop** | ⏳ pending | Flutter Desktop supports them; per-platform libskal linkers not written |
 | **Web** | ✅ working | separate target — Solid + DOM directly, no Flutter Web |
 
-See [`PERFORMANCE.md`](PERFORMANCE.md) for the perf decision log and budget invariants.
+See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the perf decision log and budget invariants.
 
 ## What it looks like
 
@@ -187,24 +187,30 @@ skal/
 │       ├── bridge.js         # JS-side bridge (op encoder, diff cache)
 │       ├── renderer.js       # Solid universal renderer for native targets
 │       └── renderer-web.js   # Solid universal renderer for the web target
-├── native/                   # C entry surface (native/ios/skal.h)
+├── packages/skal_native/     # C ABI surface — header + iOS sim shim
 ├── patches/                  # bun + WebKit patches
 ├── scripts/                  # ICU/JSC builds, libskal linkers per-platform
 ├── vendor/                   # bun + WebKit pinned commits (setup.sh clones)
 ├── build/                    # build outputs
-└── docs/                     # bytecode-cache.md, crash-symbolication.md
+└── docs/                     # all design docs (RESTRUCTURE, PERFORMANCE, ENGINE_CHOICE, FastStorage, ...)
 ```
 
 ## Documentation
 
 | Doc | What's in it |
 |---|---|
-| [`ENGINE_CHOICE.md`](ENGINE_CHOICE.md) | Why bun+JSC, why Flutter, alternatives considered |
-| [`PERFORMANCE.md`](PERFORMANCE.md) | Perf decision log + budget invariants |
-| [`PROPS_PLAN.md`](PROPS_PLAN.md) | Wire-format prop architecture (renderer-agnostic) |
+| [`docs/RESTRUCTURE.md`](docs/RESTRUCTURE.md) | Framework / app boundary; monorepo layout |
+| [`docs/ENGINE_CHOICE.md`](docs/ENGINE_CHOICE.md) | Why bun+JSC, why Flutter, alternatives considered |
+| [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) | Perf decision log + budget invariants |
+| [`docs/PROPS_PLAN.md`](docs/PROPS_PLAN.md) | Wire-format prop architecture (renderer-agnostic) |
+| [`docs/FastStorage.md`](docs/FastStorage.md) | Store engine — design, optimizations, native port |
+| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Bench numbers + methodology |
+| [`docs/FLUTTER_JS_COMPONENTS.md`](docs/FLUTTER_JS_COMPONENTS.md) | Fast-path widget layer |
+| [`docs/WRAPPING_PUB_PACKAGES.md`](docs/WRAPPING_PUB_PACKAGES.md) | Custom widget codegen for pub.dev packages |
+| [`docs/ANIMATION.md`](docs/ANIMATION.md) / [`docs/NAVIGATION.md`](docs/NAVIGATION.md) | Animation + navigation subsystems |
 | [`docs/bytecode-cache.md`](docs/bytecode-cache.md) | Why `.cjs.jsc` exists; JSC version coupling |
 | [`docs/crash-symbolication.md`](docs/crash-symbolication.md) | Symbolicating libskal crashes from device logs |
-| [`TODO.md`](TODO.md) / [`TODO_PLATFORMS.md`](TODO_PLATFORMS.md) | Open work |
+| [`docs/TODO.md`](docs/TODO.md) / [`docs/TODO_PLATFORMS.md`](docs/TODO_PLATFORMS.md) | Open work |
 
 ## What's next
 

@@ -1,0 +1,32 @@
+{
+  "name": "kitchen-sink",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The Skal demo app. Showcases every fast-path widget, the store, custom widgets, navigation, the JS-side probes, and the render bench.",
+  "scripts": {
+    "build": "vite build && bun run build:bytecode",
+    "build:js-only": "vite build",
+    "_": "// bytecode build MUST use vendored bun (vendor/bun/build/release/bun-profile)",
+    "_2": "// — JSC bytecode is tied to a specific JSC version. The version libskal",
+    "_3": "// links against IS the vendored one. If we use $PATH bun (typically the",
+    "_4": "// developer's system bun, currently 1.3.13 by coincidence), drift between",
+    "_5": "// it and vendor/bun's JSC silently invalidates the .jsc cache at runtime",
+    "_6": "// → fallback to parsing → cold-start regression with no error. Per",
+    "_7": "// TODO_PLATFORMS § 1.1.",
+    "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && \"$BUN\" build ./flutter-host/assets/skal-app.js --bytecode --format=cjs --outdir=./flutter-host/assets/ --entry-naming=skal-app.cjs --root=./flutter-host/assets'",
+    "dev": "vite build --watch",
+    "dev:web": "vite --config vite.config.web.js",
+    "build:web": "vite build --config vite.config.web.js"
+  },
+  "dependencies": {
+    "skal": "workspace:*",
+    "solid-js": "^1.9.12"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "esbuild": "^0.28.0",
+    "vite": "^8.0.11",
+    "vite-plugin-solid": "^2.11.12"
+  }
+}

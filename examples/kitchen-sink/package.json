@@ -5,19 +5,40 @@
   "type": "module",
   "description": "The Skal demo app. Showcases every fast-path widget, the store, custom widgets, navigation, the JS-side probes, and the render bench.",
   "scripts": {
+    "_js_pipeline": "// ── JS bundle (vite + JSC bytecode) ───────────────────",
     "build": "vite build && bun run build:bytecode",
     "build:js-only": "vite build",
-    "_": "// bytecode build MUST use vendored bun (vendor/bun/build/release/bun-profile)",
-    "_2": "// — JSC bytecode is tied to a specific JSC version. The version libskal",
-    "_3": "// links against IS the vendored one. If we use $PATH bun (typically the",
-    "_4": "// developer's system bun, currently 1.3.13 by coincidence), drift between",
-    "_5": "// it and vendor/bun's JSC silently invalidates the .jsc cache at runtime",
-    "_6": "// → fallback to parsing → cold-start regression with no error. Per",
-    "_7": "// TODO_PLATFORMS § 1.1.",
+    "_bytecode_note_1": "// bytecode build MUST use vendored bun — JSC bytecode is JSC-version-keyed.",
+    "_bytecode_note_2": "// `find-vendored-bun.sh` locks onto vendor/bun/build/release/bun(-profile), not the $PATH bun.",
+    "_bytecode_note_3": "// Drift silently invalidates .jsc at runtime → fallback to parsing → cold-start regression with no error.",
     "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && \"$BUN\" build ./flutter-host/assets/skal-app.js --bytecode --format=cjs --outdir=./flutter-host/assets/ --entry-naming=skal-app.cjs --root=./flutter-host/assets'",
     "dev": "vite build --watch",
+
+    "_web": "// ── Web preview (DOM via skal/renderer-web) ────────────",
     "dev:web": "vite --config vite.config.web.js",
-    "build:web": "vite build --config vite.config.web.js"
+    "build:web": "vite build --config vite.config.web.js",
+
+    "_dev": "// ── Native dev (rebuild JS bundle, hand off to flutter run) ──",
+    "dev:flutter": "bun run build && cd flutter-host && flutter run",
+    "dev:macos": "bun run build && cd flutter-host && flutter run -d macos",
+    "dev:ios": "bun run build && cd flutter-host && flutter run -d iphone-simulator",
+    "dev:android": "bun run build && cd flutter-host && flutter run -d android",
+
+    "_release": "// ── Release builds (ships bytecode cache) ──────────────",
+    "build:macos": "bun run build && cd flutter-host && flutter build macos --release",
+    "build:ios": "bun run build && cd flutter-host && flutter build ios --release",
+    "build:android": "bun run build && cd flutter-host && flutter build apk --release --target-platform android-arm64",
+
+    "_flutter": "// ── Flutter housekeeping ───────────────────────────────",
+    "pub": "cd flutter-host && flutter pub get",
+    "codegen": "cd flutter-host && dart run build_runner build --delete-conflicting-outputs",
+    "analyze": "cd flutter-host && dart analyze lib/",
+    "test": "cd flutter-host && flutter test",
+    "clean": "cd flutter-host && flutter clean && rm -rf ../../dist dist build",
+
+    "_setup": "// ── First-time setup helpers ──────────────────────────",
+    "platforms": "cd flutter-host && flutter create --org com.skal --project-name kitchen_sink --platforms macos,ios,android .",
+    "link": "../../scripts/skal-link.sh kitchen-sink"
   },
   "dependencies": {
     "skal": "workspace:*",

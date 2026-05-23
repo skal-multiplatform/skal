@@ -92,107 +92,72 @@ serialization in the bridge hot path.
 - `~/.cargo/bin` on PATH (`rustup install nightly` once — bun's lolhtml dep)
 - Android NDK at `/opt/homebrew/share/android-ndk`
 
-### One-time setup
+### The three commands
 
 ```sh
-# Clones vendor/bun + vendor/WebKit at pinned commits, applies patches,
-# copies skal_entry.zig into bun's source tree.
-scripts/setup.sh
-
-# Builds the host bun used for bytecode generation. ~30 min cold,
-# ~3 min incremental.
-cd vendor/bun
-PATH="$HOME/.cargo/bin:$PATH" bun run build:release
-cd ../..
-
-# Builds bun for Android (~30 min cold, ~3 min incremental).
-ANDROID_NDK_ROOT=/opt/homebrew/share/android-ndk \
-  bun --cwd vendor/bun scripts/build.ts --profile=android-release \
-  --build-dir=$(pwd)/vendor/bun/build/android
-
-# Build ICU + JSC for Android (one-time, ~30-60 min).
-scripts/build-icu-android.sh
-scripts/build-jsc-android.sh
-
-# Link libskal.so for the Flutter Android app.
-flutter/scripts/link-libskal-flutter.sh
+bun run setup              # one-time install — clones vendor, builds libskal, links it
+bun run new my-app         # scaffold a new app — flutter create + libskal link included
+bun run dev:macos          # run the kitchen-sink demo (or use bun --filter my-app)
 ```
 
-### Day-to-day builds
+That's the whole workflow. Each one is idempotent and self-contained:
 
-**Android APK** (the Makefile orchestrates JS bundle + bytecode + Flutter):
+| Command | What it does | Cold time |
+|---|---|---|
+| `bun run setup` | Workspace install + clone vendor/bun + vendor/WebKit + apply patches + build host bun (+ build Android cross-stack if NDK present) + link libskal into kitchen-sink. Set `SKAL_NO_ANDROID=1` to skip Android even if NDK is installed. | ~30-40 min host-only, ~90-120 min with Android |
+| `bun run new <name>` | Scaffold app under `examples/<name>/` from `scripts/templates/default/`, run `flutter create` for android/ios/macos, drop libskal binaries into the new platform configs. Pass `--platforms <list>` to limit, or `--no-platforms` for the JS scaffold only. Requires `setup` first. | ~30 seconds |
+| `bun run dev:*` | Rebuild JS bundle + `flutter run -d <target>`. Available on kitchen-sink and any scaffolded app via `bun --filter <name> dev:*`. | seconds (the build hot-incremental) |
+
+### Other handy scripts
 
 ```sh
-cd flutter
-make release    # JS bundle + bytecode + Flutter APK
-make profile    # same, profile mode (Dart AOT + DevTools wiring)
-make debug      # debug mode (hot reload friendly)
+bun run test                         # skal_codegen + skal_flutter test suites
+bun run analyze                      # dart analyze across framework packages
+bun run link <name>                  # re-link libskal binaries into an app (if you rebuilt vendor/bun)
 ```
 
-**Other targets** — rebuild the JS bundle first, then invoke Flutter directly:
-
-```sh
-cd js-app && bun run build   # rebuild skal-app.{js,cjs,cjs.jsc} into flutter assets
-cd ../flutter/skal_flutter
-
-# Android — equivalent to `make release`
-flutter build apk --release --target-platform android-arm64
-adb install -r build/app/outputs/flutter-apk/app-release.apk
-
-# macOS Desktop
-flutter build macos --release           # or --debug
-open build/macos/Build/Products/Release/skal_flutter.app
-
-# iOS Simulator (release blocked by Flutter — Dart AOT has no Sim target)
-flutter build ios --simulator --debug   # or --profile
-xcrun simctl install booted build/ios/iphonesimulator/Runner.app
-xcrun simctl launch --console-pty booted com.skal.skalFlutter
-
-# iOS Device (requires a provisioning profile)
-flutter build ios --release
-```
+Each app under `examples/` also has its own scripts — run with
+`bun --filter <name> <task>` from anywhere, or `cd` in and drop the
+prefix. See `examples/kitchen-sink/package.json` for the full list
+(`build`, `build:web`, `build:macos`/`ios`/`android`, `dev:flutter`,
+`pub`, `codegen`, `analyze`, `test`, `clean`, …).
 
 ### Bytecode regeneration footgun
 
-The `.cjs.jsc` is JSC-version-keyed to the bun used at build time. The Makefile + the
-vendored-bun resolver in `js-app/scripts/find-vendored-bun.sh` guard against version drift.
-If you ever see a cold-launch regression with no error, regenerate with the vendored bun:
+The `.cjs.jsc` is JSC-version-keyed to the bun used at build time. `bun run build`
+invokes `scripts/find-vendored-bun.sh` to lock onto the vendored bun, not the
+system `$PATH` bun. If you ever see a cold-launch regression with no error, regenerate:
 
 ```sh
-cd js-app && bun run build
+bun run build
 ```
 
 ## Module layout
 
 ```
 skal/
-├── flutter/                  # Flutter shell — primary host renderer
-│   ├── Makefile              # bundle + APK orchestration
-│   ├── scripts/
-│   │   └── link-libskal-flutter.sh   # re-link libskal.so with skal_* C-ABI exports
-│   └── skal_flutter/         # the Flutter app
-│       ├── lib/skal/         # Dart-side renderer (~1300 LOC)
-│       │   ├── wire.dart
-│       │   ├── node_state.dart
-│       │   ├── bridge.dart
-│       │   ├── root.dart
-│       │   └── memoizing_listenable_builder.dart
-│       ├── lib/skal_ffi.dart # dart:ffi bindings to skal_* C ABI
-│       ├── lib/main.dart     # boot + PerfHud
-│       ├── assets/           # skal-app.js + .cjs + .cjs.jsc (the JS bundle)
-│       └── test/             # wire + node_state unit tests
-├── js-app/                   # Solid UI — Vite + bytecode pipeline
-│   └── src/
-│       ├── App.jsx           # the demo
-│       ├── bridge.js         # JS-side bridge (op encoder, diff cache)
-│       ├── renderer.js       # Solid universal renderer for native targets
-│       └── renderer-web.js   # Solid universal renderer for the web target
-├── packages/skal_native/     # C ABI surface — header + iOS sim shim
-├── patches/                  # bun + WebKit patches
-├── scripts/                  # ICU/JSC builds, libskal linkers per-platform
-├── vendor/                   # bun + WebKit pinned commits (setup.sh clones)
-├── build/                    # build outputs
-└── docs/                     # all design docs (RESTRUCTURE, PERFORMANCE, ENGINE_CHOICE, FastStorage, ...)
+├── package.json              # bun workspace root + top-level scripts
+├── packages/                 # framework — consumed by apps
+│   ├── skal-js/              # JS framework (Solid universal renderer, store, runtime)
+│   │   └── src/{bridge.js, renderer.js, renderer-web.js, skal-runtime.jsx, skal/*}
+│   ├── skal_flutter/         # Dart/Flutter framework (bridge, registry, root, FFI)
+│   │   └── lib/{skal/*, skal_ffi.dart, skal_flutter.dart}
+│   ├── skal_codegen/         # Dart codegen tool (build_runner builder + CLI)
+│   └── skal_native/          # C ABI surface — header + iOS Simulator shim
+├── examples/                 # apps consuming the framework
+│   └── kitchen-sink/         # the demo (renders every fast-path widget + store + bench)
+│       ├── src/App.jsx       # ~2100-line demo entry
+│       ├── flutter-host/     # Flutter app — main.dart, platform configs, libskal binaries
+│       └── Makefile          # APK orchestration
+├── patches/                  # bun + WebKit patches + skal_entry.zig
+├── scripts/                  # libskal linkers, new-app scaffold, build pipeline
+│   ├── new-app.sh            # `bun run new <name>` — scaffold
+│   ├── skal-link.sh          # `bun run link <name>` — drop libskal into platform configs
+│   ├── link-libskal-flutter-{mac,}.sh    # per-target libskal re-linkers
+│   └── templates/default/    # template tree used by new-app.sh
+├── vendor/                   # bun + WebKit pinned commits (gitignored; setup.sh clones)
+├── build/                    # libskal link inputs per platform (gitignored)
+└── docs/                     # design docs (RESTRUCTURE, PERFORMANCE, FastStorage, ...)
 ```
 
 ## Documentation

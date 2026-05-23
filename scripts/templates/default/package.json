@@ -5,12 +5,37 @@
   "type": "module",
   "description": "A Skal app.",
   "scripts": {
+    "_js_pipeline": "// ── JS bundle (vite + JSC bytecode) ───────────────────",
     "build": "vite build && bun run build:bytecode",
     "build:js-only": "vite build",
     "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && \"$BUN\" build ./flutter-host/assets/skal-app.js --bytecode --format=cjs --outdir=./flutter-host/assets/ --entry-naming=skal-app.cjs --root=./flutter-host/assets'",
     "dev": "vite build --watch",
+
+    "_web": "// ── Web preview (DOM via skal/renderer-web) ────────────",
     "dev:web": "vite --config vite.config.web.js",
-    "build:web": "vite build --config vite.config.web.js"
+    "build:web": "vite build --config vite.config.web.js",
+
+    "_dev": "// ── Native dev (rebuild JS bundle, hand off to flutter run) ──",
+    "dev:flutter": "bun run build && cd flutter-host && flutter run",
+    "dev:macos": "bun run build && cd flutter-host && flutter run -d macos",
+    "dev:ios": "bun run build && cd flutter-host && flutter run -d iphone-simulator",
+    "dev:android": "bun run build && cd flutter-host && flutter run -d android",
+
+    "_release": "// ── Release builds (ships bytecode cache) ──────────────",
+    "build:macos": "bun run build && cd flutter-host && flutter build macos --release",
+    "build:ios": "bun run build && cd flutter-host && flutter build ios --release",
+    "build:android": "bun run build && cd flutter-host && flutter build apk --release --target-platform android-arm64",
+
+    "_flutter": "// ── Flutter housekeeping ───────────────────────────────",
+    "pub": "cd flutter-host && flutter pub get",
+    "codegen": "cd flutter-host && dart run build_runner build --delete-conflicting-outputs",
+    "analyze": "cd flutter-host && dart analyze lib/",
+    "test": "cd flutter-host && flutter test",
+    "clean": "cd flutter-host && flutter clean && rm -rf dist build",
+
+    "_setup": "// ── First-time setup helpers ──────────────────────────",
+    "platforms": "cd flutter-host && flutter create --org com.example --project-name __APP_NAME_SNAKE__ --platforms macos,ios,android .",
+    "link": "../../scripts/skal-link.sh __APP_NAME__"
   },
   "dependencies": {
     "skal": "workspace:*",

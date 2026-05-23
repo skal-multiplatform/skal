@@ -2,7 +2,7 @@ diff --git a/src/main.zig b/src/main.zig
 index 6698634..f48ca20 100644
 --- a/src/main.zig
 +++ b/src/main.zig
-@@ -13,6 +13,15 @@ comptime {
+@@ -13,6 +13,17 @@ comptime {
      _bun.assert(builtin.target.cpu.arch.endian() == .little);
  }
  
@@ -12,7 +12,7 @@ index 6698634..f48ca20 100644
 +// linker anyway. We include the import on darwin too so the host-side
 +// libskal.dylib (used by desktop-app/) gets the same JNI surface.
 +comptime {
-+    if (builtin.target.abi.isAndroid() or builtin.target.os.tag == .macos) {
++    if (builtin.target.abi.isAndroid() or builtin.target.os.tag == .macos or builtin.target.os.tag == .ios) {
 +        _ = @import("./skal_entry.zig");
 +    }
 +}

@@ -402,12 +402,25 @@ export const ALIGN_SPACE_EVENLY  = 5;
 
 // ───────────────────────────────────────────────────────────────────────
 // Acquire the shared buffer. __skal_acquireBridge is installed by the
-// native side (skal_entry.zig).
+// native side (skal_entry.zig). On web (renderer-web.js path) no native
+// bridge exists — feature-detect and fall back to a zero-init
+// ArrayBuffer so this module imports cleanly. The web renderer speaks
+// DOM directly and never reads/writes encoded ops, so the bytes are
+// inert; the buffer just satisfies the new Uint8Array / Uint32Array
+// views below.
 // ───────────────────────────────────────────────────────────────────────
 
-const buffer = globalThis.__skal_acquireBridge();
-if (!buffer || buffer.byteLength !== BRIDGE_SIZE) {
-  throw new Error(`Skal: bridge buffer not available (got ${buffer && buffer.byteLength})`);
+export const HAS_NATIVE_BRIDGE =
+  typeof globalThis.__skal_acquireBridge === 'function';
+
+let buffer;
+if (HAS_NATIVE_BRIDGE) {
+  buffer = globalThis.__skal_acquireBridge();
+  if (!buffer || buffer.byteLength !== BRIDGE_SIZE) {
+    throw new Error(`Skal: bridge buffer not available (got ${buffer && buffer.byteLength})`);
+  }
+} else {
+  buffer = new ArrayBuffer(BRIDGE_SIZE);
 }
 
 const u8     = new Uint8Array(buffer);

@@ -1,0 +1,13 @@
+{
+  "name": "skal-plugin-geolocator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Skal plugin shim for geolocation. On native, calls through the (future) native plugin bridge to package:geolocator. On web, lazy-routes through the B.5 hidden Flutter Web plugin host (see docs/WEB_SUPPORT_PLAN.md).",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "dependencies": {
+    "skal": "workspace:*"
+  }
+}

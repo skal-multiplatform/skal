@@ -113,6 +113,143 @@ if (typeof document !== 'undefined' && !document.getElementById('skal-kf')) {
   document.head.appendChild(_st);
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// <tabs> / <tab> — best-effort web parity for the host's IndexedStack +
+// NavigationBar combo. The native renderer pivots on `propActiveTab`
+// to show exactly one tab + draws a host NavigationBar from each
+// <tab>'s `title` / `icon`; on web we replicate both halves:
+//
+//   1. Active-tab selection: each <tab> sibling is hidden via
+//      `display:none` except the active one.
+//   2. The bar: a flex row pinned at the bottom of <tabs> with one
+//      button per <tab>. Clicking fires the <tabs>'s `onChange(index)`
+//      handler — same surface JS sees on native.
+//
+// We can't use a fast-path Flutter widget on web, so this is JS-side
+// glue that runs on every relevant setProperty / insertNode call.
+// ──────────────────────────────────────────────────────────────────────
+
+// Icon-name → glyph map. Skal's icon prop is a host-side font lookup
+// on native (Material icon names); on web we fall back to a small
+// monochrome glyph table so the bar is at least recognizable. Add
+// names here as new tabs surface them.
+const TAB_ICON_GLYPHS = {
+  grid: '▦',     // ▦
+  list: '☰',     // ☰
+  explore: '⦿',  // ⦿
+  code: '⟨⟩', // ⟨⟩
+  storage: '☰',  // ☰ (same as list — close enough as a fallback)
+  home: '⌂',     // ⌂
+  settings: '⚙', // ⚙
+  search: '🔍', // 🔍
+  user: '☻',     // ☻
+  heart: '♡',    // ♡
+  star: '★',     // ★
+  plus: '+',     // +
+};
+
+const TAB_BAR_ACTIVE_COLOR = '#0A84FF';
+const TAB_BAR_INACTIVE_COLOR = '#8E8E93';
+const TAB_BAR_BG = '#F2F2F7';
+const TAB_BAR_BORDER = '#E5E5EA';
+
+function _tabsContentChildren(tabsEl) {
+  // Bar sits as the last child of <tabs>; everything else with
+  // _skalTag==='tab' is a content pane.
+  const out = [];
+  for (const c of tabsEl.children) {
+    if (c._skalTag === 'tab') out.push(c);
+  }
+  return out;
+}
+
+function _ensureTabsBar(tabsEl) {
+  let bar = tabsEl._skalBar;
+  if (bar && bar.parentElement === tabsEl) return bar;
+  bar = document.createElement('div');
+  bar.setAttribute('role', 'tablist');
+  bar.style.cssText =
+    'display:flex;flex-direction:row;align-items:stretch;flex:0 0 auto;' +
+    `border-top:1px solid ${TAB_BAR_BORDER};background:${TAB_BAR_BG};` +
+    'padding:6px 4px;padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px));' +
+    'min-height:50px;gap:4px;user-select:none;box-sizing:border-box;';
+  tabsEl.appendChild(bar);
+  tabsEl._skalBar = bar;
+  return bar;
+}
+
+function _renderTabs(tabsEl) {
+  const tabs = _tabsContentChildren(tabsEl);
+  const requested = (tabsEl._skalActiveTab | 0);
+  const active = tabs.length === 0
+    ? 0
+    : Math.min(Math.max(requested, 0), tabs.length - 1);
+
+  // Make <tabs> a column flex so the bar pins at the bottom and the
+  // active pane fills the rest. Override the applyDefaults('tabs')
+  // baseline (which left height unspecified).
+  tabsEl.style.flexDirection = 'column';
+  tabsEl.style.height = '100%';
+  tabsEl.style.minHeight = '0';
+  tabsEl.style.overflow = 'hidden';
+
+  // Show only the active pane; keep the others mounted for keep-alive
+  // parity with the native IndexedStack.
+  for (let i = 0; i < tabs.length; i++) {
+    const t = tabs[i];
+    if (i === active) {
+      t.style.display = 'flex';
+      t.style.flexDirection = 'column';
+      t.style.flex = '1 1 auto';
+      t.style.minHeight = '0';
+      t.style.overflow = 'auto';
+    } else {
+      t.style.display = 'none';
+    }
+  }
+
+  const bar = _ensureTabsBar(tabsEl);
+  // Rebuild bar buttons. Tabs rarely change in count + their title /
+  // icon are mount-once cold props, so the rebuild cost is paid at
+  // most once per structural change. Switching the active tab only
+  // needs to re-color buttons; full-rebuild keeps the code simple.
+  bar.innerHTML = '';
+  for (let i = 0; i < tabs.length; i++) {
+    const t = tabs[i];
+    const isActive = i === active;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    btn.style.cssText =
+      'flex:1 1 0;display:flex;flex-direction:column;align-items:center;' +
+      'justify-content:center;background:transparent;border:0;cursor:pointer;' +
+      'font:inherit;padding:4px 2px;gap:2px;line-height:1.15;font-size:11px;' +
+      'color:' + (isActive ? TAB_BAR_ACTIVE_COLOR : TAB_BAR_INACTIVE_COLOR) + ';';
+    const iconName = t._skalIcon;
+    if (iconName) {
+      const ico = document.createElement('span');
+      ico.textContent = TAB_ICON_GLYPHS[iconName] || '●'; // ●
+      ico.style.cssText = 'font-size:20px;line-height:1;';
+      btn.appendChild(ico);
+    }
+    const title = t._skalTitle;
+    if (title) {
+      const lbl = document.createElement('span');
+      lbl.textContent = title;
+      btn.appendChild(lbl);
+    }
+    // Capture the index — closure over `i` is fine since we rebuild
+    // every render, so stale handlers never linger across structural
+    // changes.
+    btn.onclick = () => {
+      const h = tabsEl._skalOnChange;
+      if (typeof h === 'function') h(i);
+    };
+    bar.appendChild(btn);
+  }
+}
+
 // Baseline inline styles applied at createElement time. Each prop set
 // later via setProperty wins over these (last-style-wins in inline CSS).
 //
@@ -327,10 +464,18 @@ function applyDefaults(el, tag) {
       s.fontFamily = 'inherit';
       break;
     case 'navigator':
+      // Children are <screen> with `position:absolute;inset:0`, so the
+      // navigator gets no intrinsic height from its content. Force it
+      // to fill its flex-column parent (typical home: a <tab> pane or
+      // the document body); without this the navigator collapses to 0
+      // and screens render but are invisible.
       s.position = 'relative';
       s.overflow = 'hidden';
       s.boxSizing = 'border-box';
       s.width = '100%';
+      s.height = '100%';
+      s.flex = '1 1 auto';
+      s.minHeight = '0';
       break;
     case 'screen':
       // Stacked absolutely — DOM order is stack order, so the last
@@ -342,12 +487,19 @@ function applyDefaults(el, tag) {
       s.background = '#FFFFFF';
       break;
     case 'tabs':
-      // Flex column — tab panes above, no host NavigationBar on web.
-      // Active-tab selection is a host-side concern; on web every pane
-      // is laid out (CSS-degraded parity, like reorder / virtualization).
+      // Flex column — active-tab pane on top of a NavigationBar-style
+      // bar at the bottom. _renderTabs() (called from setProperty +
+      // insertNode hooks) (a) hides inactive <tab> children with
+      // `display:none` so only the active one renders, and (b)
+      // populates a bar with one button per <tab> that calls the
+      // <tabs>'s `onChange(index)` — close-enough parity with the
+      // native IndexedStack + NavigationBar.
       s.display = 'flex';
       s.flexDirection = 'column';
       s.boxSizing = 'border-box';
+      s.height = '100%';
+      s.minHeight = '0';
+      s.overflow = 'hidden';
       break;
     case 'tab':
       s.display = 'block';
@@ -774,10 +926,43 @@ function applyProp(node, name, value) {
 // the only difference is the sink (DOM here, bridge ops there).
 // ──────────────────────────────────────────────────────────────────────
 
+// Unknown tags get a degraded fallback (a plain <div> placeholder with
+// children still parented in). Most "unknown" tags on web come from
+// codegen-wrapped Flutter widgets like <Greeting>, <QrImageView>,
+// <Camera>, etc. — they reach this renderer as lowercase intrinsics
+// (<greeting>, <qrImageView>, <camera>) the babel macro emitted. They
+// can't render natively in a browser; under the B.5 plan they'll be
+// served by a hidden Flutter Web instance. Until that lands (Phases
+// 1–5 of WEB_SUPPORT_PLAN.md), we render a visible placeholder so the
+// surrounding layout still works instead of throwing and blanking the
+// page.
+const _warnedUnknownTags = new Set();
+function warnOnce(tag) {
+  if (_warnedUnknownTags.has(tag)) return;
+  _warnedUnknownTags.add(tag);
+  // eslint-disable-next-line no-console
+  console.warn(`Skal web: unknown intrinsic <${tag}> — rendering placeholder. ` +
+    `Custom widgets / Flutter plugins need the B.5 plugin host (WEB_SUPPORT_PLAN.md Phases 1–5).`);
+}
+
 const _renderer = createRenderer({
   createElement(tag) {
     const html = TAG_TO_HTML[tag];
-    if (html === undefined) throw new Error(`Skal: unknown JSX tag <${tag}>`);
+    if (html === undefined) {
+      warnOnce(tag);
+      const el = document.createElement('div');
+      el._skalTag = tag;
+      el.setAttribute('data-skal-unknown', tag);
+      // Make the placeholder visible-but-quiet: a 1px dashed outline,
+      // a small label, no layout impact otherwise. Helps devs spot
+      // codegen-wrapped widgets that need a B.5 plugin shim.
+      el.style.outline = '1px dashed #d33';
+      el.style.padding = '4px';
+      el.style.color = '#d33';
+      el.style.font = '11px ui-monospace, monospace';
+      el.appendChild(document.createTextNode(`<${tag}>`));
+      return el;
+    }
     const el = document.createElement(html);
     el._skalTag = tag;
     applyDefaults(el, tag);
@@ -793,6 +978,31 @@ const _renderer = createRenderer({
   },
 
   setProperty(node, name, value, _prev) {
+    // <tabs> / <tab> props — handled here so they don't fall through
+    // to the generic CSS / attribute path (which would set them as
+    // inline-style `activeTab:0` / DOM attribute `title=…`, etc.).
+    // See _renderTabs for the layout + bar contract.
+    const tag = node._skalTag;
+    if (tag === 'tabs') {
+      if (name === 'activeTab') {
+        node._skalActiveTab = (value | 0);
+        _renderTabs(node);
+        return;
+      }
+      if (name === 'onChange') {
+        node._skalOnChange = typeof value === 'function' ? value : null;
+        return;
+      }
+    } else if (tag === 'tab') {
+      if (name === 'title' || name === 'icon') {
+        if (name === 'title') node._skalTitle = value == null ? '' : String(value);
+        else node._skalIcon = value == null ? '' : String(value);
+        const p = node.parentElement;
+        if (p && p._skalTag === 'tabs') _renderTabs(p);
+        return;
+      }
+    }
+
     // Gesture handlers — direct DOM handlers. No event ring / handler-
     // id indirection needed; we're already in the browser's JS context.
     if (name === 'onClick' || name === 'onclick' || name === 'onTap') {
@@ -904,16 +1114,29 @@ const _renderer = createRenderer({
   },
 
   insertNode(parent, node, anchor) {
-    parent.insertBefore(node, anchor || null);
+    // <tabs> children: the bar should always remain the last DOM
+    // child. If a new <tab> arrives with no anchor (append), insert it
+    // *before* the bar so the bar stays pinned at the end.
+    if (parent._skalTag === 'tabs' && parent._skalBar && !anchor) {
+      parent.insertBefore(node, parent._skalBar);
+    } else {
+      parent.insertBefore(node, anchor || null);
+    }
     // A <pageView> child is one full-bleed snap page.
     if (parent._skalTag === 'pageView' && node.style) {
       node.style.flex = '0 0 100%';
       node.style.scrollSnapAlign = 'start';
     }
+    if (parent._skalTag === 'tabs' && node._skalTag === 'tab') {
+      _renderTabs(parent);
+    }
   },
 
   removeNode(parent, node) {
     parent.removeChild(node);
+    if (parent._skalTag === 'tabs' && node._skalTag === 'tab') {
+      _renderTabs(parent);
+    }
   },
 
   isTextNode(node) { return node.nodeType === 3; },

@@ -76,6 +76,10 @@ adding a new widget type means three edits — `wire.dart`,
 silent bug. A code-gen step from a single source-of-truth wire
 schema would close that gap.
 
+See [`WEB_SUPPORT_PLAN.md`](WEB_SUPPORT_PLAN.md) for the full web
+architecture — DOM renderer + Option B.5 hidden Flutter Web for
+plugins. Phases 0-5 tracked there.
+
 ---
 
 ## Considered and rejected (revisit when profiling shows it)

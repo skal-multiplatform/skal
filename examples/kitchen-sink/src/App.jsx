@@ -40,6 +40,11 @@ import {
   Camera,
   Ticker,
 } from 'skal-flutter';
+// B.5 plugin shim — geolocation. On web routes through the hidden
+// Flutter Web plugin host (docs/WEB_SUPPORT_PLAN.md). On native the
+// plugin bridge isn't wired yet so calls fail with "no DOM"; that's
+// the expected pending state until TODO_PLATFORMS.md §2 lands.
+import { getCurrentPosition } from 'skal-plugin-geolocator';
 
 // ── Palette — module scope so the bridge's prop-diff cache hits on
 //    identical color strings across every node. ───────────────────
@@ -1659,6 +1664,28 @@ const _pick = (mod, key) =>
 // Each probe: { label, run }. `run` is sync or async and returns a
 // string (the "response"); a throw is caught and shown as an error.
 const JS_PROBE_GROUPS = [
+  {
+    // B.5 hidden Flutter Web plugin host (docs/WEB_SUPPORT_PLAN.md).
+    // On web: first invocation lazy-boots a ~3 MB Flutter Web instance
+    // into a 1×1 off-screen <div>, which then runs `package:geolocator`
+    // (federated → `geolocator_web` → navigator.geolocation). On
+    // native: the native plugin bridge isn't wired yet, so this probe
+    // throws "no DOM" (the JS plugin-bridge-web tries to inject a
+    // <script> tag) — informative failure mode until the native
+    // bridge lands (TODO_PLATFORMS.md §2).
+    title: 'Web plugin bridge — geolocator (B.5, web only)',
+    probes: [
+      {
+        label: 'geolocator.getCurrentPosition — lat/lon via hidden Flutter Web',
+        run: async () => {
+          const t0 = performance.now();
+          const pos = await getCurrentPosition();
+          const ms = (performance.now() - t0).toFixed(0);
+          return `${pos.lat.toFixed(4)}, ${pos.lon.toFixed(4)} (±${pos.accuracy.toFixed(0)}m, ${ms}ms — includes Flutter Web cold boot on first call)`;
+        },
+      },
+    ],
+  },
   {
     title: 'Web Crypto — crypto.subtle (global, native)',
     probes: [

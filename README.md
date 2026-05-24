@@ -173,6 +173,7 @@ skal/
 | [`docs/FLUTTER_JS_COMPONENTS.md`](docs/FLUTTER_JS_COMPONENTS.md) | Fast-path widget layer |
 | [`docs/WRAPPING_PUB_PACKAGES.md`](docs/WRAPPING_PUB_PACKAGES.md) | Custom widget codegen for pub.dev packages |
 | [`docs/ANIMATION.md`](docs/ANIMATION.md) / [`docs/NAVIGATION.md`](docs/NAVIGATION.md) | Animation + navigation subsystems |
+| [`docs/WEB_SUPPORT_PLAN.md`](docs/WEB_SUPPORT_PLAN.md) | Web target plan — DOM renderer + hidden Flutter Web for plugins (B.5) |
 | [`docs/bytecode-cache.md`](docs/bytecode-cache.md) | Why `.cjs.jsc` exists; JSC version coupling |
 | [`docs/crash-symbolication.md`](docs/crash-symbolication.md) | Symbolicating libskal crashes from device logs |
 | [`docs/TODO.md`](docs/TODO.md) / [`docs/TODO_PLATFORMS.md`](docs/TODO_PLATFORMS.md) | Open work |

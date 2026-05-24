@@ -71,6 +71,9 @@ None of those steps require:
   integration are the new work.
 
 ### 1.4 Web
+See [`WEB_SUPPORT_PLAN.md`](WEB_SUPPORT_PLAN.md) for the full plan
+(DOM renderer + hidden Flutter Web for plugins, Phases 0-5).
+
 - ✓ Solid + DOM via `packages/skal-js/src/renderer-web.js` + `vite.config.web.js`
 - ◇ Production build pipeline: `vite build --config vite.config.web.js`
   produces a `dist/` static site, but it's not part of the

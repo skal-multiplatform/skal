@@ -17,6 +17,8 @@
     "_web": "// ── Web preview (DOM via skal/renderer-web) ────────────",
     "dev:web": "vite --config vite.config.web.js",
     "build:web": "vite build --config vite.config.web.js",
+    "_flutter_web_plugins": "// ── B.5 hidden Flutter Web plugin host (see docs/WEB_SUPPORT_PLAN.md) ──",
+    "build:flutter-plugins": "cd flutter-web-plugins && flutter build web --release",
 
     "_dev": "// ── Native dev (rebuild JS bundle, hand off to flutter run) ──",
     "dev:flutter": "bun run build && cd flutter-host && flutter run",
@@ -42,6 +44,7 @@
   },
   "dependencies": {
     "skal": "workspace:*",
+    "skal-plugin-geolocator": "workspace:*",
     "solid-js": "^1.9.12"
   },
   "devDependencies": {

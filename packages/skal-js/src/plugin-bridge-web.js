@@ -153,6 +153,36 @@ export function prewarmPlugins() {
 }
 
 /**
+ * Add a visible Flutter Web view at the given DOM element. The host
+ * runs in multi-view mode (see vite.config.web.js patchBootstrap),
+ * which lets each <FlutterEmbed> get its own independent Flutter view
+ * sharing the single Flutter engine.
+ *
+ * The returned viewId is the handle the JS side passes to
+ * `callPlugin('embed.setSpec', {viewId, widget, props})` to tell Dart
+ * what to render in that view, and to `removeFlutterView(viewId)` on
+ * unmount.
+ */
+export async function addFlutterView(hostElement) {
+  await ensurePluginHost();
+  const app = globalThis.__skalFlutterApp;
+  if (!app || typeof app.addView !== 'function') {
+    throw new Error(
+      'Skal plugin bridge: addView not available. ' +
+        'Multi-view requires Flutter Web 3.10+ with multiViewEnabled:true in the bootstrap config.',
+    );
+  }
+  return app.addView({ hostElement });
+}
+
+/** Remove a Flutter Web view previously added via addFlutterView. */
+export async function removeFlutterView(viewId) {
+  const app = globalThis.__skalFlutterApp;
+  if (!app || typeof app.removeView !== 'function') return;
+  await app.removeView(viewId);
+}
+
+/**
  * The dispatcher every plugin shim calls. Boots the host if needed,
  * forwards the call, unwraps the {ok, value | error} envelope.
  *

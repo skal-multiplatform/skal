@@ -20,7 +20,13 @@ import {
   Dismissible, CustomScrollView, SliverAppBar, SliverList, SliverGrid, Canvas,
   DragItem, DropZone, Radio, Chip, SegmentedButton, ExpansionTile, Dropdown,
   Stepper, Step, Drawer, BottomSheet, BackdropFilter, InteractiveViewer,
+  FlutterEmbed,
 } from 'skal';
+// Web target only — no native plugin bridge means a FlutterEmbed call
+// would throw "no DOM" at runtime. Apps that share code across targets
+// can guard `<FlutterEmbed>` with this flag.
+const IS_WEB = typeof window !== 'undefined' &&
+  typeof globalThis.__skal_acquireBridge !== 'function';
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
   showDatePicker, showTimePicker,
@@ -1495,6 +1501,31 @@ function LibsTab() {
         fontSize={13}
         color={SUBTLE}
       />
+
+      {/* ── Shape C — visible Flutter Web embed (WEB ONLY) ───────── */}
+      {IS_WEB && (
+        <Section title="FlutterEmbed — Shape C, real Flutter rendering">
+          <Text
+            label="A multi-view Flutter Web view rendered inside a DOM region (lazy-loaded ~3 MB on first appearance). Click the button — the counter state lives in Dart, the +1 increment is a Flutter setState, not JS."
+            fontSize={11}
+            color={SUBTLE}
+          />
+          <FlutterEmbed
+            widget="counter"
+            props={{ initial: 0 }}
+            height={180}
+            background="#FFF7F7F8"
+            cornerRadius={8}
+          />
+          <FlutterEmbed
+            widget="greeting"
+            props={{ name: 'Skal' }}
+            height={60}
+            background="#FFF7F7F8"
+            cornerRadius={8}
+          />
+        </Section>
+      )}
 
       {/* ── Custom adapter — Greeting ───────────────────────────── */}
       <Section title="Greeting — hand-written adapter">

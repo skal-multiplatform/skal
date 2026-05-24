@@ -495,14 +495,32 @@ auto-run-on-mount UX rather than a plugin-host defect.
 
 ---
 
-## Future extensions (NOT in this plan)
+## Shape C — `<FlutterEmbed>` (in progress)
 
-Once Phase 0-5 land, these become small additions:
+Architecture landed; layout-timing bug pending.
+
+The plugin host now boots in **multi-view mode** (`config.multiViewEnabled: true` + `runWidget(ViewCollection(...))` on the Dart side). The JS side exposes:
+
+- `addFlutterView(hostElement) → viewId` — adds a Flutter view inside the given DOM element (the same engine handles all views).
+- `removeFlutterView(viewId)` — removes it.
+- `<FlutterEmbed widget="..." props={...} />` intrinsic — wraps the above as a Solid primitive: on mount it waits for first non-zero layout, calls `addFlutterView`, then `embed.setSpec` to tell Dart what to render. Props changes coalesce into a single `setSpec` per tick. Removal cleans up both sides.
+
+Dart side has a widget registry (`_widgetFor` in `flutter-web-plugins/lib/main.dart`); start with `counter` + `greeting`; new widgets are one switch case.
+
+**Status**: end-to-end wire verified — `addView → embed.setSpec → MultiViewApp picks up the new view + spec → Dart renders the widget`. Manual proof-of-life worked: a hand-added view at body level rendered "Flutter counter: 0" + a Material `+1 (Dart)` button (tap incremented Dart-side state).
+
+**Known issue (open)**: when `<FlutterEmbed>` is mounted deep inside a flex layout (the kitchen-sink Libs tab is nested `Tabs > Tab > ScrollView > Section > Column`), the `flt-glass-pane`'s shadow-DOM `flt-scene-host` stays at `width:auto height:auto` after `addView`. The embed div, Flutter view container, and CSS sizing are all correct — only the internal scene-host bounds fail to update. Dispatching `window.resize` after addView doesn't recover. The same widget renders fine when added at `document.body` level with explicit pixel dimensions.
+
+Best guess: Flutter Web 3.41's multi-view `ResizeObserver` on per-view scene-host doesn't fire when the host is inside a flex column with computed (rather than declared) dimensions. Needs more investigation — possibly an explicit `flutterApp.resizeView(...)` call or a `physicalSize` config field on `addView`.
+
+For now the architecture is in place + a single-instance hand-mounted view works. Apps that need this can use `addFlutterView` directly with a position:fixed mount as a workaround.
+
+## Future extensions (NOT in this plan)
 
 - **More plugins** — file picker, share, biometric. Each is one switch case in Dart + one JS shim. Half-day each.
 - **prewarmPlugins() opt-in** — apps that know they'll need plugins call this during idle (after first paint, on user-interaction signal) to hide the first-click latency.
 - **Plugin-shim publishing** — each `@skal/<plugin>` package shipped as a workspace package under `packages/skal-plugins/<name>/`, with both a native implementation (when the native plugin-bridge lands) and the B.5 web implementation.
-- **`<FlutterEmbed>` primitive (Shape C)** — for apps that want Flutter Web rendering on specific routes, not just plugins. Same lazy-loading pattern, but mounts visibly + larger size. ~1 day on top of B.5.
+- **Auto-routing codegen widgets through `<FlutterEmbed>`** — once Shape C is stable, the `_widgetFor` registry on the Dart side could be auto-generated from `skal_codegen.json` so every `<Greeting>` / `<QrImageView>` / `<Camera>` / etc. that today renders as a placeholder on web instead routes through Flutter via Shape C automatically. No app-level API change.
 
 ---
 

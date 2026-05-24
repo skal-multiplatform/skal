@@ -13,6 +13,11 @@
 // tree drives either Flutter-on-native or DOM-in-browser.
 
 import { createRenderer } from 'solid-js/universal';
+import {
+  addFlutterView,
+  removeFlutterView,
+  callPlugin,
+} from './plugin-bridge-web.js';
 
 // ──────────────────────────────────────────────────────────────────────
 // Tag → HTML element + per-tag baseline styling.
@@ -77,6 +82,13 @@ const TAG_TO_HTML = {
   listTile:             'div',
   pageView:             'div',
   dismissible:          'div',
+  // <flutterEmbed widget="counter" props={...} /> — Shape C of
+  // WEB_SUPPORT_PLAN.md. A plain DOM div on web that's used as a
+  // hostElement for a real Flutter Web view (multi-view). The bound
+  // Dart widget renders inside; setProperty hooks below drive the
+  // view lifecycle (addView on mount, embed.setSpec on prop change,
+  // removeView on unmount). Inert on native — pure web primitive.
+  flutterEmbed:         'div',
   // Slivers — <customScrollView> is a scroll container; sliver
   // sections are plain divs (a <sliverAppBar> uses position:sticky).
   customScrollView:     'div',
@@ -176,6 +188,125 @@ function _ensureTabsBar(tabsEl) {
   tabsEl.appendChild(bar);
   tabsEl._skalBar = bar;
   return bar;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// <flutterEmbed> — visible Flutter Web rendering via multi-view.
+//
+// Lifecycle (driven by insertNode + setProperty + removeNode hooks):
+//   1. insertNode → request a Flutter view bound to this DOM element.
+//      `addFlutterView` lazy-boots the host if needed; returned viewId
+//      is stashed on the element.
+//   2. setProperty('widget' | 'props') → coalesce a microtask, then
+//      send embed.setSpec(viewId, widget, props) to Dart so the right
+//      widget renders. (Both props arrive separately as Solid sets
+//      them; coalescing means one Dart-side rebuild per JSX change,
+//      not two.)
+//   3. removeNode → embed.unsetSpec + removeFlutterView.
+//
+// Async cost: addView is a Promise (Flutter has to wire up a new
+// view), so the first render lags by a paint or two. Subsequent prop
+// changes are just JSON-RPC over the plugin bridge (~ms).
+// ──────────────────────────────────────────────────────────────────────
+
+// Flutter Web reads the hostElement's size at addView time + binds the
+// FlutterView's glass-pane to whatever it reads. If the embed div has
+// 0 width/height at that instant (Solid inserts the node BEFORE CSS
+// layout runs the first time), the glass-pane gets fixed at 0×0 and
+// later CSS-driven resizes are NOT picked up — the view renders into
+// nothing forever. So we wait for the first non-zero layout before
+// calling addView.
+function _waitForFirstLayout(el) {
+  return new Promise((resolve) => {
+    if (el.offsetWidth > 0 && el.offsetHeight > 0) {
+      resolve();
+      return;
+    }
+    if (typeof ResizeObserver === 'undefined') {
+      // No ResizeObserver → fall back to a single rAF; if still 0, just
+      // resolve and hope (the view will at least be created).
+      requestAnimationFrame(() => resolve());
+      return;
+    }
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        const r = e.contentRect;
+        if (r.width > 0 && r.height > 0) {
+          ro.disconnect();
+          resolve();
+          return;
+        }
+      }
+    });
+    ro.observe(el);
+  });
+}
+
+async function _ensureFlutterView(embedEl) {
+  if (embedEl._skalViewPromise) return embedEl._skalViewPromise;
+  embedEl._skalViewPromise = (async () => {
+    await _waitForFirstLayout(embedEl);
+    // The embed might have been removed while we were waiting.
+    if (embedEl._skalEmbedRemoved) {
+      throw new Error('Skal <flutterEmbed>: removed before view could be added');
+    }
+    const viewId = await addFlutterView(embedEl);
+    embedEl._skalViewId = viewId;
+    // Wake Flutter's render pipeline. The flutter-view + flt-glass-pane
+    // get created at addView time, but the scene-host inside (shadow
+    // DOM) is sized via a ResizeObserver on the view that fires on
+    // the FIRST size change after the view exists. With CSS-driven
+    // sizing this can race and leave the scene-host at width:auto
+    // height:auto → no pixels paint. Dispatching window.resize coaxes
+    // Flutter to re-sync all view sizes, fixing the scene-host bounds.
+    if (typeof window !== 'undefined') {
+      // Defer one frame so the new view has its CSS applied.
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new Event('resize'));
+      });
+    }
+    return viewId;
+  })();
+  return embedEl._skalViewPromise;
+}
+
+function _scheduleEmbedSync(embedEl) {
+  if (embedEl._skalSyncScheduled) return;
+  embedEl._skalSyncScheduled = true;
+  queueMicrotask(async () => {
+    embedEl._skalSyncScheduled = false;
+    const widget = embedEl._skalEmbedWidget;
+    if (!widget) return; // widget prop not set yet — wait for it
+    try {
+      const viewId = await _ensureFlutterView(embedEl);
+      // The embed may have been removed while addView was pending.
+      // _skalEmbedRemoved is set by removeNode; if true, drop the sync.
+      if (embedEl._skalEmbedRemoved) return;
+      await callPlugin('embed.setSpec', {
+        viewId,
+        widget,
+        props: embedEl._skalEmbedProps || {},
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error(`Skal <flutterEmbed widget="${widget}"> failed:`, e);
+    }
+  });
+}
+
+async function _teardownFlutterEmbed(embedEl) {
+  embedEl._skalEmbedRemoved = true;
+  if (!embedEl._skalViewPromise) return;
+  try {
+    const viewId = await embedEl._skalViewPromise;
+    // Tell Dart to drop the spec first (otherwise the next addView's
+    // viewId might collide with a stale spec from this one).
+    try { await callPlugin('embed.unsetSpec', { viewId }); } catch (_) {}
+    await removeFlutterView(viewId);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('Skal <flutterEmbed> teardown failed:', e);
+  }
 }
 
 function _renderTabs(tabsEl) {
@@ -504,6 +635,22 @@ function applyDefaults(el, tag) {
     case 'tab':
       s.display = 'block';
       s.boxSizing = 'border-box';
+      break;
+    case 'flutterEmbed':
+      // Visible block. `alignSelf:stretch` makes the embed claim its
+      // flex parent's cross-axis size — most Skal columns use
+      // `align-items:flex-start`, so a `width:100%` child of zero-
+      // width-shrink-fit parent would collapse to 0. align-self:stretch
+      // sidesteps that by telling the flex parent "give me the full
+      // cross-axis", which then propagates a definite width to the
+      // Flutter view inside. Height is left unset on purpose so the
+      // user's prop wins.
+      s.display = 'block';
+      s.boxSizing = 'border-box';
+      s.position = 'relative';
+      s.width = '100%';
+      s.alignSelf = 'stretch';
+      s.overflow = 'hidden';
       break;
   }
 }
@@ -978,11 +1125,27 @@ const _renderer = createRenderer({
   },
 
   setProperty(node, name, value, _prev) {
+    // <flutterEmbed widget="..." props={...}> — capture the two
+    // declarative props and coalesce a single embed.setSpec call per
+    // tick. We don't pass these through to the DOM (they're not CSS).
+    const tag = node._skalTag;
+    if (tag === 'flutterEmbed') {
+      if (name === 'widget') {
+        node._skalEmbedWidget = value == null ? '' : String(value);
+        _scheduleEmbedSync(node);
+        return;
+      }
+      if (name === 'props') {
+        node._skalEmbedProps = value && typeof value === 'object' ? value : {};
+        _scheduleEmbedSync(node);
+        return;
+      }
+    }
+
     // <tabs> / <tab> props — handled here so they don't fall through
     // to the generic CSS / attribute path (which would set them as
     // inline-style `activeTab:0` / DOM attribute `title=…`, etc.).
     // See _renderTabs for the layout + bar contract.
-    const tag = node._skalTag;
     if (tag === 'tabs') {
       if (name === 'activeTab') {
         node._skalActiveTab = (value | 0);
@@ -1130,12 +1293,21 @@ const _renderer = createRenderer({
     if (parent._skalTag === 'tabs' && node._skalTag === 'tab') {
       _renderTabs(parent);
     }
+    if (node._skalTag === 'flutterEmbed') {
+      // Lazy-boot + addView fire here, but actual setSpec waits for
+      // `widget` to be set via setProperty. If widget is already on
+      // node (could happen with re-mount), kick off the sync.
+      _scheduleEmbedSync(node);
+    }
   },
 
   removeNode(parent, node) {
     parent.removeChild(node);
     if (parent._skalTag === 'tabs' && node._skalTag === 'tab') {
       _renderTabs(parent);
+    }
+    if (node._skalTag === 'flutterEmbed') {
+      _teardownFlutterEmbed(node);
     }
   },
 

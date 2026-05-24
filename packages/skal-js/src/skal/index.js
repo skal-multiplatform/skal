@@ -780,3 +780,28 @@ export const BackdropFilter = makeMissingMacroComponent('BackdropFilter');
  * @type {Component<BaseProps & { minScale?: number, maxScale?: number }>}
  */
 export const InteractiveViewer = makeMissingMacroComponent('InteractiveViewer');
+
+/**
+ * Visible Flutter Web view embedded in a DOM region — Shape C of
+ * `docs/WEB_SUPPORT_PLAN.md`.
+ *
+ * On web, the renderer adds a Flutter view at this element via
+ * multi-view, then asks the plugin host to render the named widget.
+ * `props` is a JSON-serializable object passed to the widget's Dart
+ * constructor. Each codegen-wrapped widget the app declares is
+ * available by name (see `flutter-web-plugins/lib/main.dart` —
+ * `_widgetFor` switch).
+ *
+ * On native this intrinsic doesn't exist — the same widget renders
+ * directly through its codegen adapter (e.g. `<Counter>`, `<Greeting>`
+ * from `skal-flutter`). FlutterEmbed is the web-only escape hatch
+ * for widgets that have no DOM equivalent.
+ *
+ *   <FlutterEmbed widget="counter" props={{ initial: 0 }} />
+ *
+ * Sizing follows normal CSS (a default min-height of 200px keeps
+ * embeds visible if no size is set); the Flutter view fills the box.
+ *
+ * @type {Component<BaseProps & { widget: string, props?: object }>}
+ */
+export const FlutterEmbed = makeMissingMacroComponent('FlutterEmbed');

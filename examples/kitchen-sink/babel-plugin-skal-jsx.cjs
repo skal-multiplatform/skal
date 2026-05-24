@@ -127,6 +127,10 @@ const BUILT_IN_WIDGET_NAMES = {
   BottomSheet:          'bottomSheet',
   BackdropFilter:       'backdropFilter',
   InteractiveViewer:    'interactiveViewer',
+  // Shape C — visible Flutter Web rendering inside a DOM region.
+  // Web-only intrinsic; on native it's an unknown tag (nothing to
+  // render — would require a Flutter-side handler that doesn't exist).
+  FlutterEmbed:         'flutterEmbed',
 };
 
 module.exports = function ({ types: t }) {

@@ -105,8 +105,21 @@ _flutter.loader.load({
     var mount = window.__skalPluginHostMount;
     var initConfig = Object.assign({}, ${cfg});
     if (mount) initConfig.hostElement = mount;
-    return initializer.initializeEngine(initConfig).then(function(engine) {
-      return engine.runApp();
+    // multiViewEnabled lets the Dart side accept additional views
+    // beyond the 1×1 plugin host — used by <flutterEmbed> for Shape C
+    // (visible widget rendering through the same engine).
+    initConfig.multiViewEnabled = true;
+    return initializer.initializeEngine(initConfig).then(function(appRunner) {
+      window.__skalFlutterAppRunner = appRunner;
+      // FlutterApp is what runApp() resolves to in Flutter 3.10+ web;
+      // it exposes addView({hostElement}) / removeView(viewId) for
+      // multi-view rendering — used by <flutterEmbed> (Shape C).
+      var appPromise = appRunner.runApp();
+      window.__skalFlutterAppPromise = appPromise;
+      return Promise.resolve(appPromise).then(function(flutterApp) {
+        window.__skalFlutterApp = flutterApp;
+        return flutterApp;
+      });
     });
   },
 });`;

@@ -231,6 +231,14 @@ class Skal {
 
   void wakeJs() => _wakeJs(handle);
 
+  /// No-ops on native — the bridge buffer is shared between bun
+  /// (JS) and Dart via FFI on the same address, no marshaling
+  /// needed. These exist purely so SkalBridge can call them on both
+  /// targets without `kIsWeb` branching. The web implementation in
+  /// skal_ffi_web.dart does the real work for dart2wasm.
+  void syncFromJs() {}
+  void syncToJs() {}
+
   /// Begin opening the native store on a background thread so its
   /// segment scan overlaps JS runtime init + bundle evaluation. Call
   /// once, right after create(), with the directory the JS side will

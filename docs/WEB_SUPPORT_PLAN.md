@@ -124,8 +124,10 @@ Listed for completeness, not in this plan's scope.
 Skip the DOM renderer entirely. Use Flutter Web for the whole app.
 Pixel parity with native, ~3-10 MB always-on download, no DOM
 advantages (a11y, SEO, native scroll feel). For an app where parity
-matters more than weight, this is the right call. Not Skal's primary
-target.
+matters more than weight, this is the right call. **Shipped as an
+alternate target** alongside B.5 — see `dev:web-flutter` /
+`build:web-flutter` in `examples/kitchen-sink/package.json` and
+§"Shape D-skwasm" below for the dart2wasm+skwasm implementation.
 
 ---
 
@@ -515,54 +517,185 @@ Best guess: Flutter Web 3.41's multi-view `ResizeObserver` on per-view scene-hos
 
 For now the architecture is in place + a single-instance hand-mounted view works. Apps that need this can use `addFlutterView` directly with a position:fixed mount as a workaround.
 
-## Shape D-skwasm — dart2wasm support (open, needs bridge reshape)
+## Shape D-skwasm — dart2wasm + skwasm support (shipped)
 
-We tried `flutter build web --wasm` for Shape D. The build succeeds, all
-pub.dev deps compile cleanly (no `dart:io`, no `dart:html`), the kitchen
-sink loads with `compileTarget: dart2wasm` + `renderer: skwasm`,
-Dart's `main()` runs to completion, the bridge hook is installed. But
-nothing renders — opSeq stays at 0 and the page is blank.
+Shape D runs under `flutter build web --wasm` with the skwasm renderer.
+`dev:web-flutter` and `build:web-flutter` both pass `--wasm`; the
+kitchen-sink renders identically to the dart2js+canvaskit baseline.
 
-Root cause: `ByteBuffer.toJS` is a cast on dart2js (zero-copy) but a
-**non-modifying copy** on dart2wasm. `skal_ffi_web.dart`'s
-`Skal.create` allocates a Dart `Uint8List`, then publishes its
-`.buffer.toJS` as `globalThis.__skal_acquireBridge`. Under dart2js
-that's the same memory both sides see. Under dart2wasm, JS gets a
-snapshot of the Wasm linear memory at acquisition time — Dart writes
-to its `Uint8List` never appear to JS, and JS writes to its
-`Uint8Array` never appear to Dart. The shared-buffer protocol breaks
-silently.
+### The problem `--wasm` introduces
 
-To make Shape D work under dart2wasm, the bridge needs a different
-ownership story. Options:
+Under dart2js, `ByteBuffer.toJS` is a cast — the Dart `Uint8List` and
+the JS `Uint8Array` view the same ArrayBuffer, so the bridge protocol
+just works. Under dart2wasm, Wasm linear memory is a separate address
+space from the JS heap; `ByteBuffer.toJS` **copies** the bytes out at
+the moment of the call. Publishing `bridge.buffer.toJS` as
+`__skal_acquireBridge` would give JS a snapshot — every later Dart
+write would be invisible to JS, and vice versa.
 
-1. **Allocate buffer on the JS side.** A JS-side
-   `new Uint8Array(BRIDGE_SIZE)` becomes the canonical buffer. Dart
-   accesses it via `dart:js_interop` typed-array methods — slow
-   per-element (each `[i]` is a JS interop call), but correct. Hot
-   paths in `bridge.dart` would need bulk-transfer wrappers
-   (`getRange(offset, length)` to materialize a Dart slice for a
-   single pumpOps batch, then `setRange` to write back). Trade-off:
-   pumpOps gets slower by the JS-interop overhead per call, but
-   stays O(ops drained) instead of O(buffer size).
-2. **SharedArrayBuffer + cross-origin isolation.** Requires
-   `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-
-   Policy: require-corp` on the serving site. With those headers,
-   `dart2wasm` *does* support sharing a SAB between Wasm linear
-   memory and JS — I think. Needs verification. Deployment headache
-   for most static-host setups.
-3. **Keep dart2js for Shape D.** The 1.1 MB → 1.5 MB bundle delta
-   and the multi-threaded skwasm performance win aren't enough to
-   justify a full bridge-protocol rewrite right now. The Skal app is
-   I/O-bound on the JS bundle download + parse cost; CanvasKit
-   raster isn't the bottleneck for Shape D today.
+### The fix: dual buffer + slice sync at pump boundaries
 
-Picked: option 3 today. Shape D ships with dart2js + canvaskit. The
-`--wasm` flag in `dev:web-flutter` / `build:web-flutter` is left out
-deliberately; reverting it was a one-liner. When/if option 1 or 2
-becomes important, the work is contained in `skal_ffi_web.dart` +
-`packages/skal_flutter/lib/skal/bridge.dart` — the JS side already
-talks to whatever buffer `__skal_acquireBridge` hands it.
+`skal_ffi_web.dart` keeps two buffers:
+
+- **JS-side canonical buffer.** `_Uint8Array(kBridgeSize)` allocated
+  in the JS heap. Its `.buffer` is what `__skal_acquireBridge` hands
+  to `bridge.js`. Everything JS does — ring writes from the encoder,
+  drain reads, reply-heap accesses — lands here.
+- **Dart-side mirror.** A `Uint8List(kBridgeSize)` in Wasm linear
+  memory. `SkalBridge` holds `ByteData.sublistView(skal.bridge)` over
+  this and never re-acquires it; the `final` reference stays stable
+  for the bridge's lifetime.
+
+`pumpOps` is wrapped:
+
+```dart
+void pumpOps() {
+  skal.syncFromJs();   // JS heap → Wasm linear memory
+  try { _pumpOpsBody(); }
+  finally { skal.syncToJs(); }  // Wasm linear memory → JS heap
+}
+```
+
+And `wakeJs` (which calls `__skal_drainEvents` inline since there's no
+worker thread on web) brackets the drain with `syncToJs` / `syncFromJs`
+the same way, so events Dart wrote reach JS, and any ops handlers
+triggered come back to Dart.
+
+### Slice sync — only copy the bytes that changed
+
+A naive "copy the whole 6 MiB buffer each pump in both directions"
+would cost ~12 MiB/pump regardless of actual traffic — even on idle
+frames where nothing moved. The bridge layout (see `wire.dart`) makes
+a much cheaper protocol possible:
+
+```
+[Header 64 B]   ← carries every region's write watermark
+[Op ring        4 MiB ]  JS-write, Dart-read    (hOpWritePos)     bump
+[JS string heap 768 KiB] JS-write, Dart-read    (hStrWritePos)    bump
+[Reply heap     256 KiB] Dart-write, JS-read    (hReplyHeapWritePos) bump
+[Event ring     ~1 MiB]  Dart-write, JS-read    (hEventWritePos)  circular
+```
+
+Three regions are bump-allocators (writePos grows monotonically; on
+overflow the producer spin-waits for the consumer, then resets to 0).
+One — the event ring — is a true circular ring with
+`writePos = (pos + 16) % ringSize`. The slice algorithm has to handle
+each shape correctly.
+
+Per direction the sync is:
+
+1. Copy the header (64 B) — small, gives us the fresh watermarks.
+2. For each bump-allocated region:
+   - `currentWp > lastSynced` → copy `[lastSynced, currentWp)`
+   - `currentWp < lastSynced` → reset happened; copy `[0, currentWp)`
+3. For the event ring:
+   - `currentWp > lastSynced` → linear; copy `[lastSynced, currentWp)`
+   - `currentWp < lastSynced` → **wrapped, not reset**; copy
+     `[lastSynced, ringSize)` AND `[0, currentWp)`. Both ranges are
+     new content — JS reads circularly via `(pos + 16) % ringSize`
+     and will look at both.
+
+`syncFromJs` handles the two JS-write bump regions (op ring + JS
+string heap); `syncToJs` handles the reply heap (bump) + event ring
+(circular). Each region's `_synced*Wp` watermark is a Dart-side int
+field updated after each sync; watermark reads are clamped to the
+region size defensively.
+
+Cost profile per pump:
+
+| Frame                | Bulk copy          | Slice copy            |
+| -------------------- | ------------------ | --------------------- |
+| Idle                 | ~12 MiB            | 128 B (2× header)     |
+| 1000-op active frame | ~12 MiB            | ~33 KB                |
+| Wrap / reset frame   | ~12 MiB            | ≤ current high-water  |
+
+~50–200× cheaper than bulk on dart2wasm (each slice crosses Wasm↔JS
+twice via `slice.toJS` then JS-side `set`); ~100–400× on dart2js
+where `.toDart`/`.toJS` are casts and only the JS-side memcpy runs.
+On idle frames both targets save ~100,000× over bulk.
+
+Native gets no-op implementations of `syncFromJs` / `syncToJs` in
+`skal_ffi_io.dart` — the FFI bridge buffer is genuinely shared
+between bun and Dart, so no marshaling is needed.
+
+#### Known limitation — bump-allocator reset miss
+
+The bump-allocated regions reset to 0 on overflow. The producer is
+supposed to spin-wait for the consumer to drain before resetting,
+which is sound on native (separate threads). On web, JS and Dart
+share the main thread, so the spin can never observe progress — it
+times out (5 s for JS, 50 ms for Dart) and the producer resets
+blindly. The protocol was already fragile here before slice sync.
+
+The slice algorithm adds one specific failure mode in that scenario:
+if the post-reset writes push `currentWp` *past* the pre-sync
+`lastSynced`, the regression detector misses it (`currentWp >
+lastSynced`, so we take the monotonic branch and copy only
+`[lastSynced, currentWp)`). The consumer sees the stale tail of the
+old content at `[0, lastSynced)` of the new batch.
+
+Most reachable on the reply heap: a single large RPC reply
+(e.g. image-picker XFile metadata or controller state dump) can be
+big enough to trigger a reset while `_syncedReplyWp` is still small.
+Far less reachable on the op ring / JS string heap — would require
+writing ~4 MiB / ~768 KiB in a single JS turn, which also produces a
+5-second freeze independently.
+
+Two ways to close this:
+
+1. **Add per-region reset-epoch counters to the header.** The
+   producer bumps its counter on every reset; the slice-sync reads
+   and compares. Cleanest fix, requires a wire-format change
+   (16 B free in the header, `wire_test.dart` snapshot update).
+2. **Dart-side reset signal.** For the reply heap (Dart-owned), the
+   producer can call into `skal_ffi_web.dart` directly to mark a
+   reset, no header change needed. Works only for Dart-side regions.
+
+Neither lands today; the bug is bounded by the same scenarios that
+were already broken on web, so the regression is zero. Tracked for
+follow-up.
+
+### The extension-type wrapper
+
+Dart's built-in `JSUint8Array` exposes `.toDart` (for materializing
+bytes back into a Dart `Uint8List`) but not the three methods the
+slice protocol needs:
+
+- `.buffer` — to hand JS the underlying ArrayBuffer for the bridge
+  protocol (`__skal_acquireBridge`).
+- `.subarray(begin, end)` — a no-copy JS-side view of a slice;
+  `.toDart` on the subarray then materializes just that slice on the
+  Dart side.
+- `.set(source, offset)` — to write a Dart-produced slice into a
+  specific region of the JS-side canonical buffer in one call.
+
+`@JS('Uint8Array') extension type _Uint8Array._(JSUint8Array _) implements JSUint8Array`
+adds the three missing externals without losing the built-in
+conversions. See `skal_ffi_web.dart` for the full annotation.
+
+### Threading caveat — needs cross-origin isolation
+
+skwasm supports multi-threaded raster via Web Workers + SharedArrayBuffer,
+but the browser only exposes SAB to pages served with:
+
+```
+Cross-Origin-Opener-Policy:   same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+The dev server (`flutter run -d chrome --wasm`) sets these by default,
+so `dev:web-flutter` gets threaded skwasm. Static hosts and most CDNs
+don't — `crossOriginIsolated` reads `false` in production and skwasm
+silently falls back to single-threaded. The slice-sync bridge works
+either way (SAB wouldn't help the bridge itself — JS and Dart are on
+the main thread regardless; SAB would let skwasm fan raster across
+workers, which is orthogonal to the bridge protocol).
+
+If/when the bridge itself moves to SAB — JS allocates a SAB, both
+sides view the same memory, sync becomes a no-op — `syncFromJs` and
+`syncToJs` would early-return when SAB is available, with the slice-
+copy path as the fallback. The current dual-buffer code is the
+correct shape for that evolution: nothing in `bridge.dart` changes.
 
 ## Future extensions (NOT in this plan)
 
@@ -576,7 +709,6 @@ talks to whatever buffer `__skal_acquireBridge` hands it.
 ## What we're NOT doing
 
 - **Shape A** (per-widget Flutter mounts inside DOM tree). Layout / event coordination is intractable.
-- **Shape D** (full Flutter Web replacement). Defeats the point of having a lightweight web target.
 - **Web port of libskal**. Compiling bun + JSC to WASM is multi-month engineering for marginal benefit; the browser already has a JS engine.
 
 ---
@@ -584,4 +716,5 @@ talks to whatever buffer `__skal_acquireBridge` hands it.
 ## Tracking
 
 Phases 0-5 done. The plan as written is fully implemented.
-*Last updated: 2026-05-24. Phases 0–5 done.*
+Shape D ships under both dart2js+canvaskit and dart2wasm+skwasm.
+*Last updated: 2026-05-25. Phases 0–5 done; Shape D-skwasm shipped.*

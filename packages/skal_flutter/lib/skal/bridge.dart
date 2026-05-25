@@ -233,6 +233,23 @@ class SkalBridge {
   /// Drain new ops from the ring. Cheap when nothing is pending —
   /// a single u64 load + compare.
   void pumpOps() {
+    // On the dart2wasm web path the Wasm linear memory is separate
+    // from the JS heap, so the "shared" bridge buffer is actually
+    // two copies kept in sync at pump boundaries. syncFromJs pulls
+    // JS-side writes (new ops + advanced opSeq) into our Dart-side
+    // mirror so reads below see them; syncToJs at the end pushes our
+    // drained-seq + any reply-heap / event-ring writes back. On
+    // native + on dart2js web both calls are no-ops — the buffer is
+    // genuinely shared, no copy needed.
+    skal.syncFromJs();
+    try {
+      _pumpOpsBody();
+    } finally {
+      skal.syncToJs();
+    }
+  }
+
+  void _pumpOpsBody() {
     // Flush any queued events first — they may carry a tap that
     // triggers ops to drain in this same tick, so getting them into
     // the ring before reading opSeq keeps the round-trip latency low.

@@ -22,9 +22,9 @@
     "_full_flutter_web": "// ── Shape D — full Flutter Web target (renderer-via-Flutter) ───",
     "_full_flutter_web_pipeline": "// Build the JS bundle (same IIFE shape as native) + drop it into flutter-host/web/ so Flutter's static asset path serves it. main_web.dart then dynamically injects a <script> after Skal.create installs the bridge buffer global.",
     "build:web-flutter-js": "bun run build:js-only && cp flutter-host/assets/skal-app.js flutter-host/web/skal-app.js",
-    "_web_flutter_renderer_note": "// dart2js + canvaskit (NOT --wasm). dart2wasm copies ArrayBuffer instead of sharing — Skal's zero-copy bridge protocol needs a real reshape on the dart2wasm path. See docs/WEB_SUPPORT_PLAN.md §Shape D-skwasm for the refactor outline.",
-    "dev:web-flutter": "bun run build:web-flutter-js && cd flutter-host && flutter run -d chrome --target lib/main_web.dart",
-    "build:web-flutter": "bun run build:web-flutter-js && cd flutter-host && flutter build web --target lib/main_web.dart",
+    "_web_flutter_renderer_note": "// --wasm enables dart2wasm + skwasm. The bridge's zero-copy shared-buffer protocol works under dart2js as-is (toJS is a cast) but needs explicit syncFromJs/syncToJs bulk copies under dart2wasm (toJS copies). See packages/skal_flutter/lib/skal_ffi_web.dart + docs/WEB_SUPPORT_PLAN.md §Shape D-skwasm.",
+    "dev:web-flutter": "bun run build:web-flutter-js && cd flutter-host && flutter run -d chrome --wasm --target lib/main_web.dart",
+    "build:web-flutter": "bun run build:web-flutter-js && cd flutter-host && flutter build web --wasm --target lib/main_web.dart",
 
     "_dev": "// ── Native dev (rebuild JS bundle, hand off to flutter run) ──",
     "dev:flutter": "bun run build && cd flutter-host && flutter run",

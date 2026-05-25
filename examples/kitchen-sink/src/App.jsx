@@ -1513,7 +1513,7 @@ function LibsTab() {
           <FlutterEmbed
             widget="counter"
             props={{ initial: 0 }}
-            height={180}
+            height={120}
             background="#FFF7F7F8"
             cornerRadius={8}
           />

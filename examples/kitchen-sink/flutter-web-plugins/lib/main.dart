@@ -220,14 +220,24 @@ class _CounterDemo extends StatefulWidget {
   State<_CounterDemo> createState() => _CounterDemoState();
 }
 
+// NOTE on alignment: widgets are top-aligned (not centered) as a
+// workaround for Flutter Web 3.41's multi-view canvas-sizing bug.
+// addView() resizes ALL views' canvases to the last view's dimensions
+// (there's no resizeView API), so a small embed can end up with an
+// oversized canvas. If the widget content is vertically centered, it
+// paints at the canvas centerline — outside the visible DOM region.
+// Top-aligned content paints at y=0 and stays visible regardless.
+
 class _CounterDemoState extends State<_CounterDemo> {
   late int _n = widget.initial;
 
   @override
   Widget build(BuildContext context) {
-    return Center(
+    return Padding(
+      padding: const EdgeInsets.all(12),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        mainAxisAlignment: MainAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           Text(
@@ -250,10 +260,14 @@ class _GreetingDemo extends StatelessWidget {
   const _GreetingDemo({required this.name});
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Text(
-        'Hello, $name! (from Flutter)',
-        style: const TextStyle(fontSize: 16),
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: Text(
+          'Hello, $name! (from Flutter)',
+          style: const TextStyle(fontSize: 16),
+        ),
       ),
     );
   }

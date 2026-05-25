@@ -152,6 +152,14 @@ export function prewarmPlugins() {
   return ensurePluginHost();
 }
 
+// Flutter Web 3.41 multi-view has a sizing race when addView() calls
+// land in quick succession: the per-view canvas's dimensions can be
+// silently inherited from a sibling view (we observed two embeds of
+// 354×180 + 354×60 → BOTH canvases ended up 354×60, so the bigger
+// embed painted only its top 60 px). Serializing addView so each call
+// fully resolves before the next starts avoids the race.
+let _addViewChain = Promise.resolve();
+
 /**
  * Add a visible Flutter Web view at the given DOM element. The host
  * runs in multi-view mode (see vite.config.web.js patchBootstrap),
@@ -172,7 +180,18 @@ export async function addFlutterView(hostElement) {
         'Multi-view requires Flutter Web 3.10+ with multiViewEnabled:true in the bootstrap config.',
     );
   }
-  return app.addView({ hostElement });
+  // Serialize: chain off the previous addView so each view's canvas
+  // sizing settles before the next starts (see comment above).
+  _addViewChain = _addViewChain
+    .catch(() => {}) // don't let a previous failure poison subsequent calls
+    .then(async () => {
+      const viewId = await app.addView({ hostElement });
+      // Give Flutter one extra microtask + a frame to size the new
+      // view's rasterizer before the next addView contends for it.
+      await new Promise((r) => requestAnimationFrame(r));
+      return viewId;
+    });
+  return _addViewChain;
 }
 
 /** Remove a Flutter Web view previously added via addFlutterView. */

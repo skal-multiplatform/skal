@@ -31,6 +31,7 @@ import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
 import 'package:skal_flutter/skal/bridge.dart';
@@ -41,10 +42,22 @@ import 'package:skal_flutter/skal_ffi.dart';
 import 'adapters/generated/skal_adapters.g.dart' as local_gen;
 import 'skal_codegen.g.dart' as packages_gen;
 
+// Debug-only step marker — gated on kDebugMode so release builds don't
+// leak `__skalDartStep` to globalThis or spam the console. Useful when
+// the page goes blank: poke `window.__skalDartStep` in DevTools to see
+// how far Dart's boot got before stalling.
 void _mark(String label) {
+  if (!kDebugMode) return;
   globalContext['__skalDartStep'] = label.toJS;
   // ignore: avoid_print
   print('[skal] step: $label');
+}
+
+// Debug-only error pinning — same gate as _mark. The visible
+// _ErrorApp fires regardless; this is just the DevTools-poke channel.
+void _recordError(String stage, Object error, StackTrace st) {
+  if (!kDebugMode) return;
+  globalContext['__skalDartError'] = '$stage: $error\n$st'.toJS;
 }
 
 Future<void> main() async {
@@ -71,43 +84,57 @@ Future<void> main() async {
   }
   _mark('main:after-skal-create');
 
-  // ── 2. Inject the JS bundle ─────────────────────────────────────────
+  // ── 2. Wrap in the bridge + dispatcher ──────────────────────────────
   //
-  // The bundle is served as `/skal-app.js` (a build-time vite output;
-  // see kitchen-sink/vite.config.web-flutter.js + the closeBundle copy
-  // into `flutter-host/web/`). We inject it dynamically — NOT via a
-  // <script> tag in index.html — because Dart's Skal.create above MUST
-  // run before the JS bundle's `bridge.js` calls __skal_acquireBridge.
-  // A static <script src=> in index.html runs BEFORE Dart main starts.
-  await _injectSkalJsBundle();
-  _mark('main:after-inject-bundle');
-
-  // ── 3. Wrap in the bridge + initial drain ───────────────────────────
+  // Bridge wraps the (still-empty) buffer; ensureRoot reserves node 1
+  // so SkalRoot can mount even before JS has emitted any ops. No
+  // initial pumpOps here — the buffer is empty (JS bundle hasn't been
+  // injected yet) and SkalRoot's per-frame Ticker will drain whatever
+  // JS writes once the bundle lands.
+  //
+  // Try-caught only on web (not on native main.dart) because dart2js
+  // surfaces some bridge failures (Int64-accessor incompat, typed-
+  // array shape mismatches) that don't exist on native AOT. An
+  // _ErrorApp here is much more useful than a blank Flutter Web canvas.
   final SkalBridge bridge;
   try {
     bridge = SkalBridge(skal);
   } catch (e, st) {
-    globalContext['__skalDartError'] = '$e\n$st'.toJS;
+    _recordError('SkalBridge ctor', e, st);
     runApp(_ErrorApp(message: 'SkalBridge ctor threw: $e'));
     return;
   }
   _mark('main:after-bridge-ctor');
   bridge.ensureRoot();
-  _mark('main:after-ensure-root');
-  try {
-    bridge.pumpOps();
-  } catch (e, st) {
-    globalContext['__skalDartError'] = 'pumpOps: $e\n$st'.toJS;
-    runApp(_ErrorApp(message: 'pumpOps threw: $e'));
-    return;
-  }
-  _mark('main:after-pump-ops');
   installAppDispatcher(bridge);
   _mark('main:after-app-dispatcher');
 
-  // ── 4. Mount the Flutter tree ───────────────────────────────────────
+  // ── 3. Mount + load the JS bundle in parallel ───────────────────────
+  //
+  // Critically: runApp() FIRST so Flutter Web's first frame paints
+  // immediately (theme + scaffold visible). _injectSkalJsBundle runs
+  // concurrently — the browser fetches + parses skal-app.js while
+  // Flutter is mounting its tree. When the bundle finishes executing,
+  // it has already written ops to the bridge; SkalRoot's next Ticker
+  // tick drains them and paints the Solid tree.
+  //
+  // Order safety: Skal.create above has already installed
+  // __skal_acquireBridge, so it doesn't matter whether the JS bundle
+  // evaluates before, during, or after runApp — the bridge buffer is
+  // there. Static <script src=> in index.html is the one thing that
+  // wouldn't work, because that runs BEFORE Dart's main.
   runApp(SkalWebApp(bridge: bridge));
   _mark('main:after-runApp');
+
+  // Fire-and-forget the injection. Errors are surfaced via the
+  // browser's console + _recordError; the Skal tree will simply stay
+  // empty if the bundle fails to load.
+  unawaited(_injectSkalJsBundle().then(
+    (_) => _mark('main:after-inject-bundle'),
+    onError: (Object e, StackTrace st) {
+      _recordError('skal-app.js inject', e, st);
+    },
+  ));
 }
 
 /// Dynamically inject the Solid/Skal JS bundle. Resolves when the

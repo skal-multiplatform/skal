@@ -6,10 +6,7 @@
 
 import 'package:flutter/widgets.dart';
 
-ImageProvider? fileImageFromPath(String path) {
-  // eslint-disable-next-line no-console
-  // dart:developer log would be the right channel for this, but a
-  // no-op silence is fine — apps that put a file:// in <image src> on
-  // web have already opted out of cross-target behavior.
-  return null;
-}
+// Apps that put a `file://` or absolute path in `<image src>` on web
+// have already opted out of cross-target behavior — silently dropping
+// to null lets the renderer paint nothing without crashing the tree.
+ImageProvider? fileImageFromPath(String path) => null;

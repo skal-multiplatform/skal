@@ -2164,7 +2164,7 @@ Widget _buildButton(NodeState n, SkalBridge bridge) {
 /// Image leaf — `<image src=… contentScale=… cornerRadius=… />`.
 ///
 /// A pure display leaf (no children). `src` is dispatched to a
-/// concrete [ImageProvider] by URI scheme (see [_imageProviderFor]);
+/// concrete [ImageProvider] by URI scheme (see [imageProviderFromSrc]);
 /// `contentScale` maps to [BoxFit]; a non-zero `cornerRadius` clips
 /// the image with a [ClipRRect] so the rounding actually crops the
 /// pixels rather than just drawing a rounded box behind them.
@@ -2175,7 +2175,7 @@ Widget _buildImage(NodeState n, SkalBridge bridge) {
   final height = n.getPropU32(propHeight, kNoValue);
   final corner = n.getPropU32(propCornerRadius, 0);
 
-  final provider = _imageProviderFor(src);
+  final provider = imageProviderFromSrc(src);
   // Sizing comes from the _applyWidth / _applyHeight wrappers below —
   // letting Image own width/height too would double-apply.
   Widget inner = provider == null
@@ -2195,13 +2195,18 @@ Widget _buildImage(NodeState n, SkalBridge bridge) {
 /// Dispatch an image `src` string to a concrete [ImageProvider]:
 ///
 ///   http:// | https://   → [NetworkImage]
-///   file://              → [FileImage]
+///   file://              → [FileImage] (native) / null (web)
 ///   asset://name         → [AssetImage] (scheme stripped)
-///   /absolute/path       → [FileImage]
+///   /absolute/path       → [FileImage] (native) / null (web)
 ///   bare string          → [AssetImage]
 ///
-/// Returns null for an empty `src` (the builder renders nothing).
-ImageProvider? _imageProviderFor(String src) {
+/// Returns null for an empty `src` or an inaccessible path (the builder
+/// renders nothing). Used by Skal's built-in `<image>` intrinsic AND
+/// by skal_codegen-emitted adapters for any pub.dev widget with an
+/// `ImageProvider` prop — centralizing the dispatch means apps target
+/// either native or Flutter Web from the same JSX `<MyWidget image="…">`
+/// call.
+ImageProvider? imageProviderFromSrc(String src) {
   if (src.isEmpty) return null;
   if (src.startsWith('http://') || src.startsWith('https://')) {
     return NetworkImage(src);

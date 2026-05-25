@@ -251,7 +251,6 @@ async function _ensureFlutterView(embedEl) {
       throw new Error('Skal <flutterEmbed>: removed before view could be added');
     }
     const viewId = await addFlutterView(embedEl);
-    embedEl._skalViewId = viewId;
     // Wake Flutter's render pipeline. The flutter-view + flt-glass-pane
     // get created at addView time, but the scene-host inside (shadow
     // DOM) is sized via a ResizeObserver on the view that fires on
@@ -288,7 +287,6 @@ function _scheduleEmbedSync(embedEl) {
         props: embedEl._skalEmbedProps || {},
       });
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error(`Skal <flutterEmbed widget="${widget}"> failed:`, e);
     }
   });
@@ -299,14 +297,28 @@ async function _teardownFlutterEmbed(embedEl) {
   if (!embedEl._skalViewPromise) return;
   try {
     const viewId = await embedEl._skalViewPromise;
-    // Tell Dart to drop the spec first (otherwise the next addView's
-    // viewId might collide with a stale spec from this one).
+    // Drop the Dart-side spec before removing the view — best-effort
+    // (swallowed if it fails). removeView is the load-bearing
+    // teardown; without it the Flutter engine leaks the view.
     try { await callPlugin('embed.unsetSpec', { viewId }); } catch (_) {}
     await removeFlutterView(viewId);
   } catch (e) {
-    // eslint-disable-next-line no-console
     console.warn('Skal <flutterEmbed> teardown failed:', e);
   }
+}
+
+// Coalesce calls into one microtask — mounting a <tabs> with N <tab>
+// children otherwise fires _renderTabs 2N+1 times (insertNode per
+// tab, setProperty for each title/icon, plus activeTab). The bar
+// rebuild is ~300 µs of DOM work; coalescing turns that into one
+// rebuild after Solid finishes the batch.
+function _scheduleRenderTabs(tabsEl) {
+  if (tabsEl._skalTabsRenderScheduled) return;
+  tabsEl._skalTabsRenderScheduled = true;
+  queueMicrotask(() => {
+    tabsEl._skalTabsRenderScheduled = false;
+    _renderTabs(tabsEl);
+  });
 }
 
 function _renderTabs(tabsEl) {
@@ -316,16 +328,9 @@ function _renderTabs(tabsEl) {
     ? 0
     : Math.min(Math.max(requested, 0), tabs.length - 1);
 
-  // Make <tabs> a column flex so the bar pins at the bottom and the
-  // active pane fills the rest. Override the applyDefaults('tabs')
-  // baseline (which left height unspecified).
-  tabsEl.style.flexDirection = 'column';
-  tabsEl.style.height = '100%';
-  tabsEl.style.minHeight = '0';
-  tabsEl.style.overflow = 'hidden';
-
   // Show only the active pane; keep the others mounted for keep-alive
-  // parity with the native IndexedStack.
+  // parity with the native IndexedStack. The flex-column + bottom-bar
+  // layout is set once at createElement time by applyDefaults('tabs').
   for (let i = 0; i < tabs.length; i++) {
     const t = tabs[i];
     if (i === active) {
@@ -1087,7 +1092,6 @@ const _warnedUnknownTags = new Set();
 function warnOnce(tag) {
   if (_warnedUnknownTags.has(tag)) return;
   _warnedUnknownTags.add(tag);
-  // eslint-disable-next-line no-console
   console.warn(`Skal web: unknown intrinsic <${tag}> — rendering placeholder. ` +
     `Custom widgets / Flutter plugins need the B.5 plugin host (WEB_SUPPORT_PLAN.md Phases 1–5).`);
 }
@@ -1149,7 +1153,7 @@ const _renderer = createRenderer({
     if (tag === 'tabs') {
       if (name === 'activeTab') {
         node._skalActiveTab = (value | 0);
-        _renderTabs(node);
+        _scheduleRenderTabs(node);
         return;
       }
       if (name === 'onChange') {
@@ -1161,7 +1165,7 @@ const _renderer = createRenderer({
         if (name === 'title') node._skalTitle = value == null ? '' : String(value);
         else node._skalIcon = value == null ? '' : String(value);
         const p = node.parentElement;
-        if (p && p._skalTag === 'tabs') _renderTabs(p);
+        if (p && p._skalTag === 'tabs') _scheduleRenderTabs(p);
         return;
       }
     }
@@ -1291,7 +1295,7 @@ const _renderer = createRenderer({
       node.style.scrollSnapAlign = 'start';
     }
     if (parent._skalTag === 'tabs' && node._skalTag === 'tab') {
-      _renderTabs(parent);
+      _scheduleRenderTabs(parent);
     }
     if (node._skalTag === 'flutterEmbed') {
       // Lazy-boot + addView fire here, but actual setSpec waits for
@@ -1304,7 +1308,7 @@ const _renderer = createRenderer({
   removeNode(parent, node) {
     parent.removeChild(node);
     if (parent._skalTag === 'tabs' && node._skalTag === 'tab') {
-      _renderTabs(parent);
+      _scheduleRenderTabs(parent);
     }
     if (node._skalTag === 'flutterEmbed') {
       _teardownFlutterEmbed(node);

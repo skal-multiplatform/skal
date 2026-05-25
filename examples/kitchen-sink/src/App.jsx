@@ -22,15 +22,15 @@ import {
   Stepper, Step, Drawer, BottomSheet, BackdropFilter, InteractiveViewer,
   FlutterEmbed,
 } from 'skal';
+import { HAS_NATIVE_BRIDGE } from 'skal/bridge';
 // True only on the DOM-renderer web target (renderer-web). False on
-// native AND on Shape D's "full Flutter Web" target — those have a
-// real bridge installed by libskal / by Dart, while the DOM target
-// has no native bridge hook at all. Apps gate Shape B.5/C-specific
+// native (where libskal installs the bridge) AND on Shape D's "full
+// Flutter Web" target (where the Dart side installs the bridge — see
+// flutter-host/lib/main_web.dart). Apps gate Shape B.5/C-specific
 // demos (geolocator plugin probe, <FlutterEmbed>) behind this flag
 // because they assume the renderer-web environment + the hidden-
 // Flutter-Web-as-plugin-host architecture.
-const IS_WEB_DOM = typeof window !== 'undefined' &&
-  typeof globalThis.__skal_acquireBridge !== 'function';
+const IS_WEB_DOM = typeof window !== 'undefined' && !HAS_NATIVE_BRIDGE;
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
   showDatePicker, showTimePicker,

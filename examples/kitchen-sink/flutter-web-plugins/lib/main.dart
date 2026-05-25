@@ -59,7 +59,12 @@ void main() {
   try {
     _bootHost();
   } catch (e, st) {
-    globalContext['__skalPluginHostError'] = '$e\n$st'.toJS;
+    // Debug-only — pins the error on globalThis so it can be poked
+    // from DevTools when the page renders blank. Release builds drop
+    // it; the rethrow propagates to Flutter's standard error handler.
+    if (kDebugMode) {
+      globalContext['__skalPluginHostError'] = '$e\n$st'.toJS;
+    }
     rethrow;
   }
 }
@@ -87,7 +92,10 @@ void _bootHost() {
   _step('boot:after-dispatch-event');
 }
 
+// Debug-only step marker; release builds drop the globalThis write
+// + the function body is shaken away. Mirror of main_web.dart's _mark.
 void _step(String label) {
+  if (!kDebugMode) return;
   globalContext['__skalPluginHostStep'] = label.toJS;
 }
 

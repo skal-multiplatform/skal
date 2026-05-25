@@ -558,37 +558,27 @@ PropEncoding? encodingFor({
   }
 
   if (_isFlutterImageProvider(type)) {
-    // Nullability matters here. Returning null from the IIFE for
-    // empty string only makes sense if the param is `ImageProvider?`;
-    // for non-nullable `ImageProvider` we need to construct something
-    // (AssetImage('') with its runtime warning, or a transparent
-    // placeholder — we go with AssetImage('') so the dev sees a clear
-    // "you didn't set the prop" failure if it matters).
+    // Delegate to skal_flutter's `imageProviderFromSrc`, which knows
+    // the same four-branch dispatch (http/file://asset:///bare) AND
+    // does the right thing per target: native uses `FileImage` for
+    // `file://` + absolute paths via `dart:io`; web silently returns
+    // null for those (browsers can't open arbitrary local paths).
+    // Centralizing the dispatch means generated adapters compile on
+    // BOTH targets without conditional imports on the codegen side.
     //
-    // The IIFE's branches return different concrete subtypes, so
-    // Dart's inference collapses the return type to their common
-    // supertype Object. Explicit cast pins it to the right nullable/
-    // non-nullable shape so it assigns to the param without complaint.
+    // Non-nullable image props get a `!` since the helper returns
+    // `ImageProvider?` (null for empty src + for file paths on web).
+    // Apps that need to handle missing images should type the prop
+    // as `ImageProvider?` upstream.
     final isNullable = typeName.endsWith('?');
-    final castTo = isNullable ? 'ImageProvider?' : 'ImageProvider';
-    final nullBranch = isNullable
-        ? 'if (s.isEmpty) return null; '
-        // Non-nullable: skip the empty-check, AssetImage('') gets
-        // returned and Flutter warns at runtime.
-        : '';
+    final nullBangOrCast = isNullable ? 'as ImageProvider?' : '!';
     return PropEncoding(
-      readerExpression: '((() { '
-          "final s = n.getCustomPropStr('$paramName') ?? ''; "
-          '$nullBranch'
-          "if (s.startsWith('http')) return NetworkImage(s); "
-          "if (s.startsWith('file://')) return FileImage(File(s.substring(7))); "
-          "if (s.startsWith('/')) return FileImage(File(s)); "
-          'return AssetImage(s); '
-          '})() as $castTo)',
+      readerExpression:
+          "(imageProviderFromSrc(n.getCustomPropStr('$paramName') ?? '') $nullBangOrCast)",
       dartTypeName: typeName,
-      // FileImage uses dart:io.File. The generated file would need an
-      // import for that.
-      requiredImports: const ['dart:io'],
+      // imageProviderFromSrc is exported by skal_flutter.dart's barrel
+      // (see root.dart). No dart:io needed in the generated file.
+      requiredImports: const ['package:skal_flutter/skal_flutter.dart'],
     );
   }
 

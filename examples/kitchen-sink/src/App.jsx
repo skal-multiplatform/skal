@@ -107,7 +107,10 @@ registerHtmlView('youtube-embed', (el) => {
 registerHtmlView('solid-counter', (el) => {
   createRoot((/* dispose */) => {
     const [n, setN] = createSignal(0);
-    const [parity, setParity] = createMemo(() => n() % 2 === 0 ? 'even' : 'odd');
+    // createMemo returns a single getter (not [get, set]) — don't
+    // destructure it. n changes → parity recomputes; parity-only
+    // changes (i.e., parity flipped) drive its effect below.
+    const parity = createMemo(() => n() % 2 === 0 ? 'even' : 'odd');
 
     el.innerHTML = `
       <div style="font-family:ui-sans-serif,system-ui,sans-serif;padding:14px;background:#f8fafc;border-radius:10px;height:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;">

@@ -618,7 +618,7 @@ Native gets no-op implementations of `syncFromJs` / `syncToJs` in
 `skal_ffi_io.dart` — the FFI bridge buffer is genuinely shared
 between bun and Dart, so no marshaling is needed.
 
-#### Known limitation — bump-allocator reset miss
+#### Bump-allocator reset miss — Dart-side fixed, JS-side limitation
 
 The bump-allocated regions reset to 0 on overflow. The producer is
 supposed to spin-wait for the consumer to drain before resetting,
@@ -634,26 +634,29 @@ lastSynced`, so we take the monotonic branch and copy only
 `[lastSynced, currentWp)`). The consumer sees the stale tail of the
 old content at `[0, lastSynced)` of the new batch.
 
-Most reachable on the reply heap: a single large RPC reply
-(e.g. image-picker XFile metadata or controller state dump) can be
-big enough to trigger a reset while `_syncedReplyWp` is still small.
-Far less reachable on the op ring / JS string heap — would require
-writing ~4 MiB / ~768 KiB in a single JS turn, which also produces a
-5-second freeze independently.
+**Reply heap (Dart-owned) — fixed via in-process signal.** The
+producer (`_writeReplyString` in `bridge.dart`) now calls
+`skal.markReplyHeapReset()` immediately after the wraparound reset.
+The web-side `Skal` keeps a `_replyHeapResetPending` flag; the next
+`syncToJs` sees it, copies the full `[0, replyWp)` regardless of the
+regression check, and clears the flag. On native the method is a
+no-op (the FFI bridge buffer is genuinely shared between bun and
+Dart, so there's nothing to sync). The most realistic trigger — a
+single large RPC reply (image-picker XFile, controller state dump)
+filling more than `kReplyHeapSize - _syncedReplyWp` — is now sound.
 
-Two ways to close this:
+**Op ring + JS string heap (JS-owned) — still limited.** The same
+producer-signal approach would require a JS-side write into a header
+slot we read here; that's a wire-format change. Reachable only by
+writing ~4 MiB of ops or ~768 KiB of strings in a single JS turn,
+which already produces a 5-second freeze + console warning from
+`flushAndWaitForDrain`'s spin timeout — i.e. the protocol is already
+broken before slice sync makes it worse. Tracked for follow-up.
 
-1. **Add per-region reset-epoch counters to the header.** The
-   producer bumps its counter on every reset; the slice-sync reads
-   and compares. Cleanest fix, requires a wire-format change
-   (16 B free in the header, `wire_test.dart` snapshot update).
-2. **Dart-side reset signal.** For the reply heap (Dart-owned), the
-   producer can call into `skal_ffi_web.dart` directly to mark a
-   reset, no header change needed. Works only for Dart-side regions.
-
-Neither lands today; the bug is bounded by the same scenarios that
-were already broken on web, so the regression is zero. Tracked for
-follow-up.
+The proper fix shape for both — a per-region reset-epoch counter in
+the header — has 16 B of free space in the 64 B header for the four
+u32 counters needed. Wire-format change + `wire_test.dart` snapshot
+update. Deferred until something forces it.
 
 ### The extension-type wrapper
 

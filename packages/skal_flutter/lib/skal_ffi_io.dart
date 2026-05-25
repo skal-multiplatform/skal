@@ -239,6 +239,13 @@ class Skal {
   void syncFromJs() {}
   void syncToJs() {}
 
+  /// No-op on native — bridge.dart calls this from `_writeReplyString`
+  /// after a reply-heap wraparound resets `_replyHeapWritePos` to 0.
+  /// On web the slice-sync uses it to force a `[0, replyWp)` push so
+  /// post-reset writes can't be miscategorized as monotonic growth.
+  /// See `skal_ffi_web.dart::markReplyHeapReset`.
+  void markReplyHeapReset() {}
+
   /// Begin opening the native store on a background thread so its
   /// segment scan overlaps JS runtime init + bundle evaluation. Call
   /// once, right after create(), with the directory the JS side will

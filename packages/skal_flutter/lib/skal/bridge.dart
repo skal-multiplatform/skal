@@ -1026,13 +1026,17 @@ class SkalBridge {
     final bytes = utf8.encode(s);
     final len = bytes.length;
     if (len > kReplyHeapSize) {
-      // String alone exceeds the heap — rare; truncate.
+      // String alone exceeds the heap — rare; truncate. Writes at
+      // offset 0 (effectively a reset), so signal the web-side
+      // slice-sync to push the full [0, kReplyHeapSize) — without
+      // this, the monotonic-growth branch would miss [0, _syncedReplyWp).
       final truncated = bytes.sublist(0, kReplyHeapSize);
       _data.buffer
           .asUint8List(kReplyHeapOff, kReplyHeapSize)
           .setRange(0, kReplyHeapSize, truncated);
       _replyHeapWritePos = kReplyHeapSize;
       _data.setInt32(hReplyHeapWritePos, _replyHeapWritePos, Endian.little);
+      skal.markReplyHeapReset();
       return (0, kReplyHeapSize);
     }
     if (_replyHeapWritePos + len > kReplyHeapSize) {
@@ -1053,6 +1057,13 @@ class SkalBridge {
       // compares its readPos against this to decide whether wraparound
       // has happened).
       _data.setInt32(hReplyHeapReadPos, 0, Endian.little);
+      // Tell the web-side slice-sync that the reply heap was reset.
+      // The watermark-regression check alone misses the case where a
+      // single post-reset write is larger than the pre-sync mark; the
+      // flag forces the next syncToJs to push [0, replyWp). No-op on
+      // native (FFI bridge buffer is genuinely shared). See
+      // skal_ffi_web.dart::markReplyHeapReset.
+      skal.markReplyHeapReset();
     }
     final offset = _replyHeapWritePos;
     _data.buffer

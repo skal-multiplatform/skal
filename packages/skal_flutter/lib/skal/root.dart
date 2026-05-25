@@ -36,7 +36,12 @@
 
 import 'dart:async' show Completer, Timer;
 import 'dart:convert' show jsonDecode;
-import 'dart:io' show File;
+// FileImage requires dart:io's File on native — not available on
+// Flutter Web. The conditional re-export below picks the right
+// implementation per target; `fileImageFromPath` returns null on web
+// (browsers can't open arbitrary local paths anyway).
+import '_file_image_io.dart'
+    if (dart.library.js_interop) '_file_image_web.dart';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/cupertino.dart';
@@ -2202,13 +2207,13 @@ ImageProvider? _imageProviderFor(String src) {
     return NetworkImage(src);
   }
   if (src.startsWith('file://')) {
-    return FileImage(File(Uri.parse(src).toFilePath()));
+    return fileImageFromPath(Uri.parse(src).toFilePath());
   }
   if (src.startsWith('asset://')) {
     return AssetImage(src.substring('asset://'.length));
   }
   if (src.startsWith('/')) {
-    return FileImage(File(src));
+    return fileImageFromPath(src);
   }
   return AssetImage(src);
 }

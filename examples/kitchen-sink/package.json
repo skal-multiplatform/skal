@@ -19,6 +19,11 @@
     "build:web": "vite build --config vite.config.web.js",
     "_flutter_web_plugins": "// ── B.5 hidden Flutter Web plugin host (see docs/WEB_SUPPORT_PLAN.md) ──",
     "build:flutter-plugins": "cd flutter-web-plugins && flutter build web --release",
+    "_full_flutter_web": "// ── Shape D — full Flutter Web target (renderer-via-Flutter) ───",
+    "_full_flutter_web_pipeline": "// Build the JS bundle (same IIFE shape as native) + drop it into flutter-host/web/ so Flutter's static asset path serves it. main_web.dart then dynamically injects a <script> after Skal.create installs the bridge buffer global.",
+    "build:web-flutter-js": "bun run build:js-only && cp flutter-host/assets/skal-app.js flutter-host/web/skal-app.js",
+    "dev:web-flutter": "bun run build:web-flutter-js && cd flutter-host && flutter run -d chrome --target lib/main_web.dart",
+    "build:web-flutter": "bun run build:web-flutter-js && cd flutter-host && flutter build web --target lib/main_web.dart",
 
     "_dev": "// ── Native dev (rebuild JS bundle, hand off to flutter run) ──",
     "dev:flutter": "bun run build && cd flutter-host && flutter run",

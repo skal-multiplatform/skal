@@ -22,10 +22,14 @@ import {
   Stepper, Step, Drawer, BottomSheet, BackdropFilter, InteractiveViewer,
   FlutterEmbed,
 } from 'skal';
-// Web target only — no native plugin bridge means a FlutterEmbed call
-// would throw "no DOM" at runtime. Apps that share code across targets
-// can guard `<FlutterEmbed>` with this flag.
-const IS_WEB = typeof window !== 'undefined' &&
+// True only on the DOM-renderer web target (renderer-web). False on
+// native AND on Shape D's "full Flutter Web" target — those have a
+// real bridge installed by libskal / by Dart, while the DOM target
+// has no native bridge hook at all. Apps gate Shape B.5/C-specific
+// demos (geolocator plugin probe, <FlutterEmbed>) behind this flag
+// because they assume the renderer-web environment + the hidden-
+// Flutter-Web-as-plugin-host architecture.
+const IS_WEB_DOM = typeof window !== 'undefined' &&
   typeof globalThis.__skal_acquireBridge !== 'function';
 import {
   setDesign, showDialog, showActionSheet, showSnackbar,
@@ -1503,7 +1507,7 @@ function LibsTab() {
       />
 
       {/* ── Shape C — visible Flutter Web embed (WEB ONLY) ───────── */}
-      {IS_WEB && (
+      {IS_WEB_DOM && (
         <Section title="FlutterEmbed — Shape C, real Flutter rendering">
           <Text
             label="A multi-view Flutter Web view rendered inside a DOM region (lazy-loaded ~3 MB on first appearance). Click the button — the counter state lives in Dart, the +1 increment is a Flutter setState, not JS."
@@ -1694,16 +1698,13 @@ const _pick = (mod, key) =>
 
 // Each probe: { label, run }. `run` is sync or async and returns a
 // string (the "response"); a throw is caught and shown as an error.
+//
+// Spread the geolocator probe in conditionally — only on the DOM web
+// target. On native it'd throw "no DOM" (plugin-bridge-web tries to
+// inject a <script> tag) and on Shape D Flutter Web it'd boot a
+// second, conflicting Flutter Web instance.
 const JS_PROBE_GROUPS = [
-  {
-    // B.5 hidden Flutter Web plugin host (docs/WEB_SUPPORT_PLAN.md).
-    // On web: first invocation lazy-boots a ~3 MB Flutter Web instance
-    // into a 1×1 off-screen <div>, which then runs `package:geolocator`
-    // (federated → `geolocator_web` → navigator.geolocation). On
-    // native: the native plugin bridge isn't wired yet, so this probe
-    // throws "no DOM" (the JS plugin-bridge-web tries to inject a
-    // <script> tag) — informative failure mode until the native
-    // bridge lands (TODO_PLATFORMS.md §2).
+  ...(IS_WEB_DOM ? [{
     title: 'Web plugin bridge — geolocator (B.5, web only)',
     probes: [
       {
@@ -1716,7 +1717,7 @@ const JS_PROBE_GROUPS = [
         },
       },
     ],
-  },
+  }] : []),
   {
     title: 'Web Crypto — crypto.subtle (global, native)',
     probes: [

@@ -172,8 +172,12 @@ class SkalBridge {
   int coldPropsTouchedLastDrain = 0;
 
   /// Sliding window of recent drain times for the rolling peak.
+  /// Float64List (not Int64List) so this works on dart2js too — JS has
+  /// no native int64 typed array. Float64 represents integer nanosecond
+  /// counts losslessly up to 2^53 ns (~104 days), far above any plausible
+  /// pump time. The peak read site rounds back to int.
   static const int _pumpPeakWindow = 60;
-  final Int64List _pumpWindow = Int64List(_pumpPeakWindow);
+  final Float64List _pumpWindow = Float64List(_pumpPeakWindow);
   int _pumpWindowIdx = 0;
   int _pumpWindowFill = 0;
 
@@ -186,6 +190,33 @@ class SkalBridge {
   /// can jump backward under NTP correction or deep-sleep wakeup,
   /// which produces garbage in the EMA + sliding-window peak.
   final Stopwatch _pumpClock = Stopwatch()..start();
+
+  // ── 64-bit accessor shims (web-safe) ───────────────────────────────
+  //
+  // `ByteData.getInt64` / `setInt64` aren't supported on dart2js (JS
+  // has no native int64 type). We always go through these two-step
+  // helpers — read low + high u32 halves separately and combine using
+  // multiplication, not shifts (`<< 32` overflows int32 on web). Dart
+  // `int` on web is the JS Number type — losslessly precise up to
+  // 2^53, which is ~9e15. The opSeq counter ticks once per JS commit
+  // batch (often 1 per frame); even at 1M batches/sec a session
+  // would have to run for ~280 years to exhaust the safe range. The
+  // tradeoff is one extra u32 load per pump vs. one missing API.
+  static int _getU64(ByteData d, int offset) {
+    final lo = d.getUint32(offset,     Endian.little);
+    final hi = d.getUint32(offset + 4, Endian.little);
+    return lo + hi * 0x100000000;
+  }
+
+  static void _setU64(ByteData d, int offset, int value) {
+    final lo = value & 0xFFFFFFFF;
+    // Floor-divide rather than `>> 32` so the high half is computed
+    // through doubles on web. Dart `~/` on big ints/doubles works on
+    // both platforms.
+    final hi = (value ~/ 0x100000000) & 0xFFFFFFFF;
+    d.setUint32(offset,     lo, Endian.little);
+    d.setUint32(offset + 4, hi, Endian.little);
+  }
 
   SkalBridge(this.skal)
       : _data = ByteData.sublistView(skal.bridge),
@@ -207,7 +238,7 @@ class SkalBridge {
     // the ring before reading opSeq keeps the round-trip latency low.
     if (_eventOverflow.isNotEmpty) _flushEventOverflow();
 
-    final seq = _data.getInt64(hOpSeq, Endian.little);
+    final seq = _getU64(_data, hOpSeq);
     if (seq == _lastOpSeq) return;
 
     final t0 = _pumpClock.elapsedMicroseconds;
@@ -219,7 +250,7 @@ class SkalBridge {
     // companion hLastDrainedWritePos slot is reserved in the wire
     // format but currently unread on the JS side, so we don't bother
     // writing it.
-    _data.setInt64(hLastDrainedSeq, seq, Endian.little);
+    _setU64(_data, hLastDrainedSeq, seq);
 
     // EMA with α=1/8 — smooths jitter while staying responsive to
     // sudden bumps (e.g. a +1000-batch frame visibly nudges the avg).
@@ -227,15 +258,15 @@ class SkalBridge {
     pumpAvgNs = pumpAvgNs == 0 ? dt : (pumpAvgNs * 7 + dt) ~/ 8;
 
     // Rolling peak: write to next slot, max across live entries.
-    _pumpWindow[_pumpWindowIdx] = dt;
+    _pumpWindow[_pumpWindowIdx] = dt.toDouble();
     _pumpWindowIdx = (_pumpWindowIdx + 1) % _pumpPeakWindow;
     if (_pumpWindowFill < _pumpPeakWindow) _pumpWindowFill++;
-    int peak = 0;
+    double peak = 0.0;
     for (var i = 0; i < _pumpWindowFill; i++) {
       final v = _pumpWindow[i];
       if (v > peak) peak = v;
     }
-    pumpPeakNs = peak;
+    pumpPeakNs = peak.toInt();
   }
 
   /// Decode loop — extracted so pumpOps stays small and the inner
@@ -891,9 +922,9 @@ class SkalBridge {
   /// ring never advances) can be eyeballed from logcat. Never called
   /// in the hot path.
   Map<String, int> debugReadHeader() => {
-        'opSeq': _data.getInt64(hOpSeq, Endian.little),
+        'opSeq': _getU64(_data, hOpSeq),
         'opWritePos': _data.getInt32(hOpWritePos, Endian.little),
-        'eventSeq': _data.getInt64(hEventSeq, Endian.little),
+        'eventSeq': _getU64(_data, hEventSeq),
       };
 
   /// Write an event record into the event ring and wake the JS worker.
@@ -952,8 +983,8 @@ class SkalBridge {
     _data.setInt32(base + 8, argValueI32, Endian.little);
     _data.setInt32(base + 12, argHeapOffset, Endian.little);
     _data.setInt32(hEventWritePos, nextPos, Endian.little);
-    final seq = _data.getInt64(hEventSeq, Endian.little);
-    _data.setInt64(hEventSeq, seq + 1, Endian.little);
+    final seq = _getU64(_data, hEventSeq);
+    _setU64(_data, hEventSeq, seq + 1);
     skal.wakeJs();
   }
 
@@ -1260,8 +1291,8 @@ class SkalBridge {
       _data.setInt32(base + 8, argValueI32, Endian.little);
       _data.setInt32(base + 12, argHeapOffset, Endian.little);
       _data.setInt32(hEventWritePos, nextPos, Endian.little);
-      final seq = _data.getInt64(hEventSeq, Endian.little);
-      _data.setInt64(hEventSeq, seq + 1, Endian.little);
+      final seq = _getU64(_data, hEventSeq);
+      _setU64(_data, hEventSeq, seq + 1);
     }
     if (_eventOverflow.isNotEmpty) skal.wakeJs();
   }

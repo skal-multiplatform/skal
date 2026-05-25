@@ -12,6 +12,16 @@
 // each tab survive.
 
 import { createSignal, createMemo, createEffect, createRoot, For, onMount, batch } from 'solid-js';
+// Skal's DOM-targeting universal renderer — separate from the bridge
+// renderer this file compiles against. Used inside HtmlEmbed factories
+// to render Skal intrinsics (<column>, <text>, <button>…) as DOM.
+import {
+  render as domRender,
+  createElement as domCreate,
+  setProp as domSet,
+  insertNode as domInsert,
+  createTextNode as domText,
+} from 'skal/renderer-web';
 import {
   Box, Column, Row, Text, Button, ListView, ScrollView,
   Image, Stack, Switch, Slider, Checkbox, ActivityIndicator,
@@ -104,6 +114,63 @@ registerHtmlView('youtube-embed', (el) => {
 // of <Component/>. createRoot gives the reactive graph an explicit
 // disposal scope — the dispose handle would be invoked from a future
 // HtmlEmbed unmount callback (TODO: wire that through the Dart side).
+// Tiny hyperscript helper over skal/renderer-web. Same intrinsic
+// vocabulary as the outer Skal app (<column>, <row>, <text>,
+// <button>, etc.), same Solid reactive primitives — just no JSX
+// because this file's JSX is compiled against the bridge renderer.
+// A future enhancement could add a separate `*.dom.jsx` compile pass
+// so JSX inside HtmlEmbed factories targets renderer-web; until then
+// `h()` is a one-liner that keeps the structure readable.
+function h(tag, props, ...children) {
+  const node = domCreate(tag);
+  if (props) {
+    for (const k in props) {
+      const v = props[k];
+      if (typeof v === 'function' && k !== 'onClick' && k !== 'onChange' && k !== 'onTap') {
+        // Reactive prop: rewrap as an effect so the renderer updates
+        // when the signal changes. Static props + handlers go through
+        // setProperty as-is.
+        createEffect(() => domSet(node, k, v()));
+      } else {
+        domSet(node, k, v);
+      }
+    }
+  }
+  for (const c of children.flat()) {
+    if (c == null || c === false || c === true) continue;
+    domInsert(node, typeof c === 'object' && c.nodeType ? c : domText(String(c)));
+  }
+  return node;
+}
+
+// Same Skal components the outer app uses — Column, Row, Text, Button
+// — but rendered to DOM via skal/renderer-web inside an HtmlEmbed.
+registerHtmlView('skal-counter', (mount) => {
+  createRoot(() => {
+    const [n, setN] = createSignal(0);
+    domRender(() => h('column', { gap: 8, padding: 12, background: '#FFF8FAFC', cornerRadius: 10 },
+      h('text', {
+        // Reactive label — the createEffect inside `h` re-applies
+        // setProperty whenever n changes.
+        label: () => `Skal <column>+<text>+<button> rendered as DOM inside Flutter — n = ${n()}`,
+        fontSize: 13,
+        fontWeight: 600,
+        color: '#FF1A1A2E',
+      }),
+      h('row', { gap: 8 },
+        h('button', { label: '+1', onClick: () => setN(c => c + 1) }),
+        h('button', { label: '-1', onClick: () => setN(c => c - 1) }),
+        h('button', { label: 'reset', onClick: () => setN(0) }),
+      ),
+      h('text', {
+        label: 'These widgets reach Shape D via the same JSX `<Column>` / `<Button>` you write in App.jsx — just compiled against skal/renderer-web (Shape B DOM target) instead of the bridge. Pointer events, hover, focus, ARIA all stay live.',
+        fontSize: 11,
+        color: '#FF4A4A5E',
+      }),
+    ), mount);
+  });
+});
+
 registerHtmlView('solid-counter', (el) => {
   createRoot((/* dispose */) => {
     const [n, setN] = createSignal(0);
@@ -1637,6 +1704,12 @@ function LibsTab() {
         <HtmlEmbed
           viewType="solid-counter"
           height={140}
+          background="#FFF8FAFC"
+          cornerRadius={10}
+        />
+        <HtmlEmbed
+          viewType="skal-counter"
+          height={200}
           background="#FFF8FAFC"
           cornerRadius={10}
         />

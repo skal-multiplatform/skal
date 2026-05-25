@@ -11,7 +11,7 @@
 // switching tabs never re-mounts; scroll position and signal state on
 // each tab survive.
 
-import { createSignal, createMemo, For, onMount, batch } from 'solid-js';
+import { createSignal, createMemo, createEffect, createRoot, For, onMount, batch } from 'solid-js';
 import {
   Box, Column, Row, Text, Button, ListView, ScrollView,
   Image, Stack, Switch, Slider, Checkbox, ActivityIndicator,
@@ -95,6 +95,47 @@ registerHtmlView('youtube-embed', (el) => {
   iframe.setAttribute('allowfullscreen', '');
   iframe.style.cssText = 'width:100%;height:100%;border:0;border-radius:8px;display:block;';
   el.appendChild(iframe);
+});
+
+// Solid signals + effects work inside the factory — the reactive
+// primitives don't care which renderer the outer app uses. JSX is
+// renderer-specific (compiled against `skal/renderer` here, the bridge
+// target), so we drive the DOM manually with `createEffect` instead
+// of <Component/>. createRoot gives the reactive graph an explicit
+// disposal scope — the dispose handle would be invoked from a future
+// HtmlEmbed unmount callback (TODO: wire that through the Dart side).
+registerHtmlView('solid-counter', (el) => {
+  createRoot((/* dispose */) => {
+    const [n, setN] = createSignal(0);
+    const [parity, setParity] = createMemo(() => n() % 2 === 0 ? 'even' : 'odd');
+
+    el.innerHTML = `
+      <div style="font-family:ui-sans-serif,system-ui,sans-serif;padding:14px;background:#f8fafc;border-radius:10px;height:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;">
+        <h3 style="margin:0;font-size:14px;color:#1a1a2e;">Solid signals → DOM inside Flutter</h3>
+        <p style="margin:0;font-size:11px;color:#4a4a5e;line-height:1.4;">
+          Same <code>createSignal</code> + <code>createMemo</code> Skal uses for the outer app — but bound to DOM via <code>createEffect</code> instead of the bridge renderer. Click the buttons; the DOM updates reactively, no manual diffing.
+        </p>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button data-act="dec" style="padding:4px 10px;border-radius:6px;border:0;background:#ef4444;color:white;font-weight:600;cursor:pointer;font-size:12px;">−1</button>
+          <button data-act="inc" style="padding:4px 10px;border-radius:6px;border:0;background:#22c55e;color:white;font-weight:600;cursor:pointer;font-size:12px;">+1</button>
+          <span data-out="n" style="font-family:ui-monospace,monospace;font-size:13px;color:#1a1a2e;font-weight:600;"></span>
+          <span data-out="parity" style="font-size:11px;padding:2px 8px;border-radius:999px;background:#e5e7eb;color:#4a4a5e;"></span>
+        </div>
+      </div>
+    `;
+
+    const nOut = el.querySelector('[data-out="n"]');
+    const parityOut = el.querySelector('[data-out="parity"]');
+    el.querySelector('[data-act="inc"]').addEventListener('click', () => setN(c => c + 1));
+    el.querySelector('[data-act="dec"]').addEventListener('click', () => setN(c => c - 1));
+
+    // Two effects — each tracks its own deps. setN(c => c+1) fires
+    // both because n changed; parity recomputes via createMemo so the
+    // parity effect only updates the DOM when parity FLIPS, not on
+    // every change. Same reactivity discipline as outer Skal code.
+    createEffect(() => { nOut.textContent = `n = ${n()}`; });
+    createEffect(() => { parityOut.textContent = parity(); });
+  });
 });
 // B.5 plugin shim — geolocation. On web routes through the hidden
 // Flutter Web plugin host (docs/WEB_SUPPORT_PLAN.md). On native the
@@ -1588,6 +1629,12 @@ function LibsTab() {
           viewType="html-card"
           height={150}
           background="#FFFFFFFF"
+          cornerRadius={10}
+        />
+        <HtmlEmbed
+          viewType="solid-counter"
+          height={140}
+          background="#FFF8FAFC"
           cornerRadius={10}
         />
         <HtmlEmbed

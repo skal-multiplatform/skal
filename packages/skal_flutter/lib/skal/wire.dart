@@ -350,6 +350,17 @@ const int wtBackdropFilter       = 47;
 /// clamp the zoom.
 const int wtInteractiveViewer    = 48;
 
+/// `<htmlEmbed viewType="…"/>` — Flutter Web only. Punches a rectangle
+/// of live DOM into the Flutter render tree via [HtmlElementView],
+/// letting Skal apps host third-party JS widgets (Stripe Elements,
+/// OAuth iframes, embeds, browser-native form controls, WebGL/Three)
+/// that have no Flutter equivalent. The DOM element is created by a
+/// JS-side factory registered via `registerHtmlView(viewType, fn)`;
+/// see packages/skal-js/src/skal/index.js for the JSX surface. On
+/// native, the renderer falls back to a sized placeholder — the use
+/// cases are inherently web (no Dart implementation of e.g. Stripe).
+const int wtHtmlEmbed            = 49;
+
 // ── Event kinds (u32 in JS, byte on the wire) ─────────────────────────
 const int evClick        = 0x01;
 const int evChange       = 0x02;
@@ -640,6 +651,11 @@ const int propBlurRadius      = 0xB4;
 // `<interactiveViewer>` zoom clamps (f32 → propsF). Mount-once.
 const int propMinScale        = 0xB5;
 const int propMaxScale        = 0xB6;
+// `<htmlEmbed>` view type — the string key the app passed to
+// `registerHtmlView(viewType, factory)`. Mount-once: the factory
+// runs at view-creation time, and Flutter Web caches the resulting
+// DOM element for the platform-view's lifetime.
+const int propViewType        = 0xB7;
 
 // ── Sentinel values for width/height props ───────────────────────────
 // Encoded into PROP_WIDTH / PROP_HEIGHT instead of needing distinct

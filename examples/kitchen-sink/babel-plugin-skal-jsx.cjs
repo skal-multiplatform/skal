@@ -131,6 +131,11 @@ const BUILT_IN_WIDGET_NAMES = {
   // Web-only intrinsic; on native it's an unknown tag (nothing to
   // render — would require a Flutter-side handler that doesn't exist).
   FlutterEmbed:         'flutterEmbed',
+  // Shape D-with-holes — a live DOM region inside Flutter's render
+  // tree. `viewType` matches a factory registered via
+  // `registerHtmlView(name, fn)`. Painted via Flutter Web's
+  // HtmlElementView (cross-browser stable since Flutter 3.10+).
+  HtmlEmbed:            'htmlEmbed',
 };
 
 module.exports = function ({ types: t }) {

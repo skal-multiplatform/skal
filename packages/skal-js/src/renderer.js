@@ -111,6 +111,12 @@ const TAG_TO_WIDGET = {
   // (place in a <stack>); <interactiveViewer> pinch-zooms its child.
   backdropFilter:       B.WT_BACKDROP_FILTER,
   interactiveViewer:    B.WT_INTERACTIVE_VIEWER,
+  // Shape D-with-holes — <htmlEmbed viewType="…"/> punches a real-DOM
+  // rectangle into the Flutter render tree (Flutter Web's
+  // HtmlElementView). On native the renderer falls back to a sized
+  // placeholder; the use cases (Stripe Elements, OAuth iframes,
+  // browser-native form controls) are inherently web-only.
+  htmlEmbed:            B.WT_HTML_EMBED,
 };
 
 /**
@@ -253,6 +259,10 @@ const COLD_PROPS = {
   blurRadius:     [B.PROP_BLUR_RADIUS,      'u32'],
   minScale:       [B.PROP_MIN_SCALE,        'f32'],
   maxScale:       [B.PROP_MAX_SCALE,        'f32'],
+  // <htmlEmbed viewType="…"/> — string key matching a factory in
+  // registerHtmlView(). Mount-once: Flutter Web caches the rendered
+  // DOM element for the platform-view's lifetime.
+  viewType:       [B.PROP_VIEW_TYPE,        'str'],
   // Accessibility — wraps any widget in a Semantics node.
   semanticLabel:  [B.PROP_SEMANTIC_LABEL,   'str'],
 };

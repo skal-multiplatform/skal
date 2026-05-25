@@ -29,6 +29,7 @@
 import 'dart:async';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
+import 'dart:ui_web' as ui_web;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
@@ -38,6 +39,7 @@ import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/dialogs.dart';
 import 'package:skal_flutter/skal/root.dart';
 import 'package:skal_flutter/skal_ffi.dart';
+import 'package:web/web.dart' as web;
 
 import 'adapters/generated/skal_adapters.g.dart' as local_gen;
 import 'skal_codegen.g.dart' as packages_gen;
@@ -60,14 +62,63 @@ void _recordError(String stage, Object error, StackTrace st) {
   globalContext['__skalDartError'] = '$stage: $error\n$st'.toJS;
 }
 
+// ── HtmlEmbed factory bridge (Shape D-with-holes) ────────────────────
+//
+// JS side calls `registerHtmlView(viewType, factory)` (in
+// skal/index.js); that function calls
+// `globalThis.__skalRegisterHtmlView(viewType)`, installed here, which
+// registers a Dart-side platformViewRegistry factory for viewType.
+// When Flutter Web instantiates an HtmlElementView, the Dart factory
+// calls JS's `__skalCreateHtmlViewElement(viewType, viewId)` to build
+// the actual DOM element. End-to-end: JS owns the factory body, Dart
+// owns the registry, Flutter owns the composite.
+final Set<String> _registeredHtmlViewTypes = <String>{};
+
+void _installHtmlEmbedHooks() {
+  globalContext['__skalRegisterHtmlView'] = ((JSString viewType) {
+    final type = viewType.toDart;
+    // platformViewRegistry throws on duplicate registration — guard
+    // for HMR / repeated calls in dev.
+    if (_registeredHtmlViewTypes.contains(type)) return;
+    _registeredHtmlViewTypes.add(type);
+    ui_web.platformViewRegistry.registerViewFactory(
+      type,
+      (int viewId, {Object? params}) {
+        // Call back into JS to build the actual DOM element.
+        final create = globalContext.getProperty<JSFunction?>(
+          '__skalCreateHtmlViewElement'.toJS,
+        );
+        if (create == null) {
+          // JS bundle didn't install the hook (out-of-order load?) —
+          // return a visible error placeholder so layout doesn't
+          // collapse silently.
+          final fallback = web.HTMLDivElement();
+          fallback.textContent =
+              'Skal: __skalCreateHtmlViewElement missing for viewType="$type"';
+          fallback.style.color = '#d33';
+          return fallback;
+        }
+        // The JS factory returns the DOM element; cast back to
+        // web.HTMLElement for Flutter's HtmlElementView API.
+        final el = create.callAsFunction(null, type.toJS, viewId.toJS);
+        return el as web.HTMLElement;
+      },
+    );
+  }).toJS;
+}
+
 Future<void> main() async {
   _mark('main:enter');
   WidgetsFlutterBinding.ensureInitialized();
   _mark('main:after-binding-init');
 
-  // ── 0. Register codegen adapters ────────────────────────────────────
+  // ── 0. Register codegen adapters + HtmlEmbed hook ───────────────────
   local_gen.registerAll();
   packages_gen.registerAll();
+  // Install the JS↔Dart bridge for <HtmlEmbed> BEFORE the JS bundle
+  // loads — apps that call registerHtmlView at module top-level need
+  // __skalRegisterHtmlView to already be on globalThis.
+  _installHtmlEmbedHooks();
   _mark('main:after-register-adapters');
 
   // ── 1. Create the (web) Skal runtime ────────────────────────────────
@@ -84,13 +135,19 @@ Future<void> main() async {
   }
   _mark('main:after-skal-create');
 
-  // ── 2. Wrap in the bridge + dispatcher ──────────────────────────────
+  // ── 2. Inject the JS bundle ─────────────────────────────────────────
   //
-  // Bridge wraps the (still-empty) buffer; ensureRoot reserves node 1
-  // so SkalRoot can mount even before JS has emitted any ops. No
-  // initial pumpOps here — the buffer is empty (JS bundle hasn't been
-  // injected yet) and SkalRoot's per-frame Ticker will drain whatever
-  // JS writes once the bundle lands.
+  // Awaited before runApp so the bridge buffer is populated with the
+  // initial CREATE_NODE batch before Flutter's first frame. Tried
+  // parallelizing this with runApp once — Flutter Web's CanvasKit
+  // skips painting when the first frame's widget tree is empty, and
+  // the flt-scene-host stays at width:auto/height:auto forever
+  // (lastDrainedSeq stuck at 0, blank page). The ~50-100 ms gain
+  // wasn't worth re-debugging that.
+  await _injectSkalJsBundle();
+  _mark('main:after-inject-bundle');
+
+  // ── 3. Wrap in the bridge + initial drain ───────────────────────────
   //
   // Try-caught only on web (not on native main.dart) because dart2js
   // surfaces some bridge failures (Int64-accessor incompat, typed-
@@ -106,35 +163,20 @@ Future<void> main() async {
   }
   _mark('main:after-bridge-ctor');
   bridge.ensureRoot();
+  try {
+    bridge.pumpOps();
+  } catch (e, st) {
+    _recordError('pumpOps', e, st);
+    runApp(_ErrorApp(message: 'pumpOps threw: $e'));
+    return;
+  }
+  _mark('main:after-pump-ops');
   installAppDispatcher(bridge);
   _mark('main:after-app-dispatcher');
 
-  // ── 3. Mount + load the JS bundle in parallel ───────────────────────
-  //
-  // Critically: runApp() FIRST so Flutter Web's first frame paints
-  // immediately (theme + scaffold visible). _injectSkalJsBundle runs
-  // concurrently — the browser fetches + parses skal-app.js while
-  // Flutter is mounting its tree. When the bundle finishes executing,
-  // it has already written ops to the bridge; SkalRoot's next Ticker
-  // tick drains them and paints the Solid tree.
-  //
-  // Order safety: Skal.create above has already installed
-  // __skal_acquireBridge, so it doesn't matter whether the JS bundle
-  // evaluates before, during, or after runApp — the bridge buffer is
-  // there. Static <script src=> in index.html is the one thing that
-  // wouldn't work, because that runs BEFORE Dart's main.
+  // ── 4. Mount the Flutter tree ───────────────────────────────────────
   runApp(SkalWebApp(bridge: bridge));
   _mark('main:after-runApp');
-
-  // Fire-and-forget the injection. Errors are surfaced via the
-  // browser's console + _recordError; the Skal tree will simply stay
-  // empty if the bundle fails to load.
-  unawaited(_injectSkalJsBundle().then(
-    (_) => _mark('main:after-inject-bundle'),
-    onError: (Object e, StackTrace st) {
-      _recordError('skal-app.js inject', e, st);
-    },
-  ));
 }
 
 /// Dynamically inject the Solid/Skal JS bundle. Resolves when the

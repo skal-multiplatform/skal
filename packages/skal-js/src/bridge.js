@@ -191,6 +191,10 @@ export const WT_BOTTOM_SHEET            = 46;
 // §3 polish — <backdropFilter> blur layer, <interactiveViewer> zoom/pan.
 export const WT_BACKDROP_FILTER         = 47;
 export const WT_INTERACTIVE_VIEWER      = 48;
+// <htmlEmbed> — Flutter Web only. A `HtmlElementView` window into a
+// JS-defined DOM element (Stripe, OAuth iframes, third-party JS
+// widgets). See packages/skal-js/src/skal/index.js#registerHtmlView.
+export const WT_HTML_EMBED              = 49;
 
 // Event kinds
 export const EV_CLICK         = 0x01;
@@ -386,6 +390,10 @@ export const PROP_SCROLLBAR        = 0xB3;
 export const PROP_BLUR_RADIUS      = 0xB4;
 export const PROP_MIN_SCALE        = 0xB5;
 export const PROP_MAX_SCALE        = 0xB6;
+// <htmlEmbed> view type — string key, matches a factory registered
+// via skal/index.js's `registerHtmlView`. Mount-once: the factory
+// runs at view creation; later changes don't replace the element.
+export const PROP_VIEW_TYPE        = 0xB7;
 
 // Sentinel values for width/height u32 props.
 export const NO_VALUE     = -1 | 0;          // prop unset → host default

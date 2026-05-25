@@ -21,6 +21,8 @@ import {
   DragItem, DropZone, Radio, Chip, SegmentedButton, ExpansionTile, Dropdown,
   Stepper, Step, Drawer, BottomSheet, BackdropFilter, InteractiveViewer,
   FlutterEmbed,
+  HtmlEmbed,
+  registerHtmlView,
 } from 'skal';
 import { HAS_NATIVE_BRIDGE } from 'skal/bridge';
 // True only on the DOM-renderer web target (renderer-web). False on
@@ -50,6 +52,50 @@ import {
   Camera,
   Ticker,
 } from 'skal-flutter';
+
+// ── HtmlEmbed view factories — Shape D-with-holes demos ─────────────
+//
+// Register at module top-level so the factories are available before
+// any <HtmlEmbed viewType="…"/> mounts. On non-Flutter-Web targets,
+// registerHtmlView is a no-op (the Dart-side hook isn't installed) —
+// the same App.jsx compiles + runs across all targets unchanged.
+//
+// Each factory receives a fresh DIV to populate. Whatever DOM mounts
+// in there gets composited into Flutter's render tree at the
+// <HtmlEmbed>'s layout position, with pointer events + selection +
+// keyboard input staying live (Flutter Web's HtmlElementView).
+registerHtmlView('html-card', (el) => {
+  el.innerHTML = `
+    <div style="font-family: ui-sans-serif, system-ui, sans-serif; padding: 14px; background: linear-gradient(135deg, #fff 0%, #f0f4ff 100%); border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); height: 100%; box-sizing: border-box; overflow: auto;">
+      <h3 style="margin: 0 0 6px; font-size: 14px; color: #1a1a2e;">Real DOM card</h3>
+      <p style="margin: 0 0 10px; font-size: 12px; color: #4a4a5e; line-height: 1.4;">
+        This whole panel is HTML rendered <strong>inside</strong> the Flutter canvas. Try to
+        <em>select this text</em> with your mouse — selection works because the
+        DOM is real, not a screenshot.
+      </p>
+      <button id="html-card-btn" style="padding: 6px 12px; border-radius: 6px; border: 0; background: #0a84ff; color: white; font-weight: 600; cursor: pointer; font-size: 12px;">
+        Click me — 0
+      </button>
+      <input type="date" style="margin-left: 8px; padding: 4px 6px; border-radius: 6px; border: 1px solid #ccc; font-size: 12px;" />
+    </div>
+  `;
+  // Real DOM event handler — proves interactivity survives the
+  // canvas composite.
+  let n = 0;
+  el.querySelector('#html-card-btn').addEventListener('click', (e) => {
+    n++;
+    e.target.textContent = `Click me — ${n}`;
+  });
+});
+
+registerHtmlView('youtube-embed', (el) => {
+  const iframe = document.createElement('iframe');
+  iframe.src = 'https://www.youtube.com/embed/dQw4w9WgXcQ';
+  iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture');
+  iframe.setAttribute('allowfullscreen', '');
+  iframe.style.cssText = 'width:100%;height:100%;border:0;border-radius:8px;display:block;';
+  el.appendChild(iframe);
+});
 // B.5 plugin shim — geolocation. On web routes through the hidden
 // Flutter Web plugin host (docs/WEB_SUPPORT_PLAN.md). On native the
 // plugin bridge isn't wired yet so calls fail with "no DOM"; that's
@@ -1530,6 +1576,27 @@ function LibsTab() {
           />
         </Section>
       )}
+
+      {/* ── Shape D-with-holes — real DOM inside Flutter render tree ── */}
+      <Section title="HtmlEmbed — Flutter with DOM holes">
+        <Text
+          label="Each panel below is a real <div> hosted inside Flutter Web's render tree via HtmlElementView. Pointer events + text selection + keyboard input stay live. On native, falls back to a sized placeholder."
+          fontSize={11}
+          color={SUBTLE}
+        />
+        <HtmlEmbed
+          viewType="html-card"
+          height={150}
+          background="#FFFFFFFF"
+          cornerRadius={10}
+        />
+        <HtmlEmbed
+          viewType="youtube-embed"
+          height={220}
+          background="#FF000000"
+          cornerRadius={8}
+        />
+      </Section>
 
       {/* ── Custom adapter — Greeting ───────────────────────────── */}
       <Section title="Greeting — hand-written adapter">

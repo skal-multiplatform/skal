@@ -17,6 +17,13 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
 
+  # package:web — modern DOM bindings (replaces deprecated dart:html).
+  # Used by main_web.dart's HtmlElementView factory wiring to take
+  # the JS-built DOM element returned by __skalCreateHtmlViewElement
+  # and hand it back to Flutter Web as an HTMLElement type. Pure
+  # type interop, no runtime cost.
+  web: ^1.1.0
+
   # The Skal framework — pulled in as a local workspace package. All
   # `package:skal_flutter/...` imports below resolve here, including
   # the framework `lib/skal/*` files and skal_ffi.

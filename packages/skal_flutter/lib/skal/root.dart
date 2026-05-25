@@ -42,6 +42,10 @@ import 'dart:convert' show jsonDecode;
 // (browsers can't open arbitrary local paths anyway).
 import '_file_image_io.dart'
     if (dart.library.js_interop) '_file_image_web.dart';
+// <HtmlEmbed> — picks Flutter Web's HtmlElementView on web, a sized
+// placeholder on native (the intrinsic is inherently web-only).
+import '_html_embed_io.dart'
+    if (dart.library.js_interop) '_html_embed_web.dart';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/cupertino.dart';
@@ -208,6 +212,7 @@ Widget _buildForType(NodeState node, SkalBridge bridge, BuildContext context) {
     case wtBottomSheet:          return _buildBottomSheet(node, bridge);
     case wtBackdropFilter:       return _buildBackdropFilter(node, bridge);
     case wtInteractiveViewer:    return _buildInteractiveViewer(node, bridge);
+    case wtHtmlEmbed:            return _buildHtmlEmbed(node, bridge);
     case wtCustom:               return _buildCustom(node, bridge);
     default:                     return const SizedBox.shrink();
   }
@@ -2606,6 +2611,26 @@ Widget _buildInteractiveViewer(NodeState n, SkalBridge bridge) {
     maxScale: maxScale,
     child: content,
   );
+  inner = _applyColdVisual(n, inner);
+  inner = _applyHeight(height, _applyWidth(width, inner));
+  return _hotLayer(node: n, child: inner);
+}
+
+/// `<htmlEmbed viewType="…"/>` → Flutter Web's [HtmlElementView]
+/// (web) or a labelled placeholder (native). The actual DOM is built
+/// JS-side by a factory registered with `registerHtmlView` — Skal's
+/// "Flutter with DOM holes" escape hatch for hosting third-party JS
+/// widgets (Stripe Elements, OAuth iframes, browser-native form
+/// controls, WebGL/Three canvases) inside an otherwise-Flutter app.
+///
+/// Sizing follows normal `propWidth` / `propHeight`; the DOM element
+/// inside the platform view is sized to fill, and gets pointer
+/// events, scroll, text selection, ARIA all live.
+Widget _buildHtmlEmbed(NodeState n, SkalBridge bridge) {
+  final viewType = n.getPropStr(propViewType) ?? '';
+  final width = n.getPropU32(propWidth, kNoValue);
+  final height = n.getPropU32(propHeight, kNoValue);
+  Widget inner = buildHtmlEmbed(viewType);
   inner = _applyColdVisual(n, inner);
   inner = _applyHeight(height, _applyWidth(width, inner));
   return _hotLayer(node: n, child: inner);

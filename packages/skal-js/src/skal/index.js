@@ -805,3 +805,112 @@ export const InteractiveViewer = makeMissingMacroComponent('InteractiveViewer');
  * @type {Component<BaseProps & { widget: string, props?: object }>}
  */
 export const FlutterEmbed = makeMissingMacroComponent('FlutterEmbed');
+
+/**
+ * Live DOM region embedded inside Flutter's render tree — "Flutter
+ * with DOM holes". `viewType` names a factory registered via
+ * `registerHtmlView` that builds the DOM element to mount. Flutter
+ * Web's HtmlElementView punches a rectangle in the CanvasKit canvas
+ * and composites the real DOM at that position — pointer events,
+ * scroll, selection, ARIA all stay live. Works in Chrome / Firefox /
+ * Safari (stable since Flutter 3.10+).
+ *
+ * Use for third-party JS widgets that have no Flutter equivalent:
+ * Stripe Elements, OAuth iframes, embedded videos, browser-native
+ * form controls, WebGL/Three canvases, CMS HTML inserts.
+ *
+ *   import { HtmlEmbed, registerHtmlView } from 'skal';
+ *   registerHtmlView('stripe-card', (el) => {
+ *     window.Stripe('pk_...').elements().create('card').mount(el);
+ *   });
+ *   <HtmlEmbed viewType="stripe-card" height={48} />
+ *
+ * On native, falls back to a sized placeholder (the underlying use
+ * cases are inherently web — no Stripe Elements in a Flutter
+ * Android app). Apps that share JSX across targets should gate
+ * web-only HtmlEmbed sections with the IS_WEB_DOM flag pattern.
+ *
+ * @type {Component<BaseProps & { viewType: string }>}
+ */
+export const HtmlEmbed = makeMissingMacroComponent('HtmlEmbed');
+
+// ── registerHtmlView — JS-side factory registry ────────────────────
+//
+// Pairs with the <HtmlEmbed viewType="…"/> intrinsic. On Shape D
+// (Flutter Web with bridge), the Dart side installs a hook —
+// `globalThis.__skalRegisterHtmlView(viewType)` — that wires our JS
+// factory into Flutter Web's `platformViewRegistry`. When Flutter
+// instantiates a platform view of that type, the Dart-side factory
+// calls back into JS via `__skalCreateHtmlViewElement` to actually
+// build the DOM. On other targets (native, Shape B DOM), the hook
+// is absent — the factory is still stored so a future renderer-web
+// build can consume it directly without an API change.
+
+const _htmlViewFactories = new Map();
+
+/**
+ * Register a JS-side factory for an `<HtmlEmbed viewType="...">`
+ * intrinsic. The factory receives a freshly-created `<div>` to
+ * populate (mount your widget into it) plus the Flutter-assigned
+ * view id (useful for disambiguating multiple instances of the
+ * same viewType).
+ *
+ *   registerHtmlView('youtube-embed', (el, viewId) => {
+ *     const iframe = document.createElement('iframe');
+ *     iframe.src = 'https://www.youtube.com/embed/dQw4w9WgXcQ';
+ *     iframe.style.cssText = 'width:100%;height:100%;border:0';
+ *     el.appendChild(iframe);
+ *   });
+ *
+ * Re-registering the same viewType replaces the factory (HMR-safe).
+ * Calling on non-Shape-D targets is a no-op + does not warn — the
+ * same source can target multiple shapes.
+ *
+ * @param {string} viewType — the key the JSX `<HtmlEmbed viewType="…">` references.
+ * @param {(el: HTMLElement, viewId: number) => void} factory — builds DOM into `el`.
+ */
+export function registerHtmlView(viewType, factory) {
+  if (typeof viewType !== 'string' || viewType.length === 0) {
+    throw new TypeError('registerHtmlView: viewType must be a non-empty string');
+  }
+  if (typeof factory !== 'function') {
+    throw new TypeError('registerHtmlView: factory must be a function');
+  }
+  _htmlViewFactories.set(viewType, factory);
+  // Tell Dart to register a Flutter Web view factory under this name.
+  // On Shape B (renderer-web DOM target) the hook is absent — we just
+  // hold onto the factory; an `<htmlEmbed>` intrinsic on that target
+  // can read from the same map.
+  const hook = globalThis.__skalRegisterHtmlView;
+  if (typeof hook === 'function') hook(viewType);
+}
+
+// Dart calls this when Flutter Web instantiates a platform view of a
+// registered type. Installed early so the Dart-side factory closure
+// always finds it (the hook itself is installed by main_web.dart at
+// boot — that one tells Dart to wire the platformViewRegistry).
+if (typeof globalThis !== 'undefined') {
+  globalThis.__skalCreateHtmlViewElement = function (viewType, viewId) {
+    const factory = _htmlViewFactories.get(viewType);
+    const el = document.createElement('div');
+    el.setAttribute('data-skal-view-type', viewType);
+    el.setAttribute('data-skal-view-id', String(viewId));
+    el.style.cssText = 'width:100%;height:100%;box-sizing:border-box;';
+    if (!factory) {
+      el.textContent =
+        `<HtmlEmbed viewType="${viewType}"> — no factory registered`;
+      el.style.cssText +=
+        'color:#d33;font:12px ui-monospace,monospace;padding:8px;' +
+        'border:1px dashed #d33;background:#fff5f5;';
+      return el;
+    }
+    try {
+      factory(el, viewId);
+    } catch (e) {
+      console.error(`Skal registerHtmlView('${viewType}') factory threw:`, e);
+      el.textContent = `<HtmlEmbed viewType="${viewType}"> factory threw: ${e}`;
+      el.style.cssText += 'color:#d33;font:12px ui-monospace,monospace;padding:8px;';
+    }
+    return el;
+  };
+}

@@ -515,6 +515,55 @@ Best guess: Flutter Web 3.41's multi-view `ResizeObserver` on per-view scene-hos
 
 For now the architecture is in place + a single-instance hand-mounted view works. Apps that need this can use `addFlutterView` directly with a position:fixed mount as a workaround.
 
+## Shape D-skwasm — dart2wasm support (open, needs bridge reshape)
+
+We tried `flutter build web --wasm` for Shape D. The build succeeds, all
+pub.dev deps compile cleanly (no `dart:io`, no `dart:html`), the kitchen
+sink loads with `compileTarget: dart2wasm` + `renderer: skwasm`,
+Dart's `main()` runs to completion, the bridge hook is installed. But
+nothing renders — opSeq stays at 0 and the page is blank.
+
+Root cause: `ByteBuffer.toJS` is a cast on dart2js (zero-copy) but a
+**non-modifying copy** on dart2wasm. `skal_ffi_web.dart`'s
+`Skal.create` allocates a Dart `Uint8List`, then publishes its
+`.buffer.toJS` as `globalThis.__skal_acquireBridge`. Under dart2js
+that's the same memory both sides see. Under dart2wasm, JS gets a
+snapshot of the Wasm linear memory at acquisition time — Dart writes
+to its `Uint8List` never appear to JS, and JS writes to its
+`Uint8Array` never appear to Dart. The shared-buffer protocol breaks
+silently.
+
+To make Shape D work under dart2wasm, the bridge needs a different
+ownership story. Options:
+
+1. **Allocate buffer on the JS side.** A JS-side
+   `new Uint8Array(BRIDGE_SIZE)` becomes the canonical buffer. Dart
+   accesses it via `dart:js_interop` typed-array methods — slow
+   per-element (each `[i]` is a JS interop call), but correct. Hot
+   paths in `bridge.dart` would need bulk-transfer wrappers
+   (`getRange(offset, length)` to materialize a Dart slice for a
+   single pumpOps batch, then `setRange` to write back). Trade-off:
+   pumpOps gets slower by the JS-interop overhead per call, but
+   stays O(ops drained) instead of O(buffer size).
+2. **SharedArrayBuffer + cross-origin isolation.** Requires
+   `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-
+   Policy: require-corp` on the serving site. With those headers,
+   `dart2wasm` *does* support sharing a SAB between Wasm linear
+   memory and JS — I think. Needs verification. Deployment headache
+   for most static-host setups.
+3. **Keep dart2js for Shape D.** The 1.1 MB → 1.5 MB bundle delta
+   and the multi-threaded skwasm performance win aren't enough to
+   justify a full bridge-protocol rewrite right now. The Skal app is
+   I/O-bound on the JS bundle download + parse cost; CanvasKit
+   raster isn't the bottleneck for Shape D today.
+
+Picked: option 3 today. Shape D ships with dart2js + canvaskit. The
+`--wasm` flag in `dev:web-flutter` / `build:web-flutter` is left out
+deliberately; reverting it was a one-liner. When/if option 1 or 2
+becomes important, the work is contained in `skal_ffi_web.dart` +
+`packages/skal_flutter/lib/skal/bridge.dart` — the JS side already
+talks to whatever buffer `__skal_acquireBridge` hands it.
+
 ## Future extensions (NOT in this plan)
 
 - **More plugins** — file picker, share, biometric. Each is one switch case in Dart + one JS shim. Half-day each.

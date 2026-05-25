@@ -143,6 +143,14 @@ function h(tag, props, ...children) {
   return node;
 }
 
+// Real JSX rendered into the embed via the *.dom.jsx compile path.
+// EmbedSkalCounter is defined in EmbedSkalCounter.dom.jsx — its JSX
+// compiled against skal/renderer-web so calling it builds DOM nodes
+// directly. We just mount it with renderer-web's `render` here.
+registerHtmlView('skal-jsx-counter', (mount) => {
+  domRender(() => EmbedSkalCounter(), mount);
+});
+
 // Same Skal components the outer app uses — Column, Row, Text, Button
 // — but rendered to DOM via skal/renderer-web inside an HtmlEmbed.
 registerHtmlView('skal-counter', (mount) => {
@@ -207,6 +215,11 @@ registerHtmlView('solid-counter', (el) => {
     createEffect(() => { parityOut.textContent = parity(); });
   });
 });
+// JSX-compiled component for the skal-jsx-counter HtmlEmbed below.
+// Lives in a *.dom.jsx file so vite.config.js's second solid plugin
+// compiles its JSX against `skal/renderer-web` instead of the bridge.
+import { EmbedSkalCounter } from './EmbedSkalCounter.dom.jsx';
+
 // B.5 plugin shim — geolocation. On web routes through the hidden
 // Flutter Web plugin host (docs/WEB_SUPPORT_PLAN.md). On native the
 // plugin bridge isn't wired yet so calls fail with "no DOM"; that's
@@ -1709,6 +1722,12 @@ function LibsTab() {
         />
         <HtmlEmbed
           viewType="skal-counter"
+          height={200}
+          background="#FFF8FAFC"
+          cornerRadius={10}
+        />
+        <HtmlEmbed
+          viewType="skal-jsx-counter"
           height={200}
           background="#FFF8FAFC"
           cornerRadius={10}

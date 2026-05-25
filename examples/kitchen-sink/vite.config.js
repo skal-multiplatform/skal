@@ -43,6 +43,22 @@ const codegen = skalCodegen({
 // time, so the runtime never pays the component-wrapper overhead.
 // See babel-plugin-skal-jsx.js for the full rationale.
 
+// The skal-jsx macro options are identical across both renderer
+// targets — only Solid's `moduleName` (which renderer createElement /
+// insertNode / etc. resolve to) differs per-file. Pull the config
+// out so both plugin instances share it.
+const skalJsxOptions = {
+  moduleName: 'skal',
+  modules: {
+    // ALL custom-widget imports flow through `skal-flutter` —
+    // local CLI-emitted (Greeting, Stickers) + build_runner pub-
+    // package (QrImageView, ShimmerFromColors). Single source of
+    // truth; the JS side doesn't care which generator produced a
+    // widget.
+    ...codegen.macroModules,
+  },
+};
+
 export default defineConfig({
   plugins: [
     // Virtual module + manifest watcher for codegen-wrapped widgets.
@@ -50,34 +66,25 @@ export default defineConfig({
     // `import { QrImageView } from 'skal-flutter'` without any
     // hand-written stub.
     codegen.vitePlugin,
+    // Default solid plugin — JSX in *.jsx (excluding *.dom.jsx) lowers
+    // to `skal/renderer`'s createElement, which writes BRIDGE OPS.
+    // This is the outer Skal app's compile path.
     solid({
-      solid: {
-        generate: 'universal',
-        moduleName: 'skal/renderer',
-      },
-      babel: {
-        plugins: [
-          [skalJsxPlugin, {
-            moduleName: 'skal',
-            // Each entry adds another module the macro recognizes; values
-            // are { ImportedName: 'loweredTag' } maps. Custom widgets
-            // lower to a camelCase intrinsic tag that matches the Dart-
-            // side SkalRegistry registration key (see greeting.dart's
-            // `SkalRegistry.registerWidget('greeting', …)`).
-            modules: {
-              // ALL custom-widget imports flow through `skal-flutter`
-              // now — both local CLI-emitted (Greeting, Stickers) and
-              // build_runner pub-package (QrImageView, ShimmerFromColors).
-              // Single source of truth; the JS side doesn't care which
-              // generator produced a widget. Manual stub modules + macro
-              // entries would only be needed for hand-written escape-hatch
-              // Dart adapters that the codegen pipeline doesn't touch
-              // (none in the demo right now).
-              ...codegen.macroModules,
-            },
-          }],
-        ],
-      },
+      include: /\.jsx$/,
+      exclude: /\.dom\.jsx$/,
+      solid: { generate: 'universal', moduleName: 'skal/renderer' },
+      babel: { plugins: [[skalJsxPlugin, skalJsxOptions]] },
+    }),
+    // Second solid plugin — JSX in *.dom.jsx lowers to
+    // `skal/renderer-web`'s createElement, which writes DOM
+    // mutations directly. Used by HtmlEmbed factories so the same
+    // <Column>/<Text>/<Button> JSX syntax can render as DOM inside
+    // Flutter Web's render tree. Same babel macro, same skal-flutter
+    // codegen vocabulary, different sink.
+    solid({
+      include: /\.dom\.jsx$/,
+      solid: { generate: 'universal', moduleName: 'skal/renderer-web' },
+      babel: { plugins: [[skalJsxPlugin, skalJsxOptions]] },
     }),
   ],
   build: {

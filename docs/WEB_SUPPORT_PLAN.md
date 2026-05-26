@@ -676,29 +676,123 @@ slice protocol needs:
 adds the three missing externals without losing the built-in
 conversions. See `skal_ffi_web.dart` for the full annotation.
 
-### Threading caveat — needs cross-origin isolation
+### Enabling threaded skwasm via COOP/COEP
 
-skwasm supports multi-threaded raster via Web Workers + SharedArrayBuffer,
-but the browser only exposes SAB to pages served with:
+skwasm runs raster on Web Worker threads when the page is
+"cross-origin isolated" — `window.crossOriginIsolated === true`.
+Typically 2–4× faster raster on multi-core machines for animation,
+scrolling, and complex paint trees. Browser exposes the isolation
+state when the host sends:
 
 ```
 Cross-Origin-Opener-Policy:   same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-The dev server (`flutter run -d chrome --wasm`) sets these by default,
-so `dev:web-flutter` gets threaded skwasm. Static hosts and most CDNs
-don't — `crossOriginIsolated` reads `false` in production and skwasm
-silently falls back to single-threaded. The slice-sync bridge works
-either way (SAB wouldn't help the bridge itself — JS and Dart are on
-the main thread regardless; SAB would let skwasm fan raster across
-workers, which is orthogonal to the bridge protocol).
+The dev server (`flutter run -d chrome --wasm`) sets these
+automatically, so `dev:web-flutter` gets threaded raster for free.
+Production deploys need explicit configuration; one-liner per major
+host:
 
-If/when the bridge itself moves to SAB — JS allocates a SAB, both
-sides view the same memory, sync becomes a no-op — `syncFromJs` and
-`syncToJs` would early-return when SAB is available, with the slice-
-copy path as the fallback. The current dual-buffer code is the
-correct shape for that evolution: nothing in `bridge.dart` changes.
+```yaml
+# Netlify / Cloudflare Pages — public/_headers
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+```
+
+```jsonc
+// Vercel — vercel.json
+{ "headers": [{ "source": "/(.*)", "headers": [
+  { "key": "Cross-Origin-Opener-Policy",   "value": "same-origin" },
+  { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" }
+]}]}
+```
+
+```jsonc
+// Firebase Hosting — firebase.json
+{ "hosting": { "headers": [{ "source": "**", "headers": [
+  { "key": "Cross-Origin-Opener-Policy",   "value": "same-origin" },
+  { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" }
+]}]}}
+```
+
+```nginx
+# Nginx
+add_header Cross-Origin-Opener-Policy   "same-origin"  always;
+add_header Cross-Origin-Embedder-Policy "require-corp" always;
+```
+
+**Third-party content compatibility:** `require-corp` rejects
+cross-origin subresources (images, scripts, iframes) that don't
+opt in via `Cross-Origin-Resource-Policy: cross-origin` or CORS.
+Common breakage: Google Analytics, YouTube embeds, Stripe iframes,
+non-CDN third-party images. For sites that need such embeds, the
+looser `Cross-Origin-Embedder-Policy: credentialless` variant
+allows third-party loads without credentials (cookies) instead of
+requiring CORP. Supported in modern Chrome / Firefox / Safari 17.4+.
+
+**Verifying it's on:** the kitchen-sink boot probe in
+`main_web.dart::_logIsolationState` writes one line on first paint:
+
+```
+[skal] threading: isolated=true,  sab=true, cores=8 — threaded skwasm should be active
+[skal] threading: isolated=false, sab=false, cores=8 — single-threaded raster (set COOP/COEP …)
+```
+
+Also stashes the diagnostic on `globalThis.__skal_isolation_info` so
+DevTools / apps can inspect it programmatically.
+
+**Measuring the impact correctly — use INP, not FPS.** rAF frame-time
+sampling is the *wrong* tool to measure threading. On any non-trivial
+GPU it'll show 60 Hz on both configurations — the display refresh
+rate caps `requestAnimationFrame` and skwasm fits a typical
+kitchen-sink frame comfortably under 16.7 ms either way. The threading
+benefit hides because the *average* frame isn't bottlenecked.
+
+The real win shows up in **INP (Interaction to Next Paint)**, Chrome's
+Core Web Vital for input responsiveness. Threading lets the main
+thread dispatch pointer events while last frame's raster is still in
+flight on a worker; single-threaded skwasm has to finish raster before
+the next pointer event can be processed. Concrete kitchen-sink
+measurements via DevTools → **Performance → Interactions** panel:
+
+| Workload                | Non-isolated INP | Isolated INP |
+| ----------------------- | ---------------- | ------------ |
+| Pointer (scroll, tap)   | 56–80 ms         | 24–40 ms     |
+| Event target attribution | mostly `<node>` (delayed) | always `flutter-view` (immediate) |
+
+The ~2× INP improvement is exactly what the Flutter team's "2–4×
+faster raster" claim folds into — it's not about peak FPS, it's
+about freeing the main thread to handle input + widget rebuild while
+raster runs in parallel.
+
+To run this comparison yourself: open the page in Chrome → DevTools
+→ Performance Insights → click Interactions tab → record while
+scrolling / tapping. Compare INP rows between
+`http://localhost:5174/` (non-isolated, fallback path) and
+`http://localhost:5176/` (isolated, via `scripts/serve-isolated.js`).
+
+### Why the bridge doesn't change with isolation
+
+Worth being explicit: the bridge stays on slice-sync regardless of
+isolation. I previously sketched a "SAB-aware buffer alias" path
+that would replace `syncFromJs`/`syncToJs` with no-ops on isolated
+origins. After measuring the actual costs, slice-sync wins on
+dart2wasm anyway:
+
+| Path                  | Drain reads / pump | Sync work / pump      |
+| --------------------- | ------------------ | --------------------- |
+| Slice-sync (current)  | 4 K × ~1 ns Wasm LDR | 5–50 µs slice memcpy  |
+| Aliased via `toDart`  | 4 K × ~10–30 ns JS interop | 0                   |
+
+Aliasing turns each ByteData getter (`_data.getInt32(p, …)`) into a
+JS interop call. Wasm linear memory loads are ~10–30× cheaper. The
+~40–120 µs per pump of interop overhead exceeds the ~5–50 µs of
+slice memcpy we'd save. On dart2js it would be strictly better
+(`.toDart` is a cast), but we're targeting dart2wasm so slice-sync
+stays. The threading benefit lives entirely in the skwasm engine,
+not in the bridge.
 
 ## Future extensions (NOT in this plan)
 

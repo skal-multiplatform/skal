@@ -62,6 +62,55 @@ void _recordError(String stage, Object error, StackTrace st) {
   globalContext['__skalDartError'] = '$stage: $error\n$st'.toJS;
 }
 
+/// One-shot boot probe: logs the cross-origin isolation state and
+/// stashes it on `globalThis.__skal_isolation_info` so apps can read
+/// it programmatically.
+///
+/// When `window.crossOriginIsolated` is `true` (the host sent
+/// `Cross-Origin-Opener-Policy: same-origin` +
+/// `Cross-Origin-Embedder-Policy: require-corp`), Flutter's skwasm
+/// renderer fans tile rasterization across Web Worker threads —
+/// typically 2-4× faster raster on multi-core machines. Otherwise
+/// raster stays single-threaded.
+///
+/// The bridge itself doesn't change either way: slice-sync stays
+/// faster than buffer aliasing on dart2wasm (the drain loop reads
+/// ~1 ns each as Wasm load instructions vs ~10-30 ns each as JS
+/// interop calls). This probe is purely about raster, plus helping
+/// users diagnose "why isn't my deploy faster" issues. See
+/// `docs/WEB_SUPPORT_PLAN.md` §Shape D-skwasm for deploy snippets
+/// (Vercel / Netlify / Firebase / nginx headers).
+///
+/// Logged unconditionally — useful in production for verifying the
+/// deploy configuration. The stashed object is read-only by intent;
+/// it's a diagnostic surface, not a control knob.
+void _logIsolationState() {
+  final isolated =
+      (globalContext['crossOriginIsolated'] as JSBoolean?)?.toDart ?? false;
+  final hasSAB = globalContext['SharedArrayBuffer'] != null;
+  final cores = (globalContext['navigator'] as JSObject?)
+          ?.getProperty<JSNumber?>('hardwareConcurrency'.toJS)
+          ?.toDartInt ??
+      0;
+
+  final info = JSObject();
+  info['crossOriginIsolated'] = isolated.toJS;
+  info['hasSharedArrayBuffer'] = hasSAB.toJS;
+  info['hardwareConcurrency'] = cores.toJS;
+  globalContext['__skal_isolation_info'] = info;
+
+  if (isolated && hasSAB) {
+    // ignore: avoid_print
+    print('[skal] threading: isolated=true, sab=true, cores=$cores '
+        '— threaded skwasm should be active');
+  } else {
+    // ignore: avoid_print
+    print('[skal] threading: isolated=$isolated, sab=$hasSAB, cores=$cores '
+        '— single-threaded raster '
+        '(set COOP/COEP headers to enable; see docs/WEB_SUPPORT_PLAN.md)');
+  }
+}
+
 // ── HtmlEmbed factory bridge (Shape D-with-holes) ────────────────────
 //
 // JS side calls `registerHtmlView(viewType, factory)` (in
@@ -111,6 +160,12 @@ Future<void> main() async {
   _mark('main:enter');
   WidgetsFlutterBinding.ensureInitialized();
   _mark('main:after-binding-init');
+
+  // Probe the cross-origin isolation context. If the host set
+  // COOP/COEP, skwasm auto-enables threaded raster — biggest perf
+  // win available on the web target; checked once at boot so the
+  // log line shows up in dev + production both.
+  _logIsolationState();
 
   // ── 0. Register codegen adapters + HtmlEmbed hook ───────────────────
   local_gen.registerAll();

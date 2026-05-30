@@ -28,6 +28,7 @@ const int hEventReadPos        = 28;   // u32
 const int hLastDrainedSeq      = 32;   // u64 — Dart bumps after each drain (JS spin-wait target)
 const int hReplyHeapReadPos    = 40;   // u32 — JS bumps to the byte-offset it's read up to in the reply heap
 const int hReplyHeapWritePos   = 44;   // u32 — Dart bumps after each reply-heap write; the wraparound guard reads JS's hReplyHeapReadPos to ensure no in-flight string is overwritten
+const int hJsResetEpoch        = 48;   // u32 — JS bumps when it resets the op ring + JS string heap (overflow path). The web slice-sync mirror watches this to force a full re-copy of both regions; without it a post-reset writePos landing above the synced mark looks like monotonic growth and the new batch's [0, syncedWp) prefix is missed. Unused on native (the FFI buffer is shared, so resets are visible directly).
 
 const int kHeaderSize     = 64;
 const int kOpRingOffset   = kHeaderSize;

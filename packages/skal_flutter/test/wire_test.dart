@@ -92,6 +92,7 @@ void main() {
       expect(hLastDrainedSeq, 32);
       expect(hReplyHeapReadPos, 40);
       expect(hReplyHeapWritePos, 44);
+      expect(hJsResetEpoch, 48);
     });
 
     test('ring layout sizes', () {

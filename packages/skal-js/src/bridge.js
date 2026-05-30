@@ -37,6 +37,13 @@ const HB_LAST_DRAINED_SEQ = 32;  // u64 — Dart bumps after each drain (JS spin
 // offset X would point to bytes Dart just clobbered.
 const HB_REPLY_HEAP_READ_POS  = 40;  // u32
 const HB_REPLY_HEAP_WRITE_POS = 44;  // u32 — Dart bumps when writing to the reply heap
+// Bumped whenever we reset the op ring + JS string heap write cursors to
+// 0 (overflow path). The web slice-sync mirror (skal_ffi_web.dart) caches
+// the last value it saw; on a change it re-copies the full [0, writePos)
+// of both regions instead of mistaking a post-reset write above the old
+// mark for monotonic growth. No-op on native — the FFI buffer is shared,
+// so Dart observes the reset (writePos regression) directly.
+const HB_JS_RESET_EPOCH       = 48;  // u32
 
 const H_OP_WRITE_POS         = HB_OP_WRITE_POS         >> 2;
 const H_STR_WRITE_POS        = HB_STR_WRITE_POS        >> 2;
@@ -44,6 +51,7 @@ const H_EVENT_WRITE_POS      = HB_EVENT_WRITE_POS      >> 2;
 const H_EVENT_READ_POS       = HB_EVENT_READ_POS       >> 2;
 const H_REPLY_HEAP_READ_POS  = HB_REPLY_HEAP_READ_POS  >> 2;
 const H_REPLY_HEAP_WRITE_POS = HB_REPLY_HEAP_WRITE_POS >> 2;
+const H_JS_RESET_EPOCH       = HB_JS_RESET_EPOCH       >> 2;
 
 const B_OP_SEQ            = HB_OP_SEQ            >> 3;
 const B_EVENT_SEQ         = HB_EVENT_SEQ         >> 3;
@@ -468,10 +476,23 @@ let strWritePos = STRING_HEAP_OFFSET;
 // in when (opWritePos32 - lastCommittedPos32) >= AUTO_COMMIT_OPS.
 let lastCommittedPos32 = OP_RING_OFFSET32;
 
+// Set when the op-ring + string-heap write cursors have been reset to 0
+// but the reset hasn't been published yet. The next publishProgress
+// bumps HB_JS_RESET_EPOCH together with the (post-reset) write positions,
+// so the web mirror always reads a consistent {writePos, epoch} snapshot.
+let pendingResetEpoch = false;
+
+// Reentrancy guard for the web synchronous-drain path (see
+// flushAndWaitForDrain). The host drain we invoke there can itself
+// enqueue ops (an RPC reply / event handler that writes during the
+// drain); a re-overflow must NOT recurse into another synchronous drain.
+let inSyncDrain = false;
+
 function resetFrame() {
   opWritePos32       = OP_RING_OFFSET32;
   strWritePos        = STRING_HEAP_OFFSET;
   lastCommittedPos32 = OP_RING_OFFSET32;
+  pendingResetEpoch  = true;
 }
 
 // Publish current write position to the host without resetting the
@@ -480,28 +501,63 @@ function resetFrame() {
 function publishProgress() {
   u32[H_OP_WRITE_POS]  = (opWritePos32 - OP_RING_OFFSET32) << 2;
   u32[H_STR_WRITE_POS] = strWritePos - STRING_HEAP_OFFSET;
+  // Publish the reset epoch in the SAME store as the post-reset write
+  // positions so the web mirror never sees a bumped epoch paired with a
+  // stale (pre-reset) writePos. No-op on native (no mirror reads it).
+  if (pendingResetEpoch) {
+    u32[H_JS_RESET_EPOCH] = (u32[H_JS_RESET_EPOCH] + 1) >>> 0;
+    pendingResetEpoch = false;
+  }
   opSeq += 1n;
   Atomics.store(seqArr, B_OP_SEQ, opSeq);
   lastCommittedPos32 = opWritePos32;
 }
 
-// Overflow path — JS would write past the end of the ring. Publish
-// what we have, spin until the host drains it, then reset writePos to
-// the start of the ring so we can keep going. Cross-thread sync: the
-// host is on Flutter's UI thread and drains in its Ticker callback;
-// each spin iteration is a single atomic load (~ns). We bound the spin
-// to 250 ms so a genuinely wedged UI thread surfaces an error instead
-// of hanging forever.
+// Overflow path — JS would write past the end of the ring. Publish what
+// we have, get the host to drain it, then rewind to the start of the ring
+// so we can keep going.
+//
+// Two host topologies:
+//
+//   • Native (bun worker thread ≠ Flutter UI thread): the consumer drains
+//     concurrently, so we spin on H_LAST_DRAINED_SEQ until it catches up.
+//
+//   • Web (Shape D: JS + Dart share the browser main thread): the consumer
+//     CANNOT run while we spin — a spin would just burn its budget and then
+//     overwrite undrained ops. So if the host installed `__skal_drainOpsSync`
+//     (it does on web, not on native), we call it to pump the host inline,
+//     exactly like `wakeJs` calls `__skal_drainEvents`. That actually
+//     drains the ring (no data loss, no freeze). A reentrancy guard covers
+//     the rare case where the drain itself re-overflows.
 function flushAndWaitForDrain() {
   publishProgress();
   const targetSeq = opSeq;
-  // 5 s budget. Throwing here is dangerous in microtask context —
-  // ChunkedFor's queued steps aren't wrapped in try/catch, and an
-  // uncaught throw in a microtask blows through to bun's error
-  // printer (which can itself segfault under heavy load). Instead,
-  // log a warning and fall through to overwrite the ring. The host
-  // will catch up eventually; in the worst case the user sees one
-  // visually-stale chunk before the next drain resolves it.
+
+  const drainOpsSync = globalThis.__skal_drainOpsSync;
+  if (typeof drainOpsSync === 'function') {
+    // Web — drain inline on the shared thread instead of spinning.
+    // Diagnostic counter (readable as globalThis.__skal_opRingResets) —
+    // lets a dev confirm whether a render is overflowing the ring. Rare
+    // path, so the bookkeeping is free.
+    globalThis.__skal_opRingResets = (globalThis.__skal_opRingResets | 0) + 1;
+    if (!inSyncDrain) {
+      inSyncDrain = true;
+      try { drainOpsSync(); } finally { inSyncDrain = false; }
+    } else {
+      // Re-overflow while already draining (e.g. an RPC reply handler that
+      // itself writes > a ring of ops). Can't recurse; fall back to a blind
+      // rewind. Chunk such producers (ChunkedFor) to avoid stale ops.
+      console.warn('Skal: op ring re-overflowed during inline drain — chunk large renders to avoid stale ops');
+    }
+    resetFrame();
+    return;
+  }
+
+  // Native — spin until the worker's consumer drains. 5 s budget. Throwing
+  // here is dangerous in microtask context (ChunkedFor's queued steps
+  // aren't wrapped in try/catch, and an uncaught throw blows through to
+  // bun's error printer), so on timeout we warn and overwrite; the host
+  // catches up over the next vsync.
   const deadline = performance.now() + 5000;
   while (true) {
     const drained = Atomics.load(seqArr, B_LAST_DRAINED_SEQ);
@@ -511,9 +567,7 @@ function flushAndWaitForDrain() {
       break;
     }
   }
-  opWritePos32       = OP_RING_OFFSET32;
-  strWritePos        = STRING_HEAP_OFFSET;
-  lastCommittedPos32 = OP_RING_OFFSET32;
+  resetFrame();
 }
 
 export function writeOp(opcode, a, b, c) {

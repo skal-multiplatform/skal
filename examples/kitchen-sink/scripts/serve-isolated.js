@@ -16,7 +16,7 @@
 //
 // Listens on port 5176 by default; override with PORT=xxxx.
 
-import { resolve, extname, join } from 'node:path';
+import { resolve, extname, join, sep } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
 
 const ROOT = resolve(import.meta.dir, '..', 'flutter-host', 'build', 'web');
@@ -71,8 +71,11 @@ Bun.serve({
     if (path.endsWith('/'))           path += 'index.html';
 
     // Prevent path-traversal: resolve, then verify still under ROOT.
+    // Require a separator boundary so a sibling dir sharing ROOT's
+    // prefix (e.g. `build/web-secret` vs ROOT `build/web`) can't slip
+    // through a bare `startsWith` prefix match.
     const filePath = resolve(join(ROOT, path));
-    if (!filePath.startsWith(ROOT)) {
+    if (filePath !== ROOT && !filePath.startsWith(ROOT + sep)) {
       return new Response('Forbidden', { status: 403 });
     }
     if (!existsSync(filePath) || !statSync(filePath).isFile()) {

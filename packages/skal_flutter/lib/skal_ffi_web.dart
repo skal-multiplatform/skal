@@ -123,21 +123,24 @@ class Skal {
   int _syncedReplyWp = 0;
   int _syncedEventWp = 0;
 
-  /// In-process signal: bridge.dart's `_writeReplyString` sets this to
-  /// `true` immediately after wrapping the reply heap (resetting
-  /// `_replyHeapWritePos` to 0). The next [syncToJs] copies the full
-  /// `[0, replyWp)` range regardless of the regression check, then
-  /// clears the flag.
-  ///
-  /// Why this exists: the regression test `replyWp < _syncedReplyWp`
-  /// only catches resets where the post-reset writePos lands *below*
-  /// the pre-sync mark. A reset followed by a single large reply
-  /// (e.g. a 100 KB+ XFile JSON) lands *above* the mark, looks like
-  /// monotonic growth, and the slice copy would only transfer
-  /// `[_syncedReplyWp, replyWp)` — missing `[0, _syncedReplyWp)` of
-  /// the new reply, which JS reads as the stale tail of the old one.
-  /// The flag closes that gap without a wire-format change.
-  bool _replyHeapResetPending = false;
+  /// Last `hJsResetEpoch` value seen from JS. JS bumps that header word
+  /// whenever it rewinds the op-ring + string-heap write cursors to 0
+  /// (overflow path). When the epoch changes we force a full
+  /// `[0, currentWp)` re-copy of both regions instead of trusting the
+  /// watermark-regression heuristic — which silently misses a reset
+  /// whose post-reset write lands *above* the pre-sync mark. See
+  /// [syncFromJs].
+  int _syncedJsResetEpoch = 0;
+
+  /// Latched when [syncFromJs] observes an op-ring reset (epoch change),
+  /// consumed by `SkalBridge._drain` via [takeOpRingReset]. The drain
+  /// keeps its OWN checkpoint (`_lastDrainedWritePos`) separate from the
+  /// copy watermarks above; it must ALSO reset to 0 on a JS rewind, and
+  /// its writePos-regression heuristic misses the web case where the
+  /// reset fires on a string-heap overflow at a lightly-filled op ring
+  /// (consecutive same-size chunks land writePos right at the old
+  /// checkpoint). This flag carries the epoch signal across to the drain.
+  bool _opRingReset = false;
 
   Skal._(this.bridge, this._jsBridge);
 
@@ -202,66 +205,94 @@ class Skal {
   /// via `slice.toJS` → JS-side `set`); ~100–400× cheaper on dart2js
   /// where those calls degenerate to casts.
   ///
-  /// **Known limitation — JS-side bump-allocator reset miss.** The op
-  /// ring + JS string heap reset to 0 on overflow (via
-  /// `flushAndWaitForDrain` in `bridge.js`). On web the drain
-  /// spin-wait is broken (single-threaded; Dart can't run during the
-  /// spin), so the spin times out and JS resets blindly. If the
-  /// post-reset writes push `opWp` *past* the pre-sync `_syncedOpWp`,
-  /// the slice-sync miscategorizes it as monotonic growth and misses
-  /// bytes `[0, _syncedOpWp)` of the new batch.
-  ///
-  /// Only reachable via the same 5-second-freeze edge case that
-  /// already corrupts the protocol (writing ~4 MiB of ops or ~768 KiB
-  /// of strings in a single JS turn), so it's not a regression. The
-  /// reply heap variant of this bug — Dart-side, more practically
-  /// reachable — is fixed via the [markReplyHeapReset] producer
-  /// signal in [syncToJs]. Closing the JS-side variant would need a
-  /// per-region reset-epoch counter in the header (wire-format
-  /// change).
+  /// **JS-side resets are signalled via `hJsResetEpoch`.** The op ring +
+  /// JS string heap rewind their write cursors to 0 on overflow (via
+  /// `flushAndWaitForDrain` in `bridge.js`), and JS bumps `hJsResetEpoch`
+  /// in the same `publishProgress` store that writes the post-reset
+  /// positions. We compare it against [_syncedJsResetEpoch]; on a change
+  /// we force a full `[0, currentWp)` re-copy of both regions. Without
+  /// this, a post-reset write landing *above* the pre-sync watermark
+  /// looks like monotonic growth and the slice copy misses the new
+  /// batch's `[0, _syncedWp)` prefix. (The reply heap is the symmetric
+  /// Dart-produced case; because its producer is in-process it uses the
+  /// [markReplyHeapReset] signal instead of a header epoch.)
   void syncFromJs() {
-    // (1) Header — small (64 B), always synced.
+    // (1) Header — small (64 B), always synced. Carries every region's
+    // write watermark plus hJsResetEpoch, read below.
     _copyFromJs(0, kHeaderSize);
 
-    final opWp = _data.getUint32(hOpWritePos, Endian.little)
-        .clamp(0, kOpRingSize);
-    final strWp = _data.getUint32(hStrWritePos, Endian.little)
-        .clamp(0, kStringHeapSize);
-
-    // (2a) Op ring — JS-write, Dart-read. JS bumps writePos as it
-    // writes; it resets to 0 on overflow or end-of-batch commit. When
-    // we see a regression, copy [0, opWp); otherwise copy the new tail.
-    if (opWp < _syncedOpWp) {
-      if (opWp > 0) _copyFromJs(kOpRingOffset, kOpRingOffset + opWp);
-    } else if (opWp > _syncedOpWp) {
-      _copyFromJs(kOpRingOffset + _syncedOpWp, kOpRingOffset + opWp);
+    // Did JS rewind its bump regions since the last sync? If so, both the
+    // op ring and the string heap restarted from 0 together (they only
+    // ever reset in lockstep), so drop both synced marks to force a full
+    // re-copy rather than a (wrong) delta.
+    final jsEpoch = _data.getUint32(hJsResetEpoch, Endian.little);
+    if (jsEpoch != _syncedJsResetEpoch) {
+      _syncedJsResetEpoch = jsEpoch;
+      _syncedOpWp = 0;
+      _syncedStrWp = 0;
+      _opRingReset = true; // tell the drain to rewind its checkpoint too.
     }
-    _syncedOpWp = opWp;
 
-    // (2b) JS string heap — JS-write, Dart-read. Same shape: bump-
-    // allocated, resets when JS commits past Dart's drained mark.
-    if (strWp < _syncedStrWp) {
-      if (strWp > 0) _copyFromJs(kStringHeapOff, kStringHeapOff + strWp);
-    } else if (strWp > _syncedStrWp) {
-      _copyFromJs(kStringHeapOff + _syncedStrWp, kStringHeapOff + strWp);
+    // (2) Op ring + JS string heap — both JS-write, Dart-read, both
+    // bump-allocated. Identical delta-or-reset shape, so the same helper
+    // drives both. (The regression branch inside _syncBumpRegion is now a
+    // belt-and-suspenders fallback — the epoch above is the primary reset
+    // signal — but it still correctly handles a below-mark rewind.)
+    final opWp =
+        _data.getUint32(hOpWritePos, Endian.little).clamp(0, kOpRingSize);
+    _syncedOpWp = _syncBumpRegion(kOpRingOffset, opWp, _syncedOpWp, _copyFromJs);
+
+    final strWp =
+        _data.getUint32(hStrWritePos, Endian.little).clamp(0, kStringHeapSize);
+    _syncedStrWp =
+        _syncBumpRegion(kStringHeapOff, strWp, _syncedStrWp, _copyFromJs);
+  }
+
+  /// Sync one bump-allocated region. The producer publishes its write
+  /// pointer; copy `[syncedWp, currentWp)` on growth, or the full
+  /// `[0, currentWp)` when the pointer regressed below our mark (the
+  /// producer reset it). Returns the new synced watermark. Shared by
+  /// the three bump regions (op ring + JS string heap on the read side,
+  /// reply heap on the write side); the event ring is a true circular
+  /// ring and is handled separately in [syncToJs].
+  int _syncBumpRegion(
+      int regionOffset, int currentWp, int syncedWp, void Function(int, int) copy) {
+    if (currentWp < syncedWp) {
+      if (currentWp > 0) copy(regionOffset, regionOffset + currentWp);
+    } else if (currentWp > syncedWp) {
+      copy(regionOffset + syncedWp, regionOffset + currentWp);
     }
-    _syncedStrWp = strWp;
+    return currentWp;
   }
 
   /// Push Dart-side bridge state back to the JS canonical buffer.
   /// Called at the end of pumpOps + before invoking
   /// `__skal_drainEvents` so JS sees any events / replies Dart wrote.
   ///
-  /// Mirror of [syncFromJs]: copy the header (carrying lastDrainedSeq,
-  /// eventSeq, eventWritePos, replyHeapWritePos that Dart bumped),
-  /// then the delta of each Dart-write region. Two different region
-  /// shapes:
+  /// Mirror of [syncFromJs], with one critical asymmetry: this pushes
+  /// only the header words **Dart owns** — never the full 64 B. The
+  /// header is co-written (JS owns hOpSeq/hOpWritePos/hStrWritePos and
+  /// the read cursors hEventReadPos/hReplyHeapReadPos + hJsResetEpoch;
+  /// Dart owns hEventSeq/hEventWritePos/hLastDrainedSeq/
+  /// hReplyHeapWritePos). A blanket `[0, kHeaderSize)` push would stomp
+  /// JS-owned words with Dart's mirror copy — and that copy can be stale
+  /// (JS advances hOpSeq/hOpWritePos from a `queueMicrotask(commit)` that
+  /// runs after the last [syncFromJs]), silently regressing JS's op
+  /// watermark so the next drain misses those ops, and rewinding JS's
+  /// read cursors so it re-drains consumed events. So we push the three
+  /// contiguous Dart-owned runs only, each bounded by the next JS-owned
+  /// word. [syncFromJs] pulling the full header back is safe in the
+  /// reverse direction — JS never writes the Dart-owned words, so the
+  /// pull is an identity for them.
+  ///
+  /// Then the delta of each Dart-write body region. Two region shapes:
   ///
   ///   • **Reply heap** — bump-allocator. Resets writePos to 0 on
   ///     overflow (see `_writeReplyString` in `bridge.dart`). The
-  ///     producer signals resets in-process via
-  ///     [markReplyHeapReset]; if the flag is set, the full
-  ///     `[0, replyWp)` is pushed regardless of the regression check.
+  ///     producer signals resets in-process via [markReplyHeapReset],
+  ///     which zeroes the synced watermark so the next sync re-copies
+  ///     the full `[0, replyWp)` instead of mistaking a post-reset
+  ///     write for growth.
   ///   • **Event ring** — TRUE CIRCULAR RING. `dispatchEvent` writes
   ///     at `(pos + 16) % kEventRingSize`, so writePos legitimately
   ///     wraps to 0 mid-ring without any "reset". A regression
@@ -271,33 +302,28 @@ class Skal {
   ///     and `[0, eventWp)` (the wrapped prefix). Both must be
   ///     copied for JS to see all events.
   void syncToJs() {
-    // (1) Header — Dart bumped lastDrainedSeq + the various write
-    // watermarks; JS reads them on its next access.
-    _copyToJs(0, kHeaderSize);
+    // (1) Header — push ONLY the Dart-owned words, never the JS-owned
+    // ones (see doc above). Each range runs from a Dart-owned word up to
+    // (but excluding) the next JS-owned word:
+    //   [hEventSeq, hEventReadPos)        → hEventSeq + hEventWritePos
+    //   [hLastDrainedSeq, hReplyHeapReadPos) → hLastDrainedSeq
+    //   [hReplyHeapWritePos, hJsResetEpoch)  → hReplyHeapWritePos
+    _copyToJs(hEventSeq, hEventReadPos);
+    _copyToJs(hLastDrainedSeq, hReplyHeapReadPos);
+    _copyToJs(hReplyHeapWritePos, hJsResetEpoch);
 
     final replyWp = _data.getUint32(hReplyHeapWritePos, Endian.little)
         .clamp(0, kReplyHeapSize);
     final eventWp = _data.getUint32(hEventWritePos, Endian.little)
         .clamp(0, kEventRingSize);
 
-    // (2a) Reply heap — Dart-write, JS-read. Bump-allocator. Three
-    // cases:
-    //   - Reset pending (flag set by markReplyHeapReset): push the
-    //     full [0, replyWp). Covers the "reset + larger write than
-    //     prior synced mark" case the regression check can't see.
-    //   - Plain regression (replyWp < _syncedReplyWp, no flag): push
-    //     [0, replyWp). Shouldn't happen now that the producer
-    //     signals; kept as a safety net.
-    //   - Monotonic growth: push [_syncedReplyWp, replyWp).
-    if (_replyHeapResetPending) {
-      if (replyWp > 0) _copyToJs(kReplyHeapOff, kReplyHeapOff + replyWp);
-      _replyHeapResetPending = false;
-    } else if (replyWp < _syncedReplyWp) {
-      if (replyWp > 0) _copyToJs(kReplyHeapOff, kReplyHeapOff + replyWp);
-    } else if (replyWp > _syncedReplyWp) {
-      _copyToJs(kReplyHeapOff + _syncedReplyWp, kReplyHeapOff + replyWp);
-    }
-    _syncedReplyWp = replyWp;
+    // (2a) Reply heap — Dart-write, JS-read. Plain bump-allocator, so
+    // the same helper as the JS-side regions drives it. The producer
+    // ([markReplyHeapReset]) zeroes _syncedReplyWp on a wraparound,
+    // which makes the helper re-copy the full [0, replyWp) instead of
+    // mistaking a post-reset write for monotonic growth.
+    _syncedReplyWp =
+        _syncBumpRegion(kReplyHeapOff, replyWp, _syncedReplyWp, _copyToJs);
 
     // (2b) Event ring — Dart-write, JS-read. True circular ring:
     // a regression means the writes wrapped past the ring end. The new
@@ -354,11 +380,31 @@ class Skal {
 
   /// Producer signal: bridge.dart calls this from `_writeReplyString`
   /// after wrapping the reply heap (resetting `_replyHeapWritePos` to
-  /// 0). Sets [_replyHeapResetPending] so the next [syncToJs] copies
-  /// the full `[0, replyWp)` range — see that flag's doc for the
-  /// scenario this covers.
+  /// 0). Zeroes the synced watermark so the next [syncToJs] re-copies
+  /// the full `[0, replyWp)` range.
+  ///
+  /// Why this is needed: the watermark-regression check inside
+  /// [_syncBumpRegion] (`currentWp < syncedWp`) only catches resets
+  /// where the post-reset writePos lands *below* the pre-sync mark. A
+  /// reset followed by a single large reply (e.g. a 100 KB+ XFile JSON)
+  /// lands *above* the mark, looks like monotonic growth, and the slice
+  /// copy would transfer only `[syncedWp, replyWp)` — missing
+  /// `[0, syncedWp)` of the new reply, which JS would read as the stale
+  /// tail of the old one. Resetting the watermark to 0 closes that gap
+  /// without a wire-format change.
   void markReplyHeapReset() {
-    _replyHeapResetPending = true;
+    _syncedReplyWp = 0;
+  }
+
+  /// Consume the "op ring was reset since the last drain" signal latched
+  /// by [syncFromJs] on an `hJsResetEpoch` change. `SkalBridge._drain`
+  /// calls this each drain and rewinds its `_lastDrainedWritePos` to 0 on
+  /// `true`, so a JS-side ring rewind can't strand the post-reset chunk.
+  /// One-shot: returns the flag and clears it.
+  bool takeOpRingReset() {
+    final r = _opRingReset;
+    _opRingReset = false;
+    return r;
   }
 
   /// No-op on web — the native parallel-prewarm-the-disk-store

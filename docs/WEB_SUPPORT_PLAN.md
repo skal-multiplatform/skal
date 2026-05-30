@@ -618,45 +618,86 @@ Native gets no-op implementations of `syncFromJs` / `syncToJs` in
 `skal_ffi_io.dart` — the FFI bridge buffer is genuinely shared
 between bun and Dart, so no marshaling is needed.
 
-#### Bump-allocator reset miss — Dart-side fixed, JS-side limitation
+#### Bump-allocator reset detection — signalled, not heuristic
 
-The bump-allocated regions reset to 0 on overflow. The producer is
-supposed to spin-wait for the consumer to drain before resetting,
-which is sound on native (separate threads). On web, JS and Dart
-share the main thread, so the spin can never observe progress — it
-times out (5 s for JS, 50 ms for Dart) and the producer resets
-blindly. The protocol was already fragile here before slice sync.
+The bump-allocated regions reset their write cursor to 0 on overflow.
+The slice algorithm's regression heuristic (`currentWp < lastSynced` ⇒
+reset) misses one case: a post-reset write that lands *above* the
+pre-sync `lastSynced` looks like monotonic growth, so the copy takes
+`[lastSynced, currentWp)` and the consumer sees the stale tail of the
+old content at `[0, lastSynced)` of the new batch. Both reset paths are
+now signalled explicitly rather than inferred — the mechanism matches
+where each producer lives:
 
-The slice algorithm adds one specific failure mode in that scenario:
-if the post-reset writes push `currentWp` *past* the pre-sync
-`lastSynced`, the regression detector misses it (`currentWp >
-lastSynced`, so we take the monotonic branch and copy only
-`[lastSynced, currentWp)`). The consumer sees the stale tail of the
-old content at `[0, lastSynced)` of the new batch.
+**Reply heap (Dart-produced, in-process).** `_writeReplyString` in
+`bridge.dart` calls `skal.markReplyHeapReset()` right after the
+wraparound reset; the web-side `Skal` zeroes `_syncedReplyWp`, so the
+next `syncToJs` re-copies the full `[0, replyWp)`. No wire traffic — the
+producer and the sync run in the same isolate.
 
-**Reply heap (Dart-owned) — fixed via in-process signal.** The
-producer (`_writeReplyString` in `bridge.dart`) now calls
-`skal.markReplyHeapReset()` immediately after the wraparound reset.
-The web-side `Skal` keeps a `_replyHeapResetPending` flag; the next
-`syncToJs` sees it, copies the full `[0, replyWp)` regardless of the
-regression check, and clears the flag. On native the method is a
-no-op (the FFI bridge buffer is genuinely shared between bun and
-Dart, so there's nothing to sync). The most realistic trigger — a
-single large RPC reply (image-picker XFile, controller state dump)
-filling more than `kReplyHeapSize - _syncedReplyWp` — is now sound.
+**Op ring + JS string heap (JS-produced, across the bridge).** JS bumps
+a new `hJsResetEpoch` header word in the same `publishProgress` store
+that writes the post-reset positions (so the web mirror always reads a
+consistent `{writePos, epoch}` snapshot). `syncFromJs` caches the last
+epoch it saw; on a change it drops both `_syncedOpWp` and `_syncedStrWp`
+to 0 (they only ever reset in lockstep) and re-copies `[0, writePos)`.
+On native this is inert — the FFI buffer is shared, so Dart observes the
+reset directly and `syncFromJs` is a no-op.
 
-**Op ring + JS string heap (JS-owned) — still limited.** The same
-producer-signal approach would require a JS-side write into a header
-slot we read here; that's a wire-format change. Reachable only by
-writing ~4 MiB of ops or ~768 KiB of strings in a single JS turn,
-which already produces a 5-second freeze + console warning from
-`flushAndWaitForDrain`'s spin timeout — i.e. the protocol is already
-broken before slice sync makes it worse. Tracked for follow-up.
+There are *two* checkpoints that must rewind on a reset: the slice-copy
+watermarks above (in `skal_ffi_web.dart`) **and** the decoder's
+`_lastDrainedWritePos` (in `SkalBridge._drain`). The decoder's own
+writePos-regression heuristic only catches a reset when the post-reset
+writePos lands *below* the old checkpoint — true on native (reset only at
+~4 MiB ring-full) but NOT on web, where a reset can fire on a string-heap
+overflow at a lightly-filled op ring, so consecutive same-size chunks land
+writePos right at the old checkpoint and the chunk would be skipped. So the
+epoch reset is forwarded to the decoder via `skal.takeOpRingReset()`, which
+rewinds `_lastDrainedWritePos` too. (Found by the stress route — the copy
+fix alone silently dropped the first chunk.)
 
-The proper fix shape for both — a per-region reset-epoch counter in
-the header — has 16 B of free space in the 64 B header for the four
-u32 counters needed. Wire-format change + `wire_test.dart` snapshot
-update. Deferred until something forces it.
+**Verifying it** — load the kitchen-sink web build with
+`?stress=<count>` (e.g. `http://localhost:5176/?stress=1500`). That swaps
+in `examples/kitchen-sink/src/StressOverflow.jsx`: a synchronous mount of
+N rows each carrying a ~1.5 KB label, which overflows the 768 KiB string
+heap several times in one turn. Console logs `[skal-stress] … overflow
+resets = N`; the list must render starting at "Row 0" in order (it started
+at "Row 633" before the `_lastDrainedWritePos` fix). `globalThis.__skal_opRingResets`
+holds the running overflow count.
+
+#### Op-ring overflow — inline drain instead of a futile spin (web)
+
+On native, `flushAndWaitForDrain` spins on `hLastDrainedSeq` until the
+consumer (a separate thread) drains, then rewinds the ring. On web JS and
+Dart share the main thread, so that spin can *never* observe progress — it
+would burn its 5 s budget and then overwrite undrained ops (data loss +
+freeze). So the web host installs `globalThis.__skal_drainOpsSync` (a thin
+wrapper over `SkalBridge.pumpOps`), and `flushAndWaitForDrain` calls it to
+pump the consumer **inline** when present — the op-ring counterpart to
+`wakeJs` → `__skal_drainEvents`. A large mount now drains in ring-sized
+chunks with no freeze and no loss. Reentrancy (an RPC reply / event
+handler that itself overflows mid-drain) is bounded by two guards —
+`inSyncDrain` in `bridge.js` and `_pumping` in `SkalBridge` — which fall
+back to a blind rewind for that rare case. Native is unchanged (it
+installs no hook, so it keeps the concurrent-thread spin). The hook is
+installed *before* the bundle is injected so the initial mount can use it.
+
+#### Header ownership — `syncToJs` pushes only Dart-owned words
+
+The 64 B header is co-written: JS owns `hOpSeq` / `hOpWritePos` /
+`hStrWritePos`, the consumer read cursors `hEventReadPos` /
+`hReplyHeapReadPos`, and `hJsResetEpoch`; Dart owns `hEventSeq` /
+`hEventWritePos` / `hLastDrainedSeq` / `hReplyHeapWritePos`. A blanket
+`[0, 64)` push in `syncToJs` would stomp the JS-owned words with Dart's
+mirror copy — which can be stale, because JS advances `hOpSeq` /
+`hOpWritePos` from a `queueMicrotask(commit)` that runs *after* the last
+`syncFromJs`. The clobber silently regresses JS's op watermark (the next
+drain misses those ops until JS's next commit re-publishes) and rewinds
+JS's read cursors (re-draining consumed events). So `syncToJs` pushes
+only the three contiguous Dart-owned runs, each bounded by the next
+JS-owned word. The reverse pull in `syncFromJs` stays a full-header copy
+— safe, because JS never writes the Dart-owned words, so pulling them
+back is an identity.
 
 ### The extension-type wrapper
 

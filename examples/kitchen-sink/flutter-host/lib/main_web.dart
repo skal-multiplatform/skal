@@ -10,7 +10,7 @@
 //
 //   1. WidgetsFlutterBinding.ensureInitialized()
 //   2. Register codegen-emitted custom widget adapters.
-//   3. Skal.create() — web shim allocates a 2 MiB ArrayBuffer + installs
+//   3. Skal.create() — web shim allocates a 6 MiB ArrayBuffer + installs
 //      `globalThis.__skal_acquireBridge = () => buffer`.
 //   4. Inject a `<script src="skal-app.js">` tag. Once it loads, the JS
 //      bundle's `bridge.js` calls __skal_acquireBridge, gets the SAME
@@ -85,29 +85,39 @@ void _recordError(String stage, Object error, StackTrace st) {
 /// deploy configuration. The stashed object is read-only by intent;
 /// it's a diagnostic surface, not a control knob.
 void _logIsolationState() {
-  final isolated =
-      (globalContext['crossOriginIsolated'] as JSBoolean?)?.toDart ?? false;
-  final hasSAB = globalContext['SharedArrayBuffer'] != null;
-  final cores = (globalContext['navigator'] as JSObject?)
-          ?.getProperty<JSNumber?>('hardwareConcurrency'.toJS)
-          ?.toDartInt ??
-      0;
+  // This is a diagnostic that runs unconditionally at the very top of
+  // main() (before runApp / the bridge try-catch), so it must NEVER be
+  // able to abort boot. crossOriginIsolated + hardwareConcurrency are
+  // typed getters on package:web's Window/Navigator (already imported
+  // for the HtmlEmbed DOM hooks); they're present on every browser
+  // Flutter Web supports, but reading an absent property through an
+  // `external` getter throws on dart2wasm rather than yielding a
+  // fallback — so the whole probe is wrapped defensively. SharedArrayBuffer
+  // has no typed existence check, so it stays a globalContext probe.
+  try {
+    final isolated = web.window.crossOriginIsolated;
+    final hasSAB = globalContext['SharedArrayBuffer'] != null;
+    final cores = web.window.navigator.hardwareConcurrency;
 
-  final info = JSObject();
-  info['crossOriginIsolated'] = isolated.toJS;
-  info['hasSharedArrayBuffer'] = hasSAB.toJS;
-  info['hardwareConcurrency'] = cores.toJS;
-  globalContext['__skal_isolation_info'] = info;
+    final info = JSObject();
+    info['crossOriginIsolated'] = isolated.toJS;
+    info['hasSharedArrayBuffer'] = hasSAB.toJS;
+    info['hardwareConcurrency'] = cores.toJS;
+    globalContext['__skal_isolation_info'] = info;
 
-  if (isolated && hasSAB) {
+    if (isolated && hasSAB) {
+      // ignore: avoid_print
+      print('[skal] threading: isolated=true, sab=true, cores=$cores '
+          '— threaded skwasm should be active');
+    } else {
+      // ignore: avoid_print
+      print('[skal] threading: isolated=$isolated, sab=$hasSAB, cores=$cores '
+          '— single-threaded raster '
+          '(set COOP/COEP headers to enable; see docs/WEB_SUPPORT_PLAN.md)');
+    }
+  } catch (e) {
     // ignore: avoid_print
-    print('[skal] threading: isolated=true, sab=true, cores=$cores '
-        '— threaded skwasm should be active');
-  } else {
-    // ignore: avoid_print
-    print('[skal] threading: isolated=$isolated, sab=$hasSAB, cores=$cores '
-        '— single-threaded raster '
-        '(set COOP/COEP headers to enable; see docs/WEB_SUPPORT_PLAN.md)');
+    print('[skal] threading: isolation probe failed ($e) — continuing boot');
   }
 }
 
@@ -178,7 +188,7 @@ Future<void> main() async {
 
   // ── 1. Create the (web) Skal runtime ────────────────────────────────
   //
-  // Allocates the 2 MiB bridge buffer in JS heap + installs
+  // Allocates the 6 MiB bridge buffer in JS heap + installs
   // `globalThis.__skal_acquireBridge`. The Solid/Skal JS bundle's
   // `bridge.js` will read the SAME buffer back when it boots in step 2.
   // The empty dataDir is intentional — the web store falls back to its
@@ -190,19 +200,15 @@ Future<void> main() async {
   }
   _mark('main:after-skal-create');
 
-  // ── 2. Inject the JS bundle ─────────────────────────────────────────
+  // ── 2. Wrap in the bridge BEFORE injecting the bundle ───────────────
   //
-  // Awaited before runApp so the bridge buffer is populated with the
-  // initial CREATE_NODE batch before Flutter's first frame. Tried
-  // parallelizing this with runApp once — Flutter Web's CanvasKit
-  // skips painting when the first frame's widget tree is empty, and
-  // the flt-scene-host stays at width:auto/height:auto forever
-  // (lastDrainedSeq stuck at 0, blank page). The ~50-100 ms gain
-  // wasn't worth re-debugging that.
-  await _injectSkalJsBundle();
-  _mark('main:after-inject-bundle');
-
-  // ── 3. Wrap in the bridge + initial drain ───────────────────────────
+  // The bridge only views the (still-empty) buffer, so it can exist
+  // before the JS app mounts — and it must, so we can install the
+  // synchronous op-drain hook the initial mount may need. On web JS and
+  // Dart share the main thread, so if the bundle's first render writes
+  // more than the 4 MiB op ring in one synchronous turn, the JS producer
+  // can't spin-wait for a consumer that never gets a turn. The hook lets
+  // it pump us inline instead (see [_installOpDrainHook]).
   //
   // Try-caught only on web (not on native main.dart) because dart2js
   // surfaces some bridge failures (Int64-accessor incompat, typed-
@@ -216,8 +222,33 @@ Future<void> main() async {
     runApp(_ErrorApp(message: 'SkalBridge ctor threw: $e'));
     return;
   }
-  _mark('main:after-bridge-ctor');
   bridge.ensureRoot();
+  // Install the app-level RPC dispatcher BEFORE injecting the bundle:
+  // a large initial mount can overflow the op ring and drain inline (via
+  // the hook below) mid-inject, and that drain may process a mount-time
+  // root-node RPC (e.g. getDataDir / showDialog at module top-level). If
+  // the dispatcher weren't set yet, such a call would get a spurious
+  // "host not mounted" error. It only sets bridge.rootDispatcher +
+  // re-attaches it to the root node, so it's safe this early.
+  installAppDispatcher(bridge);
+  _installOpDrainHook(bridge);
+  _mark('main:after-bridge-ctor');
+
+  // ── 3. Inject the JS bundle ─────────────────────────────────────────
+  //
+  // Awaited before runApp so the bridge buffer is populated with the
+  // initial CREATE_NODE batch before Flutter's first frame. Tried
+  // parallelizing this with runApp once — Flutter Web's CanvasKit
+  // skips painting when the first frame's widget tree is empty, and
+  // the flt-scene-host stays at width:auto/height:auto forever
+  // (lastDrainedSeq stuck at 0, blank page). The ~50-100 ms gain
+  // wasn't worth re-debugging that.
+  await _injectSkalJsBundle();
+  _mark('main:after-inject-bundle');
+
+  // ── 4. Initial drain ────────────────────────────────────────────────
+  // Drains whatever the mount left in the ring (the inline hook above may
+  // already have consumed earlier chunks of a large mount).
   try {
     bridge.pumpOps();
   } catch (e, st) {
@@ -229,9 +260,24 @@ Future<void> main() async {
   installAppDispatcher(bridge);
   _mark('main:after-app-dispatcher');
 
-  // ── 4. Mount the Flutter tree ───────────────────────────────────────
+  // ── 5. Mount the Flutter tree ───────────────────────────────────────
   runApp(SkalWebApp(bridge: bridge));
   _mark('main:after-runApp');
+}
+
+/// Install the synchronous op-ring drain hook the JS bridge calls from
+/// `flushAndWaitForDrain` when a render would overflow the op ring. On web
+/// the JS producer and the Dart consumer share the browser main thread, so
+/// JS can't spin-wait for us to drain — it would just burn its budget and
+/// then overwrite undrained ops. This hook lets JS pump us inline instead
+/// (the op-ring counterpart to `wakeJs` → `__skal_drainEvents`), so a
+/// large mount drains in chunks with no freeze and no data loss.
+/// [SkalBridge.pumpOps] guards against re-entry. Native installs no such
+/// hook — its consumer runs on a separate thread, so the spin works there.
+void _installOpDrainHook(SkalBridge bridge) {
+  globalContext['__skal_drainOpsSync'] = (() {
+    bridge.pumpOps();
+  }).toJS;
 }
 
 /// Dynamically inject the Solid/Skal JS bundle. Resolves when the

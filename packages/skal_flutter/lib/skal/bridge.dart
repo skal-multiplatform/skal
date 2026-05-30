@@ -1,4 +1,4 @@
-// Skal bridge. Owns the shared 2 MiB region, drains the op ring once
+// Skal bridge. Owns the shared 6 MiB region, drains the op ring once
 // per frame, fans changes into NodeState's reactive notifiers.
 //
 // Two architectural decisions:
@@ -230,9 +230,21 @@ class SkalBridge {
     nodes.putIfAbsent(kRootNodeId, () => NodeState(wtBox));
   }
 
+  /// Reentrancy guard. On web, the JS overflow path
+  /// (`flushAndWaitForDrain`) can call back into [pumpOps] synchronously
+  /// via the `__skal_drainOpsSync` hook to drain the op ring inline. If
+  /// that happens while a pump is already on the stack (an RPC reply or
+  /// event handler that overflows the ring mid-drain), re-entering would
+  /// corrupt the shared scratch (`_touched`, the watermarks). We skip the
+  /// nested pump instead; JS falls back to a blind ring rewind for that
+  /// rare case. Never set on native (no inline-drain hook).
+  bool _pumping = false;
+
   /// Drain new ops from the ring. Cheap when nothing is pending —
   /// a single u64 load + compare.
   void pumpOps() {
+    if (_pumping) return; // nested inline-drain — see [_pumping].
+    _pumping = true;
     // On the dart2wasm web path the Wasm linear memory is separate
     // from the JS heap, so the "shared" bridge buffer is actually
     // two copies kept in sync at pump boundaries. syncFromJs pulls
@@ -241,11 +253,15 @@ class SkalBridge {
     // drained-seq + any reply-heap / event-ring writes back. On
     // native + on dart2js web both calls are no-ops — the buffer is
     // genuinely shared, no copy needed.
-    skal.syncFromJs();
     try {
-      _pumpOpsBody();
+      skal.syncFromJs();
+      try {
+        _pumpOpsBody();
+      } finally {
+        skal.syncToJs();
+      }
     } finally {
-      skal.syncToJs();
+      _pumping = false;
     }
   }
 
@@ -299,13 +315,20 @@ class SkalBridge {
     // op ring into the string heap.
     final writePos = data.getInt32(hOpWritePos, Endian.little).clamp(0, kOpRingSize);
 
-    // Detect a JS-side wrap. flushAndWaitForDrain spin-waits for us to
-    // catch up THEN resets opWritePos32 to 0; the next publishProgress
-    // exposes a writePos lower than our checkpoint, which is the signal
-    // that the ring has wrapped and we should resume the drain from
-    // offset 0. (End-of-batch commit no longer resets, so this only
-    // fires on the overflow path — see bridge.js `commit()`.)
-    if (writePos < _lastDrainedWritePos) {
+    // Detect a JS-side ring reset and snap our drain checkpoint back to 0.
+    // Two signals, because two topologies:
+    //   • Native: flushAndWaitForDrain spin-waits for us to fully drain
+    //     THEN rewinds opWritePos32. Because it only fires at ~ring-full
+    //     (4 MiB), the post-reset writePos is always far below our
+    //     checkpoint, so `writePos < _lastDrainedWritePos` detects it.
+    //   • Web: the reset can fire on a STRING-heap overflow while the op
+    //     ring is only lightly filled (and the inline drain runs AT the
+    //     overflow, so consecutive same-size chunks land writePos right at
+    //     the old checkpoint — the regression test misses it). The mirror
+    //     instead reports the reset out-of-band via the hJsResetEpoch the
+    //     sync just read; `skal.takeOpRingReset()` returns it (always
+    //     false on native, which uses the regression test above).
+    if (skal.takeOpRingReset() || writePos < _lastDrainedWritePos) {
       _lastDrainedWritePos = 0;
     }
 
@@ -1053,14 +1076,18 @@ class SkalBridge {
         if (readPos >= _replyHeapWritePos) break;
       }
       _replyHeapWritePos = 0;
-      // Mirror to header so JS sees the reset on its next drain (it
-      // compares its readPos against this to decide whether wraparound
-      // has happened).
+      // Reset our own view of the read cursor. JS never *reads*
+      // hReplyHeapReadPos (it only writes it as it drains, via
+      // _advanceReplyReadCursor) — so this is purely for Dart's next
+      // wraparound spin above, which compares the (JS-written, sync-
+      // pulled) readPos against _replyHeapWritePos. On web syncToJs no
+      // longer pushes this word (it's JS-owned), which is fine: the next
+      // syncFromJs pulls JS's authoritative value back in.
       _data.setInt32(hReplyHeapReadPos, 0, Endian.little);
       // Tell the web-side slice-sync that the reply heap was reset.
       // The watermark-regression check alone misses the case where a
-      // single post-reset write is larger than the pre-sync mark; the
-      // flag forces the next syncToJs to push [0, replyWp). No-op on
+      // single post-reset write is larger than the pre-sync mark; this
+      // signal forces the next syncToJs to push [0, replyWp). No-op on
       // native (FFI bridge buffer is genuinely shared). See
       // skal_ffi_web.dart::markReplyHeapReset.
       skal.markReplyHeapReset();

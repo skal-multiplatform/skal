@@ -9,7 +9,7 @@
 //
 // Two things matter for performance:
 //
-//   - `skal_acquire_bridge` returns a pointer + length to a 2 MiB
+//   - `skal_acquire_bridge` returns a pointer + length to a 6 MiB
 //     shared region that both JS (via JSObjectMakeArrayBufferWithBytes
 //     NoCopy) and any embedder (here, Dart) write into. We materialize
 //     it as a `Pointer<Uint8>` and view it as a `Uint8List` via
@@ -238,6 +238,12 @@ class Skal {
   /// skal_ffi_web.dart does the real work for dart2wasm.
   void syncFromJs() {}
   void syncToJs() {}
+
+  /// No-op on native — there is no mirror, so the op ring is never reset
+  /// out-of-band. `SkalBridge._drain`'s writePos-regression check detects
+  /// the genuine (near-ring-full) rewind directly. The web implementation
+  /// in skal_ffi_web.dart returns the epoch-driven reset signal instead.
+  bool takeOpRingReset() => false;
 
   /// No-op on native — bridge.dart calls this from `_writeReplyString`
   /// after a reply-heap wraparound resets `_replyHeapWritePos` to 0.

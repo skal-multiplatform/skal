@@ -226,19 +226,9 @@ import { EmbedSkalCounter } from './EmbedSkalCounter.dom.jsx';
 // the expected pending state until TODO_PLATFORMS.md §2 lands.
 import { getCurrentPosition } from 'skal-plugin-geolocator';
 
-// ── Palette — module scope so the bridge's prop-diff cache hits on
-//    identical color strings across every node. ───────────────────
-const BG     = '#FFF2F2F7';
-const CARD   = '#FFFFFFFF';
-const BORDER = '#FFE5E5EA';
-const INK    = '#FF1C1C1E';
-const SUBTLE = '#FF8E8E93';
-const ACCENT = '#FF0A84FF';
-const GREEN  = '#FF34C759';
-const ORANGE = '#FFFF9F0A';
-const RED    = '#FFFF3B30';
-const PURPLE = '#FF5E5CE6';
-const CHIP   = '#FFEFEFF4';
+// ── Palette — shared module so the bridge's prop-diff cache hits on
+//    identical color strings across every node and route. ──────────
+import { BG, CARD, BORDER, INK, SUBTLE, ACCENT, GREEN, ORANGE, RED, PURPLE, CHIP } from './theme.js';
 
 /** A titled card. A plain Solid component — not a Skal intrinsic, so
  *  the babel plugin leaves `<Section>` as a `createComponent` call. */

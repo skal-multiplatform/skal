@@ -26,6 +26,7 @@ import 'dart:ffi';
 import 'dart:io' show Platform;
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart' show kReleaseMode;
 
 /// Lazy-loaded handle to libskal — `.so` on Android, `.dylib` on
 /// macOS/iOS. We never close it; bun's VM tear-down is process-exit
@@ -172,7 +173,17 @@ class Skal {
         _disposeRuntime(h);
         return null;
       }
-      return Skal._(h, p.cast<Uint8>(), n);
+      final skal = Skal._(h, p.cast<Uint8>(), n);
+      // Release: tell the JS bundle to skip the dev hot-reload coordinator
+      // (the __skalHot coordinator + drain trampoline + createHotState/
+      // createRouter stash) for zero overhead. Set here, once per runtime,
+      // before the app evaluates the bundle — so every app inherits it with no
+      // boilerplate. See bridge.js / hot.js. (Debug leaves it unset → coordinator
+      // installs and hot reload works.)
+      if (kReleaseMode) {
+        skal.evaluate('globalThis.__skalRelease=true;', url: 'skal:rel');
+      }
+      return skal;
     } finally {
       calloc.free(outPtr);
       calloc.free(outLen);

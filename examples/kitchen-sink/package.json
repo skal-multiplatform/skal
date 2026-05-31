@@ -33,9 +33,9 @@
     "dev:android": "bun run build && cd flutter-host && flutter run -d android",
 
     "_hot": "// ── JS hot reload (auto): dev server watches+pushes the bundle; save a .jsx → live app updates. Manual alt: run `dev` in another shell + press `r`. ──",
-    "dev:hot:macos": "bun run build:js-only && bash -c 'bun ../../scripts/hot-reload-server.js kitchen-sink & SRV=$!; trap \"kill $SRV 2>/dev/null\" EXIT; cd flutter-host && flutter run -d macos --dart-define=SKAL_HOT=1'",
-    "dev:hot:ios": "bun run build:js-only && bash -c 'bun ../../scripts/hot-reload-server.js kitchen-sink & SRV=$!; trap \"kill $SRV 2>/dev/null\" EXIT; cd flutter-host && flutter run -d iphone-simulator --dart-define=SKAL_HOT=1'",
-    "dev:hot:android": "bun run build:js-only && bash -c 'bun ../../scripts/hot-reload-server.js kitchen-sink & SRV=$!; trap \"kill $SRV 2>/dev/null\" EXIT; cd flutter-host && flutter run -d android --dart-define=SKAL_HOT=1 --dart-define=SKAL_HOT_HOST=10.0.2.2'",
+    "dev:hot:macos": "bash ../../scripts/dev-hot.sh macos kitchen-sink",
+    "dev:hot:ios": "bash ../../scripts/dev-hot.sh iphone-simulator kitchen-sink",
+    "dev:hot:android": "bash ../../scripts/dev-hot.sh android kitchen-sink 10.0.2.2",
 
     "_release": "// ── Release builds (ships bytecode cache) ──────────────",
     "build:macos": "bun run build && cd flutter-host && flutter build macos --release",

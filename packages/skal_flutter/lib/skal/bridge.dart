@@ -251,9 +251,7 @@ class SkalBridge {
   /// socket (hot_reload_client) paths so the two can't drift.
   bool hotReload(String source) {
     if (source == _lastHotReloadSource) return false;
-    final reload =
-        'globalThis.__skalHot && globalThis.__skalHot.beginReload();\n$source';
-    final result = skal.evaluate(reload, url: 'skal-app.js');
+    final result = _evalReload(source);
     if (result.isError) {
       debugPrint('[skal] JS hot reload failed:\n${result.value}');
       // beginReload already tore down the previous generation, so a bundle that
@@ -265,10 +263,7 @@ class SkalBridge {
       // later save that reverts to it is correctly a no-op.
       final lastGood = _lastHotReloadSource;
       if (lastGood != null) {
-        skal.evaluate(
-          'globalThis.__skalHot && globalThis.__skalHot.beginReload();\n$lastGood',
-          url: 'skal-app.js',
-        );
+        _evalReload(lastGood);
         pumpOps();
       }
       return false;
@@ -278,6 +273,13 @@ class SkalBridge {
     pumpOps();
     return true;
   }
+
+  /// Evaluate `src` as a hot reload: prepend the outgoing generation's teardown
+  /// (`__skalHot.beginReload()`) so the new bundle re-mounts in place (hot.js).
+  EvalResult _evalReload(String src) => skal.evaluate(
+        'globalThis.__skalHot && globalThis.__skalHot.beginReload();\n$src',
+        url: 'skal-app.js',
+      );
 
   /// Reentrancy guard. On web, the JS overflow path
   /// (`flushAndWaitForDrain`) can call back into [pumpOps] synchronously

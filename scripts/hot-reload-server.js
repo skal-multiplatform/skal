@@ -74,6 +74,7 @@ console.log('[skal-hot] run the app with:  flutter run -d macos --dart-define=SK
 // ── 3. Watch the bundle; debounce (vite writes can fire several events).
 let timer = null;
 function broadcast() {
+  if (clients.size === 0) return; // nobody to push to — skip the read
   let source;
   try {
     source = readFileSync(BUNDLE, 'utf8');
@@ -81,7 +82,6 @@ function broadcast() {
     console.error(`[skal-hot] could not read bundle: ${e.message}`);
     return;
   }
-  if (clients.size === 0) return;
   for (const ws of clients) {
     try { ws.send(source); } catch (_) { /* dropped client */ }
   }

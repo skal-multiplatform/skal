@@ -841,15 +841,11 @@ export function scheduleCommit() {
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// Hot-reload support — see hot.js. flushOps publishes synchronously (no
-// microtask wait) so the OUTGOING generation's teardown ops are visible in
-// the header before the incoming bundle seeds its cursors from it.
-// resetRootSubtree emits the host tree-reset op.
+// Hot-reload support — see hot.js. resetRootSubtree emits the host tree-reset
+// op and publishes synchronously (commit, no microtask wait) so the OUTGOING
+// generation's teardown is visible in the header before the incoming bundle
+// seeds its cursors from it.
 // ───────────────────────────────────────────────────────────────────────
-
-export function flushOps() {
-  commit();
-}
 
 export function resetRootSubtree() {
   // Rewind the op-ring + string-heap write cursors to base BEFORE emitting the
@@ -863,6 +859,7 @@ export function resetRootSubtree() {
   // existing ring-reset detection) and snaps its drain checkpoint to 0.
   resetFrame();
   writeOp(OP_RESET_ROOT_SUBTREE, ROOT_NODE_ID, 0, 0);
+  commit(); // publish synchronously so the incoming bundle seeds past this
 }
 
 // ───────────────────────────────────────────────────────────────────────

@@ -265,6 +265,17 @@ export function ChunkedFor(props) {
 let _hotStateSeq = 0;
 let _routerInstanceSeq = 0;
 
+// Back a [get, set] signal with the reload stash under `key`: restore the
+// stashed value on (re)mount and mirror every set back into it. Falls back to a
+// plain createSignal when the coordinator is absent (web/release). Shared by
+// createHotState and createRouter so the stash protocol lives in one place.
+function hotSignal(key, initial) {
+  const stash = globalThis.__skalHot && globalThis.__skalHot.stash;
+  if (!stash) return createSignal(initial);
+  const [get, _set] = createSignal(stash.has(key) ? stash.get(key) : initial);
+  return [get, (v) => { const r = _set(v); stash.set(key, get()); return r; }];
+}
+
 /**
  * createHotState(initial, key?) — a [get, set] tuple like `createSignal`,
  * except its value survives a JS hot reload (native dev). Use it for the small
@@ -283,16 +294,7 @@ let _routerInstanceSeq = 0;
  * uses a plain `createSignal`.
  */
 export function createHotState(initial, key) {
-  const stash = globalThis.__skalHot && globalThis.__skalHot.stash;
-  if (!stash) return createSignal(initial);
-  const k = 'hotstate:' + (key != null ? key : _hotStateSeq++);
-  const [get, _set] = createSignal(stash.has(k) ? stash.get(k) : initial);
-  const set = (v) => {
-    const r = _set(v);
-    stash.set(k, get());
-    return r;
-  };
-  return [get, set];
+  return hotSignal('hotstate:' + (key != null ? key : _hotStateSeq++), initial);
 }
 
 /**
@@ -374,32 +376,24 @@ export function createRouter(routes, initial, options) {
   }
   // Restore the route stack the previous generation stashed before it was torn
   // down (hot reload), so a reload lands on the same screen instead of the
-  // initial route. Keyed by createRouter call order (stable across reloads). If
-  // the route table changed (a stashed route no longer exists), start fresh.
-  const _hotStash = globalThis.__skalHot && globalThis.__skalHot.stash;
-  // `options.key` (any string) gives a stable key for a router created in a
-  // conditional/lazy spot; otherwise fall back to call order.
-  const _routerKey = 'router:' +
-      (options && options.key != null ? options.key : _routerInstanceSeq++);
-  let _restored = _hotStash && _hotStash.get(_routerKey);
-  if (!(Array.isArray(_restored) && _restored.length &&
-        _restored.every((e) => e && routes[e.name]))) {
-    _restored = null;
-  }
-  const [stack, _setStack] = createSignal(_restored || [
+  // initial route. `options.key` (any string) gives a stable key for a router
+  // created in a conditional/lazy spot; otherwise fall back to call order.
+  const initialStack = [
     {
       name: firstName,
       params: {},
       title: defaultTitleFor(firstName),
       transition: defaultTransitionFor(firstName),
     },
-  ]);
-  // Mirror the live stack into the stash on every change so the next generation
-  // can restore it (native dev only; no-op on web/release). Router methods
-  // always pass the full new stack array, so we stash `v` directly.
-  const setStack = _hotStash
-    ? (v) => { _setStack(v); _hotStash.set(_routerKey, v); }
-    : _setStack;
+  ];
+  const routerKey = 'router:' +
+      (options && options.key != null ? options.key : _routerInstanceSeq++);
+  const [stack, setStack] = hotSignal(routerKey, initialStack);
+  // If the route table changed (a stashed route no longer exists), start fresh.
+  const restored = stack();
+  const restoredValid = Array.isArray(restored) && restored.length > 0 &&
+      restored.every((e) => e && routes[e.name]);
+  if (!restoredValid) setStack(initialStack);
 
   const router = {
     stack,

@@ -935,6 +935,6 @@ export const root = new SkalNode('box', B.ROOT_NODE_ID, false);
 if (globalThis.__skalHot) {
   globalThis.__skalHot.configure({
     render: (factory) => render(factory, root),
-    reset: () => { B.resetRootSubtree(); B.flushOps(); },
+    reset: () => B.resetRootSubtree(),
   });
 }

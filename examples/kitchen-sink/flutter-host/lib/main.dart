@@ -156,10 +156,6 @@ void main() async {
     // top-level await), but dynamic import() is legal in Program context.
     // Bun's worker waitForPromise hook unwraps the returned promise
     // before signalDone, so this is synchronous from Dart's POV.
-    // Release: skip the dev hot-reload coordinator entirely (the bundle checks
-    // this flag) so release pays zero of its overhead. Set before the bundle's
-    // module init runs (the import below).
-    skal.evaluate('globalThis.__skalRelease=true;', url: 'skal:rel');
     final loader =
         "(async()=>{await import(${_jsStringLiteral('file://$cjsPath')});"
         "return 'skal-app loaded';})();";

@@ -111,6 +111,9 @@ export const OP_SET_ROTATION_Z    = 0x25;
 export const OP_SET_DESIGN        = 0x26;
 // Pull-to-refresh completion — JS → host: app finished refreshing.
 export const OP_COMPLETE_REFRESH  = 0x27;
+// Diagnostic log — native only. Routes a console.* line to the host (see
+// installConsoleBridge below). a = level, b = str offset, c = byte length.
+export const OP_LOG               = 0x28;
 
 // Widget types — naming mirrors Flutter's widget vocabulary.
 export const WT_BOX                  = 0;
@@ -488,6 +491,13 @@ let pendingResetEpoch = false;
 // drain); a re-overflow must NOT recurse into another synchronous drain.
 let inSyncDrain = false;
 
+// Set for the full duration of flushAndWaitForDrain. The console shim's
+// _emitLog checks it and drops any log that fires from INSIDE a flush —
+// notably the internal `console.warn` calls below, which would otherwise
+// re-enter writeOp while the ring is still full (opWritePos is at the
+// overflow point until resetFrame), triggering a nested flush/second spin.
+let _inFlush = false;
+
 function resetFrame() {
   opWritePos32       = OP_RING_OFFSET32;
   strWritePos        = STRING_HEAP_OFFSET;
@@ -530,44 +540,55 @@ function publishProgress() {
 //     drains the ring (no data loss, no freeze). A reentrancy guard covers
 //     the rare case where the drain itself re-overflows.
 function flushAndWaitForDrain() {
-  publishProgress();
-  const targetSeq = opSeq;
+  // _inFlush is cleared in a finally so it ALWAYS resets — even if the web
+  // inline drain (drainOpsSync) throws. A leaked _inFlush=true would, on any
+  // target where the console shim is installed, silence every later console.*
+  // for the session (see _emitLog). resetFrame stays on the happy path: on a
+  // failed drain the host may not have consumed the ops, so blindly rewinding
+  // the ring could overwrite undrained data — leave that pre-existing behavior.
+  _inFlush = true;
+  try {
+    publishProgress();
+    const targetSeq = opSeq;
 
-  const drainOpsSync = globalThis.__skal_drainOpsSync;
-  if (typeof drainOpsSync === 'function') {
-    // Web — drain inline on the shared thread instead of spinning.
-    // Diagnostic counter (readable as globalThis.__skal_opRingResets) —
-    // lets a dev confirm whether a render is overflowing the ring. Rare
-    // path, so the bookkeeping is free.
-    globalThis.__skal_opRingResets = (globalThis.__skal_opRingResets | 0) + 1;
-    if (!inSyncDrain) {
-      inSyncDrain = true;
-      try { drainOpsSync(); } finally { inSyncDrain = false; }
-    } else {
-      // Re-overflow while already draining (e.g. an RPC reply handler that
-      // itself writes > a ring of ops). Can't recurse; fall back to a blind
-      // rewind. Chunk such producers (ChunkedFor) to avoid stale ops.
-      console.warn('Skal: op ring re-overflowed during inline drain — chunk large renders to avoid stale ops');
+    const drainOpsSync = globalThis.__skal_drainOpsSync;
+    if (typeof drainOpsSync === 'function') {
+      // Web — drain inline on the shared thread instead of spinning.
+      // Diagnostic counter (readable as globalThis.__skal_opRingResets) —
+      // lets a dev confirm whether a render is overflowing the ring. Rare
+      // path, so the bookkeeping is free.
+      globalThis.__skal_opRingResets = (globalThis.__skal_opRingResets | 0) + 1;
+      if (!inSyncDrain) {
+        inSyncDrain = true;
+        try { drainOpsSync(); } finally { inSyncDrain = false; }
+      } else {
+        // Re-overflow while already draining (e.g. an RPC reply handler that
+        // itself writes > a ring of ops). Can't recurse; fall back to a blind
+        // rewind. Chunk such producers (ChunkedFor) to avoid stale ops.
+        console.warn('Skal: op ring re-overflowed during inline drain — chunk large renders to avoid stale ops');
+      }
+      resetFrame();
+      return;
+    }
+
+    // Native — spin until the worker's consumer drains. 5 s budget. Throwing
+    // here is dangerous in microtask context (ChunkedFor's queued steps
+    // aren't wrapped in try/catch, and an uncaught throw blows through to
+    // bun's error printer), so on timeout we warn and overwrite; the host
+    // catches up over the next vsync.
+    const deadline = performance.now() + 5000;
+    while (true) {
+      const drained = Atomics.load(seqArr, B_LAST_DRAINED_SEQ);
+      if (drained >= targetSeq) break;
+      if (performance.now() > deadline) {
+        console.warn('Skal: drain spin timeout — UI thread slow; ring will overwrite');
+        break;
+      }
     }
     resetFrame();
-    return;
+  } finally {
+    _inFlush = false;
   }
-
-  // Native — spin until the worker's consumer drains. 5 s budget. Throwing
-  // here is dangerous in microtask context (ChunkedFor's queued steps
-  // aren't wrapped in try/catch, and an uncaught throw blows through to
-  // bun's error printer), so on timeout we warn and overwrite; the host
-  // catches up over the next vsync.
-  const deadline = performance.now() + 5000;
-  while (true) {
-    const drained = Atomics.load(seqArr, B_LAST_DRAINED_SEQ);
-    if (drained >= targetSeq) break;
-    if (performance.now() > deadline) {
-      console.warn('Skal: drain spin timeout — UI thread slow; ring will overwrite');
-      break;
-    }
-  }
-  resetFrame();
 }
 
 export function writeOp(opcode, a, b, c) {
@@ -628,6 +649,123 @@ function writeString(s) {
 export function setText(id, text) {
   writeString(text);
   writeOp(OP_SET_TEXT, id, _strOffset, _strLength);
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Console bridge (NATIVE ONLY) — route console.* into the host log stream.
+//
+// Under bun, globalThis.console is JSC's ConsoleObject writing to a stdio
+// the embedded runtime never wires up: on device that's /dev/null at best,
+// and historically it crashed the VM outright. So a user's `console.log`
+// had nowhere safe to go. We shadow console with a shim that serializes the
+// args and ships them through OP_LOG; the Dart side debugPrints each line,
+// so logs land in `flutter run` / logcat / Console.app interleaved with
+// Dart's own [skal] logs — one place to look, on every native platform.
+//
+// Web keeps the browser's real console (DevTools is strictly better), so the
+// shim is installed only under the embedded bun runtime — gated on
+// HAS_NATIVE_BRIDGE AND the absence of a DOM `window` (the bridge is also
+// present on the Flutter Web target, which DOES have a window). It REPLACES
+// console rather than wrapping it, so a connected JS inspector's console pane
+// won't mirror these lines — the inspector's value is breakpoints, not its console.
+const LOG_MAX_CHARS = 8192;
+
+// Hoisted (not re-created per call). JSON.stringify visits every value, and a
+// BigInt anywhere in the object would otherwise throw — collapsing the whole
+// value to "[object Object]" in _fmtLogArg's catch. Circular refs still fall through.
+const _bigintReplacer = (_k, v) => (typeof v === 'bigint' ? `${v}n` : v);
+
+function _fmtLogArg(a) {
+  if (typeof a === 'string') return a;
+  if (a instanceof Error) return a.stack || a.message || String(a);
+  if (typeof a === 'object' && a !== null) {
+    try {
+      return JSON.stringify(a, _bigintReplacer);
+    } catch (_) {
+      return String(a);
+    }
+  }
+  return String(a);
+}
+
+// Reentrancy guards. Two distinct cases must not re-enter the op ring:
+//   • _inEmitLog — a log fired from inside _emitLog itself.
+//   • _inFlush   — a log fired from inside flushAndWaitForDrain (its own
+//     console.warn diagnostics). _inEmitLog is FALSE there because the flush
+//     was triggered by a normal op, so without _inFlush the warn's _emitLog
+//     would run writeOp while the ring is still full → nested flush/spin.
+// Either way the nested log is dropped. Logging must also never throw into
+// app code, hence the try/catch.
+let _inEmitLog = false;
+
+function _emitLog(level, args) {
+  if (_inEmitLog || _inFlush) return;
+  _inEmitLog = true;
+  try {
+    let s = '';
+    for (let i = 0; i < args.length; i++) {
+      if (i) s += ' ';
+      s += _fmtLogArg(args[i]);
+    }
+    if (s.length === 0) return;
+    if (s.length > LOG_MAX_CHARS) s = s.slice(0, LOG_MAX_CHARS) + '…';
+    writeString(s);
+    writeOp(OP_LOG, level, _strOffset, _strLength);
+    // Schedule (don't force) a commit so the log reaches the host at the end
+    // of the current tick — covering a log from an idle async callback/timer
+    // without a per-call opSeq bump + Atomics.store. Idempotent: a loop of
+    // N logs in one tick publishes once, and a mid-render log piggybacks the
+    // render's own end-of-batch commit.
+    scheduleCommit();
+  } catch (_) {
+    // swallow — a logging failure must never break the app
+  } finally {
+    _inEmitLog = false;
+  }
+}
+
+function installConsoleBridge() {
+  // level: 0 log, 1 info, 2 warn, 3 error, 4 debug
+  const con = {
+    log:   function () { _emitLog(0, arguments); },
+    info:  function () { _emitLog(1, arguments); },
+    warn:  function () { _emitLog(2, arguments); },
+    error: function () { _emitLog(3, arguments); },
+    debug: function () { _emitLog(4, arguments); },
+    trace: function () { _emitLog(4, arguments); },
+  };
+  // Methods that should still surface output route to log; assert keeps its
+  // semantics. Everything else we don't define (groupEnd, count, time,
+  // profile, timeStamp, createTask, …) falls through to the Proxy's no-op
+  // below, so no console method ever throws under bun — no curated list to
+  // maintain, and we REPLACE rather than wrap so there's no native fallback.
+  con.dir = con.log;
+  con.dirxml = con.log;
+  con.table = con.log;
+  con.group = con.log;
+  con.groupCollapsed = con.log;
+  con.assert = function (cond) {
+    if (!cond) {
+      const rest = Array.prototype.slice.call(arguments, 1);
+      _emitLog(3, ['Assertion failed:'].concat(rest));
+    }
+  };
+  const noop = function () {};
+  globalThis.console = new Proxy(con, {
+    get(target, prop) {
+      const v = target[prop];
+      return v !== undefined ? v : noop;
+    },
+  });
+}
+
+// Install ONLY under the embedded bun runtime — which has no DOM. Note
+// HAS_NATIVE_BRIDGE is ALSO true on the Flutter Web (Shape D) target, where
+// Dart hands us the bridge buffer via __skal_acquireBridge; there a real
+// browser console (DevTools) exists and is strictly better, so the `window`
+// check keeps the shim off the web and leaves console.* going to DevTools.
+if (HAS_NATIVE_BRIDGE && typeof window === 'undefined') {
+  installConsoleBridge();
 }
 
 // ───────────────────────────────────────────────────────────────────────

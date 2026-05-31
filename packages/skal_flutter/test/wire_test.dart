@@ -40,6 +40,12 @@ void main() {
       expect(opSetScaleY, 0x24);
       expect(opSetRotationZ, 0x25);
     });
+
+    test('control + diagnostic opcodes', () {
+      expect(opSetDesign, 0x26);
+      expect(opCompleteRefresh, 0x27);
+      expect(opLog, 0x28);
+    });
   });
 
   group('wire constants — widget types', () {

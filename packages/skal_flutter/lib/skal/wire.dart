@@ -128,6 +128,13 @@ const int opSetDesign       = 0x26;
 // spinner. `a` = nodeId. Emitted by JS once the `onRefresh` callback's
 // returned Promise resolves; completes a host-side `Completer`. See §1.5.
 const int opCompleteRefresh = 0x27;
+// Diagnostic log line — JS `console.*` routed to the host by the native
+// console shim (see `installConsoleBridge` in bridge.js for the full why).
+// The host `debugPrint`s it into the Flutter log stream. Wire shape:
+// a = level (0 log / 1 info / 2 warn / 3 error / 4 debug), b = string-heap
+// offset, c = byte length. Pure side-channel — mutates no node. Emitted only
+// by the embedded-bun runtime (native), so on web the decoder is unused.
+const int opLog             = 0x28;
 
 // ── Widget types (NodeState.type) ─────────────────────────────────────
 //

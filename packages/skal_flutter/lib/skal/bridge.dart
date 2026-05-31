@@ -826,6 +826,22 @@ class SkalBridge {
           designBrightness = b;
           designChanged.notify();
           break;
+
+        case opLog:
+          // JS `console.*` from the native shim (bridge.js). a = level,
+          // b = string-heap offset, c = byte length. Surface it in the
+          // Flutter log stream so it shows wherever the dev is already
+          // watching, next to Dart's own logs. Gated on kDebugMode: the
+          // shim only installs on native and is meant for dev, and release
+          // builds shouldn't pay the decode/print. The op is still consumed
+          // either way (p advances below), so gating can't desync the ring.
+          if (kDebugMode) {
+            final msg = _readString(kStringHeapOff + b, c);
+            const tags = ['log', 'info', 'warn', 'error', 'debug'];
+            final tag = (a >= 0 && a < tags.length) ? tags[a] : 'log';
+            debugPrint('[skal-js:$tag] $msg');
+          }
+          break;
       }
 
       p += 16;

@@ -209,6 +209,30 @@ const Runtime = struct {
     fn workerMain(self: *Runtime) void {
         bun.jsc.initialize(false);
 
+        // Crash floor for console.*. Bun's ConsoleObject writes through
+        // Output.Source, which the embedded library path never initializes —
+        // so any console.log from user JS hits an uninitialized (threadlocal)
+        // source: rawWriter() asserts in debug and dereferences a garbage fd
+        // in release, taking down the VM. Wire it to the process stdout/stderr
+        // here, on the worker thread that owns the VM (source is threadlocal),
+        // BEFORE VirtualMachine.init captures the console writers. On macOS
+        // these are the app's real stdio (visible via `flutter run`); on
+        // Android they resolve to /dev/null — harmless. The JS console shim
+        // (bridge.js) is what makes logs visible cross-platform; this just
+        // guarantees the native console can never crash, with or without the
+        // shim or an attached inspector.
+        //
+        // We deliberately call only the setInit step of bun's
+        // Output.Source.Stdio.init, NOT the whole thing: the full init also runs
+        // bun_initialize_process(), which an embedded library must not do inside
+        // the host Flutter process (it would touch the host's stdio/signals).
+        // Trade-off: bun's invalid-fd → /dev/null safety net is skipped — fine
+        // here because the host always hands us valid stdio fds.
+        bun.Output.Source.setInit(
+            bun.sys.File.from(std.fs.File.stdout()),
+            bun.sys.File.from(std.fs.File.stderr()),
+        );
+
         const args = std.mem.zeroes(bun.schema.api.TransformOptions);
         const vm = jsc.VirtualMachine.init(.{
             .allocator = self.allocator,
@@ -230,6 +254,14 @@ const Runtime = struct {
         installBridgeGlobals(vm);
 
         self.ready.set();
+
+        // Optional JS inspector (WebKit Inspector Protocol). Started AFTER
+        // ready.set so a non-blocking attach doesn't delay skal_create_runtime;
+        // in wait mode it blocks this worker before the event loop, so the
+        // bundle eval task simply doesn't run until a debugger connects (the
+        // host's create() still returns). Off unless SKAL_INSPECT is set, so
+        // production never opens a debug socket.
+        maybeStartInspector(vm);
 
         // Long-lived event loop — mirrors bun's watcher-mode loop in
         // `src/bun.js.zig`. While the loop has work — pending timers,
@@ -279,6 +311,51 @@ fn acquireBridgeBuffer_jsCallback(
         null,
     );
     return @ptrCast(ab);
+}
+
+/// Start bun's WebKit-Inspector-Protocol debugger when SKAL_INSPECT is set.
+/// SKAL_INSPECT=1|true|on|yes|<empty> → default localhost:6499;
+/// SKAL_INSPECT=<port>|<host:port>|<ws-url> → that endpoint. SKAL_INSPECT_WAIT=1
+/// blocks bootstrap until a debugger attaches so the bundle's first line can be
+/// breakpointed. Connect via https://debug.bun.sh or the VS Code Bun extension.
+///
+/// WARNING — opt-in DEV tooling, not a graceful runtime feature. bun's debugger
+/// server runs on its OWN thread; if it can't bind the endpoint (port in use,
+/// privileged port, bad host) it calls process.exit(1) from that thread, which
+/// the `catch` below CANNOT intercept — the whole app dies. Only set
+/// SKAL_INSPECT in a dev shell, and prefer the default port unless you know the
+/// port you pick is free.
+///
+/// Note: Skal evaluates the bundle through Bun__REPL__evaluate, not bun's
+/// module pipeline, so source-map fidelity back to original JSX is limited —
+/// protocol attach, pausing, the console, and breakpoints work, but mapping
+/// to .jsx source is not guaranteed.
+fn maybeStartInspector(vm: *jsc.VirtualMachine) void {
+    const spec = bun.getenvZ("SKAL_INSPECT") orelse return;
+    const wait = bun.getenvZ("SKAL_INSPECT_WAIT") != null;
+    // Treat the common boolean-enable values as "use the default port". bun's
+    // debugger parses a bare-number path_or_port AS the port, so a literal
+    // SKAL_INSPECT=1 would otherwise bind privileged port 1 and (per the
+    // WARNING above) kill the app.
+    //
+    // The value must be an EMPTY but NON-NULL string, not null: Debugger.start
+    // only runs its LISTEN branch — the one that actually opens the inspector
+    // server — when `path_or_port` is non-null (jsc/Debugger.zig). A null
+    // skips it and starts no server at all. parseUrl("") then keeps bun's
+    // default ws://localhost:6499.
+    const enable_only = spec.len == 0 or
+        std.mem.eql(u8, spec, "1") or
+        std.mem.eql(u8, spec, "true") or
+        std.mem.eql(u8, spec, "on") or
+        std.mem.eql(u8, spec, "yes");
+    vm.debugger = .{
+        .path_or_port = if (enable_only) "" else spec,
+        .wait_for_connection = if (wait) .forever else .off,
+        .set_breakpoint_on_first_line = false,
+    };
+    vm.ensureDebugger(wait) catch |e| {
+        std.debug.print("skal: inspector failed to start: {}\n", .{e});
+    };
 }
 
 fn installBridgeGlobals(vm: *jsc.VirtualMachine) void {

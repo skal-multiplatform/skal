@@ -64,6 +64,12 @@ class SkalBridge {
   /// detect the regression and snap this back to 0 too.
   int _lastDrainedWritePos = 0;
 
+  /// Last `hJsResetEpoch` we observed. JS bumps the epoch whenever it rewinds
+  /// the op-ring/string-heap cursors to base (overflow path + every hot
+  /// reload). A change is the reliable cross-topology reset signal — see the
+  /// detection in [_drain].
+  int _lastJsResetEpoch = 0;
+
   /// Heap-side overflow queue for events that didn't fit in the
   /// 1 MiB event ring. The other three rings use JS-side spin-wait
   /// because their producer (the bun worker) can safely block; the
@@ -230,6 +236,49 @@ class SkalBridge {
     nodes.putIfAbsent(kRootNodeId, () => NodeState(wtBox));
   }
 
+  /// Source of the JS generation currently running. Lets [hotReload] skip a
+  /// byte-identical bundle (e.g. a pure-Dart Flutter hot reload that didn't
+  /// touch the JS) instead of needlessly re-evaluating and resetting
+  /// in-component state.
+  String? _lastHotReloadSource;
+
+  /// Apply a freshly-built JS bundle to the LIVE runtime (native dev hot
+  /// reload). Prepends the outgoing generation's teardown
+  /// (`__skalHot.beginReload()` — dispose + host tree reset, see hot.js) then
+  /// re-evaluates the new bundle so it re-mounts in place. Returns false and
+  /// does nothing if the source matches the running generation or the eval
+  /// fails. Shared by the manual `r` ([SkalRoot.reassemble]) and the automatic
+  /// socket (hot_reload_client) paths so the two can't drift.
+  bool hotReload(String source) {
+    if (source == _lastHotReloadSource) return false;
+    final reload =
+        'globalThis.__skalHot && globalThis.__skalHot.beginReload();\n$source';
+    final result = skal.evaluate(reload, url: 'skal-app.js');
+    if (result.isError) {
+      debugPrint('[skal] JS hot reload failed:\n${result.value}');
+      // beginReload already tore down the previous generation, so a bundle that
+      // threw mid-mount (a broken intermediate save — very common while
+      // editing) left the tree blank/partial. Re-mount the last good bundle so
+      // the app keeps running instead of going blank until the error is fixed
+      // (beginReload resets the tree again, clearing the failed attempt's
+      // orphan nodes). _lastHotReloadSource stays at the last good source, so a
+      // later save that reverts to it is correctly a no-op.
+      final lastGood = _lastHotReloadSource;
+      if (lastGood != null) {
+        skal.evaluate(
+          'globalThis.__skalHot && globalThis.__skalHot.beginReload();\n$lastGood',
+          url: 'skal-app.js',
+        );
+        pumpOps();
+      }
+      return false;
+    }
+    _lastHotReloadSource = source;
+    // Pump immediately so the rebuilt tree appears this frame, not next.
+    pumpOps();
+    return true;
+  }
+
   /// Reentrancy guard. On web, the JS overflow path
   /// (`flushAndWaitForDrain`) can call back into [pumpOps] synchronously
   /// via the `__skal_drainOpsSync` hook to drain the op ring inline. If
@@ -316,19 +365,24 @@ class SkalBridge {
     final writePos = data.getInt32(hOpWritePos, Endian.little).clamp(0, kOpRingSize);
 
     // Detect a JS-side ring reset and snap our drain checkpoint back to 0.
-    // Two signals, because two topologies:
-    //   • Native: flushAndWaitForDrain spin-waits for us to fully drain
-    //     THEN rewinds opWritePos32. Because it only fires at ~ring-full
-    //     (4 MiB), the post-reset writePos is always far below our
-    //     checkpoint, so `writePos < _lastDrainedWritePos` detects it.
-    //   • Web: the reset can fire on a STRING-heap overflow while the op
-    //     ring is only lightly filled (and the inline drain runs AT the
-    //     overflow, so consecutive same-size chunks land writePos right at
-    //     the old checkpoint — the regression test misses it). The mirror
-    //     instead reports the reset out-of-band via the hJsResetEpoch the
-    //     sync just read; `skal.takeOpRingReset()` returns it (always
-    //     false on native, which uses the regression test above).
-    if (skal.takeOpRingReset() || writePos < _lastDrainedWritePos) {
+    // Three signals:
+    //   • hJsResetEpoch bumped — JS rewound the op-ring + string-heap cursors
+    //     to base. This fires on the overflow path AND on every hot reload
+    //     (resetRootSubtree rewinds so positions don't accumulate across
+    //     reloads). It is the RELIABLE signal: because the buffer is shared we
+    //     read it directly, and unlike the regression test below it fires even
+    //     when the post-reset tree is the same size or LARGER than what we last
+    //     drained — exactly the case for a hot reload re-mounting a similar
+    //     tree, where writePos would NOT regress.
+    //   • Native overflow: flushAndWaitForDrain only fires near ring-full, so
+    //     the post-reset writePos lands far below our checkpoint — the
+    //     regression test catches it as a belt-and-braces fallback.
+    //   • Web: the slice-sync mirror reports the reset out-of-band;
+    //     `skal.takeOpRingReset()` returns it (always false on native).
+    final jsResetEpoch = data.getInt32(hJsResetEpoch, Endian.little);
+    final epochBumped = jsResetEpoch != _lastJsResetEpoch;
+    _lastJsResetEpoch = jsResetEpoch;
+    if (skal.takeOpRingReset() || epochBumped || writePos < _lastDrainedWritePos) {
       _lastDrainedWritePos = 0;
     }
 
@@ -346,12 +400,23 @@ class SkalBridge {
 
       switch (opcode) {
         case opCreateNode:
-          ns[a] = NodeState(b);
-          // JS (re)creates the root node id at startup — re-attach the
-          // app-level dispatcher so the imperative dialog API survives.
-          if (a == kRootNodeId) ns[a]?.methodDispatcher = rootDispatcher;
-          // Latch — enables the richText pass-0 in the coalescer.
-          if (b == wtRichText) _treeHasRichText = true;
+          if (a == kRootNodeId && ns[a] != null) {
+            // The root box is re-emitted on every boot AND every hot reload
+            // (renderer.js runs at bundle top level). Keep the live NodeState
+            // SkalRoot is bound to instead of replacing it — a fresh one would
+            // strand SkalRoot on a dead notifier. Scoped to the root: every
+            // other id is created fresh, since after a reload's tree sweep no
+            // non-root id survives (so there is nothing to keep, and a chance
+            // type-match must never silently reuse a stale NodeState).
+            ns[a]!.methodDispatcher = rootDispatcher;
+          } else {
+            ns[a] = NodeState(b);
+            // JS (re)creates the root node id at startup — re-attach the
+            // app-level dispatcher so the imperative dialog API survives.
+            if (a == kRootNodeId) ns[a]!.methodDispatcher = rootDispatcher;
+            // Latch — enables the richText pass-0 in the coalescer.
+            if (b == wtRichText) _treeHasRichText = true;
+          }
           break;
 
         case opCreateCustomNode:
@@ -360,6 +425,59 @@ class SkalBridge {
           final node = NodeState(wtCustom);
           node.customWidgetName = _nameDict[b];
           ns[a] = node;
+          break;
+
+        case opResetRootSubtree:
+          // Hot reload — the outgoing JS generation has been disposed and a
+          // fresh bundle is about to rebuild the tree with freshly-reused node
+          // ids. Drop every node except the root shell so the rebuild lands on
+          // a clean map (the re-emitted root create is idempotent above, so any
+          // gen-1 node left behind would leak as an orphan). Cancel every
+          // stream subscription (all subscribing nodes are being torn down),
+          // keep the live root NodeState (SkalRoot is bound to it), clear its
+          // children, and re-attach the app dispatcher.
+          for (final sub in _streamSubscriptions.values) {
+            sub.cancel();
+          }
+          _streamSubscriptions.clear();
+          final resetRoot = ns[kRootNodeId];
+          // We deliberately do NOT dispose the swept NodeStates: their SkalNode
+          // widgets (and any host-side AnimationControllers) are still mounted
+          // until this frame's build rebuilds the root, and disposing their
+          // notifiers now would risk a "used after dispose" if a controller
+          // ticks before the rebuild detaches them. Dropping them from the map
+          // is enough — each is unreferenced (and GC'd) once its widget
+          // unmounts on the rebuild and removes its own listener.
+          ns.clear();
+          // Buffered method-arg lists and animatedList mid-exit children belong
+          // to the swept generation — drop them so they don't leak across the
+          // reload (the leaving NodeStates are already gone with ns.clear()).
+          _pendingMethodArgs.clear();
+          if (resetRoot != null) {
+            resetRoot.clearChildren();
+            resetRoot.leavingChildren?.clear();
+            resetRoot.methodDispatcher = rootDispatcher;
+            resetRoot.coldDirty = true;
+            ns[kRootNodeId] = resetRoot;
+          } else {
+            ns[kRootNodeId] = NodeState(wtBox)..methodDispatcher = rootDispatcher;
+          }
+          // Per-tree latch — the swept tree is gone, so let the new generation
+          // re-latch only if it actually mounts rich text.
+          _treeHasRichText = false;
+          // The reply heap is logically empty now (subscribers gone, RPCs
+          // rejected); rewind its cursors so they don't accumulate across
+          // reloads (which would inject periodic ~50ms wraparound stalls) — but
+          // ONLY when JS has consumed everything (its read cursor caught up to
+          // the write cursor), so we never clobber a reply string that an
+          // undrained event still points at. Otherwise leave it for this round.
+          if (_data.getInt32(hReplyHeapReadPos, Endian.little) >=
+              _replyHeapWritePos) {
+            _replyHeapWritePos = 0;
+            _data.setInt32(hReplyHeapWritePos, 0, Endian.little);
+            _data.setInt32(hReplyHeapReadPos, 0, Endian.little);
+          }
+          touched.add(kRootNodeId);
           break;
 
         case opRemoveNode:

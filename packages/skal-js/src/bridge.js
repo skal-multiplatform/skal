@@ -4,6 +4,8 @@
 //
 // Higher-level code (the universal renderer in renderer.js) builds on top.
 
+import { installHotCoordinator } from './hot.js';
+
 // ───────────────────────────────────────────────────────────────────────
 // Buffer layout — must match flutter/skal_flutter/lib/skal/wire.dart
 // + patches/skal_entry.zig.
@@ -114,6 +116,11 @@ export const OP_COMPLETE_REFRESH  = 0x27;
 // Diagnostic log — native only. Routes a console.* line to the host (see
 // installConsoleBridge below). a = level, b = str offset, c = byte length.
 export const OP_LOG               = 0x28;
+
+// Hot reload — tear down every node under the root (id 1), keeping the root
+// shell, so a re-evaluated bundle rebuilds the tree from a clean host state.
+// See hot.js (beginReload) + bridge.dart's opResetRootSubtree handler.
+export const OP_RESET_ROOT_SUBTREE = 0x29;
 
 // Widget types — naming mirrors Flutter's widget vocabulary.
 export const WT_BOX                  = 0;
@@ -471,13 +478,29 @@ const AUTO_COMMIT_OPS = 16384;
 // not the ring, so the slack just has to cover the in-progress op.
 const RING_NEAR_END32 = OP_RING_END32 - 4;
 
-let opSeq = 0n;
-let opWritePos32 = OP_RING_OFFSET32;
-let strWritePos = STRING_HEAP_OFFSET;
+// Cursors are SEEDED FROM THE LIVE HEADER, not hardcoded, so re-evaluating
+// this bundle in the same VM (JS hot reload — see hot.js) continues exactly
+// where the previous generation left off instead of regressing the shared
+// op-ring / string-heap write positions (which would desync the host drain).
+// The header stores positions RELATIVE to each region's base (see
+// publishProgress), so we add the base back. On a cold start the header is
+// zeroed, so this reduces to OP_RING_OFFSET32 / STRING_HEAP_OFFSET / 0n —
+// byte-identical to the original hardcoded defaults.
+const _seededOpRelBytes  = u32[H_OP_WRITE_POS];
+const _seededStrRelBytes = u32[H_STR_WRITE_POS];
+let opSeq = Atomics.load(seqArr, B_OP_SEQ);
+let opWritePos32 = _seededOpRelBytes
+  ? (_seededOpRelBytes >> 2) + OP_RING_OFFSET32
+  : OP_RING_OFFSET32;
+let strWritePos = _seededStrRelBytes
+  ? _seededStrRelBytes + STRING_HEAP_OFFSET
+  : STRING_HEAP_OFFSET;
 
 // Tracks the writePos at which we last bumped opSeq. Auto-commit kicks
-// in when (opWritePos32 - lastCommittedPos32) >= AUTO_COMMIT_OPS.
-let lastCommittedPos32 = OP_RING_OFFSET32;
+// in when (opWritePos32 - lastCommittedPos32) >= AUTO_COMMIT_OPS. Seed it to
+// the current cursor (not the ring base) or the first op after a hot reload
+// would trip a spurious auto-commit.
+let lastCommittedPos32 = opWritePos32;
 
 // Set when the op-ring + string-heap write cursors have been reset to 0
 // but the reset hasn't been published yet. The next publishProgress
@@ -815,6 +838,31 @@ export function scheduleCommit() {
   if (scheduled) return;
   scheduled = true;
   queueMicrotask(commit);
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Hot-reload support — see hot.js. flushOps publishes synchronously (no
+// microtask wait) so the OUTGOING generation's teardown ops are visible in
+// the header before the incoming bundle seeds its cursors from it.
+// resetRootSubtree emits the host tree-reset op.
+// ───────────────────────────────────────────────────────────────────────
+
+export function flushOps() {
+  commit();
+}
+
+export function resetRootSubtree() {
+  // Rewind the op-ring + string-heap write cursors to base BEFORE emitting the
+  // reset. The outgoing generation is fully torn down and the host has already
+  // drained its published ops (it pumps every frame), so reusing the byte
+  // ranges is safe — and it stops the write positions from ratcheting upward
+  // on every reload. Without this, after ~20 reloads a re-mount overflows the
+  // ring/heap mid-eval; on native the overflow path spin-waits on the host
+  // consumer, which is blocked inside the synchronous evaluate() — a ~5s
+  // freeze then a blind overwrite. The host sees writePos regress (its
+  // existing ring-reset detection) and snaps its drain checkpoint to 0.
+  resetFrame();
+  writeOp(OP_RESET_ROOT_SUBTREE, ROOT_NODE_ID, 0, 0);
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -1415,7 +1463,11 @@ const pendingCalls = new Map();
 // pendingCalls (one nextCallId counter shared so the spaces don't
 // overlap). Value shape: { onValue, onError?, onDone? }.
 const streamHandlers = new Map();
-let nextCallId = 1;
+// Seeded from the previous generation's high-water mark (persisted by the
+// hot-reload cleanup below) so a reloaded bundle does NOT reuse call ids the
+// host may still have in flight — a late RPC reply for a gen-1 call id would
+// otherwise resolve an unrelated gen-2 call. Fresh on cold boot (undefined → 1).
+let nextCallId = globalThis.__skalNextCallId || 1;
 
 /**
  * Invoke a method on a Dart-side host's controller. Returns a Promise
@@ -1561,7 +1613,9 @@ export function cancelStreamsForNode(nodeId) {
 // ───────────────────────────────────────────────────────────────────────
 
 const handlers = new Map();
-let nextHandlerId = 1;
+// Same cross-generation continuity as nextCallId — a tap the host queued for a
+// gen-1 handler id must not fire a gen-2 handler that happens to reuse that id.
+let nextHandlerId = globalThis.__skalNextHandlerId || 1;
 
 export function newHandlerId(fn) {
   const id = nextHandlerId++;
@@ -1611,7 +1665,7 @@ function _advanceReplyReadCursor(offset, length) {
   u32[H_REPLY_HEAP_READ_POS] = offset + length;
 }
 
-globalThis.__skal_drainEvents = function () {
+function _drainEvents() {
   const seq = Atomics.load(seqArr, B_EVENT_SEQ);
   if (seq === lastEventSeq) return;
 
@@ -1769,7 +1823,39 @@ globalThis.__skal_drainEvents = function () {
   }
   u32[H_EVENT_READ_POS] = (readPos32 - base32) << 2;
   lastEventSeq = seq;
-};
+}
+
+// Install the event drain. On native we route through the hot-reload
+// coordinator's trampoline: the worker permanently caches the FIRST
+// __skal_drainEvents it sees (patches/skal_entry.zig), so a re-evaluated
+// bundle's new drain would otherwise never be called. The coordinator keeps a
+// stable trampoline and we register THIS generation's drain as the live
+// target. On web / non-native there's no in-VM re-eval, so install directly
+// (zero indirection) — matching the original behavior exactly. Same
+// native-only guard as the console bridge (`window` is undefined on bun).
+if (HAS_NATIVE_BRIDGE && typeof window === 'undefined') {
+  const _hot = installHotCoordinator();
+  _hot.setDrain(_drainEvents);
+  // Reject this generation's in-flight RPCs on hot-reload teardown so awaiting
+  // code fails fast instead of hanging on a promise the new generation will
+  // never resolve. (The host cancels stream subscriptions via the tree reset.)
+  _hot.configure({
+    cleanup() {
+      // Hand the next generation our id high-water marks FIRST — before the
+      // reject loop below, whose user reject-handlers could throw — so they're
+      // always persisted and the next generation never reuses ids the host may
+      // still have in flight.
+      globalThis.__skalNextCallId = nextCallId;
+      globalThis.__skalNextHandlerId = nextHandlerId;
+      for (const pending of pendingCalls.values()) {
+        try { pending.reject(new Error('skal: hot reload')); } catch (_) { /* ignore */ }
+      }
+      pendingCalls.clear();
+    },
+  });
+} else {
+  globalThis.__skal_drainEvents = _drainEvents;
+}
 
 // Debug snapshot. `propWrites/propSkips` are diff-cache effectiveness
 // counters — visible via `JSON.parse(skalStatus()).propSkips / (writes+skips)`

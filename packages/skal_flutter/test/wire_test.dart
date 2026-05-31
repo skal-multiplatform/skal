@@ -45,6 +45,7 @@ void main() {
       expect(opSetDesign, 0x26);
       expect(opCompleteRefresh, 0x27);
       expect(opLog, 0x28);
+      expect(opResetRootSubtree, 0x29);
     });
   });
 

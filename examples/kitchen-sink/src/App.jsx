@@ -47,7 +47,7 @@ import {
   setDesign, showDialog, showActionSheet, showSnackbar,
   showDatePicker, showTimePicker,
 } from 'skal/renderer';
-import { createRouter, createSkalRef } from 'skal/runtime';
+import { createRouter, createSkalRef, createHotState } from 'skal/runtime';
 import { createSkalStore, STORE } from 'skal/store';
 // `skal-flutter` — codegen-wrapped widgets (custom adapters + pub.dev
 // packages). The separate import source tells the dev at a glance that
@@ -2373,7 +2373,10 @@ function StoreTab() {
 }
 
 export default function App() {
-  const [appTab, setAppTab] = createSignal(0);
+  // createHotState (not createSignal) so the selected tab survives a JS hot
+  // reload instead of snapping back to the first tab — see skal/runtime. The
+  // explicit 'appTab' key keeps it stable regardless of other hot-state.
+  const [appTab, setAppTab] = createHotState(0, 'appTab');
   return (
     <Tabs activeTab={appTab()} onChange={setAppTab} height="fill">
       <Tab title="UI" icon="grid">

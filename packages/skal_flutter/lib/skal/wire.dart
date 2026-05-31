@@ -135,6 +135,13 @@ const int opCompleteRefresh = 0x27;
 // offset, c = byte length. Pure side-channel — mutates no node. Emitted only
 // by the embedded-bun runtime (native), so on web the decoder is unused.
 const int opLog             = 0x28;
+// Hot reload (native dev) — tear down every node under the root (id 1),
+// keeping the root shell, so a re-evaluated JS bundle rebuilds the tree from
+// a clean host state. Emitted by hot.js's beginReload (see `resetRootSubtree`
+// in bridge.js) before the new bundle mounts. Wire shape: a = kRootNodeId,
+// b = 0, c = 0. The handler disposes the subtree, cancels all stream
+// subscriptions, and re-attaches the root method dispatcher.
+const int opResetRootSubtree = 0x29;
 
 // ── Widget types (NodeState.type) ─────────────────────────────────────
 //

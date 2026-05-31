@@ -922,3 +922,19 @@ B.writeOp(B.OP_CREATE_NODE, B.ROOT_NODE_ID, B.WT_BOX, 0);
 B.scheduleCommit();
 
 export const root = new SkalNode('box', B.ROOT_NODE_ID, false);
+
+// ───────────────────────────────────────────────────────────────────────
+// Hot reload (native dev) — register THIS generation's mount primitives with
+// the coordinator that bridge.js installed on native (see hot.js). On a
+// reload the Dart trigger evaluates "__skalHot.beginReload();\n<new bundle>":
+// beginReload tears down the outgoing generation via its `reset` (emit the
+// host tree-reset + publish synchronously), then this fresh bundle mounts via
+// `render`. No-op on web / non-native, where __skalHot is absent and the app
+// entry falls back to a plain render().
+// ───────────────────────────────────────────────────────────────────────
+if (globalThis.__skalHot) {
+  globalThis.__skalHot.configure({
+    render: (factory) => render(factory, root),
+    reset: () => { B.resetRootSubtree(); B.flushOps(); },
+  });
+}

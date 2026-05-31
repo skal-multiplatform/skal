@@ -15,6 +15,7 @@ Quick index:
 
 | You want to… | Go to |
 |---|---|
+| Edit `.jsx` and see it without restarting | [JS hot reload](#js-hot-reload) |
 | See a `console.log` | [console.log](#consolelog) |
 | Set a JS breakpoint / profile JS | [The bun inspector](#the-bun-inspector-deep-js-debugging) |
 | Fix a blank page on web | [Boot & blank-page](#boot--blank-page-web) |
@@ -216,10 +217,63 @@ between the bytecode bundle and libskal.
 
 ---
 
+## JS hot reload
+
+Edit a `.jsx` file and see it in the **running native app** in well under a
+second — no process restart. Skal re-evaluates the rebuilt bundle inside the
+live VM and re-mounts the widget tree. (This is JS reload; Flutter's own `r`
+only reloads *Dart*.)
+
+Two ways to trigger it — same underlying mechanism, different transport:
+
+| | Command | How to apply an edit |
+|---|---|---|
+| **Automatic** | `bun run dev:hot:macos` (`:ios` / `:android`) | Just save — the dev server rebuilds and pushes; the app updates itself |
+| **Manual** | `bun run dev` in one shell + `flutter run` in another | Press **`r`** in the `flutter run` terminal |
+
+`dev:hot:*` runs `scripts/hot-reload-server.js` (a `vite build --watch` + a
+WebSocket on `:8765`) alongside `flutter run --dart-define=SKAL_HOT=1`; the
+app's debug-only Dart client connects and re-evals each pushed bundle. The
+manual route leans on Flutter's asset-sync: pressing `r` re-syncs the
+vite-rebuilt `skal-app.js` and `SkalRoot.reassemble()` re-evals it.
+
+**What survives a reload:**
+- **Store-backed state** (`createSkalStore` persists through the native store).
+- **Navigation** — `createRouter`'s route stack is restored automatically, so a
+  reload lands you back on the screen you were on (not the initial route).
+- **Opt-in signals** via `createHotState(initial)` (from `skal/runtime`) — a
+  drop-in for `createSignal` whose value survives a reload. Use it for "where am
+  I" state like a selected tab index: `const [tab, setTab] = createHotState(0)`.
+
+**What resets:** any other in-component `createSignal` state — the tree is
+re-mounted, so local UI state returns to its initial value (the same trade-off
+as React without Fast Refresh). Preserved state is held in an in-memory stash on
+the dev coordinator — it survives reloads but not a full app relaunch, and it's
+keyed by call order, so use `createHotState`/`createRouter` in a stable spot
+(component top level), not inside a loop or conditional.
+
+**Gotchas:**
+- **Clean up side effects.** A bare `setInterval` / external subscription from
+  the old generation leaks across a reload. Register them with Solid's
+  `onCleanup` so the teardown (`__skalHot.beginReload`) stops them.
+- **Native + debug only.** Web reloads via Vite/the browser; release ships
+  bytecode with no reload trigger. The machinery is inert in release.
+- **Don't use `R` (hot restart)** with a native Skal app — it re-runs `main()`
+  over the already-live VM and drops the connection. Use JS reload (`r` /
+  socket) for JS edits; for Dart edits, `r` (hot reload) is fine.
+- **Android:** the client reaches the host via `10.0.2.2` (the `dev:hot:android`
+  script sets `--dart-define=SKAL_HOT_HOST=10.0.2.2`).
+
+**Did it work?** You'll see `Performing hot reload…` (manual) or a
+`[skal-hot] pushed reload` line from the server (auto), and your edit appears.
+Mechanism: `packages/skal-js/src/hot.js` (the `__skalHot` coordinator) +
+`OP_RESET_ROOT_SUBTREE` in `bridge.dart`.
+
 ## Dev loop & tooling
 
 | Command | Target | Notes |
 |---|---|---|
+| `bun run dev:hot:macos` | native | **JS hot reload** — save a `.jsx`, app updates live (see above) |
 | `bun run dev:web` | DOM preview | vite dev server with **HMR** — fastest loop |
 | `bun run dev:web-flutter` | Flutter Web (skwasm) | `flutter run -d chrome --wasm` |
 | `bun run dev:macos` / `dev:ios` / `dev:android` | native | `flutter run` → Flutter DevTools, hot reload, widget inspector |

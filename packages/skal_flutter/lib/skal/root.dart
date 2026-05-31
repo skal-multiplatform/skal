@@ -49,6 +49,7 @@ import '_html_embed_io.dart'
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
@@ -56,6 +57,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import 'bridge.dart';
+import 'hot_reload_client.dart';
 import 'memoizing_listenable_builder.dart';
 import 'node_state.dart';
 import 'registry.dart';
@@ -85,10 +87,40 @@ class _SkalRootState extends State<SkalRoot>
     // already marked dirty by the time the build phase starts, so
     // they get rebuilt in the same frame instead of the next.
     _ticker = createTicker(_onTick)..start();
+    // Automatic JS hot reload (native dev): connect to the dev server and
+    // re-evaluate pushed bundles in place. No-op unless launched with
+    // `--dart-define=SKAL_HOT=1` (the dev:hot scripts), and on web.
+    startHotReloadClient(widget.bridge);
   }
 
   void _onTick(Duration _) {
     widget.bridge.pumpOps();
+  }
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    // JS hot reload (manual). Flutter's hot reload (`r` in `flutter run`)
+    // re-syncs changed assets into the running app and then calls
+    // reassemble() — so we re-read the vite-rebuilt skal-app.js and
+    // re-evaluate it in the live VM. The eval string runs the OUTGOING
+    // generation's teardown (beginReload — dispose + host tree reset, see
+    // hot.js) first, then the fresh bundle re-mounts in place. Native + debug
+    // only: web reloads via Vite/the browser, and release ships bytecode with
+    // no reload trigger.
+    //
+    // Workflow: run `vite build --watch` (the app's `dev` script) so
+    // skal-app.js stays fresh, then press `r` to apply JS edits.
+    if (kIsWeb || !kDebugMode) return;
+    // Drop any cached copy so we re-read the bytes Flutter just synced, then
+    // hand it to the shared reload path (which no-ops if the JS is unchanged,
+    // e.g. a pure-Dart hot reload).
+    rootBundle.evict('assets/skal-app.js');
+    rootBundle.loadString('assets/skal-app.js', cache: false).then((src) {
+      widget.bridge.hotReload(src);
+    }).catchError((Object e) {
+      debugPrint('[skal] JS hot reload: could not read skal-app.js: $e');
+    });
   }
 
   @override

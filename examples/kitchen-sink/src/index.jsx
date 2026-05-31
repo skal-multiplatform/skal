@@ -24,5 +24,11 @@ if (typeof location !== 'undefined' && location.search) {
 if (stressCount > 0) {
   render(() => <StressOverflow count={stressCount} />, root);
 } else {
-  render(() => <App />, root);
+  const mount = () => <App />;
+  // Native dev: route the mount through the hot-reload coordinator (see
+  // hot.js) so a re-evaluated bundle re-mounts in place. On web / release-web
+  // __skalHot is absent and we fall back to a plain render() — identical to
+  // the previous behavior.
+  if (globalThis.__skalHot) globalThis.__skalHot.mount(mount);
+  else render(mount, root);
 }

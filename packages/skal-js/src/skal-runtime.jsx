@@ -251,6 +251,50 @@ export function ChunkedFor(props) {
   return <For each={sliced()}>{props.children}</For>;
 }
 
+// ───────────────────────────────────────────────────────────────────────
+// Hot-reload state preservation (native dev). The hot coordinator
+// (globalThis.__skalHot, see hot.js) carries a key/value `stash` across reload
+// generations, so "where am I" state survives a reload instead of snapping
+// back to its initial value. Keys are assigned by CALL ORDER, which is stable
+// across reloads because the bundle re-runs identically — so only use these
+// for state created in a deterministic spot (a router, a top-level tab index),
+// not inside loops/conditionals whose call order can shift. No-op on
+// web/release, where __skalHot is absent (web restores nav via the URL hash).
+// ───────────────────────────────────────────────────────────────────────
+
+let _hotStateSeq = 0;
+let _routerInstanceSeq = 0;
+
+/**
+ * createHotState(initial, key?) — a [get, set] tuple like `createSignal`,
+ * except its value survives a JS hot reload (native dev). Use it for the small
+ * bits of navigation state you don't want to lose on every edit — e.g. a tab:
+ *
+ *   const [tab, setTab] = createHotState(0);             // call-order keyed
+ *   const [tab, setTab] = createHotState(0, 'appTab');   // explicit key
+ *
+ * Pass an explicit `key` (any string) for state created in a conditional/lazy
+ * spot: without it, the value is keyed by CALL ORDER, so adding another
+ * `createHotState` above this one would shift the index and restore the wrong
+ * value on the next reload. Store only primitives / plain data — like any Solid
+ * signal, a function value is treated as an updater (wrap it: `setX(() => fn)`).
+ *
+ * On web/release it's exactly `createSignal`. The reload only resets state that
+ * uses a plain `createSignal`.
+ */
+export function createHotState(initial, key) {
+  const stash = globalThis.__skalHot && globalThis.__skalHot.stash;
+  if (!stash) return createSignal(initial);
+  const k = 'hotstate:' + (key != null ? key : _hotStateSeq++);
+  const [get, _set] = createSignal(stash.has(k) ? stash.get(k) : initial);
+  const set = (v) => {
+    const r = _set(v);
+    stash.set(k, get());
+    return r;
+  };
+  return [get, set];
+}
+
 /**
  * createRouter — a screen-stack router over `<Navigator>` / `<Screen>`.
  *
@@ -328,7 +372,21 @@ export function createRouter(routes, initial, options) {
     const fromUrl = routeFromHash();
     if (fromUrl) firstName = fromUrl;
   }
-  const [stack, setStack] = createSignal([
+  // Restore the route stack the previous generation stashed before it was torn
+  // down (hot reload), so a reload lands on the same screen instead of the
+  // initial route. Keyed by createRouter call order (stable across reloads). If
+  // the route table changed (a stashed route no longer exists), start fresh.
+  const _hotStash = globalThis.__skalHot && globalThis.__skalHot.stash;
+  // `options.key` (any string) gives a stable key for a router created in a
+  // conditional/lazy spot; otherwise fall back to call order.
+  const _routerKey = 'router:' +
+      (options && options.key != null ? options.key : _routerInstanceSeq++);
+  let _restored = _hotStash && _hotStash.get(_routerKey);
+  if (!(Array.isArray(_restored) && _restored.length &&
+        _restored.every((e) => e && routes[e.name]))) {
+    _restored = null;
+  }
+  const [stack, _setStack] = createSignal(_restored || [
     {
       name: firstName,
       params: {},
@@ -336,6 +394,12 @@ export function createRouter(routes, initial, options) {
       transition: defaultTransitionFor(firstName),
     },
   ]);
+  // Mirror the live stack into the stash on every change so the next generation
+  // can restore it (native dev only; no-op on web/release). Router methods
+  // always pass the full new stack array, so we stash `v` directly.
+  const setStack = _hotStash
+    ? (v) => { _setStack(v); _hotStash.set(_routerKey, v); }
+    : _setStack;
 
   const router = {
     stack,

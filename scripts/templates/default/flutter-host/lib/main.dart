@@ -7,6 +7,10 @@
 //      source bundle in debug.
 //   3. Wrap the bridge buffer in SkalBridge, drain once, then mount
 //      Flutter widgets from the JS-produced tree.
+//
+// The whole sequence runs inside a try/catch: any boot failure (e.g. a
+// dlopen error if libskal.dylib isn't embedded, or a JS eval error) shows a
+// visible error screen instead of a silent black window.
 
 import 'dart:io';
 
@@ -22,7 +26,18 @@ import 'package:skal_flutter/skal_ffi.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await _boot();
+  } catch (e, st) {
+    // Surface the failure instead of leaving a black screen. Common cause on
+    // a fresh app: libskal.dylib not embedded in the .app (dlopen throws) —
+    // see scripts/skal-link.sh / docs/DEBUGGING.md.
+    debugPrint('[skal] BOOT FAILED: $e\n$st');
+    runApp(_BootError(message: '$e', detail: '$st'));
+  }
+}
 
+Future<void> _boot() async {
   // Resolve the data dir up front so the JS store can read it
   // synchronously (skips the async getDataDir() RPC at boot).
   String dataDir = '';
@@ -34,13 +49,16 @@ void main() async {
 
   final skal = Skal.create(dataDir);
   if (skal == null) {
-    runApp(const MaterialApp(home: Scaffold(body: Center(child: Text('skal_create_runtime returned 0')))));
-    return;
+    throw StateError(
+        'skal_create_runtime returned 0 — libskal initialized but the runtime '
+        'failed to start.');
   }
 
   // Background-prewarm the native store while the JS bundle parses.
   if (dataDir.isNotEmpty) {
-    try { skal.prewarmStore('$dataDir/store'); } catch (_) {}
+    try {
+      skal.prewarmStore('$dataDir/store');
+    } catch (_) {}
   }
 
   // Eval the JS bundle. Release path uses pre-compiled JSC bytecode
@@ -57,14 +75,14 @@ void main() async {
     result = skal.evaluate(source, url: 'skal-app.js');
   }
 
+  if (result.isError) {
+    throw StateError('JS bundle failed to evaluate:\n${result.value}');
+  }
+
   final bridge = SkalBridge(skal);
   bridge.ensureRoot();
   bridge.pumpOps();
   installAppDispatcher(bridge);
-
-  if (result.isError) {
-    debugPrint('[skal] EVAL ERROR: ${result.value}');
-  }
 
   runApp(MaterialApp(
     debugShowCheckedModeBanner: false,
@@ -74,6 +92,63 @@ void main() async {
       body: SafeArea(child: SkalRoot(bridge: bridge)),
     ),
   ));
+}
+
+/// Visible boot-failure screen. Without this a boot exception leaves a black
+/// window with no clue what went wrong; this shows the error + stack so you
+/// can act on it.
+class _BootError extends StatelessWidget {
+  const _BootError({required this.message, this.detail});
+
+  final String message;
+  final String? detail;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        backgroundColor: const Color(0xFF2A0000),
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Skal failed to boot',
+                    style: TextStyle(
+                        color: Color(0xFFFF6B6B),
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 12),
+                  SelectableText(
+                    message,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontFamily: 'monospace'),
+                  ),
+                  if (detail != null && detail!.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    SelectableText(
+                      detail!,
+                      style: const TextStyle(
+                          color: Color(0xFFBBBBBB),
+                          fontSize: 11,
+                          fontFamily: 'monospace'),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 Future<String> _extractBytecodeAssets() async {

@@ -45,6 +45,14 @@ if [[ "${PLATFORM}" == "all" || "${PLATFORM}" == "macos" ]]; then
     echo "→ linking libskal.dylib for macOS into ${APP_ROOT}/macos/Frameworks/"
     SKAL_FLUTTER_FRAMEWORKS="${APP_ROOT}/macos/Frameworks" \
       "${SCRIPT_DIR}/link-libskal-flutter-mac.sh"
+    # `flutter create` projects don't embed libskal into the .app — without
+    # this the runtime dlopen fails and the app black-screens. Inject the copy
+    # build phase into the Xcode project (idempotent).
+    PBXPROJ="${APP_ROOT}/macos/Runner.xcodeproj/project.pbxproj"
+    if [[ -f "${PBXPROJ}" ]]; then
+      echo "→ ensuring libskal embed build phase in Runner.xcodeproj"
+      python3 "${SCRIPT_DIR}/embed-libskal-macos.py" "${PBXPROJ}"
+    fi
     did_anything=1
   elif [[ "${PLATFORM}" == "macos" ]]; then
     echo "error: ${APP_ROOT}/macos missing — run 'flutter create --platforms macos .' first" >&2

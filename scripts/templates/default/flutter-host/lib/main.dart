@@ -66,6 +66,10 @@ Future<void> _boot() async {
   final EvalResult result;
   if (kReleaseMode) {
     final cjsPath = await _extractBytecodeAssets();
+    // Release: skip the dev hot-reload coordinator entirely (the bundle checks
+    // this flag) so release pays zero of its overhead. Set before the bundle's
+    // module init runs (the import below).
+    skal.evaluate('globalThis.__skalRelease=true;', url: 'skal:rel');
     final loader =
         "(async()=>{await import(${_jsStringLiteral('file://$cjsPath')});"
         "return 'app loaded';})();";

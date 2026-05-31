@@ -257,7 +257,10 @@ keyed by call order, so use `createHotState`/`createRouter` in a stable spot
   the old generation leaks across a reload. Register them with Solid's
   `onCleanup` so the teardown (`__skalHot.beginReload`) stops them.
 - **Native + debug only.** Web reloads via Vite/the browser; release ships
-  bytecode with no reload trigger. The machinery is inert in release.
+  bytecode with no reload trigger. In release the host sets
+  `globalThis.__skalRelease` before loading the bundle, so the coordinator,
+  drain trampoline, and all `createHotState`/`createRouter` stash work are
+  skipped entirely — zero release overhead.
 - **Don't use `R` (hot restart)** with a native Skal app — it re-runs `main()`
   over the already-live VM and drops the connection. Use JS reload (`r` /
   socket) for JS edits; for Dart edits, `r` (hot reload) is fine.

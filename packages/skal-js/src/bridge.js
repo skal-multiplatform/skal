@@ -1825,15 +1825,17 @@ function _drainEvents() {
   lastEventSeq = seq;
 }
 
-// Install the event drain. On native we route through the hot-reload
+// Install the event drain. On native DEV we route through the hot-reload
 // coordinator's trampoline: the worker permanently caches the FIRST
 // __skal_drainEvents it sees (patches/skal_entry.zig), so a re-evaluated
 // bundle's new drain would otherwise never be called. The coordinator keeps a
 // stable trampoline and we register THIS generation's drain as the live
 // target. On web / non-native there's no in-VM re-eval, so install directly
-// (zero indirection) — matching the original behavior exactly. Same
-// native-only guard as the console bridge (`window` is undefined on bun).
-if (HAS_NATIVE_BRIDGE && typeof window === 'undefined') {
+// (zero indirection) — matching the original behavior exactly. In RELEASE the
+// host sets `globalThis.__skalRelease` before this bundle loads (no reload can
+// ever fire), so we skip the coordinator/trampoline + all createHotState/
+// createRouter stash work entirely and install the drain directly too.
+if (HAS_NATIVE_BRIDGE && typeof window === 'undefined' && !globalThis.__skalRelease) {
   const _hot = installHotCoordinator();
   _hot.setDrain(_drainEvents);
   // Reject this generation's in-flight RPCs on hot-reload teardown so awaiting

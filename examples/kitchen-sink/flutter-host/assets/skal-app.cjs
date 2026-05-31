@@ -1124,7 +1124,7 @@
     }
     ge[Xn] = n - a << 2, Kr = e;
   }
-  if (ur && typeof window > "u") {
+  if (ur && typeof window > "u" && !globalThis.__skalRelease) {
     const e = fo();
     e.setDrain(vi), e.configure({ cleanup() {
       globalThis.__skalNextCallId = jr, globalThis.__skalNextHandlerId = pi;

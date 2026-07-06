@@ -265,6 +265,10 @@ const COLD_PROPS = {
   viewType:       [B.PROP_VIEW_TYPE,        'str'],
   // Accessibility — wraps any widget in a Semantics node.
   semanticLabel:  [B.PROP_SEMANTIC_LABEL,   'str'],
+  // Stable E2E test handle — sets the Semantics `identifier` so Maestro
+  // (`tapOn: { id }`) / integration_test (`bySemanticsIdentifier`) can target
+  // this widget without relying on visible text. See docs/TESTING.md.
+  testID:         [B.PROP_TEST_ID,          'str'],
 };
 
 const HOT_PROP_SETTERS = {

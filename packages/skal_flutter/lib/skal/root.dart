@@ -170,13 +170,30 @@ class SkalNode extends StatelessWidget {
       listenable: node.cold,
       builder: (context) {
         final built = _buildForType(node, bridge, context);
-        // Accessibility — a `semanticLabel` on ANY node wraps it in a
-        // `Semantics` so screen readers announce it. Done here, once,
-        // rather than in every builder. Inside the memoized builder, so
-        // it costs nothing until the node's cold notifier fires.
+        // Accessibility + E2E test handles — a `semanticLabel` (screen-reader
+        // text) and/or a `testID` (the Semantics `identifier` that Maestro /
+        // integration_test match on) on ANY node wrap it in a single
+        // `Semantics`. Done here, once, rather than in every builder, inside
+        // the memoized builder so it costs nothing until the cold notifier
+        // fires.
         final label = node.getPropStr(propSemanticLabel);
-        if (label == null || label.isEmpty) return built;
-        return Semantics(label: label, child: built);
+        final testId = node.getPropStr(propTestId);
+        final hasLabel = label != null && label.isNotEmpty;
+        final hasTestId = testId != null && testId.isNotEmpty;
+        if (!hasLabel && !hasTestId) return built;
+        // No `container: true`: for a leaf (e.g. <text testID>) the identifier
+        // rides on the child's own semantics node, and for a wrapper
+        // (<box testID>) it annotates the region without collapsing the
+        // subtree's child nodes — so descendant testIDs / labels stay
+        // individually findable and screen-reader traversal is preserved.
+        // `testID` surfaces as the Android resource-id Maestro matches via
+        // `id:`. (E2E asserts by `id:`, since Skal text lands in the a11y
+        // label, not Maestro's `text` field — see docs/TESTING.md.)
+        return Semantics(
+          label: hasLabel ? label : null,
+          identifier: hasTestId ? testId : null,
+          child: built,
+        );
       },
     );
   }

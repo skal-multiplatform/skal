@@ -570,6 +570,11 @@ const int propDragData        = 0x4A;
 // so screen readers announce it. Applied generically in `SkalNode`.
 // See DONE_OR_STALE/FLUTTER_COMPONENTS_TODO_2.md §3.
 const int propSemanticLabel   = 0x4B;
+// Stable E2E test handle (string) — sets the `Semantics` `identifier`, which
+// black-box test tools (Maestro `tapOn: { id }`, integration_test
+// `bySemanticsIdentifier`) match on. Kept distinct from the a11y label so test
+// ids don't reach screen readers. Applied generically in `SkalNode`.
+const int propTestId          = 0x4C;
 
 // Image (string-valued)
 const int propImageSrc        = 0x60;

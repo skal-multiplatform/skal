@@ -19,7 +19,7 @@
     "dev:flutter": "bun run build && cd flutter-host && flutter run",
     "dev:macos": "bun run build && cd flutter-host && flutter run -d macos",
     "dev:ios": "bun run build && cd flutter-host && flutter run -d iphone-simulator",
-    "dev:android": "bun run build && cd flutter-host && flutter run -d android",
+    "dev:android": "bun run build && DEV=$(../../scripts/android-emulator.sh) && cd flutter-host && flutter run -d \"$DEV\"",
 
     "_hot": "// ── JS hot reload (auto): dev server watches+pushes the bundle; save a .jsx → live app updates. Manual alt: run `dev` in another shell + press `r`. ──",
     "dev:hot:macos": "bash ../../scripts/dev-hot.sh macos __APP_NAME__",
@@ -36,6 +36,7 @@
     "codegen": "cd flutter-host && dart run build_runner build --delete-conflicting-outputs",
     "analyze": "cd flutter-host && dart analyze lib/",
     "test": "cd flutter-host && flutter test",
+    "test:e2e": "maestro test .maestro",
     "clean": "cd flutter-host && flutter clean && rm -rf dist build",
 
     "_setup": "// ── First-time setup helpers ──────────────────────────",

@@ -14,7 +14,7 @@
 
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show kReleaseMode;
+import 'package:flutter/foundation.dart' show kDebugMode, kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -26,6 +26,15 @@ import 'package:skal_flutter/skal_ffi.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // E2E visibility — force Flutter's semantics tree on so Maestro can read it.
+  // Native Flutter only builds semantics when an accessibility service is
+  // active, and Maestro's UIAutomator query doesn't reliably trigger that, so
+  // without this the tree is invisible to it. Debug builds (where dev:android
+  // E2E runs) plus an explicit `--dart-define=SKAL_E2E=true` for release E2E;
+  // release otherwise never pays the always-on cost. See docs/TESTING.md.
+  if (kDebugMode || const bool.fromEnvironment('SKAL_E2E')) {
+    WidgetsBinding.instance.ensureSemantics();
+  }
   try {
     await _boot();
   } catch (e, st) {

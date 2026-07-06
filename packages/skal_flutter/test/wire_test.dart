@@ -85,6 +85,8 @@ void main() {
       expect(propFontWeight, 0x41);
       expect(propFontFamily, 0x42);
       expect(propTextAlign, 0x43);
+      expect(propSemanticLabel, 0x4B);
+      expect(propTestId, 0x4C);
     });
   });
 

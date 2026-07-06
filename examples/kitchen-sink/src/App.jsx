@@ -709,7 +709,7 @@ function UITab() {
   function homeScreen(router) {
     return (
     <ScrollView background={BG} padding={16} gap={14} scrollbar>
-      <Text label="Skal — Component Demo" fontSize={24} fontWeight={800} color={INK} />
+      <Text label="Skal — Component Demo" testID="home-title" fontSize={24} fontWeight={800} color={INK} />
       <Text
         label="Every fast-path widget, plus animation, the design system, and dialogs."
         fontSize={13}
@@ -2286,7 +2286,7 @@ function StoreTab() {
 
   return (
     <ScrollView background={BG} padding={16} gap={14} scrollbar>
-      <Text label="createSkalStore — reactive · persistent · deep-object" fontSize={23} fontWeight={800} color={INK} />
+      <Text label="createSkalStore — reactive · persistent · deep-object" testID="store-title" fontSize={23} fontWeight={800} color={INK} />
       <Text
         label={`Backend: ${ctl.backendKind()} · schema v${ctl.version()}`}
         fontSize={14}

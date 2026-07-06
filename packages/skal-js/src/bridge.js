@@ -341,6 +341,10 @@ export const PROP_DRAG_DATA        = 0x4A;
 // Accessibility label — wraps any node in a Semantics widget.
 // Mount-once; not in KEY_TO_SLOT.
 export const PROP_SEMANTIC_LABEL   = 0x4B;
+// Stable test handle — sets the Semantics `identifier`, which E2E tools
+// (Maestro `tapOn: { id }`, integration_test bySemanticsIdentifier) match on.
+// Separate from the a11y label so test ids don't leak to screen readers.
+export const PROP_TEST_ID          = 0x4C;
 
 // Image (string-valued)
 export const PROP_IMAGE_SRC        = 0x60;

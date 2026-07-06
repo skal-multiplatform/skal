@@ -127,6 +127,9 @@
  *   app shortcuts.
  * @property {string} [semanticLabel]  accessibility label — wraps the
  *   widget in a Semantics node so screen readers announce it.
+ * @property {string} [testID]  stable E2E test handle — sets the Semantics
+ *   `identifier` so test tools (Maestro `tapOn: { id }`, integration_test)
+ *   can target this widget without relying on visible text. See docs/TESTING.md.
  */
 
 /**

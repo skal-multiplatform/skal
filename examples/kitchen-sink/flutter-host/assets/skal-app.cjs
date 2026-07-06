@@ -663,7 +663,7 @@
     };
     return n.__skalTrampoline = true, globalThis.__skal_drainEvents = n, globalThis.__skalHot = r, r;
   }
-  var Hn = 6 * 1024 * 1024, Ut = 4194368, go = 768 * 1024, Un = 4980800, Gn = 4980800, jn = 2, qn = 3, po = 6, Xn = 7, bo = 10, Kn = 12, Jn = 0, _o = 2, vo = 4, Ws = 1, Hs = 2, Us = 3, Gs = 4, js = 16, qs = 17, Xs = 20, Ks = 21, Js = 22, Ys = 23, Zs = 24, Qs = 25, el = 26, tl = 27, rl = 28, nl = 29, il = 30, ol = 31, al = 32, sl = 33, ll = 34, cl = 35, ul = 36, dl = 37, fl = 38, hl = 39, gl = 40, pl = 41, bl = 0, _l = 1, vl = 2, ml = 3, wl = 4, Sl = 5, yl = 6, xl = 7, kl = 9, Tl = 10, El = 11, $l = 12, Rl = 13, Pl = 14, Al = 15, Fl = 16, Ol = 17, Cl = 18, Il = 19, zl = 20, Dl = 21, Nl = 22, Ll = 23, Ml = 24, Bl = 25, Vl = 26, Wl = 27, Hl = 28, Ul = 29, Gl = 30, jl = 31, ql = 32, Xl = 33, Kl = 34, Jl = 35, Yl = 36, Zl = 37, Ql = 38, ec = 39, tc = 40, rc = 41, nc = 42, ic = 43, oc = 44, ac = 45, sc = 46, lc = 47, cc = 48, uc = 49, dc = 1, fc = 2, hc = 3, gc = 4, pc = 5, bc = 6, _c = 7, vc = 8, mc = 9, wc = 10, Sc = 11, yc = 12, xc = 13, kc = 14, Tc = 15, Ec = 16, $c = 17, Rc = 18, Pc = 19, Ac = 20, Fc = 21, Oc = 22, Cc = 23, Ic = 0, zc = 1, Dc = 2, Nc = 3, Lc = 4, Mc = 5, Bc = 6, Vc = 7, Wc = 0, Hc = 1, Uc = 2, Gc = 3, jc = 4, qc = 5, Xc = 6, Kc = 7, Jc = 8, Yc = 9, Zc = 10, Qc = 11, eu = 12, tu = 13, ru = 14, nu = 15, iu = 16, ou = 32, au = 33, su = 34, lu = 35, cu = 36, uu = 37, du = 64, fu = 65, hu = 66, gu = 67, pu = 68, bu = 69, _u = 70, vu = 71, mu = 72, wu = 73, Su = 74, yu = 75, xu = 96, ku = 97, Tu = 98, Eu = 99, $u = 128, Ru = 129, Pu = 130, Au = 131, Fu = 132, Ou = 133, Cu = 134, Iu = 135, zu = 136, Du = 137, Nu = 160, Lu = 161, Mu = 162, Bu = 163, Vu = 164, Wu = 165, Hu = 166, Uu = 167, Gu = 168, ju = 169, qu = 170, Xu = 171, Ku = 172, Ju = 173, Yu = 174, Zu = 175, Qu = 176, ed = 177, td = 178, rd = 179, nd = 180, id = 181, od = 182, ad = 183, sd = -1, mo = 2147483646, wo = 2147483645, ur = typeof globalThis.__skal_acquireBridge == "function", Ue;
+  var Hn = 6 * 1024 * 1024, Ut = 4194368, go = 768 * 1024, Un = 4980800, Gn = 4980800, jn = 2, qn = 3, po = 6, Xn = 7, bo = 10, Kn = 12, Jn = 0, _o = 2, vo = 4, Ws = 1, Hs = 2, Us = 3, Gs = 4, js = 16, qs = 17, Xs = 20, Ks = 21, Js = 22, Ys = 23, Zs = 24, Qs = 25, el = 26, tl = 27, rl = 28, nl = 29, il = 30, ol = 31, al = 32, sl = 33, ll = 34, cl = 35, ul = 36, dl = 37, fl = 38, hl = 39, gl = 40, pl = 41, bl = 0, _l = 1, vl = 2, ml = 3, wl = 4, Sl = 5, yl = 6, xl = 7, kl = 9, Tl = 10, El = 11, $l = 12, Rl = 13, Pl = 14, Al = 15, Fl = 16, Ol = 17, Cl = 18, Il = 19, zl = 20, Dl = 21, Nl = 22, Ll = 23, Ml = 24, Bl = 25, Vl = 26, Wl = 27, Hl = 28, Ul = 29, Gl = 30, jl = 31, ql = 32, Xl = 33, Kl = 34, Jl = 35, Yl = 36, Zl = 37, Ql = 38, ec = 39, tc = 40, rc = 41, nc = 42, ic = 43, oc = 44, ac = 45, sc = 46, lc = 47, cc = 48, uc = 49, dc = 1, fc = 2, hc = 3, gc = 4, pc = 5, bc = 6, _c = 7, vc = 8, mc = 9, wc = 10, Sc = 11, yc = 12, xc = 13, kc = 14, Tc = 15, Ec = 16, $c = 17, Rc = 18, Pc = 19, Ac = 20, Fc = 21, Oc = 22, Cc = 23, Ic = 0, zc = 1, Dc = 2, Nc = 3, Lc = 4, Mc = 5, Bc = 6, Vc = 7, Wc = 0, Hc = 1, Uc = 2, Gc = 3, jc = 4, qc = 5, Xc = 6, Kc = 7, Jc = 8, Yc = 9, Zc = 10, Qc = 11, eu = 12, tu = 13, ru = 14, nu = 15, iu = 16, ou = 32, au = 33, su = 34, lu = 35, cu = 36, uu = 37, du = 64, fu = 65, hu = 66, gu = 67, pu = 68, bu = 69, _u = 70, vu = 71, mu = 72, wu = 73, Su = 74, yu = 75, xu = 76, ku = 96, Tu = 97, Eu = 98, $u = 99, Ru = 128, Pu = 129, Au = 130, Fu = 131, Ou = 132, Cu = 133, Iu = 134, zu = 135, Du = 136, Nu = 137, Lu = 160, Mu = 161, Bu = 162, Vu = 163, Wu = 164, Hu = 165, Uu = 166, Gu = 167, ju = 168, qu = 169, Xu = 170, Ku = 171, Ju = 172, Yu = 173, Zu = 174, Qu = 175, ed = 176, td = 177, rd = 178, nd = 179, id = 180, od = 181, ad = 182, sd = 183, ld = -1, mo = 2147483646, wo = 2147483645, ur = typeof globalThis.__skal_acquireBridge == "function", Ue;
   if (ur) {
     if (Ue = globalThis.__skal_acquireBridge(), !Ue || Ue.byteLength !== Hn)
       throw new Error(`Skal: bridge buffer not available (got ${Ue && Ue.byteLength})`);
@@ -1134,7 +1134,7 @@
   } else
     globalThis.__skal_drainEvents = vi;
   globalThis.skalStatus = () => JSON.stringify({ handlerCount: qr.size, opSeq: Number(fr), lastEventSeq: Number(Kr), lastHandlerError: lt, propWrites: Ne, propSkips: Qe });
-  var ld = 1, ta = 2;
+  var cd = 1, ta = 2;
   function mi() {
     return ta++;
   }
@@ -1173,7 +1173,7 @@
     } };
     return r;
   }
-  var ia = { padding: [0, "u32"], paddingTop: [1, "u32"], paddingRight: [2, "u32"], paddingBottom: [3, "u32"], paddingLeft: [4, "u32"], width: [5, "dim"], height: [6, "dim"], weight: [7, "f32"], alignment: [8, "u32"], gap: [9, "u32"], axis: [10, "u32"], top: [11, "u32"], right: [12, "u32"], bottom: [13, "u32"], left: [14, "u32"], crossAxisCount: [15, "u32"], aspectRatio: [16, "f32"], background: [32, "color"], color: [33, "color"], cornerRadius: [34, "u32"], borderWidth: [35, "u32"], borderColor: [36, "color"], shadow: [37, "u32"], fontSize: [64, "u32"], fontWeight: [65, "u32"], fontFamily: [66, "u32"], textAlign: [67, "u32"], lineHeight: [68, "u32"], maxLines: [69, "u32"], textOverflow: [70, "u32"], src: [96, "str"], contentScale: [97, "u32"], placeholder: [128, "str"], value: [129, "str"], keyboardType: [130, "u32"], secureEntry: [131, "u32"], checked: [132, "u32"], min: [134, "f32"], max: [135, "f32"], progress: [136, "f32"], initialSize: [176, "f32"], minSize: [177, "f32"], maxSize: [178, "f32"], presentation: [166, "u32"], title: [71, "str"], icon: [98, "str"], leadingIcon: [98, "str"], subtitle: [73, "str"], trailingIcon: [99, "str"], activeTab: [137, "u32"], tag: [72, "str"], transition: [171, "u32"], enabled: [160, "u32"], focusable: [161, "u32"], visible: [162, "u32"], draggable: [172, "u32"], spring: [173, "u32"], release: [174, "u32"], sliverMode: [175, "u32"], dragData: [74, "str"], scrollbar: [179, "u32"], blurRadius: [180, "u32"], minScale: [181, "f32"], maxScale: [182, "f32"], viewType: [183, "str"], semanticLabel: [75, "str"] }, oa = { opacity: Co, translationX: Io, translationY: zo, scaleX: Do, scaleY: No, rotation: Lo }, aa = { onClick: 1, onclick: 1, onTap: 1, onLongPress: 8, onDoubleTap: 9, onChange: 2, onSubmit: 10, onReorder: 11, onPop: 12, onDismiss: 20, onPanStart: 13, onPanUpdate: 14, onPanEnd: 15, onScaleStart: 16, onScaleUpdate: 17, onScaleEnd: 18, onDrop: 21, onHover: 22, onKey: 23 }, sa = { linear: 0, easeIn: 1, easeOut: 2, easeInOut: 3, bounce: 4, elastic: 5, fastOutSlowIn: 6 }, la = { gentle: 1, bouncy: 2, stiff: 3 };
+  var ia = { padding: [0, "u32"], paddingTop: [1, "u32"], paddingRight: [2, "u32"], paddingBottom: [3, "u32"], paddingLeft: [4, "u32"], width: [5, "dim"], height: [6, "dim"], weight: [7, "f32"], alignment: [8, "u32"], gap: [9, "u32"], axis: [10, "u32"], top: [11, "u32"], right: [12, "u32"], bottom: [13, "u32"], left: [14, "u32"], crossAxisCount: [15, "u32"], aspectRatio: [16, "f32"], background: [32, "color"], color: [33, "color"], cornerRadius: [34, "u32"], borderWidth: [35, "u32"], borderColor: [36, "color"], shadow: [37, "u32"], fontSize: [64, "u32"], fontWeight: [65, "u32"], fontFamily: [66, "u32"], textAlign: [67, "u32"], lineHeight: [68, "u32"], maxLines: [69, "u32"], textOverflow: [70, "u32"], src: [96, "str"], contentScale: [97, "u32"], placeholder: [128, "str"], value: [129, "str"], keyboardType: [130, "u32"], secureEntry: [131, "u32"], checked: [132, "u32"], min: [134, "f32"], max: [135, "f32"], progress: [136, "f32"], initialSize: [176, "f32"], minSize: [177, "f32"], maxSize: [178, "f32"], presentation: [166, "u32"], title: [71, "str"], icon: [98, "str"], leadingIcon: [98, "str"], subtitle: [73, "str"], trailingIcon: [99, "str"], activeTab: [137, "u32"], tag: [72, "str"], transition: [171, "u32"], enabled: [160, "u32"], focusable: [161, "u32"], visible: [162, "u32"], draggable: [172, "u32"], spring: [173, "u32"], release: [174, "u32"], sliverMode: [175, "u32"], dragData: [74, "str"], scrollbar: [179, "u32"], blurRadius: [180, "u32"], minScale: [181, "f32"], maxScale: [182, "f32"], viewType: [183, "str"], semanticLabel: [75, "str"], testID: [76, "str"] }, oa = { opacity: Co, translationX: Io, translationY: zo, scaleX: Do, scaleY: No, rotation: Lo }, aa = { onClick: 1, onclick: 1, onTap: 1, onLongPress: 8, onDoubleTap: 9, onChange: 2, onSubmit: 10, onReorder: 11, onPop: 12, onDismiss: 20, onPanStart: 13, onPanUpdate: 14, onPanEnd: 15, onScaleStart: 16, onScaleUpdate: 17, onScaleEnd: 18, onDrop: 21, onHover: 22, onKey: 23 }, sa = { linear: 0, easeIn: 1, easeOut: 2, easeInOut: 3, bounce: 4, elastic: 5, fastOutSlowIn: 6 }, la = { gentle: 1, bouncy: 2, stiff: 3 };
   function tn(e) {
     if (typeof e == "number")
       return e | 0;
@@ -1378,7 +1378,7 @@
     return e.firstChild;
   }, getNextSibling(e) {
     return e.nextSibling;
-  } }), { render: rn, effect: q, memo: nn, createComponent: L, createElement: s, createTextNode: cd, insertNode: _, insert: B, spread: ud, setProp: t, mergeProps: dd, use: ga } = ha;
+  } }), { render: rn, effect: q, memo: nn, createComponent: L, createElement: s, createTextNode: ud, insertNode: _, insert: B, spread: dd, setProp: t, mergeProps: fd, use: ga } = ha;
   ne(1, 1, 0, 0), ee();
   var on = new mr("box", 1, false);
   globalThis.__skalHot && globalThis.__skalHot.configure({ render: (e) => rn(e, on), reset: () => Ro() });
@@ -2039,13 +2039,13 @@
     return e.firstChild;
   }, getNextSibling(e) {
     return e.nextSibling;
-  } }), { render: Ti, effect: Ua, memo: fd, createComponent: hd, createElement: et, createTextNode: Ga, insertNode: ut, insert: gd, spread: pd, setProp: de, mergeProps: bd, use: _d } = Ha;
+  } }), { render: Ti, effect: Ua, memo: hd, createComponent: gd, createElement: et, createTextNode: Ga, insertNode: ut, insert: pd, spread: bd, setProp: de, mergeProps: _d, use: vd } = Ha;
   function Z(e) {
     return function() {
       throw new Error(`Skal: <${e}> was used without the babel-plugin-skal-jsx transform. Add the plugin to your Vite/babel config \u2014 see examples/kitchen-sink/vite.config.js for an example. (This wrapper exists as a fallback so misconfigured builds fail loud rather than rendering blanks.)`);
     };
   }
-  var vd = Z("Box"), md = Z("Container"), wd = Z("Column"), Sd = Z("Row"), yd = Z("Text"), xd = Z("Button"), kd = Z("ScrollView"), Td = Z("ListView"), Ed = Z("ReorderableListView"), $d = Z("Image"), Rd = Z("Stack"), Pd = Z("Switch"), Ad = Z("Slider"), Fd = Z("Checkbox"), Od = Z("ActivityIndicator"), Cd = Z("ProgressBar"), Id = Z("LazyGrid"), zd = Z("Wrap"), Dd = Z("SafeArea"), Nd = Z("RichText"), Ld = Z("TextInput"), Md = Z("Navigator"), Bd = Z("Screen"), Vd = Z("Tabs"), Wd = Z("Tab"), Hd = Z("AnimatedList"), Ud = Z("CrossFade"), Gd = Z("Hero"), jd = Z("ListTile"), qd = Z("PageView"), Xd = Z("Dismissible"), Kd = Z("CustomScrollView"), Jd = Z("SliverAppBar"), Yd = Z("SliverList"), Zd = Z("SliverGrid"), Qd = Z("Canvas"), ef = Z("DragItem"), tf = Z("DropZone"), rf = Z("Radio"), nf = Z("Chip"), of = Z("SegmentedButton"), af = Z("ExpansionTile"), sf = Z("Dropdown"), lf = Z("Stepper"), cf = Z("Step"), uf = Z("Drawer"), df = Z("BottomSheet"), ff = Z("BackdropFilter"), hf = Z("InteractiveViewer"), gf = Z("FlutterEmbed"), pf = Z("HtmlEmbed"), Ei = new Map;
+  var md = Z("Box"), wd = Z("Container"), Sd = Z("Column"), yd = Z("Row"), xd = Z("Text"), kd = Z("Button"), Td = Z("ScrollView"), Ed = Z("ListView"), $d = Z("ReorderableListView"), Rd = Z("Image"), Pd = Z("Stack"), Ad = Z("Switch"), Fd = Z("Slider"), Od = Z("Checkbox"), Cd = Z("ActivityIndicator"), Id = Z("ProgressBar"), zd = Z("LazyGrid"), Dd = Z("Wrap"), Nd = Z("SafeArea"), Ld = Z("RichText"), Md = Z("TextInput"), Bd = Z("Navigator"), Vd = Z("Screen"), Wd = Z("Tabs"), Hd = Z("Tab"), Ud = Z("AnimatedList"), Gd = Z("CrossFade"), jd = Z("Hero"), qd = Z("ListTile"), Xd = Z("PageView"), Kd = Z("Dismissible"), Jd = Z("CustomScrollView"), Yd = Z("SliverAppBar"), Zd = Z("SliverList"), Qd = Z("SliverGrid"), ef = Z("Canvas"), tf = Z("DragItem"), rf = Z("DropZone"), nf = Z("Radio"), of = Z("Chip"), af = Z("SegmentedButton"), sf = Z("ExpansionTile"), lf = Z("Dropdown"), cf = Z("Stepper"), uf = Z("Step"), df = Z("Drawer"), ff = Z("BottomSheet"), hf = Z("BackdropFilter"), gf = Z("InteractiveViewer"), pf = Z("FlutterEmbed"), bf = Z("HtmlEmbed"), Ei = new Map;
   function Kt(e, r) {
     if (typeof e != "string" || e.length === 0)
       throw new TypeError("registerHtmlView: viewType must be a non-empty string");
@@ -2339,7 +2339,7 @@
       return r;
     };
   }
-  var bf = 15, ts = (() => {
+  var _f = 15, ts = (() => {
     const e = new Uint32Array(256);
     for (let r = 0;r < 256; r++) {
       let n = r;
@@ -3717,7 +3717,7 @@
     function R(m) {
       return (() => {
         var w = s("scrollView"), C = s("text"), I = s("text"), O = s("text");
-        return _(w, C), _(w, I), _(w, O), t(w, "background", ke), t(w, "padding", 16), t(w, "gap", 14), t(w, "scrollbar", true), t(C, "label", "Skal \u2014 Component Demo"), t(C, "fontSize", 24), t(C, "fontWeight", 800), t(C, "color", Q), t(I, "label", "Every fast-path widget, plus animation, the design system, and dialogs."), t(I, "fontSize", 13), t(I, "color", W), B(w, L(Y, { title: "Design system \u2014 setDesign()", get children() {
+        return _(w, C), _(w, I), _(w, O), t(w, "background", ke), t(w, "padding", 16), t(w, "gap", 14), t(w, "scrollbar", true), t(C, "label", "Skal \u2014 Component Demo"), t(C, "testID", "home-title"), t(C, "fontSize", 24), t(C, "fontWeight", 800), t(C, "color", Q), t(I, "label", "Every fast-path widget, plus animation, the design system, and dialogs."), t(I, "fontSize", 13), t(I, "color", W), B(w, L(Y, { title: "Design system \u2014 setDesign()", get children() {
           return [(() => {
             var o = s("text");
             return t(o, "fontSize", 13), t(o, "color", W), q((u) => t(o, "label", `active: ${e()} \xB7 ${n() ? "dark" : "light"}`, u)), o;
@@ -4416,7 +4416,7 @@
     };
     return (() => {
       var a = s("scrollView"), l = s("text"), c = s("text"), p = s("text");
-      return _(a, l), _(a, c), _(a, p), t(a, "background", ke), t(a, "padding", 16), t(a, "gap", 14), t(a, "scrollbar", true), t(l, "label", "createSkalStore \u2014 reactive \xB7 persistent \xB7 deep-object"), t(l, "fontSize", 23), t(l, "fontWeight", 800), t(l, "color", Q), t(c, "fontSize", 14), t(c, "fontWeight", 800), t(p, "fontSize", 12), t(p, "color", W), B(a, L(Y, { title: "Values \u2014 mutate the object directly", get children() {
+      return _(a, l), _(a, c), _(a, p), t(a, "background", ke), t(a, "padding", 16), t(a, "gap", 14), t(a, "scrollbar", true), t(l, "label", "createSkalStore \u2014 reactive \xB7 persistent \xB7 deep-object"), t(l, "testID", "store-title"), t(l, "fontSize", 23), t(l, "fontWeight", 800), t(l, "color", Q), t(c, "fontSize", 14), t(c, "fontWeight", 800), t(p, "fontSize", 12), t(p, "color", W), B(a, L(Y, { title: "Values \u2014 mutate the object directly", get children() {
         return [(() => {
           var h = s("row"), v = s("button"), E = s("text");
           return _(h, v), _(h, E), t(h, "gap", 10), t(v, "label", "counter + 1"), t(v, "onClick", () => {

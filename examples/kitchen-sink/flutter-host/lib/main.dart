@@ -24,7 +24,7 @@ import 'dart:io';
 import 'dart:ui' show FramePhase;
 
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart' show kReleaseMode;
+import 'package:flutter/foundation.dart' show kDebugMode, kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -44,6 +44,21 @@ void main() async {
   final bootClock = Stopwatch()..start();
   final t0 = bootClock.elapsedMicroseconds;
   WidgetsFlutterBinding.ensureInitialized();
+
+  // E2E visibility — force Flutter's semantics tree on so Maestro /
+  // integration_test can read it. Native Flutter only builds semantics when
+  // an accessibility service is active, and Maestro's UIAutomator query
+  // doesn't reliably trigger that — without this the tree is invisible to it
+  // (an empty `maestro hierarchy`). Mirrors main_web.dart, which forces it for
+  // the same reason. Gated to debug builds (where `flutter run` / dev:android
+  // E2E runs) plus an explicit `--dart-define=SKAL_E2E=true` for profile /
+  // release E2E — so a shipped release never pays the always-on semantics cost
+  // unless asked. The handle is intentionally not held: an outstanding handle
+  // keeps semantics enabled for the app's lifetime, which is exactly what we
+  // want here. See docs/TESTING.md.
+  if (kDebugMode || const bool.fromEnvironment('SKAL_E2E')) {
+    WidgetsBinding.instance.ensureSemantics();
+  }
 
   // ── 0. Register custom widget adapters ──────────────────────────────
   //

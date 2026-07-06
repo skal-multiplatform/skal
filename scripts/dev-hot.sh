@@ -29,4 +29,10 @@ trap "kill $SRV 2>/dev/null" EXIT
 DEFINES="--dart-define=SKAL_HOT=1"
 [[ -n "$HOST" ]] && DEFINES="$DEFINES --dart-define=SKAL_HOT_HOST=$HOST"
 
+# `flutter run -d android` doesn't match a booted emulator's id (it's
+# `emulator-5554`) — resolve the real id, booting an AVD if none is attached.
+if [[ "$DEVICE" == "android" ]]; then
+  DEVICE="$("${SCRIPT_DIR}/android-emulator.sh")"
+fi
+
 cd flutter-host && flutter run -d "$DEVICE" $DEFINES

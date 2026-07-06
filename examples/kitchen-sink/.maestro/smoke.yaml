@@ -1,0 +1,51 @@
+# Maestro E2E smoke flow for the kitchen-sink demo.
+#
+# Maestro drives the REAL app on a device/emulator through Flutter's Semantics
+# tree (it can't see Flutter Keys). For Skal specifically, the reliable matcher
+# is **`id:` — a `testID` prop -> Semantics(identifier) -> Android resource-id**.
+# Plain-string text assertions do NOT match Skal widgets: Skal text lands in the
+# node's accessibility label (content-desc), and Maestro's plain-string matcher
+# checks the `text` field, which Skal leaves empty. So assert by `id:`. See
+# docs/TESTING.md.
+#
+# Run (needs the maestro CLI + a connected emulator with the app installed —
+# `bun run dev:android` once first):
+#   bun run test:e2e                              # = maestro test .maestro
+#
+# Why the Store tab and not the home (UI) tab: the home tab is one ~9000px
+# `<ScrollView>` embedding nested Navigator/Tabs demos, and Flutter only
+# materializes a semantics window near the scroll's far end for such
+# pathologically tall single-child scrolls — so the visible top (incl. its
+# testID) isn't in the a11y tree there. Normal-height screens (Store) expose
+# semantics correctly. See the "tall ScrollView" caveat in docs/TESTING.md.
+#
+# appId: Android applicationId. (iOS bundle id is com.skal.skalFlutter — pass
+# `--app-id com.skal.skalFlutter` or use a separate flow when targeting iOS.)
+appId: com.skal.skal_flutter
+---
+- launchApp
+
+# Cold boot renders the JS bundle asynchronously (a couple of seconds), and the
+# default home tab exposes nothing Maestro can match. So drive to the Store tab
+# (5th of 5, bottom-right) by tapping until its screen appears: taps fired
+# mid-boot are no-ops; the first post-boot tap lands. The bottom-bar tabs carry
+# no Maestro-matchable id/text, hence the coordinate tap.
+- repeat:
+    while:
+      notVisible:
+        id: "store-title"
+    commands:
+      - tapOn:
+          point: "90%,92%"
+      - waitForAnimationToEnd:
+          timeout: 1200
+
+# testID resolves: `testID="store-title"` -> Semantics(identifier) -> the
+# Android resource-id Maestro matches on. Reaching this proves the whole stack:
+# app booted, JS bundle rendered, Flutter semantics live, tab nav works, testID
+# round-trips JS -> bridge -> Flutter -> accessibility tree.
+- assertVisible:
+    id: "store-title"
+
+# More you can do: `inputText`, `scroll`, `swipe`, `assertNotVisible`,
+# `tapOn: { id: "..." }`, `takeScreenshot`. See https://docs.maestro.dev

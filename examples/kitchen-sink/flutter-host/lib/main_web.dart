@@ -34,7 +34,6 @@ import 'dart:ui_web' as ui_web;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
-import 'package:flutter/widgets.dart';
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/dialogs.dart';
 import 'package:skal_flutter/skal/root.dart';
@@ -169,6 +168,12 @@ void _installHtmlEmbedHooks() {
 Future<void> main() async {
   _mark('main:enter');
   WidgetsFlutterBinding.ensureInitialized();
+  // Flutter Web renders to <canvas> and ships the a11y/semantics overlay only
+  // on demand — force it on so E2E tools (Maestro) can see the tree. Harmless
+  // on native; required for web E2E. The handle is intentionally not held: an
+  // outstanding handle keeps semantics enabled for the app's lifetime. See
+  // docs/TESTING.md.
+  WidgetsBinding.instance.ensureSemantics();
   _mark('main:after-binding-init');
 
   // Probe the cross-origin isolation context. If the host set

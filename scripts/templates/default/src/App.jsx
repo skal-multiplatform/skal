@@ -13,7 +13,9 @@ export default function App() {
 
   return (
     <Column padding={24} gap={16} background="#FFF2F2F7">
-      <Text label="Hello, Skal" fontSize={28} fontWeight={800} color="#FF1C1C1E" />
+      {/* testID -> Semantics(identifier) -> the Android resource-id Maestro
+          matches via `id:` in .maestro/smoke.yaml. See docs/TESTING.md. */}
+      <Text label="Hello, Skal" testID="home-title" fontSize={28} fontWeight={800} color="#FF1C1C1E" />
       <Text label="Edit src/App.jsx to start building." fontSize={14} color="#FF8E8E93" />
       <Row gap={12}>
         <Button label={`Tapped ${count()} time${count() === 1 ? '' : 's'}`} onClick={() => setCount(c => c + 1)} />

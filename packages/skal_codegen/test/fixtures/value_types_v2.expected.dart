@@ -15,7 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
-import 'dart:io';
+import 'package:skal_flutter/skal_flutter.dart';
 
 import 'value_types_v2.dart';
 
@@ -59,18 +59,7 @@ Widget _build_Anchored(NodeState n, SkalBridge bridge) {
 }
 
 Widget _build_Pic(NodeState n, SkalBridge bridge) {
-  return Pic(
-    image:
-        ((() {
-              final s = n.getCustomPropStr('image') ?? '';
-              if (s.startsWith('http')) return NetworkImage(s);
-              if (s.startsWith('file://'))
-                return FileImage(File(s.substring(7)));
-              if (s.startsWith('/')) return FileImage(File(s));
-              return AssetImage(s);
-            })()
-            as ImageProvider),
-  );
+  return Pic(image: (imageProviderFromSrc(n.getCustomPropStr('image') ?? '')!));
 }
 
 void registerAll() {

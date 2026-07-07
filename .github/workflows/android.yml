@@ -16,9 +16,8 @@ on:
       - flutter/scripts/link-libskal-flutter.sh
       - js-app/**
       - patches/skal_entry.zig
-      - patches/bun-base-commit.txt
-      - patches/0001-bun-main-android-skal-import.patch
-      - patches/0003-bun-uws-disable-epoll-pwait2-on-android.patch
+      - patches/bun-skal-commit.txt
+      - patches/webkit-skal-commit.txt
       - scripts/setup.sh
       - scripts/build-icu-android.sh
       - scripts/build-jsc-android.sh
@@ -84,9 +83,14 @@ jobs:
             ~/.bun/build-cache
             build/icu-android
             build/jsc-android
-          key: android-vendor-${{ hashFiles('patches/bun-base-commit.txt', 'patches/webkit-base-commit.txt', 'patches/0*.patch', 'patches/skal_entry.zig') }}
+          key: android-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt', 'patches/skal_entry.zig') }}
+          # Prefix fallback: a pin bump restores the previous vendor/ and
+          # setup.sh reconciles it to the new pin (fetch + checkout) —
+          # minutes instead of a from-scratch clone + 60-90 min rebuild.
+          restore-keys: |
+            android-vendor-
 
-      - name: Bootstrap (clone + apply patches + copy skal_entry.zig)
+      - name: Bootstrap (clone skal forks + copy skal_entry.zig)
         run: scripts/setup.sh
 
       - name: Build vendored bun for host (release)

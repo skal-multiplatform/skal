@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-build JavaScriptCore for Android NDK (arm64-v8a) using oven-sh/WebKit.
+# Cross-build JavaScriptCore for Android NDK (arm64-v8a) using Skal's WebKit fork (skal-multiplatform/WebKit @ skal).
 #
 # Requires: ICU built first via scripts/build-icu-android.sh
 #
@@ -33,7 +33,7 @@ esac
 
 if [[ ! -d "$WEBKIT_SRC" ]]; then
   echo "error: WebKit source not found at $WEBKIT_SRC" >&2
-  echo "       run: git clone --depth 1 https://github.com/oven-sh/WebKit.git vendor/WebKit" >&2
+  echo "       run: git clone --branch skal --depth 1 https://github.com/skal-multiplatform/WebKit.git vendor/WebKit" >&2
   exit 1
 fi
 

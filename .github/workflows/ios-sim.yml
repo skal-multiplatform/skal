@@ -18,9 +18,8 @@ on:
       - flutter/skal_flutter/pubspec.yaml
       - js-app/**
       - patches/skal_entry.zig
-      - patches/bun-base-commit.txt
-      - patches/0001-bun-main-android-skal-import.patch
-      - patches/0002-bun-tools-find-lld-on-darwin.patch
+      - patches/bun-skal-commit.txt
+      - patches/webkit-skal-commit.txt
       - scripts/setup.sh
       - scripts/link-skal-iossim.sh
       - native/ios/**
@@ -61,9 +60,13 @@ jobs:
           path: |
             vendor
             ~/.bun/build-cache
-          key: ios-sim-vendor-${{ hashFiles('patches/bun-base-commit.txt', 'patches/webkit-base-commit.txt', 'patches/0*.patch', 'patches/skal_entry.zig') }}
+          key: ios-sim-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt', 'patches/skal_entry.zig') }}
+          # Prefix fallback: a pin bump restores the previous vendor/ and
+          # setup.sh reconciles it to the new pin (fetch + checkout).
+          restore-keys: |
+            ios-sim-vendor-
 
-      - name: Bootstrap (clone + apply patches + copy skal_entry.zig)
+      - name: Bootstrap (clone skal forks + copy skal_entry.zig)
         run: scripts/setup.sh
 
       - name: Build vendored bun for host (release)

@@ -1,7 +1,7 @@
 # iOS Simulator build pipeline. Independent of desktop.yml even though
 # both produce a macOS-built libskal.dylib — the iOS-Sim variant is the
 # same .o files re-stamped with `vtool` to LC_BUILD_VERSION=IOSSIMULATOR
-# plus a small shim (native/ios/skal_iossim_shim.c) that provides the
+# plus a small shim (packages/skal_native/ios/skal_iossim_shim.c) that provides the
 # __clear_cache symbol iOS Simulator's libSystem doesn't export.
 #
 # iOS Device (aarch64-apple-ios) is intentionally not in CI — it
@@ -13,28 +13,32 @@ name: ios-sim
 on:
   pull_request:
     paths:
-      - flutter/skal_flutter/ios/**
-      - flutter/skal_flutter/lib/**
-      - flutter/skal_flutter/pubspec.yaml
-      - js-app/**
+      - examples/kitchen-sink/flutter-host/ios/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
       - patches/skal_entry.zig
       - patches/bun-skal-commit.txt
       - patches/webkit-skal-commit.txt
       - scripts/setup.sh
       - scripts/link-skal-iossim.sh
-      - native/ios/**
+      - packages/skal_native/**
       - .github/workflows/ios-sim.yml
   push:
     branches: [main]
     paths:
-      - flutter/skal_flutter/ios/**
-      - flutter/skal_flutter/lib/**
-      - flutter/skal_flutter/pubspec.yaml
-      - js-app/**
+      - examples/kitchen-sink/flutter-host/ios/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
       - patches/**
       - scripts/setup.sh
       - scripts/link-skal-iossim.sh
-      - native/ios/**
+      - packages/skal_native/**
       - .github/workflows/ios-sim.yml
   workflow_call:
 
@@ -68,6 +72,8 @@ jobs:
 
       - name: Bootstrap (clone skal forks + copy skal_entry.zig)
         run: scripts/setup.sh
+        env:
+          SKAL_BOOTSTRAP_ONLY: "1"
 
       - name: Build vendored bun for host (release)
         working-directory: vendor/bun
@@ -78,18 +84,19 @@ jobs:
 
       - name: Place dylib in Flutter Frameworks/iphonesimulator/
         run: |
-          mkdir -p flutter/skal_flutter/ios/Frameworks/iphonesimulator
+          mkdir -p examples/kitchen-sink/flutter-host/ios/Frameworks/iphonesimulator
           cp build/skal-iossim/libskal.dylib \
-             flutter/skal_flutter/ios/Frameworks/iphonesimulator/libskal.dylib
+             examples/kitchen-sink/flutter-host/ios/Frameworks/iphonesimulator/libskal.dylib
 
+      # Workspace deps land at the repo root (bun workspaces); the
+      # bytecode pass locks onto the vendored bun via the app's
+      # scripts/find-vendored-bun.sh.
       - name: Build skal-app.{js,cjs,cjs.jsc}
-        working-directory: js-app
-        run: |
-          bun install
-          bun run build
+        working-directory: examples/kitchen-sink
+        run: bun run build
 
       - name: flutter build ios --simulator --debug
-        working-directory: flutter/skal_flutter
+        working-directory: examples/kitchen-sink/flutter-host
         run: flutter build ios --simulator --debug
 
       # Boot a sim, install, launch, screenshot — full end-to-end
@@ -108,7 +115,7 @@ jobs:
       - name: Install + launch + screenshot
         run: |
           xcrun simctl install "$DEVICE_ID" \
-            flutter/skal_flutter/build/ios/iphonesimulator/Runner.app
+            examples/kitchen-sink/flutter-host/build/ios/iphonesimulator/Runner.app
           xcrun simctl launch "$DEVICE_ID" com.skal.skalFlutter > /tmp/launch.log
           sleep 8
           xcrun simctl io "$DEVICE_ID" screenshot smoke.png

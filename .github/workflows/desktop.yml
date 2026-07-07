@@ -1,6 +1,6 @@
 # macOS Desktop build pipeline. Scoped only to changes that affect
 # the Flutter macOS shell. iOS-Simulator-only changes (e.g.
-# native/ios/skal_iossim_shim.c, scripts/link-skal-iossim.sh) do NOT
+# packages/skal_native/ios/skal_iossim_shim.c, scripts/link-skal-iossim.sh) do NOT
 # trigger this workflow — modularity invariant: per-platform builds
 # only relink on inputs that actually flow into them.
 
@@ -9,28 +9,32 @@ name: desktop
 on:
   pull_request:
     paths:
-      - flutter/skal_flutter/macos/**
-      - flutter/skal_flutter/lib/**
-      - flutter/skal_flutter/pubspec.yaml
-      - flutter/scripts/link-libskal-flutter-mac.sh
-      - js-app/**
+      - examples/kitchen-sink/flutter-host/macos/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
+      - scripts/link-libskal-flutter-mac.sh
       - patches/skal_entry.zig
       - patches/bun-skal-commit.txt
       - patches/webkit-skal-commit.txt
       - scripts/setup.sh
-      - native/ios/skal.h
+      - packages/skal_native/include/skal.h
       - .github/workflows/desktop.yml
   push:
     branches: [main]
     paths:
-      - flutter/skal_flutter/macos/**
-      - flutter/skal_flutter/lib/**
-      - flutter/skal_flutter/pubspec.yaml
-      - flutter/scripts/link-libskal-flutter-mac.sh
-      - js-app/**
+      - examples/kitchen-sink/flutter-host/macos/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
+      - scripts/link-libskal-flutter-mac.sh
       - patches/**
       - scripts/setup.sh
-      - native/ios/skal.h
+      - packages/skal_native/include/skal.h
       - .github/workflows/desktop.yml
   workflow_call:
 
@@ -64,22 +68,25 @@ jobs:
 
       - name: Bootstrap (clone skal forks + copy skal_entry.zig)
         run: scripts/setup.sh
+        env:
+          SKAL_BOOTSTRAP_ONLY: "1"
 
       - name: Build vendored bun for host (release)
         working-directory: vendor/bun
         run: PATH="$HOME/.cargo/bin:$PATH" bun run build:release
 
       - name: Re-link libskal.dylib for Flutter macOS
-        run: flutter/scripts/link-libskal-flutter-mac.sh
+        run: scripts/link-libskal-flutter-mac.sh
 
+      # Workspace deps land at the repo root (bun workspaces); the
+      # bytecode pass locks onto the vendored bun via the app's
+      # scripts/find-vendored-bun.sh.
       - name: Build skal-app.{js,cjs,cjs.jsc}
-        working-directory: js-app
-        run: |
-          bun install
-          bun run build
+        working-directory: examples/kitchen-sink
+        run: bun run build
 
       - name: flutter build macos --release
-        working-directory: flutter/skal_flutter
+        working-directory: examples/kitchen-sink/flutter-host
         run: flutter build macos --release
 
       # Headless smoke: launches the .app for 10 s, asserts the
@@ -88,7 +95,7 @@ jobs:
       # bundle "loads" but no ops ever reach the bridge.
       - name: Smoke run (10 s)
         run: |
-          APP=flutter/skal_flutter/build/macos/Build/Products/Release/skal_flutter.app
+          APP=examples/kitchen-sink/flutter-host/build/macos/Build/Products/Release/skal_flutter.app
           "$APP/Contents/MacOS/skal_flutter" > /tmp/smoke.log 2>&1 &
           SMOKE_PID=$!
           sleep 10
@@ -106,5 +113,5 @@ jobs:
         with:
           name: desktop-flutter
           path: |
-            flutter/skal_flutter/build/macos/Build/Products/Release/skal_flutter.app
-            build/skal-darwin/libskal.unstripped.dylib
+            examples/kitchen-sink/flutter-host/build/macos/Build/Products/Release/skal_flutter.app
+            build/skal-darwin/libskal.flutter.unstripped.dylib

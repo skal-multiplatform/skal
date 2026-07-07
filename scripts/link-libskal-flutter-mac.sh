@@ -24,6 +24,17 @@ BUN_BUILD="${BUN_DIR}/build/release"
 SKAL_BUILD="${SKAL_ROOT}/build/skal-darwin"
 FLUTTER_FRAMEWORKS="${SKAL_FLUTTER_FRAMEWORKS:-${SKAL_ROOT}/examples/kitchen-sink/flutter-host/macos/Frameworks}"
 
+# Prebuilt fast path — scripts/fetch-libskal.sh downloaded a ready-made
+# dylib into build/skal-darwin/; install it without relinking (no
+# llvm@21, no vendor/bun build needed on this machine).
+PREBUILT="${SKAL_BUILD}/libskal.flutter.dylib"
+if [[ -n "${SKAL_PREBUILT:-}" && -f "${PREBUILT}" ]]; then
+  mkdir -p "${FLUTTER_FRAMEWORKS}"
+  cp "${PREBUILT}" "${FLUTTER_FRAMEWORKS}/libskal.dylib"
+  echo "✓ libskal.dylib (prebuilt) → ${FLUTTER_FRAMEWORKS}/libskal.dylib"
+  exit 0
+fi
+
 # Toolchain — Homebrew llvm@21 (matches bun's build).
 if ! command -v brew >/dev/null 2>&1; then
   echo "error: brew not found; install Homebrew or set LLVM_PREFIX" >&2

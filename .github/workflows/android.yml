@@ -10,32 +10,36 @@ name: android
 on:
   pull_request:
     paths:
-      - flutter/skal_flutter/android/**
-      - flutter/skal_flutter/lib/**
-      - flutter/skal_flutter/pubspec.yaml
-      - flutter/scripts/link-libskal-flutter.sh
-      - js-app/**
+      - examples/kitchen-sink/flutter-host/android/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
+      - scripts/link-libskal-flutter.sh
       - patches/skal_entry.zig
       - patches/bun-skal-commit.txt
       - patches/webkit-skal-commit.txt
       - scripts/setup.sh
       - scripts/build-icu-android.sh
       - scripts/build-jsc-android.sh
-      - native/ios/skal.h
+      - packages/skal_native/include/skal.h
       - .github/workflows/android.yml
   push:
     branches: [main]
     paths:
-      - flutter/skal_flutter/android/**
-      - flutter/skal_flutter/lib/**
-      - flutter/skal_flutter/pubspec.yaml
-      - flutter/scripts/link-libskal-flutter.sh
-      - js-app/**
+      - examples/kitchen-sink/flutter-host/android/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
+      - scripts/link-libskal-flutter.sh
       - patches/**
       - scripts/setup.sh
       - scripts/build-icu-android.sh
       - scripts/build-jsc-android.sh
-      - native/ios/skal.h
+      - packages/skal_native/include/skal.h
       - .github/workflows/android.yml
   workflow_call:
 
@@ -68,7 +72,7 @@ jobs:
       # on macos-15 runners; we just toggle the toolchain.
       - run: rustup install nightly && rustup default nightly
 
-      # bun (used to bundle js-app and run scripts/setup.sh).
+      # bun (used to bundle the kitchen-sink JS app and run scripts/setup.sh).
       - uses: oven-sh/setup-bun@v2
 
       - name: Install Android NDK
@@ -92,6 +96,8 @@ jobs:
 
       - name: Bootstrap (clone skal forks + copy skal_entry.zig)
         run: scripts/setup.sh
+        env:
+          SKAL_BOOTSTRAP_ONLY: "1"
 
       - name: Build vendored bun for host (release)
         working-directory: vendor/bun
@@ -110,26 +116,27 @@ jobs:
             --build-dir=$(pwd)/build/android
 
       - name: Re-link libskal.so for the Flutter Android app
-        run: flutter/scripts/link-libskal-flutter.sh
+        run: scripts/link-libskal-flutter.sh
 
+      # Workspace deps land at the repo root (bun workspaces); the
+      # bytecode pass locks onto the vendored bun via the app's
+      # scripts/find-vendored-bun.sh.
       - name: Build skal-app.{js,cjs,cjs.jsc}
-        working-directory: js-app
-        run: |
-          bun install
-          bun run build
+        working-directory: examples/kitchen-sink
+        run: bun run build
 
       - name: flutter build apk --release
-        working-directory: flutter/skal_flutter
+        working-directory: examples/kitchen-sink/flutter-host
         run: flutter build apk --release --target-platform android-arm64
 
       - name: flutter build apk --debug
-        working-directory: flutter/skal_flutter
+        working-directory: examples/kitchen-sink/flutter-host
         run: flutter build apk --debug --target-platform android-arm64
 
       - uses: actions/upload-artifact@v4
         with:
           name: android-apks
           path: |
-            flutter/skal_flutter/build/app/outputs/flutter-apk/app-release.apk
-            flutter/skal_flutter/build/app/outputs/flutter-apk/app-debug.apk
-            build/skal-android/libskal.unstripped.so
+            examples/kitchen-sink/flutter-host/build/app/outputs/flutter-apk/app-release.apk
+            examples/kitchen-sink/flutter-host/build/app/outputs/flutter-apk/app-debug.apk
+            build/skal-android/libskal.flutter.unstripped.so

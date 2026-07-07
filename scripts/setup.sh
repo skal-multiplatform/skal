@@ -48,6 +48,42 @@ if [[ -d "${ROOT}/node_modules" && -f "${ROOT}/bun.lock" ]]; then
 fi
 bun install --silent
 
+# ── prebuilt fast path ───────────────────────────────────────────────
+# SKAL_PREBUILT=1 downloads CI-built libskal binaries + the matching
+# host bun from the release-libskal workflow's GitHub release instead
+# of building the vendor stack (30-120 min → ~1 min; needs `gh` auth).
+# Override the release tag with SKAL_PREBUILT_TAG. See
+# scripts/fetch-libskal.sh and .github/workflows/release-libskal.yml.
+if [[ -n "${SKAL_PREBUILT:-}" ]]; then
+  export SKAL_PREBUILT
+  step "2-5/6  fetch prebuilt libskal (skipping vendor clone + builds)"
+  "${ROOT}/scripts/fetch-libskal.sh" "${SKAL_PREBUILT_TAG:-libskal-dev}"
+
+  step "6/6  link libskal binaries into kitchen-sink"
+  "${ROOT}/scripts/skal-link.sh" kitchen-sink macos
+  if [[ -f "${ROOT}/build/skal-android/libskal.flutter.so" ]]; then
+    "${ROOT}/scripts/skal-link.sh" kitchen-sink android
+  fi
+  if [[ -f "${ROOT}/build/skal-iossim/libskal.dylib" ]]; then
+    "${ROOT}/scripts/skal-link.sh" kitchen-sink ios 2>/dev/null || true
+  fi
+
+  cat <<EOF
+
+
+✓ Prebuilt setup done. Try the demo:
+
+  bun run dev:macos                 # macOS desktop
+  bun run dev:android               # Android emulator / device
+
+(Bytecode generation uses the downloaded bun at build/skal-bun/bun —
+see scripts/find-vendored-bun.sh. For from-source development, re-run
+without SKAL_PREBUILT.)
+
+EOF
+  exit 0
+fi
+
 # ── 2-3. clone vendor forks (patch commits live on the forks) ────────
 step "2/6  clone vendor forks — skal-multiplatform/{bun,WebKit} @ skal"
 
@@ -130,6 +166,15 @@ fi
 cd "${VENDOR}/bun"
 note "bun install inside vendor/bun (needed for bun's own codegen)"
 bun install --silent
+
+# CI bootstrap mode — stop after clone+pin+entry placement so the
+# workflow's named steps own the builds (real per-step timing/logs
+# instead of a 60-min opaque "Bootstrap"). Local `bun run setup` never
+# sets this.
+if [[ -n "${SKAL_BOOTSTRAP_ONLY:-}" ]]; then
+  note "SKAL_BOOTSTRAP_ONLY set — skipping build/link steps (4-6)"
+  exit 0
+fi
 
 # ── 4. build vendor/bun for host ─────────────────────────────────────
 cd "${ROOT}"

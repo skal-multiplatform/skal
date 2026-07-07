@@ -1,0 +1,200 @@
+# Prebuilt libskal release pipeline.
+#
+# Builds the final consumable binaries — libskal for macOS / iOS-Sim /
+# Android plus the matching host bun (bytecode generation MUST use the
+# same JSC as libskal; see docs/bytecode-cache.md) — and publishes them
+# as assets on a GitHub Release. Consumers pull them via
+# scripts/fetch-libskal.sh (or `SKAL_PREBUILT=1 bun run setup`), turning
+# the 30-120 min vendor build into a ~1 min download.
+#
+# Why this lives HERE and not on the bun/WebKit forks: a libskal binary
+# is a function of (bun pin × WebKit pin × patches/skal_entry.zig), and
+# only a commit of THIS repo pins all three — the fork's main.zig hook
+# imports skal_entry.zig, which deliberately lives here (it co-evolves
+# with the Dart FFI + JS bridge). The forks are validated implicitly:
+# every run builds from their pinned `skal` branches.
+#
+# Triggers:
+#   • push to main touching the binary's actual inputs (the fork pins,
+#     skal_entry.zig, the link scripts, or this workflow) — refreshes
+#     the rolling `libskal-dev` prerelease automatically, so prebuilts
+#     never go stale relative to main.
+#   • workflow_dispatch — manual refresh of `libskal-dev`, or an
+#     immutable versioned release by passing e.g. tag=libskal-v0.1.0
+#     (the Phase-1 `skal` CLI will pin those).
+#
+# iOS device is intentionally absent: it needs an Apple signing
+# identity (scripts/link-skal-ios.sh, local-only for now).
+
+name: release-libskal
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create/update (libskal-v* = stable release)"
+        default: "libskal-dev"
+        required: true
+  push:
+    branches: [main]
+    paths:
+      - patches/**
+      - scripts/link-libskal-flutter.sh
+      - scripts/link-libskal-flutter-mac.sh
+      - scripts/link-skal-iossim.sh
+      - .github/workflows/release-libskal.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-libskal
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'push' && 'libskal-dev' || inputs.tag }}
+
+jobs:
+  darwin:
+    # Produces: libskal-macos-arm64.dylib, libskal-iossim-arm64.dylib,
+    # bun-darwin-arm64, manifest.json, checksums-darwin.txt
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup install nightly && rustup default nightly
+      - uses: oven-sh/setup-bun@v2
+      # bun's link step + our relink need llvm@21; ninja for its deps.
+      - run: brew install llvm@21 ninja || true
+
+      # Shares the desktop lane's cache — a warm PR cache makes this a
+      # relink-only run. setup.sh reconciles a stale restore to the pins.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor
+            ~/.bun/build-cache
+          key: desktop-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt', 'patches/skal_entry.zig') }}
+          restore-keys: |
+            desktop-vendor-
+
+      - name: Bootstrap (clone skal forks + copy skal_entry.zig)
+        run: scripts/setup.sh
+        env:
+          SKAL_BOOTSTRAP_ONLY: "1"
+
+      - name: Build vendored bun for host (release)
+        working-directory: vendor/bun
+        run: PATH="$HOME/.cargo/bin:$PATH" bun run build:release
+
+      - name: Link libskal.dylib (macOS)
+        run: scripts/link-libskal-flutter-mac.sh
+
+      - name: Link libskal.dylib (iOS Simulator)
+        run: scripts/link-skal-iossim.sh
+
+      - name: Assemble assets
+        run: |
+          mkdir -p out
+          cp build/skal-darwin/libskal.flutter.dylib out/libskal-macos-arm64.dylib
+          cp build/skal-iossim/libskal.dylib         out/libskal-iossim-arm64.dylib
+          # Host bun for bytecode generation — stripped if present.
+          if [[ -x vendor/bun/build/release/bun ]]; then
+            cp vendor/bun/build/release/bun out/bun-darwin-arm64
+          else
+            cp vendor/bun/build/release/bun-profile out/bun-darwin-arm64
+          fi
+          # Manifest — everything a consumer needs to know what they got.
+          BUN_VERSION="$(out/bun-darwin-arm64 --version 2>/dev/null || echo unknown)"
+          cat > out/manifest.json <<EOF
+          {
+            "skal_commit": "${GITHUB_SHA}",
+            "bun_pin": "$(cat patches/bun-skal-commit.txt)",
+            "webkit_pin": "$(cat patches/webkit-skal-commit.txt)",
+            "skal_entry_sha256": "$(shasum -a 256 patches/skal_entry.zig | cut -d' ' -f1)",
+            "bun_version": "${BUN_VERSION}",
+            "tag": "${RELEASE_TAG}"
+          }
+          EOF
+          (cd out && shasum -a 256 libskal-macos-arm64.dylib libskal-iossim-arm64.dylib bun-darwin-arm64 > checksums-darwin.txt)
+
+      - name: Publish to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # libskal-v* tags are stable releases; everything else (the
+          # rolling libskal-dev) is a prerelease.
+          PRE=""
+          [[ "${RELEASE_TAG}" == libskal-v* ]] || PRE="--prerelease"
+          gh release view "${RELEASE_TAG}" >/dev/null 2>&1 || \
+            gh release create "${RELEASE_TAG}" ${PRE} \
+              --title "libskal ${RELEASE_TAG}" \
+              --notes "Prebuilt libskal binaries — built by release-libskal.yml from ${GITHUB_SHA}. Consume via scripts/fetch-libskal.sh or SKAL_PREBUILT=1 bun run setup." \
+              || true
+          gh release upload "${RELEASE_TAG}" out/* --clobber
+
+  android:
+    # Produces: libskal-android-arm64.so, checksums-android.txt
+    runs-on: macos-15
+    timeout-minutes: 150
+    env:
+      ANDROID_NDK_ROOT: /opt/homebrew/share/android-ndk
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup install nightly && rustup default nightly
+      - uses: oven-sh/setup-bun@v2
+      - run: brew install llvm@21 ninja || true
+      - name: Install Android NDK
+        run: brew install --cask android-ndk
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor
+            ~/.bun/build-cache
+            build/icu-android
+            build/jsc-android
+          key: android-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt', 'patches/skal_entry.zig') }}
+          restore-keys: |
+            android-vendor-
+
+      - name: Bootstrap (clone skal forks + copy skal_entry.zig)
+        run: scripts/setup.sh
+        env:
+          SKAL_BOOTSTRAP_ONLY: "1"
+
+      - name: Build ICU + JSC for Android (cached after first run)
+        run: |
+          [[ -d build/icu-android ]] || scripts/build-icu-android.sh
+          [[ -d build/jsc-android ]] || scripts/build-jsc-android.sh
+
+      - name: Cross-compile bun for Android
+        working-directory: vendor/bun
+        run: |
+          PATH="$HOME/.cargo/bin:$PATH" bun scripts/build.ts \
+            --profile=android-release \
+            --build-dir=$(pwd)/build/android
+
+      - name: Link libskal.so (Android arm64)
+        run: scripts/link-libskal-flutter.sh
+
+      - name: Assemble assets
+        run: |
+          mkdir -p out
+          cp build/skal-android/libskal.flutter.so out/libskal-android-arm64.so
+          (cd out && shasum -a 256 libskal-android-arm64.so > checksums-android.txt)
+
+      - name: Publish to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # libskal-v* tags are stable releases; everything else (the
+          # rolling libskal-dev) is a prerelease.
+          PRE=""
+          [[ "${RELEASE_TAG}" == libskal-v* ]] || PRE="--prerelease"
+          gh release view "${RELEASE_TAG}" >/dev/null 2>&1 || \
+            gh release create "${RELEASE_TAG}" ${PRE} \
+              --title "libskal ${RELEASE_TAG}" \
+              --notes "Prebuilt libskal binaries — built by release-libskal.yml from ${GITHUB_SHA}. Consume via scripts/fetch-libskal.sh or SKAL_PREBUILT=1 bun run setup." \
+              || true
+          gh release upload "${RELEASE_TAG}" out/* --clobber

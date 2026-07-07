@@ -192,8 +192,9 @@ The `.jsc` file is keyed to the exact JSC version that produced it (via
 host bun and our libskal.so must agree:
 
 ```
-host bun:        1.3.13 at vendor/bun commit 6d0d86b71a...
-libskal.so:      built from vendor/bun at commit 6d0d86b71a... (same commit)
+host bun:        built from vendor/bun at the commit pinned in
+                 patches/bun-skal-commit.txt
+libskal.so:      built from vendor/bun at that same pinned commit
 ```
 
 When you upgrade `vendor/bun` to a newer commit, you **must** also rebuild

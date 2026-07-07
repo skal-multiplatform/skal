@@ -31,7 +31,7 @@
 #            --profile=ios-release --build-dir=build/ios-release --configure-only
 #        PATH="$HOME/.cargo/bin:$PATH" ninja -C build/ios-release
 #      (Resolves all 22 deps + bun-zig.o + bun C++ .o files for iOS
-#       arm64. See patches/0004-bun-ios-target-plumbing.patch.)
+#       arm64. See the iOS-target commit on the bun fork's skal branch.)
 #   2. WebKit iOS build complete (output at build/skal-jsc-ios/lib/
 #      or vendor/bun/build/ios-release/deps/WebKit/lib/).
 
@@ -60,7 +60,7 @@ mkdir -p "${SKAL_BUILD}"
 
 if [[ ! -f "${BUN_BUILD}/build.ninja" ]]; then
   echo "error: bun iOS C++ build not configured at ${BUN_BUILD}" >&2
-  echo "       run from vendor/bun (after applying patches/0004-...patch):" >&2
+  echo "       run from vendor/bun (the fork's skal branch carries the iOS plumbing):" >&2
   echo "         ln -sfn \$PWD/../WebKit vendor/WebKit" >&2
   echo "         PATH=\"\$HOME/.cargo/bin:\$PATH\" bun scripts/build.ts \\" >&2
   echo "             --profile=ios-release \\" >&2

@@ -10,9 +10,10 @@
 #
 # Resolution order:
 #   1. $SKAL_BUN env var (absolute path, for CI / explicit overrides)
-#   2. vendor/bun/build/release/bun (stripped) if present
-#   3. vendor/bun/build/release/bun-profile (unstripped)
-#   4. error with build instructions
+#   2. build/skal-bun/bun — prebuilt (fetch-libskal.sh)
+#   3. vendor/bun/build/release/bun (stripped) if present
+#   4. vendor/bun/build/release/bun-profile (unstripped)
+#   5. error with build instructions
 
 set -euo pipefail
 
@@ -30,7 +31,7 @@ fi
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 RELEASE_DIR="${REPO_ROOT}/vendor/bun/build/release"
 
-for candidate in "${RELEASE_DIR}/bun" "${RELEASE_DIR}/bun-profile"; do
+for candidate in "${REPO_ROOT}/build/skal-bun/bun" "${RELEASE_DIR}/bun" "${RELEASE_DIR}/bun-profile"; do
     if [[ -x "${candidate}" ]]; then
         echo "${candidate}"
         exit 0
@@ -38,7 +39,8 @@ for candidate in "${RELEASE_DIR}/bun" "${RELEASE_DIR}/bun-profile"; do
 done
 
 cat >&2 <<EOF
-error: vendored bun not built. Looked at:
+error: no skal bun found. Looked at:
+  ${REPO_ROOT}/build/skal-bun/bun   (prebuilt — SKAL_PREBUILT=1 bun run setup)
   ${RELEASE_DIR}/bun
   ${RELEASE_DIR}/bun-profile
 

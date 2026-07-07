@@ -1,5 +1,6 @@
 # Vendored sources are huge git clones — re-created by scripts/setup.sh
-# from the pinned commits in patches/{bun,webkit}-base-commit.txt.
+# from Skal's forks at the commits pinned in
+# patches/{bun,webkit}-skal-commit.txt.
 vendor/
 
 # Build artifacts. All outputs of scripts/build-*.sh and scripts/link-skal-so.sh.

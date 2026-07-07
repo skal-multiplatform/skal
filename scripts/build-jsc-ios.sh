@@ -17,10 +17,11 @@
 # apps), so the embedded-but-unused code costs only static size.
 #
 # Prerequisites:
-#   1. WebKit cloned at vendor/bun/vendor/WebKit (run from vendor/bun:
-#      `git clone https://github.com/oven-sh/WebKit.git vendor/WebKit
-#       && cd vendor/WebKit
-#       && git checkout 88b2f7a2159c913f7dd0d73c0e88d66138cd67ba`).
+#   1. WebKit at <repo>/vendor/WebKit, pinned — easiest via
+#      `SKAL_WEBKIT=1 bun run setup` (clones the fork's `skal` branch
+#      and pins it to patches/webkit-skal-commit.txt). bun's own iOS
+#      build additionally reads it through a vendor/bun/vendor/WebKit
+#      symlink — see scripts/link-skal-ios.sh, which sets that up.
 #   2. cmake 3.20+ (`brew install cmake`).
 #   3. ninja (`brew install ninja`).
 #   4. Xcode (full install, not just CommandLineTools — needed for
@@ -31,11 +32,11 @@
 set -euo pipefail
 
 SKAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# WebKit source — Skal pins to the same commit bun does
-# (88b2f7a2159c913f7dd0d73c0e88d66138cd67ba). Lives at
-# vendor/WebKit/ in the Skal tree (gitignored — 8 GB). Single checkout
-# is shared by the macOS/Android prebuilt fetches AND by this iOS-from-
-# source build.
+# WebKit source — pinned by patches/webkit-skal-commit.txt (the tip of
+# the skal-multiplatform/WebKit fork's `skal` branch; its base is the
+# WebKit commit bun's prebuilts use). Lives at vendor/WebKit/ in the
+# Skal tree (gitignored — 8 GB). Single checkout is shared by the
+# Android JSC cross-build AND by this iOS-from-source build.
 WEBKIT_SRC="${SKAL_ROOT}/vendor/WebKit"
 BUILD_DIR="${SKAL_ROOT}/build/skal-jsc-ios"
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
@@ -43,10 +44,12 @@ SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 if [[ ! -d "${WEBKIT_SRC}/Source/JavaScriptCore" ]]; then
   echo "error: WebKit source not at ${WEBKIT_SRC}" >&2
   echo "       expected vendor/WebKit/Source/JavaScriptCore/ to exist." >&2
-  echo "       clone if missing:" >&2
-  echo "         git clone https://github.com/oven-sh/WebKit.git vendor/WebKit \\" >&2
-  echo "           && cd vendor/WebKit \\" >&2
-  echo "           && git checkout 88b2f7a2159c913f7dd0d73c0e88d66138cd67ba" >&2
+  echo "       easiest fix — let setup clone it at the pinned commit:" >&2
+  echo "         SKAL_WEBKIT=1 bun run setup" >&2
+  echo "       or manually:" >&2
+  echo "         git clone --branch skal --depth 1 https://github.com/skal-multiplatform/WebKit.git vendor/WebKit" >&2
+  echo "         pin=\$(cat \"${SKAL_ROOT}/patches/webkit-skal-commit.txt\")" >&2
+  echo "         git -C vendor/WebKit fetch --depth 1 origin \"\$pin\" && git -C vendor/WebKit checkout \"\$pin\"" >&2
   exit 1
 fi
 

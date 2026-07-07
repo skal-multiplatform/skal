@@ -8,8 +8,9 @@
 #
 # Steps:
 #   1. bun install                          — workspace deps
-#   2. clone vendor/bun + vendor/WebKit     — ~5-10 min, shallow
-#   3. apply patches + place skal_entry.zig
+#   2. clone Skal's bun + WebKit forks and pin them — shallow; WebKit
+#      only when something needs it (Android/iOS JSC builds)
+#   3. place skal_entry.zig
 #   4. build vendor/bun for host            — ~30 min cold, ~3 min incremental
 #   5. (if NDK present) ICU + JSC + bun for Android — ~60-90 min cold
 #   6. link libskal binaries into kitchen-sink
@@ -47,43 +48,113 @@ if [[ -d "${ROOT}/node_modules" && -f "${ROOT}/bun.lock" ]]; then
 fi
 bun install --silent
 
-# ── 2-3. clone vendor + apply patches ────────────────────────────────
-step "2/6  clone vendor/bun + vendor/WebKit"
+# ── prebuilt fast path ───────────────────────────────────────────────
+# SKAL_PREBUILT=1 downloads CI-built libskal binaries + the matching
+# host bun from the release-libskal workflow's GitHub release instead
+# of building the vendor stack (30-120 min → ~1 min; needs `gh` auth).
+# Override the release tag with SKAL_PREBUILT_TAG. See
+# scripts/fetch-libskal.sh and .github/workflows/release-libskal.yml.
+if [[ -n "${SKAL_PREBUILT:-}" ]]; then
+  export SKAL_PREBUILT
+  step "2-5/6  fetch prebuilt libskal (skipping vendor clone + builds)"
+  "${ROOT}/scripts/fetch-libskal.sh" "${SKAL_PREBUILT_TAG:-libskal-dev}"
 
-BUN_COMMIT="$(cat "${PATCHES}/bun-base-commit.txt" | tr -d '[:space:]')"
-WEBKIT_COMMIT="$(cat "${PATCHES}/webkit-base-commit.txt" | tr -d '[:space:]')"
+  step "6/6  link libskal binaries into kitchen-sink"
+  "${ROOT}/scripts/skal-link.sh" kitchen-sink macos
+  if [[ -f "${ROOT}/build/skal-android/libskal.flutter.so" ]]; then
+    "${ROOT}/scripts/skal-link.sh" kitchen-sink android
+  fi
+  if [[ -f "${ROOT}/build/skal-iossim/libskal.dylib" ]]; then
+    "${ROOT}/scripts/skal-link.sh" kitchen-sink ios 2>/dev/null || true
+  fi
+
+  cat <<EOF
+
+
+✓ Prebuilt setup done. Try the demo:
+
+  bun run dev:macos                 # macOS desktop
+  bun run dev:android               # Android emulator / device
+
+(Bytecode generation uses the downloaded bun at build/skal-bun/bun —
+see scripts/find-vendored-bun.sh. For from-source development, re-run
+without SKAL_PREBUILT.)
+
+EOF
+  exit 0
+fi
+
+# ── 2-3. clone vendor forks (patch commits live on the forks) ────────
+step "2/6  clone vendor forks — skal-multiplatform/{bun,WebKit} @ skal"
+
+FORK_URL="https://github.com/skal-multiplatform"
+
+read_pin() { tr -d '[:space:]' < "$1"; }
+BUN_COMMIT="$(read_pin "${PATCHES}/bun-skal-commit.txt")"
+WEBKIT_COMMIT="$(read_pin "${PATCHES}/webkit-skal-commit.txt")"
 mkdir -p "${VENDOR}"
 
-if [[ ! -d "${VENDOR}/bun" ]]; then
-  note "cloning oven-sh/bun (shallow)"
-  git clone --depth 1 https://github.com/oven-sh/bun.git "${VENDOR}/bun"
-else
-  note "vendor/bun already present"
-fi
-cd "${VENDOR}/bun"
-if [[ "$(git rev-parse HEAD)" != "${BUN_COMMIT}" ]]; then
-  warn "vendor/bun is at $(git rev-parse --short HEAD), patches were generated against ${BUN_COMMIT:0:10}"
-fi
-
-step "3/6  apply bun patches + place skal_entry.zig"
-apply_patch() {
-  local p="$1"
-  if git apply --reverse --check "${p}" 2>/dev/null; then
-    note "already applied: $(basename "${p}")"
+# Clone <url>'s `skal` branch into <dir> and put it AT the pinned
+# commit — the pin, not the branch tip, is the source of truth for
+# what gets built (the branch moves; builds must not). Self-heals a
+# clean clone whose HEAD drifted (fork advanced, pin bumped, stale CI
+# cache restored) by fetching + checking out the pin. Hard-fails
+# instead of building the wrong tree when the directory is not a git
+# checkout (interrupted clone / partial cache restore — git would
+# otherwise walk UP and answer for the Skal repo itself) or carries
+# local modifications (e.g. a pre-fork checkout whose patches live as
+# uncommitted edits — the fork's commits replace those).
+clone_pinned_fork() {
+  local dir="$1" url="$2" pin="$3"
+  if [[ ! -d "${dir}" ]]; then
+    note "cloning ${url#https://github.com/} @ skal (shallow)"
+    git clone --branch skal --depth 1 "${url}" "${dir}"
   else
-    git apply --check "${p}" 2>/dev/null
-    git apply "${p}"
-    note "applied:         $(basename "${p}")"
+    note "$(basename "${dir}") already present"
   fi
+  if [[ ! -e "${dir}/.git" ]]; then
+    echo "error: ${dir} exists but is not a git checkout (interrupted clone?)" >&2
+    echo "       remove it and re-run:  rm -rf ${dir}" >&2
+    exit 1
+  fi
+  if [[ "$(git -C "${dir}" rev-parse HEAD)" == "${pin}" ]]; then
+    return 0
+  fi
+  if [[ -n "$(git -C "${dir}" status --porcelain --untracked-files=no)" ]]; then
+    echo "error: ${dir} is not at the pinned commit ${pin:0:10} AND has local" >&2
+    echo "       modifications, so it won't be reset automatically." >&2
+    echo "       A pre-fork checkout carries the old patches as uncommitted edits —" >&2
+    echo "       the fork's commits replace them, so they are safe to discard:" >&2
+    echo "         git -C ${dir} fetch --depth 1 ${url} ${pin}" >&2
+    echo "         git -C ${dir} checkout -f ${pin}" >&2
+    echo "       (or start clean:  rm -rf ${dir}  and re-run setup)" >&2
+    exit 1
+  fi
+  note "reconciling $(basename "${dir}") to pinned commit ${pin:0:10}"
+  git -C "${dir}" fetch --depth 1 "${url}" "${pin}"
+  git -C "${dir}" checkout --detach --quiet "${pin}"
 }
-for p in "${PATCHES}"/0*-bun-*.patch; do apply_patch "${p}"; done
 
-# Order of patches:
-#   0001  src/main.zig          android-only comptime import of skal_entry.zig
-#   0002  scripts/build/tools.ts find ld.lld on darwin (cross-compile bug)
-#   0003  packages/bun-usockets/src/eventing/epoll_kqueue.c
-#                                disable epoll_pwait2 on Android (seccomp)
+clone_pinned_fork "${VENDOR}/bun" "${FORK_URL}/bun.git" "${BUN_COMMIT}"
 
+# vendor/WebKit is only consumed by the Android/iOS JSC cross-builds
+# (scripts/build-jsc-{android,ios}.sh) — the host bun build downloads
+# its own PREBUILT JSC. Skip the 1.65 GiB clone unless a consumer is
+# in play (or it's already on disk, in which case keep it reconciled
+# to the pin). Force with SKAL_WEBKIT=1.
+if [[ ${ANDROID} -eq 1 || -n "${SKAL_WEBKIT:-}" || -d "${VENDOR}/WebKit" ]]; then
+  clone_pinned_fork "${VENDOR}/WebKit" "${FORK_URL}/WebKit.git" "${WEBKIT_COMMIT}"
+else
+  note "skipping vendor/WebKit — only the Android/iOS JSC builds need it (SKAL_WEBKIT=1 to force)"
+fi
+
+step "3/6  place skal_entry.zig"
+# The bun + WebKit modifications live as real commits on the `skal`
+# branch of Skal's forks (github.com/skal-multiplatform/{bun,WebKit})
+# — no patch application at setup time. skal_entry.zig stays in THIS
+# repo because it co-evolves with the Dart FFI + JS bridge halves; it
+# is copied into the bun tree, which imports it via the fork's
+# android/ios/macos build hook in src/main.zig.
 SKAL_ENTRY_DST="${VENDOR}/bun/src/skal_entry.zig"
 if [[ ! -f "${SKAL_ENTRY_DST}" ]] || ! cmp -s "${PATCHES}/skal_entry.zig" "${SKAL_ENTRY_DST}"; then
   cp "${PATCHES}/skal_entry.zig" "${SKAL_ENTRY_DST}"
@@ -92,20 +163,18 @@ else
   note "src/skal_entry.zig already in place"
 fi
 
-if [[ ! -d "${VENDOR}/WebKit" ]]; then
-  note "cloning oven-sh/WebKit (shallow, ~5-10 min)"
-  git clone --depth 1 https://github.com/oven-sh/WebKit.git "${VENDOR}/WebKit"
-else
-  note "vendor/WebKit already present"
-fi
-cd "${VENDOR}/WebKit"
-if [[ "$(git rev-parse HEAD)" != "${WEBKIT_COMMIT}" ]]; then
-  warn "vendor/WebKit is at $(git rev-parse --short HEAD), expected ${WEBKIT_COMMIT:0:10}"
-fi
-
 cd "${VENDOR}/bun"
 note "bun install inside vendor/bun (needed for bun's own codegen)"
 bun install --silent
+
+# CI bootstrap mode — stop after clone+pin+entry placement so the
+# workflow's named steps own the builds (real per-step timing/logs
+# instead of a 60-min opaque "Bootstrap"). Local `bun run setup` never
+# sets this.
+if [[ -n "${SKAL_BOOTSTRAP_ONLY:-}" ]]; then
+  note "SKAL_BOOTSTRAP_ONLY set — skipping build/link steps (4-6)"
+  exit 0
+fi
 
 # ── 4. build vendor/bun for host ─────────────────────────────────────
 cd "${ROOT}"

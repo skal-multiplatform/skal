@@ -104,7 +104,7 @@ That's the whole workflow. Each one is idempotent and self-contained:
 
 | Command | What it does | Cold time |
 |---|---|---|
-| `bun run setup` | Workspace install + clone vendor/bun + vendor/WebKit + apply patches + build host bun (+ build Android cross-stack if NDK present) + link libskal into kitchen-sink. Set `SKAL_NO_ANDROID=1` to skip Android even if NDK is installed. | ~30-40 min host-only, ~90-120 min with Android |
+| `bun run setup` | Workspace install + clone Skal's bun + WebKit forks (branch `skal` — patches live there as commits) + build host bun (+ build Android cross-stack if NDK present) + link libskal into kitchen-sink. Set `SKAL_NO_ANDROID=1` to skip Android even if NDK is installed. | ~30-40 min host-only, ~90-120 min with Android |
 | `bun run new <name>` | Scaffold app under `examples/<name>/` from `scripts/templates/default/`, run `flutter create` for android/ios/macos, drop libskal binaries into the new platform configs. Pass `--platforms <list>` to limit, or `--no-platforms` for the JS scaffold only. Requires `setup` first. | ~30 seconds |
 | `bun run dev:*` | Rebuild JS bundle + `flutter run -d <target>`. Available on kitchen-sink and any scaffolded app via `bun --filter <name> dev:*`. | seconds (the build hot-incremental) |
 
@@ -149,13 +149,13 @@ skal/
 │       ├── src/App.jsx       # ~2100-line demo entry
 │       ├── flutter-host/     # Flutter app — main.dart, platform configs, libskal binaries
 │       └── Makefile          # APK orchestration
-├── patches/                  # bun + WebKit patches + skal_entry.zig
+├── patches/                  # skal_entry.zig + pinned fork tips (patches = commits on the forks' `skal` branch)
 ├── scripts/                  # libskal linkers, new-app scaffold, build pipeline
 │   ├── new-app.sh            # `bun run new <name>` — scaffold
 │   ├── skal-link.sh          # `bun run link <name>` — drop libskal into platform configs
 │   ├── link-libskal-flutter-{mac,}.sh    # per-target libskal re-linkers
 │   └── templates/default/    # template tree used by new-app.sh
-├── vendor/                   # bun + WebKit pinned commits (gitignored; setup.sh clones)
+├── vendor/                   # skal-multiplatform/{bun,WebKit} clones @ skal (gitignored; setup.sh)
 ├── build/                    # libskal link inputs per platform (gitignored)
 └── docs/                     # design docs (RESTRUCTURE, PERFORMANCE, FastStorage, ...)
 ```

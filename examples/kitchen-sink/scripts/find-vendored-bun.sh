@@ -10,10 +10,12 @@
 #
 # Resolution order:
 #   1. $SKAL_BUN env var (absolute path, for CI / explicit overrides)
-#   2. vendor/bun/build/release/bun (stripped) if present
-#   3. vendor/bun/build/release/bun-profile (unstripped) — what
+#   2. build/skal-bun/bun — prebuilt, placed by scripts/fetch-libskal.sh
+#      (the SKAL_PREBUILT=1 setup path)
+#   3. vendor/bun/build/release/bun (stripped) if present
+#   4. vendor/bun/build/release/bun-profile (unstripped) — what
 #      `bun run build:release` actually produces
-#   4. error with build instructions
+#   5. error with build instructions
 #
 # Prints the absolute path on stdout; nothing else (the calling
 # package.json script captures it via $(./scripts/find-vendored-bun.sh)).
@@ -37,7 +39,7 @@ RELEASE_DIR="${REPO_ROOT}/vendor/bun/build/release"
 # upstream of strip. Both are content-equivalent for bundling / bytecode
 # (strip only removes debug syms, doesn't alter JSC version), so either
 # works. Prefer the stripped one if both exist.
-for candidate in "${RELEASE_DIR}/bun" "${RELEASE_DIR}/bun-profile"; do
+for candidate in "${REPO_ROOT}/build/skal-bun/bun" "${RELEASE_DIR}/bun" "${RELEASE_DIR}/bun-profile"; do
     if [[ -x "${candidate}" ]]; then
         echo "${candidate}"
         exit 0
@@ -45,7 +47,8 @@ for candidate in "${RELEASE_DIR}/bun" "${RELEASE_DIR}/bun-profile"; do
 done
 
 cat >&2 <<EOF
-error: vendored bun not built. Looked at:
+error: no skal bun found. Looked at:
+  ${REPO_ROOT}/build/skal-bun/bun   (prebuilt — SKAL_PREBUILT=1 bun run setup)
   ${RELEASE_DIR}/bun
   ${RELEASE_DIR}/bun-profile
 

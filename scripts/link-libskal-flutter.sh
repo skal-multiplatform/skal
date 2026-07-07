@@ -26,6 +26,17 @@ BUN_BUILD="${SKAL_ROOT}/vendor/bun/build/android"
 SKAL_BUILD="${SKAL_ROOT}/build/skal-android"
 FLUTTER_NATIVE_LIBS="${SKAL_FLUTTER_NATIVE_LIBS:-${SKAL_ROOT}/examples/kitchen-sink/flutter-host/android/app/src/main/jniLibs/arm64-v8a}"
 
+# Prebuilt fast path — scripts/fetch-libskal.sh downloaded a ready-made
+# .so into build/skal-android/; install it without relinking (no NDK,
+# no vendor/bun Android cross-build needed on this machine).
+PREBUILT="${SKAL_BUILD}/libskal.flutter.so"
+if [[ -n "${SKAL_PREBUILT:-}" && -f "${PREBUILT}" ]]; then
+  mkdir -p "${FLUTTER_NATIVE_LIBS}"
+  cp "${PREBUILT}" "${FLUTTER_NATIVE_LIBS}/libskal.so"
+  echo "✓ libskal.so (prebuilt) → ${FLUTTER_NATIVE_LIBS}/libskal.so"
+  exit 0
+fi
+
 NDK="/opt/homebrew/share/android-ndk"
 SYSROOT="${NDK}/toolchains/llvm/prebuilt/darwin-x86_64/sysroot"
 LLVM_BIN="/opt/homebrew/opt/llvm@21/bin"

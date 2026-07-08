@@ -1,0 +1,7 @@
+{
+  "widgets": {
+    "Greeting": "greeting",
+    "Counter": "counter",
+    "Stickers": "stickers"
+  }
+}

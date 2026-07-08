@@ -1,0 +1,142 @@
+# Android build pipeline. Scoped to changes that actually affect the
+# Android APK: the Flutter Android shell, the JS bundle, bun's host
+# build, libskal.so's link script, and the Android-only ICU/JSC scripts.
+#
+# Other platforms' CI failures (Desktop link issues, iOS device profiles)
+# don't block this lane.
+
+name: android
+
+on:
+  pull_request:
+    paths:
+      - examples/kitchen-sink/flutter-host/android/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
+      - scripts/link-libskal-flutter.sh
+      - patches/skal_entry.zig
+      - patches/bun-skal-commit.txt
+      - patches/webkit-skal-commit.txt
+      - scripts/setup.sh
+      - scripts/build-icu-android.sh
+      - scripts/build-jsc-android.sh
+      - packages/skal_native/include/skal.h
+      - .github/workflows/android.yml
+  push:
+    branches: [main]
+    paths:
+      - examples/kitchen-sink/flutter-host/android/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
+      - scripts/link-libskal-flutter.sh
+      - patches/**
+      - scripts/setup.sh
+      - scripts/build-icu-android.sh
+      - scripts/build-jsc-android.sh
+      - packages/skal_native/include/skal.h
+      - .github/workflows/android.yml
+  workflow_call:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # arm64 macOS — bun's host build and the Android cross-build both
+    # run faster on Apple Silicon, and Homebrew's android-ndk cask
+    # works out of the box.
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      ANDROID_NDK_ROOT: /opt/homebrew/share/android-ndk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # bun's lolhtml dep needs nightly Rust. rustup is preinstalled
+      # on macos-15 runners; we just toggle the toolchain.
+      - run: rustup install nightly && rustup default nightly
+
+      # bun (used to bundle the kitchen-sink JS app and run scripts/setup.sh).
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install Android NDK
+        run: brew install --cask android-ndk
+
+      # Cached: vendored bun+WebKit clones, bun's incremental build
+      # cache, ICU + JSC for Android (these are 30-60 min cold).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor
+            ~/.bun/build-cache
+            build/icu-android
+            build/jsc-android
+          key: android-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt', 'patches/skal_entry.zig') }}
+          # Prefix fallback: a pin bump restores the previous vendor/ and
+          # setup.sh reconciles it to the new pin (fetch + checkout) —
+          # minutes instead of a from-scratch clone + 60-90 min rebuild.
+          restore-keys: |
+            android-vendor-
+
+      - name: Bootstrap (clone skal forks + copy skal_entry.zig)
+        run: scripts/setup.sh
+        env:
+          SKAL_BOOTSTRAP_ONLY: "1"
+
+      - name: Build vendored bun for host (release)
+        working-directory: vendor/bun
+        run: PATH="$HOME/.cargo/bin:$PATH" bun run build:release
+
+      - name: Build ICU + JSC for Android (cached after first run)
+        run: |
+          [[ -d build/icu-android ]] || scripts/build-icu-android.sh
+          [[ -d build/jsc-android ]] || scripts/build-jsc-android.sh
+
+      - name: Cross-compile bun for Android
+        working-directory: vendor/bun
+        run: |
+          PATH="$HOME/.cargo/bin:$PATH" bun scripts/build.ts \
+            --profile=android-release \
+            --build-dir=$(pwd)/build/android
+
+      - name: Re-link libskal.so for the Flutter Android app
+        run: scripts/link-libskal-flutter.sh
+
+      # Workspace deps land at the repo root (bun workspaces); the
+      # bytecode pass locks onto the vendored bun via the app's
+      # scripts/find-vendored-bun.sh.
+      - name: Build skal-app.{js,cjs,cjs.jsc}
+        working-directory: examples/kitchen-sink
+        run: bun run build
+
+      - name: flutter build apk --release
+        working-directory: examples/kitchen-sink/flutter-host
+        run: flutter build apk --release --target-platform android-arm64
+
+      - name: flutter build apk --debug
+        working-directory: examples/kitchen-sink/flutter-host
+        run: flutter build apk --debug --target-platform android-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: |
+            examples/kitchen-sink/flutter-host/build/app/outputs/flutter-apk/app-release.apk
+            examples/kitchen-sink/flutter-host/build/app/outputs/flutter-apk/app-debug.apk
+            build/skal-android/libskal.flutter.unstripped.so

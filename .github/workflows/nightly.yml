@@ -1,0 +1,24 @@
+# Cross-platform regression guard. Builds every shipping target every
+# night against the latest main, regardless of which paths changed.
+#
+# Per-platform path filters in android.yml / desktop.yml / ios-sim.yml
+# could let a coupling slip through (e.g. someone changes
+# patches/skal_entry.zig thinking it's iOS-only but it actually flows
+# into every libskal). The nightly catches that within 24 hours.
+
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 5 * * *"  # 05:00 UTC every day
+  workflow_dispatch: {}
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+  android:
+    uses: ./.github/workflows/android.yml
+  desktop:
+    uses: ./.github/workflows/desktop.yml
+  ios-sim:
+    uses: ./.github/workflows/ios-sim.yml

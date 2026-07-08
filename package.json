@@ -1,0 +1,33 @@
+{
+  "name": "skal-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Skal — Solid → bridge → Flutter app framework. Internal monorepo: framework in packages/, apps in examples/.",
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "_three_commands": "// ─── the three commands you usually run ─────────────────",
+    "setup": "./scripts/setup.sh",
+    "new": "./scripts/new-app.sh",
+
+    "_dev_demo": "// ─── kitchen-sink demo (= bun --filter kitchen-sink <task>) ──",
+    "dev:macos": "bun --filter kitchen-sink dev:macos",
+    "dev:ios": "bun --filter kitchen-sink dev:ios",
+    "dev:android": "bun --filter kitchen-sink dev:android",
+    "dev:web": "bun --filter kitchen-sink dev:web",
+    "build": "bun --filter kitchen-sink build",
+
+    "_repo_wide": "// ─── repo-wide tasks ────────────────────────────────────",
+    "test": "bun run test:codegen && bun run test:flutter",
+    "test:codegen": "cd packages/skal_codegen && dart test --exclude-tags integration",
+    "test:flutter": "cd packages/skal_flutter && flutter test",
+    "analyze": "cd packages/skal_flutter && dart analyze lib/ test/ && cd ../skal_codegen && dart analyze lib/ bin/",
+    "link": "./scripts/skal-link.sh",
+
+    "_low_level": "// ─── lower-level (setup.sh wraps these; call them directly only for incremental re-builds) ──",
+    "build:libskal": "cd vendor/bun && PATH=\"$HOME/.cargo/bin:$PATH\" bun run build:release",
+    "build:libskal:android": "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT:-/opt/homebrew/share/android-ndk} bun --cwd vendor/bun scripts/build.ts --profile=android-release --build-dir=$(pwd)/vendor/bun/build/android"
+  }
+}

@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>State &amp; the Store — Skal Docs</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" type="image/png" href="../assets/favicon.png">
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="logo" href="../"><img class="mark" src="../assets/skal-logo.png" alt="Skal" style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em">skal<span class="dot">.</span></a>
+    <span class="pill">docs</span>
+    <div class="links">
+      <a href="./" style="color: var(--text)">Docs</a>
+      <a href="../#performance">Performance</a>
+      <a class="gh" href="https://github.com/skal-multiplatform/skal"><span class="star">★</span> 4.1k · GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap docs">
+  <aside class="side">
+    <div class="grp">Start</div>
+    <a href="./">Getting Started</a>
+    <div class="grp">Concepts</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="components.html">Components</a>
+    <a href="state.html" class="on">State &amp; the Store</a>
+    <div class="grp">Native</div>
+    <a href="native.html">Wrapping pub.dev packages</a>
+    <div class="grp">Workflow</div>
+    <a href="tooling.html">Hot reload &amp; dev loop</a>
+    <a href="testing.html">Testing</a>
+  </aside>
+
+  <article class="doc">
+    <h1>State &amp; the Store</h1>
+    <p class="lede">Ephemeral state is just Solid. Persistent state is <code>createSkalStore</code> — a reactive deep-object store backed by a log-structured native engine, hydrated before your first render.</p>
+
+    <h2>Ephemeral: plain Solid</h2>
+    <pre class="code"><span class="kw">const</span> [query, setQuery] = <span class="fn">createSignal</span>(<span class="st">''</span>);
+<span class="kw">const</span> results = <span class="fn">createMemo</span>(() =&gt; <span class="fn">search</span>(query()));</pre>
+    <p>Signals, memos, effects, resources — everything from <code>solid-js</code> works untouched. There is no bridge-specific state API to learn for in-memory state.</p>
+
+    <h2>Persistent: <code>createSkalStore</code></h2>
+    <pre class="code"><span class="kw">import</span> { createSkalStore } <span class="kw">from</span> <span class="st">'skal/store'</span>;
+
+<span class="kw">export const</span> db = <span class="fn">createSkalStore</span>({
+  name: <span class="st">'store'</span>,
+  version: <span class="nm">1</span>,
+  initial: {
+    counter: <span class="nm">0</span>,
+    settings: { theme: <span class="st">'dark'</span>, locale: <span class="st">'en'</span> },
+    todos: [],                 <span class="cm">// arrays are stable-id collections</span>
+    scratch: { note: <span class="st">''</span> },
+  },
+  config: {
+    scratch: { persist: <span class="kw">false</span> },   <span class="cm">// memory-only subtree</span>
+    todos:   { lazy: <span class="kw">true</span> },        <span class="cm">// hydrate on first read, LRU-evicted</span>
+  },
+});</pre>
+    <p>Reads and writes are direct object access — the store is a deep reactive proxy, so any widget reading <code>db.counter</code> re-renders when it changes:</p>
+    <pre class="code">&lt;<span class="fn">Text</span> label={<span class="st">`Count: ${</span>db.counter<span class="st">}`</span>} /&gt;
+&lt;<span class="fn">Button</span> label=<span class="st">"+1"</span> onClick={() =&gt; db.counter++} /&gt;
+
+db.settings.theme = <span class="st">'light'</span>;      <span class="cm">// persisted on write — one delta frame</span>
+db.todos.<span class="fn">push</span>({ text: <span class="st">'ship it'</span> }); <span class="cm">// collection ops persist per element</span></pre>
+
+    <h2>The native engine</h2>
+    <p>Persistence is not JSON-to-disk. Writes append per-leaf delta frames to a log-structured store implemented inside libskal (segments, compaction, a keydir index) — a write is sub-millisecond and never blocks a frame. On launch, the engine pre-warms on a background thread while your bundle evaluates, so hydration is already done when the first render reads the store.</p>
+    <div class="table-scroll">
+      <table>
+        <tr><th>Property</th><th>Behavior</th></tr>
+        <tr><td>Write</td><td>persist-on-write, per-leaf delta frames, batched fsync</td></tr>
+        <tr><td>Read</td><td>in-memory reactive proxy — native only on hydrate</td></tr>
+        <tr><td>Arrays</td><td>stable-id collections — push/splice persist element ops, not the array</td></tr>
+        <tr><td>Big values</td><td>auto-blob: large subtrees serialize as one frame instead of leaf recursion</td></tr>
+        <tr><td>Migration</td><td><code>version</code> + <code>migrate(old)</code> hook runs before hydration completes</td></tr>
+        <tr><td>Web</td><td>same API, in-memory backend (persistence lands with the IndexedDB backend)</td></tr>
+      </table>
+    </div>
+
+    <h2>Schema versioning</h2>
+    <pre class="code"><span class="fn">createSkalStore</span>({
+  name: <span class="st">'store'</span>, version: <span class="nm">2</span>,
+  initial: { ... },
+  <span class="fn">migrate</span>(old, fromVersion) {
+    <span class="kw">if</span> (fromVersion &lt; <span class="nm">2</span>) old.settings.locale ??= <span class="st">'en'</span>;
+    <span class="kw">return</span> old;
+  },
+});</pre>
+
+    <h2>The control handle</h2>
+    <p>Data lives on the proxy; <em>operations on the store itself</em> live behind the <code>STORE</code> symbol — deliberately off to the side so they can never collide with your keys:</p>
+    <pre class="code"><span class="kw">import</span> { createSkalStore, STORE } <span class="kw">from</span> <span class="st">'skal/store'</span>;
+
+<span class="kw">const</span> ctl = db[STORE];</pre>
+    <div class="table-scroll">
+      <table>
+        <tr><th>Method</th><th>Returns</th></tr>
+        <tr><td><code>ctl.backendKind()</code></td><td><code>'native'</code> on device · <code>'memory'</code> on web/tests — branch UI on it if you must</td></tr>
+        <tr><td><code>ctl.version()</code></td><td>the schema version currently on disk</td></tr>
+        <tr><td><code>ctl.pending()</code></td><td>writes staged but not yet flushed (watch it settle to 0)</td></tr>
+        <tr><td><code>ctl.flushes()</code></td><td>flush count this session — a cheap write-amplification gauge</td></tr>
+        <tr><td><code>ctl.engineStats()</code></td><td><code>{ records, segments }</code> from the native engine</td></tr>
+        <tr><td><code>ctl.initTiming()</code></td><td><code>{ total, open, migrate, hydrate, records }</code> in ms — how boot was spent</td></tr>
+      </table>
+    </div>
+    <div class="callout">The kitchen-sink's Store tab renders all of these live — it's the fastest way to build intuition for what a write actually costs.</div>
+
+    <h2>Recipes</h2>
+    <h3>Collections with <code>&lt;For&gt;</code></h3>
+    <pre class="code"><span class="kw">import</span> { For } <span class="kw">from</span> <span class="st">'solid-js'</span>;
+
+&lt;<span class="fn">Column</span> gap={<span class="nm">8</span>}&gt;
+  &lt;<span class="fn">For</span> each={db.todos}&gt;
+    {(todo) =&gt; (
+      &lt;<span class="fn">ListTile</span> title={todo.text}
+        onTap={() =&gt; todo.done = !todo.done} /&gt;   <span class="cm">// mutate the element directly</span>
+    )}
+  &lt;/<span class="fn">For</span>&gt;
+&lt;/<span class="fn">Column</span>&gt;
+
+db.todos.<span class="fn">push</span>({ text: <span class="st">'ship it'</span>, done: <span class="kw">false</span> }); <span class="cm">// one element frame persisted</span>
+db.todos.<span class="fn">splice</span>(i, <span class="nm">1</span>);                            <span class="cm">// deletion persisted by stable id</span></pre>
+    <p>Elements have stable identities, so <code>&lt;For&gt;</code> reconciles moves without re-rendering rows, and each element persists independently — pushing item 10,001 doesn't rewrite the other 10,000.</p>
+
+    <h3>Derived values</h3>
+    <pre class="code"><span class="kw">const</span> remaining = <span class="fn">createMemo</span>(() =&gt; db.todos.<span class="fn">filter</span>(t =&gt; !t.done).length);
+&lt;<span class="fn">Text</span> label={<span class="st">`${</span>remaining()<span class="st">} left`</span>} /&gt;</pre>
+    <p>Memos subscribe with the same fine granularity as widgets — derive freely, persist only source data.</p>
+
+    <h3>Drafts that shouldn't outlive a crash</h3>
+    <pre class="code">config: { scratch: { persist: <span class="kw">false</span> } }   <span class="cm">// in createSkalStore</span>
+
+db.scratch.note = draft();                <span class="cm">// reactive, shared, never on disk</span></pre>
+
+    <h3>Resetting a subtree</h3>
+    <pre class="code">db.todos.<span class="fn">splice</span>(<span class="nm">0</span>);                       <span class="cm">// clear a collection</span>
+<span class="fn">Object.assign</span>(db.settings, { theme: <span class="st">'dark'</span>, locale: <span class="st">'en'</span> }); <span class="cm">// reset leaves</span></pre>
+
+    <h2>Guarantees &amp; limits</h2>
+    <ul>
+      <li><b>Crash safety:</b> the engine is log-structured — a write appends; recovery replays the log. A crash can lose at most the last unflushed batch (<code>ctl.pending()</code>), never corrupt what's on disk.</li>
+      <li><b>Compaction is automatic.</b> Segments fold in the background; you never vacuum.</li>
+      <li><b>Big values are fine, big <em>blobs</em> aren't.</b> Large subtrees auto-serialize as single frames, but the store is for app state — put images and downloads in files and store the path.</li>
+      <li><b>It's a store, not a database.</b> No queries, no indexes, no joins — reads are plain object access at memory speed. If you need SQL, wrap a pub.dev database and keep the store for state.</li>
+    </ul>
+
+    <h2>What survives what</h2>
+    <div class="table-scroll">
+      <table>
+        <tr><th>State kind</th><th>Hot reload</th><th>App restart</th></tr>
+        <tr><td><code>createSignal</code></td><td>resets</td><td>resets</td></tr>
+        <tr><td><code>createHotState</code></td><td><b class="ok">survives</b></td><td>resets</td></tr>
+        <tr><td>Router stack</td><td><b class="ok">survives</b></td><td>resets</td></tr>
+        <tr><td><code>createSkalStore</code></td><td><b class="ok">survives</b></td><td><b class="ok">survives</b></td></tr>
+      </table>
+    </div>
+
+    <div class="pn">
+      <a href="components.html"><small>Previous</small>← Components</a>
+      <a class="next" href="native.html"><small>Next</small>Wrapping pub.dev packages →</a>
+    </div>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div><span class="logo" style="font-size:16px">skal<span class="dot">.</span></span><span style="margin-left:10px;">Skål. 🍻</span></div>
+    <div style="display:flex; gap:22px;"><a href="./">Docs</a><a href="https://github.com/skal-multiplatform/skal">GitHub</a><a href="https://github.com/skal-multiplatform/skal/blob/main/LICENSE">Apache-2.0</a></div>
+  </div>
+</footer>
+
+</body>
+</html>

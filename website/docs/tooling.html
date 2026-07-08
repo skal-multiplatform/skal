@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hot reload &amp; dev loop — Skal Docs</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" type="image/png" href="../assets/favicon.png">
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="logo" href="../"><img class="mark" src="../assets/skal-logo.png" alt="Skal" style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em">skal<span class="dot">.</span></a>
+    <span class="pill">docs</span>
+    <div class="links">
+      <a href="./" style="color: var(--text)">Docs</a>
+      <a href="../#performance">Performance</a>
+      <a class="gh" href="https://github.com/skal-multiplatform/skal"><span class="star">★</span> 4.1k · GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap docs">
+  <aside class="side">
+    <div class="grp">Start</div>
+    <a href="./">Getting Started</a>
+    <div class="grp">Concepts</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="components.html">Components</a>
+    <a href="state.html">State &amp; the Store</a>
+    <div class="grp">Native</div>
+    <a href="native.html">Wrapping pub.dev packages</a>
+    <div class="grp">Workflow</div>
+    <a href="tooling.html" class="on">Hot reload &amp; dev loop</a>
+    <a href="testing.html">Testing</a>
+  </aside>
+
+  <article class="doc">
+    <h1>Hot reload &amp; the dev loop</h1>
+    <p class="lede">Save-to-screen in under a second — without losing your place in the app. How live reload works, what survives it, and the rest of the daily loop.</p>
+
+    <h2>Hot reload</h2>
+    <p><code>skal dev</code> watches <code>src/</code>. On save, the new bundle is pushed to the running app and re-evaluated <b>inside the live JS VM</b> — no process restart, no native rebuild:</p>
+    <pre class="code"><span class="st">↻</span> App.jsx changed — reloaded in <span class="nm">380 ms</span>
+  <span class="cm">navigation + hot state preserved</span></pre>
+    <p>The outgoing generation tears down cleanly (its Solid roots dispose, the host resets the widget tree by id), then the new bundle mounts in place. What carries across:</p>
+    <ul>
+      <li><b>Navigation</b> — <code>createRouter</code> stacks restore, so you stay on the screen you were styling.</li>
+      <li><b>Marked state</b> — <code>createHotState(initial, key?)</code> is a drop-in <code>createSignal</code> that survives reloads (selected tab, form draft, scroll target).</li>
+      <li><b>The store</b> — <code>createSkalStore</code> data was never in the bundle to begin with.</li>
+    </ul>
+    <div class="callout">A bundle that throws on reload doesn't brick the session — Skal re-mounts the last good bundle and prints the error, so you fix the typo and save again.</div>
+    <p>Prefer manual control? Press <code>r</code> in the <code>skal dev</code> terminal. In release builds, all reload machinery is compiled out — zero overhead ships.</p>
+
+    <h2>The rest of the loop</h2>
+    <div class="table-scroll">
+      <table>
+        <tr><th>Command</th><th>What it does</th></tr>
+        <tr><td><code>skal dev &lt;target&gt;</code></td><td>build, launch, watch — auto-boots an emulator if none is attached</td></tr>
+        <tr><td><code>skal test</code></td><td>unit + component tests (<code>bun test</code>) — see <a href="testing.html">Testing</a></td></tr>
+        <tr><td><code>skal test e2e</code></td><td>Maestro flows against the real app — see <a href="testing.html">Testing</a></td></tr>
+        <tr><td><code>skal codegen</code></td><td>regenerate pub.dev widget adapters — see <a href="native.html">Wrapping packages</a></td></tr>
+        <tr><td><code>skal build &lt;target&gt; --release</code></td><td>shippable artifact with the bytecode cache baked in</td></tr>
+      </table>
+    </div>
+
+    <h2>Benchmarks</h2>
+    <p>The repo ships the harness behind our <a href="../#performance">published numbers</a> — boot timing, per-frame drain cost, prop-write throughput, and the 15,000-item feed scroll. Run it on your own hardware:</p>
+    <pre class="code"><span class="cm">$</span> bun run bench          <span class="cm"># prints the same table the website quotes</span></pre>
+    <p>Every number on this site is reproducible from a clean checkout. If your hardware disagrees with us, open an issue — that's a bug in the claim or a bug in the code, and either way we want it.</p>
+
+    <div class="pn">
+      <a href="native.html"><small>Previous</small>← Wrapping pub.dev packages</a>
+      <a class="next" href="testing.html"><small>Next</small>Testing →</a>
+    </div>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div><span class="logo" style="font-size:16px">skal<span class="dot">.</span></span><span style="margin-left:10px;">Skål. 🍻</span></div>
+    <div style="display:flex; gap:22px;"><a href="./">Docs</a><a href="https://github.com/skal-multiplatform/skal">GitHub</a><a href="https://github.com/skal-multiplatform/skal/blob/main/LICENSE">Apache-2.0</a></div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Dart package noise — analyzer cache, build artifacts, etc.
+.dart_tool/
+.packages
+build/
+
+# IDE / editor / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Pubspec.lock IS committed — it pins the analyzer version so the
+# generator's snapshot output stays reproducible across machines.

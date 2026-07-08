@@ -1,0 +1,35 @@
+# Maestro E2E smoke flow for __APP_NAME__.
+#
+# Maestro drives the REAL app on a device/emulator through Flutter's Semantics
+# tree (it can't see Flutter Keys). For Skal, the reliable matcher is
+# **`id:` — a `testID` prop -> Semantics(identifier) -> Android resource-id**.
+# Plain-string text assertions do NOT match Skal widgets (their label lands in
+# the accessibility content-desc, while Maestro's plain-string matcher checks
+# the `text` field, which Skal leaves empty). So assert by `id:`, and give any
+# widget you assert/tap a `testID`. See docs/TESTING.md.
+#
+# Run (needs the maestro CLI + a connected emulator/simulator with the app
+# installed — `bun run dev:android` once first):
+#   bun run test:e2e        # = maestro test .maestro
+#
+# appId = your Android applicationId (flutter create --org com.example sets it
+# to com.example.<project>). The iOS bundle id matches unless you changed it.
+appId: com.example.__APP_NAME_SNAKE__
+---
+- launchApp
+
+# Cold boot renders the JS bundle asynchronously (a second or two), so wait for
+# a known testID rather than asserting immediately. `extendedWaitUntil` polls up
+# to the timeout — covering boot — then the assertion confirms it.
+- extendedWaitUntil:
+    visible:
+      id: "home-title"
+    timeout: 15000
+- assertVisible:
+    id: "home-title"
+
+# Build out from here, e.g.:
+#   - tapOn: { id: "..." }     # give the <Button> a testID to tap it
+#   - inputText: "hello"
+#   - assertVisible: { id: "..." }
+# See https://docs.maestro.dev

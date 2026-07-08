@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Components — Skal Docs</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" type="image/png" href="../assets/favicon.png">
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="logo" href="../"><img class="mark" src="../assets/skal-logo.png" alt="Skal" style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em">skal<span class="dot">.</span></a>
+    <span class="pill">docs</span>
+    <div class="links">
+      <a href="./" style="color: var(--text)">Docs</a>
+      <a href="../#performance">Performance</a>
+      <a class="gh" href="https://github.com/skal-multiplatform/skal"><span class="star">★</span> 4.1k · GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap docs">
+  <aside class="side">
+    <div class="grp">Start</div>
+    <a href="./">Getting Started</a>
+    <div class="grp">Concepts</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="components.html" class="on">Components</a>
+    <a href="state.html">State &amp; the Store</a>
+    <div class="grp">Native</div>
+    <a href="native.html">Wrapping pub.dev packages</a>
+    <div class="grp">Workflow</div>
+    <a href="tooling.html">Hot reload &amp; dev loop</a>
+    <a href="testing.html">Testing</a>
+  </aside>
+
+  <article class="doc">
+    <h1>Components</h1>
+    <p class="lede">Fifty-plus fast-path widgets, styled with props, animated by the host, navigable out of the box. Capitalized JSX tags compile to binary ops — they cost nothing at runtime.</p>
+
+    <h2>The widget set</h2>
+    <div class="table-scroll">
+      <table>
+        <tr><th>Category</th><th>Widgets</th></tr>
+        <tr><td>Layout</td><td><code>Column</code> <code>Row</code> <code>Stack</code> <code>Wrap</code> <code>SafeArea</code> <code>Box</code></td></tr>
+        <tr><td>Scrolling</td><td><code>ScrollView</code> <code>ListView</code> <code>LazyGrid</code> <code>PageView</code> <code>CustomScrollView</code> + sliver family, <code>ReorderableListView</code></td></tr>
+        <tr><td>Content</td><td><code>Text</code> <code>RichText</code> <code>Image</code> <code>Canvas</code> <code>ProgressBar</code> <code>ActivityIndicator</code></td></tr>
+        <tr><td>Input</td><td><code>Button</code> <code>TextInput</code> <code>Switch</code> <code>Slider</code> <code>Checkbox</code> <code>Radio</code> <code>Chip</code> <code>Dropdown</code> <code>SegmentedButton</code> <code>Stepper</code></td></tr>
+        <tr><td>Navigation</td><td><code>Navigator</code> <code>Screen</code> <code>Tabs</code> <code>Tab</code> <code>Drawer</code> <code>BottomSheet</code> <code>Hero</code></td></tr>
+        <tr><td>Motion &amp; gesture</td><td><code>AnimatedList</code> <code>CrossFade</code> <code>Dismissible</code> <code>DragItem</code>/<code>DropZone</code> <code>InteractiveViewer</code>, <code>draggable</code> + release physics on any box</td></tr>
+      </table>
+    </div>
+
+    <h2>Styling is props</h2>
+    <pre class="code">&lt;<span class="fn">Box</span>
+  width={<span class="nm">220</span>} height=<span class="st">"wrap"</span>
+  padding={<span class="nm">16</span>} cornerRadius={<span class="nm">14</span>}
+  background=<span class="st">"#FF131A26"</span> borderWidth={<span class="nm">1</span>} borderColor=<span class="st">"#FF1F2937"</span>
+  onTap={() =&gt; <span class="fn">open</span>()}
+/&gt;</pre>
+    <p>Every styling prop maps to a compact binary prop-op with a stable id — there's no stylesheet engine to re-implement and nothing to parse at runtime. Colors are <code>#AARRGGBB</code>; sizes are dp numbers or the <code>"fill"</code>/<code>"wrap"</code> sentinels.</p>
+
+    <h2>Animation: declare it, the host runs it</h2>
+    <pre class="code"><span class="cm">// tween any hot prop — runs entirely on the Flutter side</span>
+&lt;<span class="fn">Box</span> scaleX={pressed() ? <span class="nm">0.96</span> : <span class="nm">1</span>} animate={{ duration: <span class="nm">180</span>, curve: <span class="st">'easeOut'</span> }} /&gt;
+
+<span class="cm">// or real spring physics</span>
+&lt;<span class="fn">Box</span> translationY={open() ? <span class="nm">0</span> : <span class="nm">320</span>} spring=<span class="st">"bouncy"</span> /&gt;</pre>
+    <p>Once the target value crosses the bridge (one op), the host owns the motion — tweens, springs, repeat loops, and drag-release physics all animate at 60 fps with zero per-frame bridge traffic.</p>
+
+    <h2>Navigation</h2>
+    <pre class="code"><span class="kw">import</span> { createRouter } <span class="kw">from</span> <span class="st">'skal/runtime'</span>;
+
+<span class="kw">const</span> router = <span class="fn">createRouter</span>({
+  home:    { component: () =&gt; &lt;<span class="fn">Home</span> /&gt; },
+  detail:  { component: (p) =&gt; &lt;<span class="fn">Detail</span> id={p.id} /&gt;, title: <span class="st">'Detail'</span> },
+}, <span class="st">'home'</span>);
+
+<span class="cm">// push with params; native back gestures + transitions included</span>
+router.<span class="fn">push</span>(<span class="st">'detail'</span>, { id: <span class="nm">42</span> });</pre>
+    <p>Screens stay alive on the stack (scroll positions survive back-navigation), <code>Tabs</code> keep every tab mounted, and <code>Hero</code> transitions work across screens. Dialogs, snackbars, and pickers are one-line imperative calls from <code>skal/renderer</code>.</p>
+
+    <h2>Accessibility &amp; testability</h2>
+    <pre class="code">&lt;<span class="fn">Text</span> label=<span class="st">"Welcome"</span> testID=<span class="st">"home-title"</span> /&gt;
+&lt;<span class="fn">Button</span> label=<span class="st">"Save"</span> semanticLabel=<span class="st">"Save document"</span> /&gt;</pre>
+    <p><code>semanticLabel</code> feeds screen readers; <code>testID</code> becomes the platform accessibility identifier that E2E tools like <a href="tooling.html">Maestro</a> match on. Both ride Flutter's real semantics tree.</p>
+
+    <div class="pn">
+      <a href="architecture.html"><small>Previous</small>← Architecture</a>
+      <a class="next" href="state.html"><small>Next</small>State &amp; the Store →</a>
+    </div>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div><span class="logo" style="font-size:16px">skal<span class="dot">.</span></span><span style="margin-left:10px;">Skål. 🍻</span></div>
+    <div style="display:flex; gap:22px;"><a href="./">Docs</a><a href="https://github.com/skal-multiplatform/skal">GitHub</a><a href="https://github.com/skal-multiplatform/skal/blob/main/LICENSE">Apache-2.0</a></div>
+  </div>
+</footer>
+
+</body>
+</html>

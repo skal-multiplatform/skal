@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture — Skal Docs</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" type="image/png" href="../assets/favicon.png">
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="logo" href="../"><img class="mark" src="../assets/skal-logo.png" alt="Skal" style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em">skal<span class="dot">.</span></a>
+    <span class="pill">docs</span>
+    <div class="links">
+      <a href="./" style="color: var(--text)">Docs</a>
+      <a href="../#performance">Performance</a>
+      <a class="gh" href="https://github.com/skal-multiplatform/skal"><span class="star">★</span> 4.1k · GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap docs">
+  <aside class="side">
+    <div class="grp">Start</div>
+    <a href="./">Getting Started</a>
+    <div class="grp">Concepts</div>
+    <a href="architecture.html" class="on">Architecture</a>
+    <a href="components.html">Components</a>
+    <a href="state.html">State &amp; the Store</a>
+    <div class="grp">Native</div>
+    <a href="native.html">Wrapping pub.dev packages</a>
+    <div class="grp">Workflow</div>
+    <a href="tooling.html">Hot reload &amp; dev loop</a>
+    <a href="testing.html">Testing</a>
+  </aside>
+
+  <article class="doc">
+    <h1>Architecture</h1>
+    <p class="lede">Three runtimes — your Solid app, an embedded JS engine, and Flutter — sharing one region of memory. Here's the whole path from a signal write to a pixel.</p>
+
+    <h2>The three layers</h2>
+    <ul>
+      <li><b>Your app (SolidJS).</b> Plain Solid components compiled against Skal's <i>universal renderer</i>. Instead of creating DOM nodes, the renderer emits binary operations.</li>
+      <li><b>libskal (bun + JavaScriptCore).</b> A native library embedding a slice of bun — its JSC runtime, module loader, bytecode cache, and Skal's store engine — inside your app's process. Your bundle runs here, on a worker thread.</li>
+      <li><b>The Flutter host.</b> A thin Dart layer that drains the op ring once per frame tick and maintains a widget tree mirroring your component tree. Rendering, gestures, accessibility, and plugins are stock Flutter.</li>
+    </ul>
+
+    <h2>The shared region</h2>
+    <p>At startup, libskal allocates a single <b>6 MiB</b> block that both sides address directly for the app's whole lifetime:</p>
+    <div class="table-scroll">
+      <table>
+        <tr><th>Segment</th><th>Size</th><th>Direction</th><th>Carries</th></tr>
+        <tr><td>Header</td><td>64 B</td><td>both</td><td>cursors, sequence counters, reset epochs</td></tr>
+        <tr><td>Op ring</td><td>4 MiB</td><td>JS → Dart</td><td><code>CREATE_NODE</code>, <code>INSERT_BEFORE</code>, <code>SET_PROP_*</code>, <code>SET_TEXT</code>…</td></tr>
+        <tr><td>String heap</td><td>768 KiB</td><td>JS → Dart</td><td>UTF-8 payloads referenced by string ops</td></tr>
+        <tr><td>Reply heap</td><td>256 KiB</td><td>Dart → JS</td><td>RPC results (dialogs, platform calls)</td></tr>
+        <tr><td>Event ring</td><td>rest</td><td>Dart → JS</td><td>taps, scrolls, text input, lifecycle</td></tr>
+      </table>
+    </div>
+    <p>JS sees the block as a <code>Uint8Array</code> over externally-owned bytes (JSC's no-copy ArrayBuffer); Dart sees the same bytes as a typed list over an FFI pointer. <b>There is no serialization step anywhere</b> — "crossing the bridge" is writing integers into a ring buffer.</p>
+
+    <h2>Life of an update</h2>
+    <ol>
+      <li>You tap a <code>&lt;Button&gt;</code>. Flutter's gesture arena resolves the tap and writes one small event (handler id + kind) into the event ring, then wakes the JS thread.</li>
+      <li>Skal's dispatcher reads the event and invokes your <code>onClick</code>. A signal updates.</li>
+      <li>Solid's reactivity re-runs only the computations that read that signal. Each affected prop becomes one op in the op ring — a 5,000-row list where one label changed emits exactly one op.</li>
+      <li>On the next frame tick, Dart drains the ring (measured at <b>0.151 ms</b> per frame, steady state), patches its node table, and marks precisely the touched widgets dirty via per-node notifiers.</li>
+      <li>Flutter rebuilds those widgets — and only those — and composites the frame.</li>
+    </ol>
+    <p>Hot props (opacity, transforms) take an even shorter path: the host tweens them on its own animation ticker, so a 60 fps animation costs <b>zero</b> bridge traffic per frame.</p>
+
+    <h2>Cold start &amp; bytecode</h2>
+    <p>Release builds ship the bundle twice: as source (<code>.cjs</code>) and as pre-compiled JavaScriptCore bytecode (<code>.jsc</code>). On launch, JSC attaches the bytecode directly — the parser never runs. That turns a several-hundred-millisecond parse into a <b>36 ms</b> eval, and a <b>56 ms</b> cold boot to first frame.</p>
+    <div class="callout">The bytecode is keyed to the exact JSC version inside libskal — the toolchain builds both from the same pinned runtime, so they can never skew.</div>
+
+    <h2>Why not a virtual DOM? Why not Flutter alone? Why not RN?</h2>
+    <ul>
+      <li><b>vs. React Native:</b> RN's architecture pays for serialization and a JS-side shadow tree. Skal's renderer writes binary ops straight into memory Flutter reads — the "bridge" is a pointer.</li>
+      <li><b>vs. Flutter alone:</b> you keep the JS ecosystem, sub-second hot reload of app code, and a language your web team already ships in — while the rendering fidelity IS Flutter.</li>
+      <li><b>vs. WebViews:</b> nothing here is a browser. Widgets are real platform-composited Flutter widgets; the DOM never existed.</li>
+    </ul>
+
+    <div class="pn">
+      <a href="./"><small>Previous</small>← Getting Started</a>
+      <a class="next" href="components.html"><small>Next</small>Components →</a>
+    </div>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div><span class="logo" style="font-size:16px">skal<span class="dot">.</span></span><span style="margin-left:10px;">Skål. 🍻</span></div>
+    <div style="display:flex; gap:22px;"><a href="./">Docs</a><a href="https://github.com/skal-multiplatform/skal">GitHub</a><a href="https://github.com/skal-multiplatform/skal/blob/main/LICENSE">Apache-2.0</a></div>
+  </div>
+</footer>
+
+</body>
+</html>

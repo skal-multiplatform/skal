@@ -1,0 +1,56 @@
+{
+  "name": "__APP_NAME__",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A Skal app.",
+  "scripts": {
+    "_js_pipeline": "// ── JS bundle (vite + JSC bytecode) ───────────────────",
+    "build": "vite build && bun run build:bytecode",
+    "build:js-only": "vite build",
+    "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && \"$BUN\" build ./flutter-host/assets/skal-app.js --bytecode --format=cjs --outdir=./flutter-host/assets/ --entry-naming=skal-app.cjs --root=./flutter-host/assets'",
+    "dev": "vite build --watch",
+
+    "_web": "// ── Web preview (DOM via skal/renderer-web) ────────────",
+    "dev:web": "vite --config vite.config.web.js",
+    "build:web": "vite build --config vite.config.web.js",
+
+    "_dev": "// ── Native dev (rebuild JS bundle, hand off to flutter run) ──",
+    "dev:flutter": "bun run build && cd flutter-host && flutter run",
+    "dev:macos": "bun run build && cd flutter-host && flutter run -d macos",
+    "dev:ios": "bun run build && cd flutter-host && flutter run -d iphone-simulator",
+    "dev:android": "bun run build && DEV=$(../../scripts/android-emulator.sh) && cd flutter-host && flutter run -d \"$DEV\"",
+
+    "_hot": "// ── JS hot reload (auto): dev server watches+pushes the bundle; save a .jsx → live app updates. Manual alt: run `dev` in another shell + press `r`. ──",
+    "dev:hot:macos": "bash ../../scripts/dev-hot.sh macos __APP_NAME__",
+    "dev:hot:ios": "bash ../../scripts/dev-hot.sh iphone-simulator __APP_NAME__",
+    "dev:hot:android": "bash ../../scripts/dev-hot.sh android __APP_NAME__ 10.0.2.2",
+
+    "_release": "// ── Release builds (ships bytecode cache) ──────────────",
+    "build:macos": "bun run build && cd flutter-host && flutter build macos --release",
+    "build:ios": "bun run build && cd flutter-host && flutter build ios --release",
+    "build:android": "bun run build && cd flutter-host && flutter build apk --release --target-platform android-arm64",
+
+    "_flutter": "// ── Flutter housekeeping ───────────────────────────────",
+    "pub": "cd flutter-host && flutter pub get",
+    "codegen": "cd flutter-host && dart run build_runner build --delete-conflicting-outputs",
+    "analyze": "cd flutter-host && dart analyze lib/",
+    "test": "cd flutter-host && flutter test",
+    "test:e2e": "maestro test .maestro",
+    "clean": "cd flutter-host && flutter clean && rm -rf dist build",
+
+    "_setup": "// ── First-time setup helpers ──────────────────────────",
+    "platforms": "cd flutter-host && flutter create --org com.example --project-name __APP_NAME_SNAKE__ --platforms macos,ios,android .",
+    "link": "../../scripts/skal-link.sh __APP_NAME__"
+  },
+  "dependencies": {
+    "skal": "workspace:*",
+    "solid-js": "^1.9.12"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "esbuild": "^0.28.0",
+    "vite": "^8.0.11",
+    "vite-plugin-solid": "^2.11.12"
+  }
+}

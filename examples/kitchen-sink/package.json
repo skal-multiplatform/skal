@@ -1,0 +1,68 @@
+{
+  "name": "kitchen-sink",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The Skal demo app. Showcases every fast-path widget, the store, custom widgets, navigation, the JS-side probes, and the render bench.",
+  "scripts": {
+    "_js_pipeline": "// ── JS bundle (vite + JSC bytecode) ───────────────────",
+    "build": "vite build && bun run build:bytecode",
+    "build:js-only": "vite build",
+    "_bytecode_note_1": "// bytecode build MUST use vendored bun — JSC bytecode is JSC-version-keyed.",
+    "_bytecode_note_2": "// `find-vendored-bun.sh` locks onto vendor/bun/build/release/bun(-profile), not the $PATH bun.",
+    "_bytecode_note_3": "// Drift silently invalidates .jsc at runtime → fallback to parsing → cold-start regression with no error.",
+    "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && \"$BUN\" build ./flutter-host/assets/skal-app.js --bytecode --format=cjs --outdir=./flutter-host/assets/ --entry-naming=skal-app.cjs --root=./flutter-host/assets'",
+    "dev": "vite build --watch",
+
+    "_web": "// ── Web preview (DOM via skal/renderer-web) ────────────",
+    "dev:web": "vite --config vite.config.web.js",
+    "build:web": "vite build --config vite.config.web.js",
+    "_flutter_web_plugins": "// ── B.5 hidden Flutter Web plugin host (see docs/WEB_SUPPORT_PLAN.md) ──",
+    "build:flutter-plugins": "cd flutter-web-plugins && flutter build web --release",
+    "_full_flutter_web": "// ── Shape D — full Flutter Web target (renderer-via-Flutter) ───",
+    "_full_flutter_web_pipeline": "// Build the JS bundle (same IIFE shape as native) + drop it into flutter-host/web/ so Flutter's static asset path serves it. main_web.dart then dynamically injects a <script> after Skal.create installs the bridge buffer global.",
+    "build:web-flutter-js": "bun run build:js-only && cp flutter-host/assets/skal-app.js flutter-host/web/skal-app.js",
+    "_web_flutter_renderer_note": "// --wasm enables dart2wasm + skwasm. The bridge's zero-copy shared-buffer protocol works under dart2js as-is (toJS is a cast) but needs explicit syncFromJs/syncToJs bulk copies under dart2wasm (toJS copies). See packages/skal_flutter/lib/skal_ffi_web.dart + docs/WEB_SUPPORT_PLAN.md §Shape D-skwasm.",
+    "dev:web-flutter": "bun run build:web-flutter-js && cd flutter-host && flutter run -d chrome --wasm --target lib/main_web.dart",
+    "build:web-flutter": "bun run build:web-flutter-js && cd flutter-host && flutter build web --wasm --target lib/main_web.dart",
+
+    "_dev": "// ── Native dev (rebuild JS bundle, hand off to flutter run) ──",
+    "dev:flutter": "bun run build && cd flutter-host && flutter run",
+    "dev:macos": "bun run build && cd flutter-host && flutter run -d macos",
+    "dev:ios": "bun run build && cd flutter-host && flutter run -d iphone-simulator",
+    "dev:android": "bun run build && DEV=$(../../scripts/android-emulator.sh) && cd flutter-host && flutter run -d \"$DEV\"",
+
+    "_hot": "// ── JS hot reload (auto): dev server watches+pushes the bundle; save a .jsx → live app updates. Manual alt: run `dev` in another shell + press `r`. ──",
+    "dev:hot:macos": "bash ../../scripts/dev-hot.sh macos kitchen-sink",
+    "dev:hot:ios": "bash ../../scripts/dev-hot.sh iphone-simulator kitchen-sink",
+    "dev:hot:android": "bash ../../scripts/dev-hot.sh android kitchen-sink 10.0.2.2",
+
+    "_release": "// ── Release builds (ships bytecode cache) ──────────────",
+    "build:macos": "bun run build && cd flutter-host && flutter build macos --release",
+    "build:ios": "bun run build && cd flutter-host && flutter build ios --release",
+    "build:android": "bun run build && cd flutter-host && flutter build apk --release --target-platform android-arm64",
+
+    "_flutter": "// ── Flutter housekeeping ───────────────────────────────",
+    "pub": "cd flutter-host && flutter pub get",
+    "codegen": "cd flutter-host && dart run build_runner build --delete-conflicting-outputs",
+    "analyze": "cd flutter-host && dart analyze lib/",
+    "test": "cd flutter-host && flutter test",
+    "test:e2e": "maestro test .maestro",
+    "clean": "cd flutter-host && flutter clean && rm -rf ../../dist dist build",
+
+    "_setup": "// ── First-time setup helpers ──────────────────────────",
+    "platforms": "cd flutter-host && flutter create --org com.skal --project-name kitchen_sink --platforms macos,ios,android .",
+    "link": "../../scripts/skal-link.sh kitchen-sink"
+  },
+  "dependencies": {
+    "skal": "workspace:*",
+    "skal-plugin-geolocator": "workspace:*",
+    "solid-js": "^1.9.12"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "esbuild": "^0.28.0",
+    "vite": "^8.0.11",
+    "vite-plugin-solid": "^2.11.12"
+  }
+}

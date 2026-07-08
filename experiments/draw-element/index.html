@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Skal — drawElement smoke test</title>
+  <style>
+    html, body { margin: 0; padding: 16px; font: 14px ui-sans-serif, system-ui, sans-serif; background: #f5f5f7; color: #111; }
+    h1 { font-size: 16px; margin: 0 0 12px; }
+    .status { padding: 12px; border-radius: 8px; margin-bottom: 16px; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+    .status.ok    { background: #d8f4e0; color: #115a2b; }
+    .status.fail  { background: #f8d7da; color: #791b22; }
+    .legend { font-size: 12px; color: #555; margin-bottom: 8px; }
+    .legend code { background: #fff; padding: 1px 4px; border-radius: 3px; }
+
+    /* The canvas needs `layoutsubtree` for Chrome to lay out its HTML
+       children. Its children are normally fallback content — but with
+       this attribute Chrome computes their layout so drawElement has
+       real dimensions to paint. */
+    canvas {
+      display: block;
+      border: 1px solid #888;
+      background: #0b0e14;
+      margin-top: 12px;
+      max-width: 100%;
+    }
+
+    /* The HTML elements that get painted into the canvas. Styled
+       normally — drawElement renders them with their computed style. */
+    .embed-btn {
+      display: inline-block;
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: #0a84ff;
+      color: white;
+      font-weight: 600;
+      border: 0;
+      cursor: pointer;
+    }
+    .embed-btn:hover { background: #0070da; }
+    .embed-card {
+      background: white;
+      padding: 12px 16px;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      width: 240px;
+    }
+    .embed-card h3 { margin: 0 0 6px; font-size: 14px; }
+    .embed-card p { margin: 0; font-size: 12px; color: #555; }
+    .embed-input { padding: 6px 8px; border-radius: 6px; border: 1px solid #888; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Skal — Chrome <code>canvas.drawElement</code> smoke test</h1>
+
+  <div id="status" class="status">Checking…</div>
+
+  <div class="legend">
+    The canvas below has a dark background. If <code>drawElement</code> is supported, you should see a button, an input field, and a card rendered INTO the canvas at fixed positions — click + type + select text to verify they stay interactive.
+  </div>
+
+  <canvas id="stage" width="520" height="340" layoutsubtree>
+    <!-- Children of <canvas> are normally fallback for unsupported
+         browsers. With the layoutsubtree attribute, Chrome lays them
+         out so drawElement can paint them. -->
+    <button id="el-btn" class="embed-btn">Click me — counter: 0</button>
+    <input id="el-input" class="embed-input" placeholder="Type here…" />
+    <div id="el-card" class="embed-card">
+      <h3>Real DOM card</h3>
+      <p>This text is selectable. Try it — drag with your mouse to highlight.</p>
+    </div>
+  </canvas>
+
+  <p id="result-log" style="font-family:ui-monospace,monospace;font-size:12px;color:#444;margin-top:12px;"></p>
+
+  <script>
+    const status = document.getElementById('status');
+    const stage  = document.getElementById('stage');
+    const ctx    = stage.getContext('2d');
+    const btn    = document.getElementById('el-btn');
+    const input  = document.getElementById('el-input');
+    const card   = document.getElementById('el-card');
+    const log    = document.getElementById('result-log');
+
+    // ── Feature detection ──────────────────────────────────────────────
+    const probes = {
+      'canvas.getContext("2d") returned a context': !!ctx,
+      'ctx has drawElement method':                  typeof ctx.drawElement === 'function',
+      'HTMLElement has getElementTransform method':  typeof btn.getElementTransform === 'function',
+      '<canvas> has layoutsubtree attribute':        stage.hasAttribute('layoutsubtree'),
+    };
+    const allOk = Object.values(probes).every(Boolean);
+
+    status.className = 'status ' + (allOk ? 'ok' : 'fail');
+    status.textContent = Object.entries(probes)
+      .map(([k, v]) => `${v ? '✓' : '✗'} ${k}`)
+      .join('\n');
+
+    if (!allOk) {
+      status.textContent += '\n\n→ Run Chrome Canary 149+ with the\n' +
+                            '   chrome://flags/#canvas-draw-element\n' +
+                            '   flag enabled, OR Chrome 148–150 stable\n' +
+                            '   joined to the origin trial.';
+    } else {
+      status.textContent += '\n\n→ drawElement is available. Rendering loop is running.';
+
+      // ── Render loop ──────────────────────────────────────────────────
+      let n = 0;
+      btn.addEventListener('click', () => {
+        n++;
+        btn.textContent = `Click me — counter: ${n}`;
+        log.textContent =
+          `Button click registered (n=${n}) — proves DOM interactivity ` +
+          `survived the canvas composite at ${new Date().toLocaleTimeString()}.`;
+      });
+
+      input.addEventListener('input', (e) => {
+        log.textContent = `Input value: "${e.target.value}" — proves keyboard input routes correctly.`;
+      });
+
+      function frame() {
+        // Clear + paint canvas-native content (a gradient + a label)
+        // BEHIND the HTML elements, to prove they composite into the
+        // same scene rather than just sitting next to it.
+        const g = ctx.createLinearGradient(0, 0, stage.width, stage.height);
+        g.addColorStop(0, '#0b0e14');
+        g.addColorStop(1, '#1a2030');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, stage.width, stage.height);
+
+        // Canvas-native ring drawn underneath the card. If drawElement
+        // works, the card paints on top.
+        ctx.strokeStyle = '#0a84ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(140, 180, 60, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = '#aaa';
+        ctx.font = '11px ui-monospace, monospace';
+        ctx.fillText('canvas-native content (ring + this label)', 12, 18);
+
+        // HTML elements drawn into the canvas at fixed positions.
+        // x/y are top-left in canvas-pixel coordinates.
+        ctx.drawElement(btn,   24, 30);
+        ctx.drawElement(input, 24, 80);
+        ctx.drawElement(card,  240, 30);
+
+        requestAnimationFrame(frame);
+      }
+      frame();
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting Started — Skal Docs</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" type="image/png" href="../assets/favicon.png">
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="logo" href="../"><img class="mark" src="../assets/skal-logo.png" alt="Skal" style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em">skal<span class="dot">.</span></a>
+    <span class="pill">docs</span>
+    <div class="links">
+      <a href="./" style="color: var(--text)">Docs</a>
+      <a href="../#performance">Performance</a>
+      <a class="gh" href="https://github.com/skal-multiplatform/skal"><span class="star">★</span> 4.1k · GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap docs">
+  <aside class="side">
+    <div class="grp">Start</div>
+    <a href="./" class="on">Getting Started</a>
+    <div class="grp">Concepts</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="components.html">Components</a>
+    <a href="state.html">State &amp; the Store</a>
+    <div class="grp">Native</div>
+    <a href="native.html">Wrapping pub.dev packages</a>
+    <div class="grp">Workflow</div>
+    <a href="tooling.html">Hot reload &amp; dev loop</a>
+    <a href="testing.html">Testing</a>
+  </aside>
+
+  <article class="doc">
+    <h1>Getting Started</h1>
+    <p class="lede">From zero to a native app running your Solid code in about three minutes (plus one coffee while the toolchain warms).</p>
+
+    <h2>Prerequisites</h2>
+    <ul>
+      <li><a href="https://bun.sh">bun</a> 1.2+ — runs the CLI, the bundler, and your tests</li>
+      <li><a href="https://flutter.dev">Flutter</a> 3.41+ — the rendering host (<code>flutter doctor</code> should be green for your targets)</li>
+      <li>Xcode for iOS/macOS, or an Android SDK + emulator for Android</li>
+    </ul>
+
+    <h2>Create an app</h2>
+    <pre class="code"><span class="cm">$</span> npx skal create my-app
+<span class="cm">$</span> cd my-app</pre>
+    <p>The scaffold is a complete, runnable project:</p>
+    <pre class="code">my-app/
+├── src/
+│   ├── App.jsx          <span class="cm"># your Solid app — edit this</span>
+│   └── index.jsx        <span class="cm"># entry: mounts &lt;App/&gt; on the bridge renderer</span>
+├── flutter-host/        <span class="cm"># platform shells (android/ios/macos) + libskal</span>
+├── .maestro/smoke.yaml  <span class="cm"># E2E smoke test, ready to run</span>
+└── package.json         <span class="cm"># dev / build / test scripts</span></pre>
+
+    <h2>Run it</h2>
+    <pre class="code"><span class="cm">$</span> skal dev macos       <span class="cm"># fastest loop for UI work</span>
+<span class="cm">$</span> skal dev android     <span class="cm"># boots an emulator automatically if none is attached</span>
+<span class="cm">$</span> skal dev ios         <span class="cm"># iOS Simulator</span>
+<span class="cm">$</span> skal dev web         <span class="cm"># Solid → DOM at localhost:5173</span></pre>
+    <p><code>skal dev</code> builds the JS bundle, launches the platform host, and starts the hot-reload server: save any file under <code>src/</code> and the running app re-evaluates the new bundle in place — <a href="tooling.html">navigation and hot state survive</a>.</p>
+
+    <div class="callout">🍻 <b>First run is slower.</b> The platform host compiles once per target (normal Flutter behavior). Every run after that is seconds.</div>
+
+    <h2>Make it yours</h2>
+    <p>Open <code>src/App.jsx</code>. It's plain SolidJS — signals, memos, effects, <code>&lt;For&gt;</code>, <code>&lt;Show&gt;</code> — with Skal's widget set instead of DOM tags:</p>
+    <pre class="code"><span class="kw">import</span> { createSignal } <span class="kw">from</span> <span class="st">'solid-js'</span>;
+<span class="kw">import</span> { Column, Text, Button } <span class="kw">from</span> <span class="st">'skal'</span>;
+
+<span class="kw">export default function</span> <span class="fn">App</span>() {
+  <span class="kw">const</span> [name, setName] = <span class="fn">createSignal</span>(<span class="st">'Skal'</span>);
+  <span class="kw">return</span> (
+    &lt;<span class="fn">Column</span> padding={<span class="nm">24</span>} gap={<span class="nm">16</span>}&gt;
+      &lt;<span class="fn">Text</span> label={<span class="st">`Hello, ${</span>name()<span class="st">}`</span>} fontSize={<span class="nm">28</span>} fontWeight={<span class="nm">800</span>} /&gt;
+      &lt;<span class="fn">Button</span> label=<span class="st">"Skål 🍻"</span> onClick={() =&gt; <span class="fn">setName</span>(<span class="st">'World'</span>)} /&gt;
+    &lt;/<span class="fn">Column</span>&gt;
+  );
+}</pre>
+    <p>When a signal changes, Solid updates exactly the widgets that read it — no virtual DOM, no reconciliation pass. The change crosses to Flutter as a handful of binary ops in shared memory. See <a href="components.html">Components</a> for the full widget set.</p>
+
+    <h2>Ship it</h2>
+    <pre class="code"><span class="cm">$</span> skal build android --release   <span class="cm"># signed APK, JSC bytecode cache baked in</span>
+<span class="cm">$</span> skal build ios --release       <span class="cm"># .ipa for TestFlight</span>
+<span class="cm">$</span> skal build macos --release
+<span class="cm">$</span> skal build web --release       <span class="cm"># static site bundle</span></pre>
+    <p>Release builds compile your bundle to JavaScriptCore bytecode, so production cold starts skip the JS parser entirely — that's the <a href="../#performance">36 ms first-eval</a>.</p>
+
+    <h2>Where next</h2>
+    <ul>
+      <li><a href="architecture.html">Architecture</a> — what actually happens between a signal and a pixel</li>
+      <li><a href="state.html">State &amp; the Store</a> — persistent state with the native store engine</li>
+      <li><a href="native.html">Wrapping pub.dev packages</a> — camera, geolocation, anything native</li>
+      <li><a href="tooling.html">Hot reload &amp; dev loop</a> — sub-second reload, what state survives</li>
+      <li><a href="testing.html">Testing</a> — unit tests, the headless harness, Maestro E2E</li>
+    </ul>
+
+    <div class="pn">
+      <span></span>
+      <a class="next" href="architecture.html"><small>Next</small>Architecture →</a>
+    </div>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div><span class="logo" style="font-size:16px">skal<span class="dot">.</span></span><span style="margin-left:10px;">Skål. 🍻</span></div>
+    <div style="display:flex; gap:22px;"><a href="./">Docs</a><a href="https://github.com/skal-multiplatform/skal">GitHub</a><a href="https://github.com/skal-multiplatform/skal/blob/main/LICENSE">Apache-2.0</a></div>
+  </div>
+</footer>
+
+</body>
+</html>

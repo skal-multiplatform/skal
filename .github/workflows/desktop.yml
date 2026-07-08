@@ -1,0 +1,117 @@
+# macOS Desktop build pipeline. Scoped only to changes that affect
+# the Flutter macOS shell. iOS-Simulator-only changes (e.g.
+# packages/skal_native/ios/skal_iossim_shim.c, scripts/link-skal-iossim.sh) do NOT
+# trigger this workflow — modularity invariant: per-platform builds
+# only relink on inputs that actually flow into them.
+
+name: desktop
+
+on:
+  pull_request:
+    paths:
+      - examples/kitchen-sink/flutter-host/macos/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
+      - scripts/link-libskal-flutter-mac.sh
+      - patches/skal_entry.zig
+      - patches/bun-skal-commit.txt
+      - patches/webkit-skal-commit.txt
+      - scripts/setup.sh
+      - packages/skal_native/include/skal.h
+      - .github/workflows/desktop.yml
+  push:
+    branches: [main]
+    paths:
+      - examples/kitchen-sink/flutter-host/macos/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
+      - scripts/link-libskal-flutter-mac.sh
+      - patches/**
+      - scripts/setup.sh
+      - packages/skal_native/include/skal.h
+      - .github/workflows/desktop.yml
+  workflow_call:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: rustup install nightly && rustup default nightly
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor
+            ~/.bun/build-cache
+          key: desktop-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt', 'patches/skal_entry.zig') }}
+          # Prefix fallback: a pin bump restores the previous vendor/ and
+          # setup.sh reconciles it to the new pin (fetch + checkout).
+          restore-keys: |
+            desktop-vendor-
+
+      - name: Bootstrap (clone skal forks + copy skal_entry.zig)
+        run: scripts/setup.sh
+        env:
+          SKAL_BOOTSTRAP_ONLY: "1"
+
+      - name: Build vendored bun for host (release)
+        working-directory: vendor/bun
+        run: PATH="$HOME/.cargo/bin:$PATH" bun run build:release
+
+      - name: Re-link libskal.dylib for Flutter macOS
+        run: scripts/link-libskal-flutter-mac.sh
+
+      # Workspace deps land at the repo root (bun workspaces); the
+      # bytecode pass locks onto the vendored bun via the app's
+      # scripts/find-vendored-bun.sh.
+      - name: Build skal-app.{js,cjs,cjs.jsc}
+        working-directory: examples/kitchen-sink
+        run: bun run build
+
+      - name: flutter build macos --release
+        working-directory: examples/kitchen-sink/flutter-host
+        run: flutter build macos --release
+
+      # Headless smoke: launches the .app for 10 s, asserts the
+      # `[skal] init=…` line appears in stdout. Catches the silent-eval
+      # regression (the UTF-8-encoding-bug class of bug) where the JS
+      # bundle "loads" but no ops ever reach the bridge.
+      - name: Smoke run (10 s)
+        run: |
+          APP=examples/kitchen-sink/flutter-host/build/macos/Build/Products/Release/skal_flutter.app
+          "$APP/Contents/MacOS/skal_flutter" > /tmp/smoke.log 2>&1 &
+          SMOKE_PID=$!
+          sleep 10
+          kill "$SMOKE_PID" 2>/dev/null || true
+          if grep -q "\[skal\] init=" /tmp/smoke.log; then
+            echo "✓ smoke passed"
+            grep "\[skal\]" /tmp/smoke.log
+          else
+            echo "✗ no [skal] init line — Desktop demo never started"
+            tail -50 /tmp/smoke.log
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-flutter
+          path: |
+            examples/kitchen-sink/flutter-host/build/macos/Build/Products/Release/skal_flutter.app
+            build/skal-darwin/libskal.flutter.unstripped.dylib

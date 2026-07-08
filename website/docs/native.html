@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wrapping pub.dev packages — Skal Docs</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" type="image/png" href="../assets/favicon.png">
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="logo" href="../"><img class="mark" src="../assets/skal-logo.png" alt="Skal" style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em">skal<span class="dot">.</span></a>
+    <span class="pill">docs</span>
+    <div class="links">
+      <a href="./" style="color: var(--text)">Docs</a>
+      <a href="../#performance">Performance</a>
+      <a class="gh" href="https://github.com/skal-multiplatform/skal"><span class="star">★</span> 4.1k · GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap docs">
+  <aside class="side">
+    <div class="grp">Start</div>
+    <a href="./">Getting Started</a>
+    <div class="grp">Concepts</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="components.html">Components</a>
+    <a href="state.html">State &amp; the Store</a>
+    <div class="grp">Native</div>
+    <a href="native.html" class="on">Wrapping pub.dev packages</a>
+    <div class="grp">Workflow</div>
+    <a href="tooling.html">Hot reload &amp; dev loop</a>
+    <a href="testing.html">Testing</a>
+  </aside>
+
+  <article class="doc">
+    <h1>Wrapping pub.dev packages</h1>
+    <p class="lede">The point of rendering with Flutter isn't just pixels — it's <a href="https://pub.dev">pub.dev</a>: tens of thousands of maintained native plugins. Skal's codegen turns any Flutter widget into a JSX component.</p>
+
+    <h2>One line of config</h2>
+    <p>List the package in your app's <code>skal_codegen.yaml</code>:</p>
+    <pre class="code"><span class="cm"># flutter-host/lib/skal_codegen.yaml</span>
+packages:
+  - qr_flutter
+  - shimmer
+  - camera</pre>
+    <p>Then run the generator:</p>
+    <pre class="code"><span class="cm">$</span> skal codegen</pre>
+    <p>The builder introspects each package's public widgets with Dart's analyzer — constructors, named constructors, parameter types — and emits adapters that register them with Skal's widget registry. On the JS side, typed components appear under <code>skal-flutter</code>:</p>
+    <pre class="code"><span class="kw">import</span> { QrImageView, ShimmerFromColors, Camera } <span class="kw">from</span> <span class="st">'skal-flutter'</span>;
+
+&lt;<span class="fn">QrImageView</span> data=<span class="st">"https://skal.dev"</span> size={<span class="nm">220</span>} /&gt;
+
+&lt;<span class="fn">ShimmerFromColors</span> baseColor=<span class="st">"#FF1F2937"</span> highlightColor=<span class="st">"#FF374151"</span>&gt;
+  &lt;<span class="fn">Box</span> width=<span class="st">"fill"</span> height={<span class="nm">96</span>} cornerRadius={<span class="nm">12</span>} /&gt;
+&lt;/<span class="fn">ShimmerFromColors</span>&gt;</pre>
+    <div class="callout">Named constructors surface as their own components — shimmer's <code>Shimmer.fromColors</code> becomes <code>&lt;ShimmerFromColors&gt;</code>. Prop types round-trip: enums, colors, durations, edge insets.</div>
+
+    <h2>Calling native APIs (not just widgets)</h2>
+    <p>Plugins with imperative APIs — geolocation, biometrics, file pickers — are exposed through the same bridge as async JS calls. A call writes one RPC op; the reply comes back through the reply heap:</p>
+    <pre class="code"><span class="kw">import</span> { call } <span class="kw">from</span> <span class="st">'skal/native'</span>;
+
+<span class="kw">const</span> pos = <span class="kw">await</span> <span class="fn">call</span>(<span class="st">'geolocator.getCurrentPosition'</span>);
+<span class="cm">// { latitude: 38.72, longitude: -9.14, accuracy: 12 }</span></pre>
+    <p>Streams (position updates, sensor events) arrive as async iterables and integrate with Solid resources.</p>
+
+    <h2>Custom Dart widgets</h2>
+    <p>Your own Flutter widgets wrap the same way — point the CLI at the file and it generates the adapter:</p>
+    <pre class="code"><span class="cm">$</span> skal codegen lib/widgets/gauge.dart
+<span class="cm">→ &lt;Gauge value={0.7} /&gt; is now available from 'skal-flutter'</span></pre>
+    <p>For full control (custom prop decoding, children handling, method channels), write a manual adapter against <code>SkalRegistry</code> — the generated code is the documentation for the shape.</p>
+
+    <h2>When codegen isn't enough</h2>
+    <ul>
+      <li><b>Function-valued parameters</b> (builders, custom painters) can't cross the bridge declaratively — wrap those widgets manually with a constrained prop surface.</li>
+      <li><b>Web target:</b> plugin calls route through a headless Flutter Web instance, so the same <code>call()</code> works in the browser for plugins with web implementations.</li>
+    </ul>
+
+    <div class="pn">
+      <a href="state.html"><small>Previous</small>← State &amp; the Store</a>
+      <a class="next" href="tooling.html"><small>Next</small>Hot reload &amp; dev loop →</a>
+    </div>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div><span class="logo" style="font-size:16px">skal<span class="dot">.</span></span><span style="margin-left:10px;">Skål. 🍻</span></div>
+    <div style="display:flex; gap:22px;"><a href="./">Docs</a><a href="https://github.com/skal-multiplatform/skal">GitHub</a><a href="https://github.com/skal-multiplatform/skal/blob/main/LICENSE">Apache-2.0</a></div>
+  </div>
+</footer>
+
+</body>
+</html>

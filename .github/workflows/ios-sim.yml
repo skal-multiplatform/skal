@@ -1,0 +1,131 @@
+# iOS Simulator build pipeline. Independent of desktop.yml even though
+# both produce a macOS-built libskal.dylib — the iOS-Sim variant is the
+# same .o files re-stamped with `vtool` to LC_BUILD_VERSION=IOSSIMULATOR
+# plus a small shim (packages/skal_native/ios/skal_iossim_shim.c) that provides the
+# __clear_cache symbol iOS Simulator's libSystem doesn't export.
+#
+# iOS Device (aarch64-apple-ios) is intentionally not in CI — it
+# requires a real Apple Developer signing identity. The device dylib
+# is built locally via scripts/link-skal-ios.sh.
+
+name: ios-sim
+
+on:
+  pull_request:
+    paths:
+      - examples/kitchen-sink/flutter-host/ios/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
+      - patches/skal_entry.zig
+      - patches/bun-skal-commit.txt
+      - patches/webkit-skal-commit.txt
+      - scripts/setup.sh
+      - scripts/link-skal-iossim.sh
+      - packages/skal_native/**
+      - .github/workflows/ios-sim.yml
+  push:
+    branches: [main]
+    paths:
+      - examples/kitchen-sink/flutter-host/ios/**
+      - packages/skal_flutter/lib/**
+      - packages/skal_flutter/pubspec.yaml
+      - packages/skal-js/**
+      - examples/kitchen-sink/src/**
+      - examples/kitchen-sink/package.json
+      - patches/**
+      - scripts/setup.sh
+      - scripts/link-skal-iossim.sh
+      - packages/skal_native/**
+      - .github/workflows/ios-sim.yml
+  workflow_call:
+
+concurrency:
+  group: ios-sim-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: rustup install nightly && rustup default nightly
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor
+            ~/.bun/build-cache
+          key: ios-sim-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt', 'patches/skal_entry.zig') }}
+          # Prefix fallback: a pin bump restores the previous vendor/ and
+          # setup.sh reconciles it to the new pin (fetch + checkout).
+          restore-keys: |
+            ios-sim-vendor-
+
+      - name: Bootstrap (clone skal forks + copy skal_entry.zig)
+        run: scripts/setup.sh
+        env:
+          SKAL_BOOTSTRAP_ONLY: "1"
+
+      - name: Build vendored bun for host (release)
+        working-directory: vendor/bun
+        run: PATH="$HOME/.cargo/bin:$PATH" bun run build:release
+
+      - name: Link libskal.dylib (iOS Simulator)
+        run: scripts/link-skal-iossim.sh
+
+      - name: Place dylib in Flutter Frameworks/iphonesimulator/
+        run: |
+          mkdir -p examples/kitchen-sink/flutter-host/ios/Frameworks/iphonesimulator
+          cp build/skal-iossim/libskal.dylib \
+             examples/kitchen-sink/flutter-host/ios/Frameworks/iphonesimulator/libskal.dylib
+
+      # Workspace deps land at the repo root (bun workspaces); the
+      # bytecode pass locks onto the vendored bun via the app's
+      # scripts/find-vendored-bun.sh.
+      - name: Build skal-app.{js,cjs,cjs.jsc}
+        working-directory: examples/kitchen-sink
+        run: bun run build
+
+      - name: flutter build ios --simulator --debug
+        working-directory: examples/kitchen-sink/flutter-host
+        run: flutter build ios --simulator --debug
+
+      # Boot a sim, install, launch, screenshot — full end-to-end
+      # verification. The screenshot is uploaded as an artifact so a
+      # reviewer can visually confirm "Solid demo still renders".
+      - name: Boot iPhone simulator
+        run: |
+          DEVICE_ID=$(xcrun simctl create "skal-ci" "iPhone 15 Pro Max" \
+                       "com.apple.CoreSimulator.SimRuntime.iOS-18-0" 2>/dev/null || \
+                     xcrun simctl list devices available | grep "iPhone 15 Pro Max" \
+                       | head -1 | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
+          echo "DEVICE_ID=$DEVICE_ID" >> $GITHUB_ENV
+          xcrun simctl boot "$DEVICE_ID" || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+
+      - name: Install + launch + screenshot
+        run: |
+          xcrun simctl install "$DEVICE_ID" \
+            examples/kitchen-sink/flutter-host/build/ios/iphonesimulator/Runner.app
+          xcrun simctl launch "$DEVICE_ID" com.skal.skalFlutter > /tmp/launch.log
+          sleep 8
+          xcrun simctl io "$DEVICE_ID" screenshot smoke.png
+          # Asserts the app didn't crash on launch. simctl spawn launchctl
+          # list shows everything currently running on the sim.
+          xcrun simctl spawn "$DEVICE_ID" launchctl list | grep -q com.skal.skalFlutter
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-sim-smoke
+          path: |
+            smoke.png
+            build/skal-iossim/libskal.unstripped.dylib

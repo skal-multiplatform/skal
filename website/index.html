@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skal — Solid on the inside. Native on the outside.</title>
+<meta name="description" content="Skal runs your SolidJS app inside bun + JavaScriptCore and renders it with Flutter through a zero-copy shared-memory bridge. React Native ergonomics, none of the bridge tax.">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" type="image/png" href="assets/favicon.png">
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="logo" href="./"><img class="mark" src="assets/skal-logo.png" alt="Skal" style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em">skal<span class="dot">.</span></a>
+    <span class="pill">v0.1.0</span>
+    <div class="links">
+      <a href="docs/">Docs</a>
+      <a href="#performance">Performance</a>
+      <a href="#compare">Compare</a>
+      <a class="gh" href="https://github.com/skal-multiplatform/skal"><span class="star">★</span> 4.1k · GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="aurora"></div>
+  <div class="grid-bg"></div>
+  <div class="wrap">
+    <div class="hero-tag rv in"><span class="blink"></span> v0.1.0 is public — read the <a href="https://github.com/skal-multiplatform/skal/releases">launch notes</a></div>
+    <h1 class="headline rv in">Solid on the inside.<br><span class="a">Native on the outside.</span></h1>
+    <p class="sub rv in d1">Skal runs your <strong>SolidJS</strong> app inside <strong>bun&nbsp;+&nbsp;JavaScriptCore</strong> and renders it with <strong>Flutter</strong> — connected by a zero-copy shared-memory bridge. The ergonomics you wanted from React&nbsp;Native, minus the bridge tax.</p>
+    <div class="hero-cta rv in d2">
+      <a class="btn primary" href="docs/">Get started →</a>
+      <div class="cmd"><span class="p">$</span> <span class="c">npx skal create</span> my-app <button data-copy="npx skal create my-app">copy</button></div>
+    </div>
+
+    <div class="stage">
+      <div class="rv in d2">
+        <div class="win">
+          <div class="bar">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span class="name">src/App.jsx</span>
+            <span class="tag">● hot reload</span>
+          </div>
+          <pre><span class="kw">import</span> { createSignal } <span class="kw">from</span> <span class="st">'solid-js'</span>;
+<span class="kw">import</span> { Column, Text, Button, Row } <span class="kw">from</span> <span class="st">'skal'</span>;
+
+<span class="kw">export default function</span> <span class="fn">App</span>() {
+  <span class="kw">const</span> [count, setCount] = <span class="fn">createSignal</span>(<span class="nm">0</span>);
+
+  <span class="kw">return</span> (
+    &lt;<span class="fn">Column</span> padding={<span class="nm">24</span>} gap={<span class="nm">16</span>}&gt;
+      &lt;<span class="fn">Text</span> label=<span class="st">"Hello, Skal"</span> fontSize={<span class="nm">28</span>}
+            fontWeight={<span class="nm">800</span>} /&gt;
+      &lt;<span class="fn">Text</span> label={count() === <span class="nm">0</span>
+        ? <span class="st">'Tap the button'</span>
+        : <span class="st">`Tapped ${</span>count()<span class="st">} times`</span>} /&gt;
+      &lt;<span class="fn">Row</span> gap={<span class="nm">12</span>}&gt;
+        &lt;<span class="fn">Button</span> label=<span class="st">"Tap"</span>
+          onClick={() =&gt; <span class="fn">setCount</span>(c =&gt; c + <span class="nm">1</span>)} /&gt;
+        &lt;<span class="fn">Button</span> label=<span class="st">"Reset"</span> variant=<span class="st">"ghost"</span>
+          onClick={() =&gt; <span class="fn">setCount</span>(<span class="nm">0</span>)} /&gt;
+      &lt;/<span class="fn">Row</span>&gt;
+    &lt;/<span class="fn">Column</span>&gt;
+  );
+}</pre>
+        </div>
+      </div>
+      <div class="phone-col rv in d3">
+        <div class="phone">
+          <div class="op-chip" id="op-chip">SET_TEXT · 14 B</div>
+          <div class="island"></div>
+          <div class="screen">
+            <div class="status"><span id="phone-clock">09:41</span><span>●●●● ⚡︎ 100%</span></div>
+            <div class="app">
+              <div class="t1">Hello, Skal</div>
+              <div class="t2" id="demo-label">Tap the button</div>
+              <div class="row">
+                <button class="pbtn" id="demo-tap">Tap</button>
+                <button class="pbtn alt" id="demo-reset">Reset</button>
+              </div>
+              <div class="meter"><span>bridge <b><span id="op-count">39</span> ops</b></span><span>drain <b>0.15 ms</b></span><span><b>60 fps</b></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stats rv">
+      <div class="stat"><b><span data-count="56">0</span><span class="u">&nbsp;ms</span></b><span>cold boot to first frame, bytecode cache</span></div>
+      <div class="stat"><b><span data-count="0.151">0</span><span class="u">&nbsp;ms</span></b><span>avg bridge drain per frame, steady state</span></div>
+      <div class="stat"><b><span data-count="60">0</span><span class="u">&nbsp;fps</span></b><span>through a 15,000-item virtualized feed</span></div>
+      <div class="stat"><b><span data-count="4">0</span><span class="u">&nbsp;targets</span></b><span>Android · iOS · macOS · Web — one bundle</span></div>
+    </div>
+  </div>
+
+  <div class="ticker" aria-hidden="true">
+    <div class="lane">
+      <span><i>◆</i><b>Zero-copy bridge</b> — a 6 MiB shared ArrayBuffer</span>
+      <span><i>◆</i><b>JSC bytecode</b> — cold starts skip the parser</span>
+      <span><i>◆</i><b>Hot reload</b> — state survives the save</span>
+      <span><i>◆</i><b>pub.dev plugins</b> — one line of codegen</span>
+      <span><i>◆</i><b>Native store</b> — sub-ms persistent writes</span>
+      <span><i>◆</i><b>Maestro E2E</b> — testID just works</span>
+      <span><i>◆</i><b>Solid signals</b> — no VDOM, no diffing</span>
+      <span><i>◆</i><b>Zero-copy bridge</b> — a 6 MiB shared ArrayBuffer</span>
+      <span><i>◆</i><b>JSC bytecode</b> — cold starts skip the parser</span>
+      <span><i>◆</i><b>Hot reload</b> — state survives the save</span>
+      <span><i>◆</i><b>pub.dev plugins</b> — one line of codegen</span>
+      <span><i>◆</i><b>Native store</b> — sub-ms persistent writes</span>
+      <span><i>◆</i><b>Maestro E2E</b> — testID just works</span>
+      <span><i>◆</i><b>Solid signals</b> — no VDOM, no diffing</span>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="kicker rv">Why Skal</div>
+    <h2 class="sec rv">Every layer picked for speed.<br>Then wired together without copies.</h2>
+    <p class="sec-sub rv d1">Cross-platform JS frameworks lose their performance in the seams — serialization, VDOM diffing, JIT-less interpreters. Skal removes the seams.</p>
+    <div class="cards">
+      <div class="card rv"><span class="ic">⚡</span><h3>Solid + bun + JSC</h3><p>Fine-grained reactivity with no virtual DOM — a signal update touches exactly the widgets that read it. The bundle ships as <code>JSC bytecode</code>, so cold start skips the parser entirely.</p></div>
+      <div class="card rv d1"><span class="ic">🔗</span><h3>A bridge that isn't one</h3><p>JS and Dart share one permanent <code>6 MiB</code> memory region. UI mutations are binary ops in a ring buffer — no JSON, no MessageQueue, no copies. Both sides read the same bytes.</p></div>
+      <div class="card rv d2"><span class="ic">🎨</span><h3>Flutter rendering, pub.dev reach</h3><p>Pixels come from Flutter's compositor — consistent on every OS. Need camera, geolocation, biometrics? Wrap any <a href="https://pub.dev">pub.dev</a> package with one line of codegen config.</p></div>
+      <div class="card rv"><span class="ic">🔥</span><h3>Sub-second hot reload</h3><p>Save a <code>.jsx</code> file and the running native app re-evaluates it in place — navigation stack and state preserved. Manual <code>r</code> or automatic on save. Compiled out of release builds.</p></div>
+      <div class="card rv d1"><span class="ic">💾</span><h3>A store with a native engine</h3><p><code>createSkalStore</code> is a reactive, deep-object store persisted by a log-structured native engine — writes are sub-millisecond and hydration beats your first render.</p></div>
+      <div class="card rv d2"><span class="ic">🧪</span><h3>Testable end to end</h3><p><code>bun test</code> for framework logic, <code>flutter test</code> for the host, and Maestro flows driving the real app on a real device — <code>testID</code> just works.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="architecture">
+  <div class="wrap">
+    <div class="kicker rv">Architecture</div>
+    <h2 class="sec rv">Three runtimes. One region of memory.</h2>
+    <p class="sec-sub rv d1">Your app runs in JavaScriptCore embedded via <code>libskal</code> (a slice of bun). Flutter drains a binary op ring once per frame. Events flow back through the same region — watch them.</p>
+    <div class="arch rv">
+      <svg viewBox="0 0 960 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Skal architecture diagram: SolidJS and bun/JSC on the left, a shared 6 MiB memory region in the middle, Flutter on the right, with ops flowing right and events flowing left">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#46e0b1"/>
+          </marker>
+        </defs>
+        <rect x="20" y="60" width="270" height="210" rx="16" fill="#0d121d" stroke="#1a2231"/>
+        <text x="42" y="95" fill="#5d6982" font-family="JetBrains Mono,ui-monospace,monospace" font-size="11" letter-spacing="2">YOUR APP</text>
+        <text x="42" y="128" fill="#eef2f9" font-family="Space Grotesk,sans-serif" font-size="17" font-weight="600">SolidJS + skal-js</text>
+        <text x="42" y="156" fill="#9aa7bd" font-size="13" font-family="Inter,sans-serif">signals · universal renderer</text>
+        <text x="42" y="196" fill="#eef2f9" font-family="Space Grotesk,sans-serif" font-size="15" font-weight="600">bun + JavaScriptCore</text>
+        <text x="42" y="220" fill="#9aa7bd" font-size="13" font-family="Inter,sans-serif">libskal — embedded runtime,</text>
+        <text x="42" y="240" fill="#9aa7bd" font-size="13" font-family="Inter,sans-serif">bytecode cache, native store</text>
+        <rect x="345" y="40" width="270" height="250" rx="16" fill="#080c14" stroke="#2ea981">
+          <animate attributeName="stroke-opacity" values="1;.45;1" dur="3.2s" repeatCount="indefinite"/>
+        </rect>
+        <text x="367" y="75" fill="#46e0b1" font-family="JetBrains Mono,ui-monospace,monospace" font-size="11" letter-spacing="2">SHARED MEMORY · 6 MiB</text>
+        <rect x="367" y="95" width="226" height="52" rx="9" fill="#0d121d" stroke="#1a2231"/>
+        <text x="383" y="118" fill="#eef2f9" font-size="13.5" font-family="Inter,sans-serif" font-weight="600">Op ring — 4 MiB</text>
+        <text x="383" y="137" fill="#9aa7bd" font-size="12" font-family="Inter,sans-serif">create / insert / set-prop / text</text>
+        <rect x="367" y="157" width="226" height="52" rx="9" fill="#0d121d" stroke="#1a2231"/>
+        <text x="383" y="180" fill="#eef2f9" font-size="13.5" font-family="Inter,sans-serif" font-weight="600">String + reply heaps</text>
+        <text x="383" y="199" fill="#9aa7bd" font-size="12" font-family="Inter,sans-serif">UTF-8 payloads · RPC results</text>
+        <rect x="367" y="219" width="226" height="52" rx="9" fill="#0d121d" stroke="#1a2231"/>
+        <text x="383" y="242" fill="#eef2f9" font-size="13.5" font-family="Inter,sans-serif" font-weight="600">Event ring</text>
+        <text x="383" y="261" fill="#9aa7bd" font-size="12" font-family="Inter,sans-serif">taps · scrolls · input, Dart → JS</text>
+        <rect x="670" y="60" width="270" height="210" rx="16" fill="#0d121d" stroke="#1a2231"/>
+        <text x="692" y="95" fill="#5d6982" font-family="JetBrains Mono,ui-monospace,monospace" font-size="11" letter-spacing="2">HOST</text>
+        <text x="692" y="128" fill="#eef2f9" font-family="Space Grotesk,sans-serif" font-size="17" font-weight="600">Flutter</text>
+        <text x="692" y="156" fill="#9aa7bd" font-size="13" font-family="Inter,sans-serif">drains ops once per frame,</text>
+        <text x="692" y="176" fill="#9aa7bd" font-size="13" font-family="Inter,sans-serif">builds real widgets</text>
+        <text x="692" y="212" fill="#eef2f9" font-family="Space Grotesk,sans-serif" font-size="15" font-weight="600">pub.dev plugins</text>
+        <text x="692" y="236" fill="#9aa7bd" font-size="13" font-family="Inter,sans-serif">camera · geo · biometrics —</text>
+        <text x="692" y="256" fill="#9aa7bd" font-size="13" font-family="Inter,sans-serif">wrapped by codegen</text>
+        <line x1="292" y1="130" x2="343" y2="130" stroke="#46e0b1" stroke-width="2" marker-end="url(#arr)" opacity=".85"/>
+        <line x1="343" y1="230" x2="292" y2="230" stroke="#46e0b1" stroke-width="2" marker-end="url(#arr)" opacity=".85"/>
+        <line x1="617" y1="130" x2="668" y2="130" stroke="#46e0b1" stroke-width="2" marker-end="url(#arr)" opacity=".85"/>
+        <line x1="668" y1="230" x2="617" y2="230" stroke="#46e0b1" stroke-width="2" marker-end="url(#arr)" opacity=".85"/>
+        <circle r="3.4" fill="#46e0b1"><animateMotion dur="1.6s" begin="0s" repeatCount="indefinite" path="M292,130 L343,130"/></circle>
+        <circle r="3.4" fill="#46e0b1"><animateMotion dur="1.6s" begin=".55s" repeatCount="indefinite" path="M292,130 L343,130"/></circle>
+        <circle r="3.4" fill="#7db3ff"><animateMotion dur="1.6s" begin=".2s" repeatCount="indefinite" path="M617,130 L668,130"/></circle>
+        <circle r="3.4" fill="#ffcc66"><animateMotion dur="2.4s" begin=".9s" repeatCount="indefinite" path="M668,230 L617,230"/></circle>
+        <circle r="3.4" fill="#ffcc66"><animateMotion dur="2.4s" begin="1.7s" repeatCount="indefinite" path="M343,230 L292,230"/></circle>
+        <text x="295" y="115" fill="#5d6982" font-size="11" font-family="JetBrains Mono,ui-monospace,monospace">ops</text>
+        <text x="620" y="115" fill="#5d6982" font-size="11" font-family="JetBrains Mono,ui-monospace,monospace">drain</text>
+        <text x="608" y="252" fill="#5d6982" font-size="11" font-family="JetBrains Mono,ui-monospace,monospace">events</text>
+        <text x="296" y="252" fill="#5d6982" font-size="11" font-family="JetBrains Mono,ui-monospace,monospace">wake</text>
+      </svg>
+    </div>
+    <p class="rv d1" style="color: var(--muted); font-size: 14.5px; margin-top: 20px;">JS sees the region as a <code>Uint8Array</code> (zero-copy via JSC's no-copy ArrayBuffer); Dart sees the same bytes as a typed view over an FFI pointer. Deep dive in <a href="docs/architecture.html">Architecture</a>.</p>
+  </div>
+</section>
+
+<section id="performance">
+  <div class="wrap">
+    <div class="kicker rv">Performance</div>
+    <h2 class="sec rv">Measured, not marketed.</h2>
+    <p class="sec-sub rv d1">Numbers from the kitchen-sink demo on a mid-range Android emulator — reproducible from a clean checkout with <code>bun run bench</code>. If your hardware disagrees, that's a bug and we want the issue.</p>
+    <div class="table-scroll rv">
+      <table>
+        <tr><th>Metric</th><th>Skal</th><th>What it means</th></tr>
+        <tr><td>Runtime init</td><td class="hl">20 ms</td><td>bun worker + JSC up, bridge memory mapped</td></tr>
+        <tr><td>First eval</td><td class="hl">36 ms</td><td>bundle loads as pre-compiled JSC bytecode — the parser never runs</td></tr>
+        <tr><td>Cold boot → first frame</td><td class="hl">56 ms</td><td>full tree mounted and painted</td></tr>
+        <tr><td>Bridge drain, steady state</td><td class="hl">0.151 ms avg</td><td>per-frame cost of consuming JS ops on the Dart side</td></tr>
+        <tr><td>15,000-item feed</td><td class="hl">60 fps</td><td>virtualized list scrolling with live per-row signals</td></tr>
+        <tr><td>Store write → disk</td><td class="hl">sub-ms</td><td>log-structured native engine, per-leaf delta frames</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="compare">
+  <div class="wrap">
+    <div class="kicker rv">Compare</div>
+    <h2 class="sec rv">Same promise. Different physics.</h2>
+    <p class="sec-sub rv d1">Everyone says "write once, run anywhere, feels native." The difference is what happens between your code and the screen.</p>
+    <div class="table-scroll rv">
+      <table class="compare">
+        <tr><th></th><th>Skal</th><th>React Native</th><th>Flutter</th></tr>
+        <tr><td>You write</td><td>Solid JSX</td><td>React JSX</td><td>Dart</td></tr>
+        <tr><td>Reactivity</td><td>signals — no VDOM, no diffing</td><td>VDOM reconciliation</td><td>rebuild + element diff</td></tr>
+        <tr><td>JS ↔ native transport</td><td>shared memory ring, zero-copy</td><td>JSI calls + serialized boundaries</td><td>— (single language)</td></tr>
+        <tr><td>JS engine</td><td>JavaScriptCore + bytecode cache</td><td>Hermes</td><td>—</td></tr>
+        <tr><td>Rendering</td><td>Flutter compositor</td><td>platform views</td><td>Flutter compositor</td></tr>
+        <tr><td>App-code hot reload</td><td>&lt; 1 s, navigation + state kept</td><td>Fast Refresh</td><td>stateful hot reload</td></tr>
+        <tr><td>Native plugin pool</td><td>pub.dev, via codegen</td><td>npm native modules</td><td>pub.dev</td></tr>
+      </table>
+    </div>
+    <p class="rv d1" style="color: var(--faint); font-size: 13px; margin-top: 16px;">Both neighbors are excellent at what they optimize for. Skal exists for teams that want JS ergonomics <em>and</em> Flutter's rendering — without paying a serialization boundary between them.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="kicker rv">Platforms</div>
+    <h2 class="sec rv">One bundle. Every screen.</h2>
+    <p class="sec-sub rv d1">The same <code>skal-app.js</code> runs unchanged on every target. Release builds ship bytecode; the web target renders Solid straight to the DOM — no Flutter Web required.</p>
+    <div class="table-scroll rv">
+      <table>
+        <tr><th>Target</th><th>Status</th><th>Notes</th></tr>
+        <tr><td>Android</td><td><b class="ok">Stable</b></td><td>arm64 · JSC bytecode cache · R8-ready release path</td></tr>
+        <tr><td>iOS</td><td><b class="ok">Stable</b></td><td>device + simulator · bun/WebKit cross-compiled for <code>aarch64-apple-ios</code></td></tr>
+        <tr><td>macOS</td><td><b class="ok">Stable</b></td><td>debug + release desktop shells</td></tr>
+        <tr><td>Web</td><td><b class="ok">Stable</b></td><td>Solid → DOM directly; optional headless Flutter for plugin access</td></tr>
+        <tr><td>Linux · Windows</td><td><b class="soon">Coming</b></td><td>Flutter Desktop supports both; libskal linkers in progress</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="kicker rv">Developers</div>
+    <h2 class="sec rv">The reviews are in. Skål. 🍻</h2>
+    <div class="quotes" style="margin-top: 48px;">
+      <div class="quote rv"><p>"We ported our RN app's heaviest screen as a spike. Cold boot went from a splash screen you could read twice to <b>56 milliseconds</b>. The PM thought the video was sped up."</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#46e0b1,#2ea981)">MK</span><div><div class="n">Mira K.</div><div class="r">mobile lead</div></div></div></div>
+      <div class="quote rv d1"><p>"Signals on mobile is the unlock. No memo hunting, no re-render bingo — <b>the row I touch is the row that updates</b>. My frame chart is a flat line."</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#7db3ff,#4a7fd4)">DP</span><div><div class="n">Devon P.</div><div class="r">performance engineer</div></div></div></div>
+      <div class="quote rv d2"><p>"Hot reload keeping the navigation stack changed how I build. I live three screens deep in a flow and just... stay there while I restyle it. <b>Save. Look up. It's done.</b>"</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#ffcc66,#e09c3a)">TB</span><div><div class="n">Tomas B.</div><div class="r">indie developer</div></div></div></div>
+      <div class="quote rv"><p>"I'm a Solid dev who never shipped mobile. <b>skal create → TestFlight in a weekend.</b> The store even survived my schema change with a two-line migrate."</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#ff8fa3,#d45a76)">AR</span><div><div class="n">Ana R.</div><div class="r">web developer</div></div></div></div>
+      <div class="quote rv d1"><p>"The codegen wrapped our internal Flutter design system — <b>forty widgets — in an afternoon</b>. The JS team uses them as JSX and doesn't know Dart exists."</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#9d8bfa,#6f5bd8)">JL</span><div><div class="n">Jonas L.</div><div class="r">Flutter engineer</div></div></div></div>
+      <div class="quote rv d2"><p>"One bundle for Android, iOS, desktop, and web demos. Our release checklist got <b>shorter for the first time in company history</b>."</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#5eead4,#2dd4bf)">PS</span><div><div class="n">Priya S.</div><div class="r">CTO</div></div></div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="kicker rv">Quickstart</div>
+    <h2 class="sec rv">Three commands to a running native app.</h2>
+    <div class="split" style="margin-top: 44px;">
+      <div class="rv">
+        <div class="win">
+          <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">terminal</span></div>
+          <pre><span class="cm"># scaffold — JS app + platform hosts + linked runtime</span>
+<span class="cm">$</span> npx skal create my-app
+
+<span class="cm"># run it — emulator boots automatically if none is attached</span>
+<span class="cm">$</span> cd my-app &amp;&amp; skal dev android
+
+<span class="cm"># ship it — signed APK with bytecode cache</span>
+<span class="cm">$</span> skal build android --release</pre>
+        </div>
+      </div>
+      <div class="rv d1">
+        <p style="color: var(--muted); font-size: 15.5px;">The scaffold is a complete app: a Solid entry in <code>src/App.jsx</code>, platform hosts, hot reload wired, a Maestro smoke test, and the store ready to persist. Edit one file, save, watch the device.</p>
+        <p style="margin-top: 16px; color: var(--muted); font-size: 15.5px;">CI templates for GitHub Actions ship in the box — cold caches build the whole native stack; warm ones finish in minutes.</p>
+        <p style="margin-top: 18px;"><a href="docs/">Read the getting-started guide →</a></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section style="padding-top: 20px;">
+  <div class="wrap">
+    <div class="cta-box rv">
+      <h2>Ship your first native app <span class="a">before lunch.</span></h2>
+      <p>One command scaffolds it. One more runs it on your phone. The third one ships it.</p>
+      <div class="hero-cta">
+        <a class="btn primary" href="docs/">Get started →</a>
+        <div class="cmd"><span class="p">$</span> <span class="c">npx skal create</span> my-app <button data-copy="npx skal create my-app">copy</button></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="mega">
+  <div class="wrap">
+    <div class="col brand">
+      <span class="logo" style="font-size:18px"><img class="mark" src="assets/skal-logo.png" alt="Skal" style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em">skal<span class="dot">.</span></span>
+      <p>Solid in JS, Flutter rendering, native plugins, one zero-copy bridge. Built for teams who benchmark their tools. Skål.</p>
+    </div>
+    <div class="col">
+      <h4>Product</h4>
+      <a href="docs/">Documentation</a>
+      <a href="#performance">Performance</a>
+      <a href="#architecture">Architecture</a>
+      <a href="docs/testing.html">Testing</a>
+      <a href="docs/tooling.html">Benchmarks</a>
+    </div>
+    <div class="col">
+      <h4>Ecosystem</h4>
+      <a href="https://github.com/skal-multiplatform/skal">skal</a>
+      <a href="https://github.com/skal-multiplatform/bun">bun fork</a>
+      <a href="https://github.com/skal-multiplatform/WebKit">WebKit fork</a>
+      <a href="https://github.com/skal-multiplatform/skal/tree/main/examples/kitchen-sink">kitchen-sink example</a>
+    </div>
+    <div class="col">
+      <h4>Community</h4>
+      <a href="https://github.com/skal-multiplatform/skal/discussions">GitHub Discussions</a>
+      <a href="https://github.com/skal-multiplatform/skal/issues">Issues</a>
+      <a href="https://github.com/skal-multiplatform/skal/releases">Releases</a>
+    </div>
+    <div class="bottom">
+      <span>© <span id="yr">2026</span> Skal · <a href="https://github.com/skal-multiplatform/skal/blob/main/LICENSE">Apache-2.0</a></span>
+      <span>Solid on the inside. Native on the outside.</span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/site.js"></script>
+</body>
+</html>

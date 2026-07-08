@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Skal — Web</title>
+    <style>
+      /* Reset + give the root a fixed canvas so the SkalScrollColumn
+         can fill it. Mobile-shape mockup by default — caps width to
+         420px so the demo looks roughly like the iOS Sim screenshots
+         on a desktop browser. Remove this constraint to test
+         responsive layout. */
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #f0f0f3;
+        font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+        -webkit-font-smoothing: antialiased;
+      }
+      #app {
+        /* width:100% is load-bearing — without it, when the inner
+           column uses align-items:flex-start (so its children don't
+           stretch to width), #app would shrink-fit to the narrowest
+           child and collapse to a few pixels wide. width:100% gives
+           the column a definite container width to fill. */
+        width: 100%;
+        max-width: 420px;
+        margin: 0 auto;
+        height: 100%;
+        background: white;
+        box-shadow: 0 0 24px rgba(0, 0, 0, 0.08);
+      }
+      /* Hide scrollbars on horizontal-scroll <row> elements to match
+         Compose's invisible-scrollbar behavior (the renderer-web.js
+         applies scrollbar-width:none for Firefox; this handles WebKit
+         which only honors the pseudo-element selector). The match is
+         broad — any flex-row with overflow-x:auto — because we don't
+         tag rows with a class, but it's harmless to apply to the few
+         other elements that happen to match. */
+      div[style*="overflow-x: auto"]::-webkit-scrollbar,
+      div[style*="overflowX: auto"]::-webkit-scrollbar {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/web-main.jsx"></script>
+  </body>
+</html>

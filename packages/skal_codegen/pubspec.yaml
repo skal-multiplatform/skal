@@ -1,0 +1,36 @@
+name: skal_codegen
+description: >-
+  Code generator for Skal custom-widget adapters. Reads target Flutter
+  widget classes (via Dart's `analyzer`), introspects their constructors,
+  and emits Skal adapter code that registers each widget with
+  SkalRegistry — automating the hand-written shape from
+  `flutter/skal_flutter/lib/adapters/greeting.dart`.
+version: 0.1.0
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  # Dart analyzer: parses Dart source into an introspectable AST.
+  # Same library `freezed`, `json_serializable`, `riverpod_generator`
+  # use — well-trodden territory.
+  analyzer: ^7.0.0
+  # build: the public Builder API. We register a SkalAdapterBuilder
+  # in build.yaml so `dart run build_runner build` triggers codegen
+  # the same way it triggers freezed / json_serializable / etc.
+  build: ^2.4.0
+  # yaml: parse the consumer's pubspec.yaml to read its `skal_codegen:`
+  # config block.
+  yaml: ^3.1.0
+  path: ^1.9.0
+  # dart_style: run the generated source through the same formatter
+  # `dart format` uses. Encoders emit single-line readerExpressions
+  # (TextStyle, BoxDecoration, IIFE chains) that exceed 200 chars
+  # straight; the formatter breaks them at idiomatic positions so the
+  # generated .g.dart file stays diffable + reviewable.
+  dart_style: ^3.0.0
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^5.0.0

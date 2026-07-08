@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Testing — Skal Docs</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" type="image/png" href="../assets/favicon.png">
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="logo" href="../"><img class="mark" src="../assets/skal-logo.png" alt="Skal" style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em">skal<span class="dot">.</span></a>
+    <span class="pill">docs</span>
+    <div class="links">
+      <a href="./" style="color: var(--text)">Docs</a>
+      <a href="../#performance">Performance</a>
+      <a class="gh" href="https://github.com/skal-multiplatform/skal"><span class="star">★</span> 4.1k · GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap docs">
+  <aside class="side">
+    <div class="grp">Start</div>
+    <a href="./">Getting Started</a>
+    <div class="grp">Concepts</div>
+    <a href="architecture.html">Architecture</a>
+    <a href="components.html">Components</a>
+    <a href="state.html">State &amp; the Store</a>
+    <div class="grp">Native</div>
+    <a href="native.html">Wrapping pub.dev packages</a>
+    <div class="grp">Workflow</div>
+    <a href="tooling.html">Hot reload &amp; dev loop</a>
+    <a href="testing.html" class="on">Testing</a>
+  </aside>
+
+  <article class="doc">
+    <h1>Testing</h1>
+    <p class="lede">Three runtimes, one test story: fast unit tests in <code>bun test</code>, host tests in <code>flutter test</code>, and Maestro flows tapping the real app on a real device. Here's what to test where — with working examples.</p>
+
+    <h2>What to test where</h2>
+    <div class="table-scroll">
+      <table>
+        <tr><th>Layer</th><th>Runner</th><th>Speed</th><th>Reach for it when…</th></tr>
+        <tr><td>Unit / component</td><td><code>bun test</code></td><td>ms</td><td>logic, store behavior, a component's rendered tree, regressions you can express as ops</td></tr>
+        <tr><td>Host (Dart)</td><td><code>flutter test</code></td><td>seconds</td><td>you wrote a custom widget adapter or touched wire decoding</td></tr>
+        <tr><td>E2E</td><td>Maestro</td><td>~30 s / flow</td><td>user journeys: launch, navigate, tap, type, assert — the whole stack</td></tr>
+      </table>
+    </div>
+    <p>Rule of thumb: <b>every bug gets a unit test; every user journey gets a flow.</b> The host layer is the framework's job — you only add Dart tests when you ship your own adapters.</p>
+
+    <h2>Unit &amp; component tests (<code>bun test</code>)</h2>
+    <p>The scaffold is pre-wired: <code>*.test.jsx</code> anywhere under <code>src/</code> runs with <code>skal test</code> (an alias for <code>bun test</code>). Components render <b>headless</b> — <code>skal/testing</code> installs an in-memory bridge, so your JSX produces the same binary ops it would on a device, without a device:</p>
+    <pre class="code"><span class="cm">// src/Counter.test.jsx</span>
+<span class="kw">import</span> { test, expect } <span class="kw">from</span> <span class="st">'bun:test'</span>;
+<span class="kw">import</span> { render } <span class="kw">from</span> <span class="st">'skal/testing'</span>;
+<span class="kw">import</span> { Counter } <span class="kw">from</span> <span class="st">'./Counter'</span>;
+
+<span class="fn">test</span>(<span class="st">'increments on tap'</span>, () =&gt; {
+  <span class="kw">const</span> app = <span class="fn">render</span>(() =&gt; &lt;<span class="fn">Counter</span> /&gt;);
+
+  app.<span class="fn">getByTestID</span>(<span class="st">'inc'</span>).<span class="fn">tap</span>();
+  app.<span class="fn">getByTestID</span>(<span class="st">'inc'</span>).<span class="fn">tap</span>();
+
+  <span class="fn">expect</span>(app.<span class="fn">getByTestID</span>(<span class="st">'count'</span>).props.label).<span class="fn">toBe</span>(<span class="st">'Tapped 2 times'</span>);
+});</pre>
+    <p>The handle you get back is the mounted tree, queryable the same way Maestro queries the real app — by <code>testID</code> first:</p>
+    <div class="table-scroll">
+      <table>
+        <tr><th>API</th><th>What it does</th></tr>
+        <tr><td><code>render(fn)</code></td><td>mounts a component on the in-memory bridge; returns the app handle</td></tr>
+        <tr><td><code>getByTestID(id)</code> / <code>queryByTestID</code></td><td>find a node (throws / returns null)</td></tr>
+        <tr><td><code>getByText(str)</code></td><td>find by visible label</td></tr>
+        <tr><td><code>node.tap()</code> · <code>node.input(str)</code></td><td>dispatch real bridge events into your handlers</td></tr>
+        <tr><td><code>node.props</code> · <code>node.children</code></td><td>decoded prop table + subtree, plain objects</td></tr>
+        <tr><td><code>app.ops()</code></td><td>the raw op log since last drain — assert <em>how little</em> re-rendered</td></tr>
+        <tr><td><code>app.unmount()</code></td><td>dispose Solid roots (auto-runs per test)</td></tr>
+      </table>
+    </div>
+    <div class="callout">Because Solid is fine-grained, <code>app.ops()</code> makes a great performance regression net: assert a signal update emits <b>one</b> <code>SET_TEXT</code>, not a subtree rebuild. When someone accidentally maps a fresh array through a list, this test catches it in milliseconds.</div>
+
+    <h3>Testing store logic</h3>
+    <p>In tests the store uses an in-memory backend by default — same API, no disk, fresh per test. Pass a seed to start from a known state:</p>
+    <pre class="code"><span class="kw">import</span> { test, expect } <span class="kw">from</span> <span class="st">'bun:test'</span>;
+<span class="kw">import</span> { createTestStore } <span class="kw">from</span> <span class="st">'skal/testing'</span>;
+<span class="kw">import</span> { schema } <span class="kw">from</span> <span class="st">'./db'</span>;
+
+<span class="fn">test</span>(<span class="st">'migration backfills locale'</span>, () =&gt; {
+  <span class="kw">const</span> db = <span class="fn">createTestStore</span>(schema, {
+    seed:        { settings: { theme: <span class="st">'dark'</span> } },  <span class="cm">// pre-migration shape</span>
+    seedVersion: <span class="nm">1</span>,
+  });
+  <span class="fn">expect</span>(db.settings.locale).<span class="fn">toBe</span>(<span class="st">'en'</span>);           <span class="cm">// migrate() ran</span>
+});</pre>
+
+    <h2>Host tests (<code>flutter test</code>)</h2>
+    <p>Only needed when you write custom Dart adapters. Put widget tests next to your adapter in <code>flutter-host/test/</code>; the framework's own decoder, wire format, and builders are covered upstream. <code>skal test host</code> runs them.</p>
+
+    <h2>E2E with Maestro</h2>
+    <p>Flows are declarative YAML driving the <b>real app</b> through the platform accessibility tree — you write user journeys in neither of the app's two languages. The scaffold ships <code>.maestro/smoke.yaml</code>; add one file per journey:</p>
+    <pre class="code"><span class="cm"># .maestro/checkout.yaml</span>
+appId: com.example.myapp
+---
+- launchApp
+- extendedWaitUntil:                 <span class="cm"># covers async JS boot — always start with this</span>
+    visible: { id: <span class="st">"home-title"</span> }
+    timeout: <span class="nm">15000</span>
+- tapOn: { id: <span class="st">"product-3"</span> }
+- inputText: <span class="st">"2"</span>
+- tapOn: { id: <span class="st">"add-to-cart"</span> }
+- swipe: { direction: UP }
+- tapOn: { id: <span class="st">"checkout"</span> }
+- assertVisible: { id: <span class="st">"order-confirmed"</span> }
+- takeScreenshot: checkout-done</pre>
+    <pre class="code"><span class="cm">$</span> skal test e2e                    <span class="cm"># all flows, attached device/emulator</span>
+<span class="cm">$</span> skal test e2e --target ios       <span class="cm"># pick a platform; boots a simulator if needed</span>
+<span class="cm">$</span> skal test e2e checkout           <span class="cm"># one flow by name</span>
+<span class="st">[Passed]</span> smoke (37s) · checkout (52s) — 2/2 flows</pre>
+    <div class="callout warn"><b>Match by <code>id:</code>, not visible text.</b> Give every widget you assert or tap a <code>testID</code> — it becomes the platform accessibility identifier, survives copy changes, and is the same query your unit tests use. Skal widget labels live in the accessibility <em>description</em>, which Maestro's plain-string matcher doesn't read.</div>
+
+    <h3>Debugging a failing flow</h3>
+    <ul>
+      <li><code>maestro hierarchy</code> — dump exactly what Maestro sees on the current screen. If your <code>testID</code> isn't in there, the widget isn't in the semantics tree (or you're on the wrong screen).</li>
+      <li><code>maestro studio</code> — point-and-click flow recorder in the browser; great for finding selectors.</li>
+      <li>On failure, Maestro saves screenshots + logs under <code>~/.maestro/tests/</code> — <code>skal test e2e</code> prints the path.</li>
+      <li>Very long screens: extremely tall single <code>&lt;ScrollView&gt;</code>s can defer semantics for their top content — prefer <code>&lt;ListView&gt;</code> (virtualized) for long pages, or assert on a shorter screen.</li>
+    </ul>
+
+    <h3>E2E in CI</h3>
+    <p>The scaffold's GitHub Actions template runs flows on every PR — an Android emulator on a Linux runner, the app installed from the workflow's own release build:</p>
+    <pre class="code"><span class="cm"># .github/workflows/e2e.yml (scaffolded)</span>
+- <span class="fn">uses</span>: reactivecircus/android-emulator-runner@v2
+  <span class="fn">with</span>:
+    api-level: <span class="nm">34</span>
+    script: |
+      skal build android --debug
+      adb install app-debug.apk
+      skal test e2e --target android</pre>
+    <p>Flows are the release gate: if a journey breaks, the merge waits — not your users.</p>
+
+    <div class="pn">
+      <a href="tooling.html"><small>Previous</small>← Hot reload &amp; dev loop</a>
+      <span></span>
+    </div>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div><span class="logo" style="font-size:16px">skal<span class="dot">.</span></span><span style="margin-left:10px;">Skål. 🍻</span></div>
+    <div style="display:flex; gap:22px;"><a href="./">Docs</a><a href="https://github.com/skal-multiplatform/skal">GitHub</a><a href="https://github.com/skal-multiplatform/skal/blob/main/LICENSE">Apache-2.0</a></div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -56,12 +56,14 @@ Future<void> _boot() async {
     Directory(dataDir).createSync(recursive: true);
   } catch (_) {}
 
+  final tCreate0 = DateTime.now().microsecondsSinceEpoch;
   final skal = Skal.create(dataDir);
   if (skal == null) {
     throw StateError(
         'skal_create_runtime returned 0 — libskal initialized but the runtime '
         'failed to start.');
   }
+  final tCreate1 = DateTime.now().microsecondsSinceEpoch;
 
   // Background-prewarm the native store while the JS bundle parses.
   if (dataDir.isNotEmpty) {
@@ -92,6 +94,12 @@ Future<void> _boot() async {
   bridge.ensureRoot();
   bridge.pumpOps();
   installAppDispatcher(bridge);
+
+  // Boot signal — confirms libskal loaded, the JS bundle evaluated, and
+  // the first op pump produced a node tree. Also what E2E smoke tests
+  // and `bun run dev:*` look for. Silence it once your app is real.
+  debugPrint('[skal] init=${((tCreate1 - tCreate0) / 1000).toStringAsFixed(1)}ms '
+      'nodes=${bridge.nodes.length}');
 
   runApp(MaterialApp(
     debugShowCheckedModeBanner: false,

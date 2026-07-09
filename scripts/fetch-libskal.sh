@@ -12,24 +12,45 @@
 # Usage:  scripts/fetch-libskal.sh [tag]      (default: libskal-dev)
 # Normally invoked via `SKAL_PREBUILT=1 bun run setup`.
 #
-# Requires the `gh` CLI authenticated with access to the repo (the repo
-# is private until launch; post-launch this can fall back to plain curl).
+# The repo is public — assets download anonymously via curl. The gh CLI
+# is used only as a fallback (e.g. private forks via SKAL_RELEASE_REPO).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TAG="${1:-libskal-dev}"
-REPO="${SKAL_RELEASE_REPO:-andrepimenta/skal}"
-
-command -v gh >/dev/null 2>&1 || {
-  echo "error: gh CLI not found — install GitHub CLI and run 'gh auth login'" >&2
-  exit 1
-}
+REPO="${SKAL_RELEASE_REPO:-skal-multiplatform/skal}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
 echo "→ downloading release '${TAG}' from ${REPO}"
-gh release download "${TAG}" --repo "${REPO}" --dir "${TMP}"
+
+# Anonymous path: list assets via the public API, download each via curl.
+# Falls back to `gh release download` (auth) if the API isn't reachable
+# anonymously — e.g. a private fork.
+fetch_anonymous() {
+  local api="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
+  local urls
+  urls="$(curl -fsSL --retry 3 "${api}" \
+          | grep -o '"browser_download_url": *"[^"]*"' \
+          | cut -d'"' -f4)" || return 1
+  [[ -n "${urls}" ]] || return 1
+  local url
+  while IFS= read -r url; do
+    echo "  ↓ ${url##*/}"
+    curl -fsSL --retry 3 -o "${TMP}/${url##*/}" "${url}" || return 1
+  done <<< "${urls}"
+}
+
+if ! fetch_anonymous; then
+  echo "  anonymous download failed — falling back to gh CLI"
+  command -v gh >/dev/null 2>&1 || {
+    echo "error: could not download release anonymously and gh CLI not found" >&2
+    echo "       install GitHub CLI and run 'gh auth login', or check ${REPO}/${TAG}" >&2
+    exit 1
+  }
+  gh release download "${TAG}" --repo "${REPO}" --dir "${TMP}"
+fi
 
 # Verify whatever checksum files the release carries (one per builder job).
 (

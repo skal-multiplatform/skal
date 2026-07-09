@@ -99,16 +99,22 @@ serialization in the bridge hot path.
 ### The three commands
 
 ```sh
-bun run setup              # one-time install — clones vendor, builds libskal, links it
-bun run new my-app         # scaffold a new app — flutter create + libskal link included
-bun run dev:macos          # run the kitchen-sink demo (or use bun --filter my-app)
+SKAL_PREBUILT=1 bun run setup   # one-time install — downloads prebuilt libskal (~2 min)
+bun run new my-app              # scaffold a new app — flutter create + libskal link included
+bun run dev:macos               # run the kitchen-sink demo (or use bun --filter my-app)
 ```
+
+`SKAL_PREBUILT=1` pulls CI-built binaries (macOS, iOS Simulator, Android arm64,
+plus the matching host bun for bytecode) from the
+[`libskal-dev` release](https://github.com/skal-multiplatform/skal/releases/tag/libskal-dev)
+— no toolchain needed beyond Flutter. Drop it to build the vendor stack from
+source (LLVM 21 + Rust nightly required).
 
 That's the whole workflow. Each one is idempotent and self-contained:
 
 | Command | What it does | Cold time |
 |---|---|---|
-| `bun run setup` | Workspace install + clone Skal's bun + WebKit forks (branch `skal` — patches live there as commits) + build host bun (+ build Android cross-stack if NDK present) + link libskal into kitchen-sink. Set `SKAL_NO_ANDROID=1` to skip Android even if NDK is installed. | ~30-40 min host-only, ~90-120 min with Android |
+| `bun run setup` | Workspace install + link libskal into kitchen-sink. With `SKAL_PREBUILT=1`: download CI-built binaries and skip the vendor stack entirely. Without it: clone Skal's bun + WebKit forks (branch `skal` — patches live there as commits) + build host bun (+ build Android cross-stack if NDK present; `SKAL_NO_ANDROID=1` to skip). | ~2 min prebuilt; ~30-40 min from source, ~90-120 min with Android |
 | `bun run new <name>` | Scaffold app under `examples/<name>/` from `scripts/templates/default/`, run `flutter create` for android/ios/macos, drop libskal binaries into the new platform configs. Pass `--platforms <list>` to limit, or `--no-platforms` for the JS scaffold only. Requires `setup` first. | ~30 seconds |
 | `bun run dev:*` | Rebuild JS bundle + `flutter run -d <target>`. Available on kitchen-sink and any scaffolded app via `bun --filter <name> dev:*`. | seconds (the build hot-incremental) |
 

@@ -87,13 +87,21 @@ if [[ "${PLATFORM}" == "all" || "${PLATFORM}" == "ios" ]]; then
     DEV_LIB="${REPO_ROOT}/build/skal-ios-device/libskal.dylib"
     SIM_LIB="${REPO_ROOT}/build/skal-iossim/libskal.dylib"
 
-    # Build if missing — but only with a clear hint, since iOS device
-    # needs the WebKit JSC build first.
+    # iOS *device* has no prebuilt binary (it needs a from-source WebKit
+    # JSC build, and shipping to a physical iPhone needs your own signing
+    # identity anyway). Only attempt the device link when a source build
+    # is actually present; otherwise skip cleanly — the simulator binary
+    # below is enough to run the app on the iOS Simulator.
     if [[ ! -f "${DEV_LIB}" ]]; then
-      echo "→ linking libskal.dylib for iOS device"
-      "${SCRIPT_DIR}/link-skal-ios.sh" || {
-        echo "warning: link-skal-ios.sh failed (need build-jsc-ios.sh output?)" >&2
-      }
+      if [[ -f "${REPO_ROOT}/vendor/bun/build/ios-release/build.ninja" ]]; then
+        echo "→ linking libskal.dylib for iOS device"
+        "${SCRIPT_DIR}/link-skal-ios.sh" || {
+          echo "warning: link-skal-ios.sh failed (need build-jsc-ios.sh output?)" >&2
+        }
+      else
+        echo "→ skipping iOS device (no source build; simulator only)."
+        echo "  For a physical iPhone: build from source (drop SKAL_PREBUILT) + sign in Xcode."
+      fi
     fi
     if [[ ! -f "${SIM_LIB}" ]]; then
       echo "→ linking libskal.dylib for iOS Simulator"

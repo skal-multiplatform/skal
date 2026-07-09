@@ -51,7 +51,7 @@ bun install --silent
 # ── prebuilt fast path ───────────────────────────────────────────────
 # SKAL_PREBUILT=1 downloads CI-built libskal binaries + the matching
 # host bun from the release-libskal workflow's GitHub release instead
-# of building the vendor stack (30-120 min → ~1 min; needs `gh` auth).
+# of building the vendor stack (30-120 min → ~1 min; no auth needed).
 # Override the release tag with SKAL_PREBUILT_TAG. See
 # scripts/fetch-libskal.sh and .github/workflows/release-libskal.yml.
 if [[ -n "${SKAL_PREBUILT:-}" ]]; then

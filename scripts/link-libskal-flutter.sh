@@ -28,9 +28,11 @@ FLUTTER_NATIVE_LIBS="${SKAL_FLUTTER_NATIVE_LIBS:-${SKAL_ROOT}/examples/kitchen-s
 
 # Prebuilt fast path — scripts/fetch-libskal.sh downloaded a ready-made
 # .so into build/skal-android/; install it without relinking (no NDK,
-# no vendor/bun Android cross-build needed on this machine).
+# no vendor/bun Android cross-build needed on this machine). Taken when
+# SKAL_PREBUILT is set, or automatically when there's no source build
+# to relink from (prebuilt-only checkout).
 PREBUILT="${SKAL_BUILD}/libskal.flutter.so"
-if [[ -n "${SKAL_PREBUILT:-}" && -f "${PREBUILT}" ]]; then
+if [[ -f "${PREBUILT}" ]] && [[ -n "${SKAL_PREBUILT:-}" || ! -f "${BUN_BUILD}/build.ninja" ]]; then
   mkdir -p "${FLUTTER_NATIVE_LIBS}"
   cp "${PREBUILT}" "${FLUTTER_NATIVE_LIBS}/libskal.so"
   echo "✓ libskal.so (prebuilt) → ${FLUTTER_NATIVE_LIBS}/libskal.so"

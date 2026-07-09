@@ -83,11 +83,15 @@ if [[ -e "${TARGET}" ]]; then
 fi
 
 # Sanity check — refuse to do platform configs if setup hasn't run.
+# Either world counts: a vendor/bun source build, or the prebuilt
+# binaries fetched by `SKAL_PREBUILT=1 bun run setup`.
 if [[ ${DO_PLATFORMS} -eq 1 ]]; then
   if [[ ! -x "${REPO_ROOT}/vendor/bun/build/release/bun-profile" \
-     && ! -x "${REPO_ROOT}/vendor/bun/build/release/bun" ]]; then
-    echo "error: vendor/bun isn't built yet — run 'bun run setup' first." >&2
-    echo "       (or pass --no-platforms to scaffold the JS side only)" >&2
+     && ! -x "${REPO_ROOT}/vendor/bun/build/release/bun" \
+     && ! -x "${REPO_ROOT}/build/skal-bun/bun" ]]; then
+    echo "error: libskal isn't built yet — run 'bun run setup' first" >&2
+    echo "       (or 'SKAL_PREBUILT=1 bun run setup' for CI-built binaries)." >&2
+    echo "       Or pass --no-platforms to scaffold the JS side only." >&2
     exit 1
   fi
 fi

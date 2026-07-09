@@ -26,9 +26,11 @@ FLUTTER_FRAMEWORKS="${SKAL_FLUTTER_FRAMEWORKS:-${SKAL_ROOT}/examples/kitchen-sin
 
 # Prebuilt fast path — scripts/fetch-libskal.sh downloaded a ready-made
 # dylib into build/skal-darwin/; install it without relinking (no
-# llvm@21, no vendor/bun build needed on this machine).
+# llvm@21, no vendor/bun build needed on this machine). Taken when
+# SKAL_PREBUILT is set, or automatically when there's no source build
+# to relink from (prebuilt-only checkout).
 PREBUILT="${SKAL_BUILD}/libskal.flutter.dylib"
-if [[ -n "${SKAL_PREBUILT:-}" && -f "${PREBUILT}" ]]; then
+if [[ -f "${PREBUILT}" ]] && [[ -n "${SKAL_PREBUILT:-}" || ! -f "${BUN_BUILD}/build.ninja" ]]; then
   mkdir -p "${FLUTTER_FRAMEWORKS}"
   cp "${PREBUILT}" "${FLUTTER_FRAMEWORKS}/libskal.dylib"
   echo "✓ libskal.dylib (prebuilt) → ${FLUTTER_FRAMEWORKS}/libskal.dylib"

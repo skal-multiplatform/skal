@@ -37,6 +37,7 @@ on:
       - packages/skal_native/include/skal.h
       - .github/workflows/desktop.yml
   workflow_call:
+  workflow_dispatch: {}
 
 concurrency:
   group: desktop-${{ github.ref }}
@@ -54,6 +55,19 @@ jobs:
           cache: true
       - run: rustup install nightly && rustup default nightly
       - uses: oven-sh/setup-bun@v2
+
+      # bun's build needs LLVM 21 (clang) + ninja. cargo's lolhtml link
+      # uses bare `-fuse-ld=lld`, resolved via PATH — Homebrew's llvm@21
+      # is keg-only, so expose ld.lld on PATH explicitly.
+      - name: Install LLVM 21 toolchain
+        run: |
+          brew install llvm@21 lld@21 ninja || true
+          test -x "$(brew --prefix llvm@21)/bin/clang"
+          # ld.lld ships in the lld@21 formula (newer bottles) or inside the llvm@21 keg (older).
+          LLD="$(brew --prefix lld@21 2>/dev/null || true)/bin/ld.lld"
+          [[ -x "$LLD" ]] || LLD="$(brew --prefix llvm@21)/bin/ld.lld"
+          ln -sf "$LLD" /opt/homebrew/bin/ld.lld
+          /opt/homebrew/bin/ld.lld --version
 
       - uses: actions/cache@v4
         with:

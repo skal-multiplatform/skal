@@ -42,6 +42,7 @@ on:
       - packages/skal_native/include/skal.h
       - .github/workflows/android.yml
   workflow_call:
+  workflow_dispatch: {}
 
 concurrency:
   group: android-${{ github.ref }}
@@ -74,6 +75,19 @@ jobs:
 
       # bun (used to bundle the kitchen-sink JS app and run scripts/setup.sh).
       - uses: oven-sh/setup-bun@v2
+
+      # bun's build needs LLVM 21 (clang) + ninja. cargo's lolhtml link
+      # (both host and android cross) uses bare `-fuse-ld=lld`, resolved
+      # via PATH — Homebrew's llvm@21 is keg-only, so expose ld.lld.
+      - name: Install LLVM 21 toolchain
+        run: |
+          brew install llvm@21 lld@21 ninja || true
+          test -x "$(brew --prefix llvm@21)/bin/clang"
+          # ld.lld ships in the lld@21 formula (newer bottles) or inside the llvm@21 keg (older).
+          LLD="$(brew --prefix lld@21 2>/dev/null || true)/bin/ld.lld"
+          [[ -x "$LLD" ]] || LLD="$(brew --prefix llvm@21)/bin/ld.lld"
+          ln -sf "$LLD" /opt/homebrew/bin/ld.lld
+          /opt/homebrew/bin/ld.lld --version
 
       - name: Install Android NDK
         run: brew install --cask android-ndk

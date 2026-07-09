@@ -189,4 +189,7 @@ skal/
 
 ## License
 
-TBD — see repo settings.
+[Apache-2.0](LICENSE). `libskal` embeds third-party components (bun,
+WebKit/JavaScriptCore, ICU) under their own licenses — see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), including the LGPL
+source-availability statement for JavaScriptCore.

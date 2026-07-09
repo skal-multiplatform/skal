@@ -31,6 +31,7 @@ on:
       - packages/skal_codegen/**
       - .github/workflows/tests.yml
   workflow_call:
+  workflow_dispatch: {}
 
 concurrency:
   group: tests-${{ github.ref }}

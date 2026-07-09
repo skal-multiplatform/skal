@@ -40,8 +40,18 @@ fi
 NDK="/opt/homebrew/share/android-ndk"
 SYSROOT="${NDK}/toolchains/llvm/prebuilt/darwin-x86_64/sysroot"
 LLVM_BIN="/opt/homebrew/opt/llvm@21/bin"
-LLD="${LLVM_BIN}/ld.lld"
 CXX="${LLVM_BIN}/clang++"
+
+# ld.lld moved out of the llvm keg into the lld/lld@21 formula on newer
+# Homebrew bottles — probe the known homes instead of hardcoding one.
+LLD=""
+for cand in "/opt/homebrew/opt/lld@21/bin/ld.lld" "${LLVM_BIN}/ld.lld" "$(command -v ld.lld || true)"; do
+  [[ -n "${cand}" && -x "${cand}" ]] && { LLD="${cand}"; break; }
+done
+if [[ -z "${LLD}" ]]; then
+  echo "error: ld.lld not found (brew install lld@21)" >&2
+  exit 1
+fi
 
 if [[ ! -f "${BUN_BUILD}/build.ninja" ]]; then
   echo "error: bun Android build not found at ${BUN_BUILD}" >&2

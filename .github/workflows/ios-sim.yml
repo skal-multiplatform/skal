@@ -41,6 +41,7 @@ on:
       - packages/skal_native/**
       - .github/workflows/ios-sim.yml
   workflow_call:
+  workflow_dispatch: {}
 
 concurrency:
   group: ios-sim-${{ github.ref }}
@@ -58,6 +59,19 @@ jobs:
           cache: true
       - run: rustup install nightly && rustup default nightly
       - uses: oven-sh/setup-bun@v2
+
+      # bun's build needs LLVM 21 (clang) + ninja. cargo's lolhtml link
+      # uses bare `-fuse-ld=lld`, resolved via PATH — Homebrew's llvm@21
+      # is keg-only, so expose ld.lld on PATH explicitly.
+      - name: Install LLVM 21 toolchain
+        run: |
+          brew install llvm@21 lld@21 ninja || true
+          test -x "$(brew --prefix llvm@21)/bin/clang"
+          # ld.lld ships in the lld@21 formula (newer bottles) or inside the llvm@21 keg (older).
+          LLD="$(brew --prefix lld@21 2>/dev/null || true)/bin/ld.lld"
+          [[ -x "$LLD" ]] || LLD="$(brew --prefix llvm@21)/bin/ld.lld"
+          ln -sf "$LLD" /opt/homebrew/bin/ld.lld
+          /opt/homebrew/bin/ld.lld --version
 
       - uses: actions/cache@v4
         with:
@@ -104,11 +118,24 @@ jobs:
       # reviewer can visually confirm "Solid demo still renders".
       - name: Boot iPhone simulator
         run: |
-          DEVICE_ID=$(xcrun simctl create "skal-ci" "iPhone 15 Pro Max" \
-                       "com.apple.CoreSimulator.SimRuntime.iOS-18-0" 2>/dev/null || \
-                     xcrun simctl list devices available | grep "iPhone 15 Pro Max" \
-                       | head -1 | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
-          echo "DEVICE_ID=$DEVICE_ID" >> $GITHUB_ENV
+          # Runner images rotate device/runtime versions — never hardcode a
+          # model. Prefer any pre-provisioned iPhone; else create one from
+          # the newest iOS runtime on the image.
+          DEVICE_ID=$(xcrun simctl list devices available --json \
+            | jq -r '[.devices | to_entries[]
+                      | select(.key | contains("SimRuntime.iOS"))
+                      | .value[]
+                      | select(.isAvailable and (.name | startswith("iPhone")))][0].udid // empty')
+          if [[ -z "$DEVICE_ID" ]]; then
+            RUNTIME=$(xcrun simctl list runtimes --json \
+              | jq -r '[.runtimes[] | select(.platform == "iOS" and .isAvailable)]
+                       | sort_by(.version | split(".") | map(tonumber)) | last | .identifier')
+            DEVICE_TYPE=$(xcrun simctl list devicetypes --json \
+              | jq -r '[.devicetypes[] | select(.name | startswith("iPhone"))] | first | .identifier')
+            DEVICE_ID=$(xcrun simctl create "skal-ci" "$DEVICE_TYPE" "$RUNTIME")
+          fi
+          echo "using simulator $DEVICE_ID"
+          echo "DEVICE_ID=$DEVICE_ID" >> "$GITHUB_ENV"
           xcrun simctl boot "$DEVICE_ID" || true
           xcrun simctl bootstatus "$DEVICE_ID" -b
 

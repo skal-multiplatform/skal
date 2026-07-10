@@ -27,11 +27,15 @@ if [[ -n "${SKAL_BUN:-}" ]]; then
     fi
 fi
 
-# Script lives at examples/<app>/scripts/; repo root is 3 dirs up.
+# Script lives at <app>/scripts/. Standalone apps (scaffolded by
+# `skal create`) carry a .skal-runtime symlink at the app root pointing
+# at the runtime checkout; in-repo apps resolve the repo root 3 dirs up.
+APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 RELEASE_DIR="${REPO_ROOT}/vendor/bun/build/release"
 
-for candidate in "${REPO_ROOT}/build/skal-bun/bun" "${RELEASE_DIR}/bun" "${RELEASE_DIR}/bun-profile"; do
+for candidate in "${APP_ROOT}/.skal-runtime/build/skal-bun/bun" \
+                 "${REPO_ROOT}/build/skal-bun/bun" "${RELEASE_DIR}/bun" "${RELEASE_DIR}/bun-profile"; do
     if [[ -x "${candidate}" ]]; then
         echo "${candidate}"
         exit 0

@@ -20,6 +20,23 @@
         "vite-plugin-solid": "^2.11.12",
       },
     },
+    "packages/skal-cli": {
+      "name": "@skal/cli",
+      "version": "0.1.0",
+      "bin": {
+        "skal": "bin/skal.js",
+      },
+    },
+    "packages/skal-create": {
+      "name": "@skal/create",
+      "version": "0.1.0",
+      "bin": {
+        "create-skal": "bin/create-skal.js",
+      },
+      "dependencies": {
+        "@skal/cli": "^0.1.0",
+      },
+    },
     "packages/skal-js": {
       "name": "skal",
       "version": "0.1.0",
@@ -175,6 +192,10 @@
     "@rolldown/binding-win32-x64-msvc": ["@rolldown/binding-win32-x64-msvc@1.0.2", "", { "os": "win32", "cpu": "x64" }, "sha512-v7qRI7gXLRINcOGXt+7YmAZ6iFuyZVMIoXAxhd8oP+DR9dLfL9GfNIx7PLMxmhZdvq8waUJBQiWN9EKNy+TRBQ=="],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.1", "", {}, "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw=="],
+
+    "@skal/cli": ["@skal/cli@workspace:packages/skal-cli"],
+
+    "@skal/create": ["@skal/create@workspace:packages/skal-create"],
 
     "@tybys/wasm-util": ["@tybys/wasm-util@0.10.2", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-RoBvJ2X0wuKlWFIjrwffGw1IqZHKQqzIchKaadZZfnNpsAYp2mM0h36JtPCjNDAHGgYez/15uMBpfGwchhiMgg=="],
 

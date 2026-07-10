@@ -1,0 +1,36 @@
+{
+  "name": "@skal/cli",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "Skal CLI — create and run Skal apps anywhere on disk, no monorepo clone needed.",
+  "bin": {
+    "skal": "bin/skal.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skal-multiplatform/skal.git",
+    "directory": "packages/skal-cli"
+  },
+  "homepage": "https://github.com/skal-multiplatform/skal",
+  "keywords": [
+    "skal",
+    "flutter",
+    "solid",
+    "solidjs",
+    "cli",
+    "cross-platform"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -31,7 +31,11 @@ const REPO_ROOT = resolve(HERE, '..');
 const APP = process.argv[2] || 'kitchen-sink';
 const PORT = parseInt(process.env.SKAL_HOT_PORT || '8765', 10);
 
-const APP_DIR = join(REPO_ROOT, 'examples', APP);
+// A path argument (e.g. `.` from a standalone `skal create` app) is the
+// app dir itself; a bare name means examples/<name> in the repo.
+const APP_DIR = existsSync(join(resolve(APP), 'package.json'))
+  ? resolve(APP)
+  : join(REPO_ROOT, 'examples', APP);
 const BUNDLE = join(APP_DIR, 'flutter-host', 'assets', 'skal-app.js');
 
 if (!existsSync(APP_DIR)) {

@@ -30,7 +30,9 @@ PLATFORM="${2:-all}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-APP_ROOT="${REPO_ROOT}/examples/${APP_NAME}/flutter-host"
+# Standalone apps (scaffolded by `skal create` outside the repo) override
+# the app location; in-repo apps keep the examples/<name>/ convention.
+APP_ROOT="${SKAL_APP_ROOT:-${REPO_ROOT}/examples/${APP_NAME}/flutter-host}"
 
 if [[ ! -d "${APP_ROOT}" ]]; then
   echo "error: ${APP_ROOT} not found — did you run 'bun run new ${APP_NAME}'?" >&2

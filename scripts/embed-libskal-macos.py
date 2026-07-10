@@ -3,15 +3,17 @@
 
 `flutter create` generates a vanilla macOS project that does NOT copy
 libskal.dylib into the built `.app`, so the runtime `dlopen('libskal.dylib')`
-in skal_ffi_io.dart fails and the app black-screens at launch. This adds the
-same Run Script build phase the reference app (examples/kitchen-sink) uses: it
-copies + ad-hoc-codesigns `$(SRCROOT)/Frameworks/libskal.dylib` into the
-bundle's `Contents/Frameworks/` on every build, where the default
+in skal_ffi_io.dart fails and the app black-screens at launch. This adds a
+Run Script build phase that copies + ad-hoc-codesigns
+`$(SRCROOT)/Frameworks/libskal.dylib` into the bundle's
+`Contents/Frameworks/` on every build, where the default
 `@executable_path/../Frameworks` rpath finds it.
 
-The phase is copied verbatim from the kitchen-sink project so there is a single
-source of truth for the embed mechanism. Idempotent — a no-op if the phase is
-already present.
+The phase block lives verbatim in the sidecar file
+embed-libskal-macos.phase.pbxproj (single source of truth — kitchen-sink
+and every scaffolded app get the same block injected, and the sidecar
+ships with standalone runtimes where examples/ doesn't exist).
+Idempotent — a no-op if the phase is already present.
 
 Usage: embed-libskal-macos.py <path/to/Runner.xcodeproj/project.pbxproj>
 """
@@ -19,14 +21,13 @@ import os
 import re
 import sys
 
-# The embed-libskal phase id in the reference app. Reused verbatim: a pbxproj
-# id only has to be unique within its own file, and this one will never collide
-# with the ids `flutter create` generates.
+# The embed-libskal phase id. Reused verbatim: a pbxproj id only has to be
+# unique within its own file, and this one will never collide with the ids
+# `flutter create` generates.
 UUID = "C340D20DED384C259A635795"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REF = os.path.join(HERE, "..", "examples", "kitchen-sink", "flutter-host",
-                   "macos", "Runner.xcodeproj", "project.pbxproj")
+REF = os.path.join(HERE, "embed-libskal-macos.phase.pbxproj")
 
 
 def main(path):
@@ -35,18 +36,12 @@ def main(path):
         print("embed-libskal: phase already present — skipping")
         return 0
     if not os.path.exists(REF):
-        sys.stderr.write("embed-libskal: reference project not found at %s\n" % REF)
+        sys.stderr.write("embed-libskal: phase file not found at %s\n" % REF)
         return 1
-    ref = open(REF).read()
 
-    # 1. Extract the phase block verbatim from the reference app (avoids any
-    #    hand-escaping of the embedded shellScript string).
-    key = UUID + " /* ShellScript */ = {"
-    i = ref.index(key)
-    block_start = ref.rindex("\n", 0, i) + 1   # include the phase's leading tabs
-    close = ref.index("};", i)                 # first "};" after i == phase close
-    block_nl = ref.index("\n", close)
-    block = ref[block_start:block_nl + 1]
+    # 1. The phase block, verbatim (avoids any hand-escaping of the
+    #    embedded shellScript string).
+    block = open(REF).read()
 
     # 2. Insert the block before the section's End marker.
     END = "/* End PBXShellScriptBuildPhase section */"

@@ -1,0 +1,38 @@
+{
+  "name": "@skal/create",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "npm create @skal — scaffold a Skal app (delegates to @skal/cli).",
+  "bin": {
+    "create-skal": "bin/create-skal.js"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@skal/cli": "^0.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skal-multiplatform/skal.git",
+    "directory": "packages/skal-create"
+  },
+  "homepage": "https://github.com/skal-multiplatform/skal",
+  "keywords": [
+    "skal",
+    "flutter",
+    "solid",
+    "solidjs",
+    "create",
+    "scaffold"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

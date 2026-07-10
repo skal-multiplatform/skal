@@ -53,6 +53,11 @@ jobs:
         with:
           channel: stable
           cache: true
+          # SDK cache only. The pub-dependency cache's save key runs
+          # hashFiles('**/pubspec.lock') over the whole workspace at
+          # post-job time — with the multi-GB vendor/ cache restored it
+          # blows the 120s template limit and reds an otherwise-green job.
+          pub-cache: false
       - run: rustup install nightly && rustup default nightly
       - uses: oven-sh/setup-bun@v2
 

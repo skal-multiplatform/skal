@@ -1,6 +1,6 @@
 # skal_flutter — Dart half of the Skal framework
 
-Pair package to JS-side [`skal`](../skal-js/README.md). This is the
+Pair package to JS-side [`skal`](https://github.com/skal-multiplatform/skal/tree/main/packages/skal-js). This is the
 host-side bridge implementation: it pumps ops out of the shared
 buffer that libskal exposes, reifies them as a tree of Flutter
 widgets, and drives the dispatch loop that lets JS call Dart
@@ -29,7 +29,7 @@ dependencies:
     path: ../../../packages/skal_flutter
 ```
 
-See [`docs/RESTRUCTURE.md`](../../docs/RESTRUCTURE.md) for the boundary
+See [`docs/RESTRUCTURE.md`](https://github.com/skal-multiplatform/skal/blob/main/docs/RESTRUCTURE.md) for the boundary
 plan and the eventual public-distribution story.
 
 ## Native side

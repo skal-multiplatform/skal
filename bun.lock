@@ -20,6 +20,16 @@
         "vite-plugin-solid": "^2.11.12",
       },
     },
+    "packages/create-skal": {
+      "name": "create-skal",
+      "version": "0.1.0",
+      "bin": {
+        "create-skal": "bin/create-skal.js",
+      },
+      "dependencies": {
+        "@skal/cli": "^0.1.0",
+      },
+    },
     "packages/skal-cli": {
       "name": "@skal/cli",
       "version": "0.1.0",
@@ -224,6 +234,8 @@
     "caniuse-lite": ["caniuse-lite@1.0.30001793", "", {}, "sha512-iwSsYWaCOoh26cV8NwNRViHlrfUvYsHDfRVcbtmw0Kg6PJIZZXwMkj1442FYLBGkeUf1juAsU3DTfxW579mrPA=="],
 
     "convert-source-map": ["convert-source-map@2.0.0", "", {}, "sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg=="],
+
+    "create-skal": ["create-skal@workspace:packages/create-skal"],
 
     "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
 

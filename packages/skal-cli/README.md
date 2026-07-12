@@ -3,10 +3,12 @@
 Create and run Skal apps **anywhere on disk** — no monorepo clone needed.
 
 ```bash
-npm i -g @skal/cli        # or one-shot: npx @skal/cli create my-app
-skal create my-app
+npm create skal my-app    # one-shot scaffold (or: npx @skal/cli create my-app)
 cd my-app
-skal dev macos            # or: bun run dev:macos
+bun run dev:macos
+
+npm i -g @skal/cli        # optional: puts `skal` on PATH
+skal dev macos            # == bun run dev:macos
 ```
 
 Prereqs: [bun](https://bun.sh) and [Flutter](https://flutter.dev) (plus
@@ -57,9 +59,10 @@ node packages/skal-cli/bin/skal.js create demo --runtime-from ~/code/skal
 Env knobs: `SKAL_HOME` (default `~/.skal`), `SKAL_RELEASE_REPO`,
 `SKAL_RELEASE_TAG`.
 
-## Publishing (not yet released)
+## Publishing (maintainers)
 
-The package is `private: true` until launch. To publish: flip
-`private`, then `npm publish --access public` under the `@skal` org.
-A sibling `@skal/create` alias package (so `npm create @skal` works)
-delegates to `skal create`.
+Three packages ship together: this one, plus the delegating shims
+[`create-skal`](../create-skal/) (`npm create skal`) and
+[`@skal/create`](../skal-create/) (`npm create @skal`). To release:
+bump the version in all three, then `npm publish` in
+`packages/skal-cli/` first, shims after (they depend on the CLI).

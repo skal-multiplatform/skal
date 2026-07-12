@@ -110,10 +110,15 @@ plus the matching host bun for bytecode) from the
 — no toolchain needed beyond Flutter. Drop it to build the vendor stack from
 source (LLVM 21 + Rust nightly required).
 
-Prefer your app in its own directory instead of inside this repo? The
-[`skal` CLI](packages/skal-cli/) (`skal create my-app`) scaffolds standalone
-apps against a shared runtime in `~/.skal` — same template, same binaries,
-no clone. Not yet on npm; runs from a checkout today.
+Prefer your app in its own directory instead of inside this repo?
+
+```sh
+npm create skal my-app          # no clone needed — scaffolds a standalone app
+```
+
+The [`skal` CLI](packages/skal-cli/) ([`@skal/cli`](https://www.npmjs.com/package/@skal/cli)
+on npm) puts the shared runtime — same template, same prebuilt binaries — in
+`~/.skal` and wires apps to it, so your project lives wherever you want it.
 
 That's the whole workflow. Each one is idempotent and self-contained:
 

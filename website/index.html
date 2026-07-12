@@ -16,6 +16,7 @@
     <span class="pill">v0.1.0</span>
     <div class="links">
       <a href="docs/">Docs</a>
+      <a href="#components">Components</a>
       <a href="#performance">Performance</a>
       <a href="#compare">Compare</a>
       <a class="gh" href="https://github.com/skal-multiplatform/skal"><span class="star">★</span> GitHub</a>
@@ -32,7 +33,7 @@
     <p class="sub rv in d1">Skal runs your <strong>SolidJS</strong> app inside <strong>bun&nbsp;+&nbsp;JavaScriptCore</strong> and renders it with <strong>Flutter</strong> — connected by a zero-copy shared-memory bridge. The ergonomics you wanted from React&nbsp;Native, minus the bridge tax.</p>
     <div class="hero-cta rv in d2">
       <a class="btn primary" href="docs/">Get started →</a>
-      <div class="cmd"><span class="p">$</span> <span class="c">npx skal create</span> my-app <button data-copy="npx skal create my-app">copy</button></div>
+      <div class="cmd"><span class="p">$</span> <span class="c">npm create skal</span> my-app <button data-copy="npm create skal my-app">copy</button></div>
     </div>
 
     <div class="stage">
@@ -59,7 +60,7 @@
       &lt;<span class="fn">Row</span> gap={<span class="nm">12</span>}&gt;
         &lt;<span class="fn">Button</span> label=<span class="st">"Tap"</span>
           onClick={() =&gt; <span class="fn">setCount</span>(c =&gt; c + <span class="nm">1</span>)} /&gt;
-        &lt;<span class="fn">Button</span> label=<span class="st">"Reset"</span> variant=<span class="st">"ghost"</span>
+        &lt;<span class="fn">Button</span> label=<span class="st">"Reset"</span>
           onClick={() =&gt; <span class="fn">setCount</span>(<span class="nm">0</span>)} /&gt;
       &lt;/<span class="fn">Row</span>&gt;
     &lt;/<span class="fn">Column</span>&gt;
@@ -90,7 +91,7 @@
     <div class="stats rv">
       <div class="stat"><b><span data-count="56">0</span><span class="u">&nbsp;ms</span></b><span>cold boot to first frame, bytecode cache</span></div>
       <div class="stat"><b><span data-count="0.151">0</span><span class="u">&nbsp;ms</span></b><span>avg bridge drain per frame, steady state</span></div>
-      <div class="stat"><b><span data-count="60">0</span><span class="u">&nbsp;fps</span></b><span>through a 15,000-item virtualized feed</span></div>
+      <div class="stat"><b><span data-count="60">0</span><span class="u">&nbsp;fps</span></b><span>through a 10,000-item virtualized feed</span></div>
       <div class="stat"><b><span data-count="4">0</span><span class="u">&nbsp;targets</span></b><span>Android · iOS · macOS · Web — one bundle</span></div>
     </div>
   </div>
@@ -194,7 +195,7 @@
   <div class="wrap">
     <div class="kicker rv">Performance</div>
     <h2 class="sec rv">Measured, not marketed.</h2>
-    <p class="sec-sub rv d1">Numbers from the kitchen-sink demo on a mid-range Android emulator — reproducible from a clean checkout with <code>bun run bench</code>. If your hardware disagrees, that's a bug and we want the issue.</p>
+    <p class="sec-sub rv d1">Numbers from the kitchen-sink demo on a mid-range Android emulator — methodology and budget invariants in <a href="https://github.com/skal-multiplatform/skal/blob/main/docs/PERFORMANCE.md">docs/PERFORMANCE.md</a>. If your hardware disagrees, that's a bug and we want the issue.</p>
     <div class="table-scroll rv">
       <table>
         <tr><th>Metric</th><th>Skal</th><th>What it means</th></tr>
@@ -202,7 +203,7 @@
         <tr><td>First eval</td><td class="hl">36 ms</td><td>bundle loads as pre-compiled JSC bytecode — the parser never runs</td></tr>
         <tr><td>Cold boot → first frame</td><td class="hl">56 ms</td><td>full tree mounted and painted</td></tr>
         <tr><td>Bridge drain, steady state</td><td class="hl">0.151 ms avg</td><td>per-frame cost of consuming JS ops on the Dart side</td></tr>
-        <tr><td>15,000-item feed</td><td class="hl">60 fps</td><td>virtualized list scrolling with live per-row signals</td></tr>
+        <tr><td>10,000-item feed</td><td class="hl">60 fps</td><td>virtualized list scrolling with live per-row signals</td></tr>
         <tr><td>Store write → disk</td><td class="hl">sub-ms</td><td>log-structured native engine, per-leaf delta frames</td></tr>
       </table>
     </div>
@@ -248,18 +249,76 @@
   </div>
 </section>
 
-<section class="alt">
+<section class="alt" id="components">
   <div class="wrap">
-    <div class="kicker rv">Developers</div>
-    <h2 class="sec rv">The reviews are in. Skål. 🍻</h2>
-    <div class="quotes" style="margin-top: 48px;">
-      <div class="quote rv"><p>"We ported our RN app's heaviest screen as a spike. Cold boot went from a splash screen you could read twice to <b>56 milliseconds</b>. The PM thought the video was sped up."</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#46e0b1,#2ea981)">MK</span><div><div class="n">Mira K.</div><div class="r">mobile lead</div></div></div></div>
-      <div class="quote rv d1"><p>"Signals on mobile is the unlock. No memo hunting, no re-render bingo — <b>the row I touch is the row that updates</b>. My frame chart is a flat line."</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#7db3ff,#4a7fd4)">DP</span><div><div class="n">Devon P.</div><div class="r">performance engineer</div></div></div></div>
-      <div class="quote rv d2"><p>"Hot reload keeping the navigation stack changed how I build. I live three screens deep in a flow and just... stay there while I restyle it. <b>Save. Look up. It's done.</b>"</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#ffcc66,#e09c3a)">TB</span><div><div class="n">Tomas B.</div><div class="r">indie developer</div></div></div></div>
-      <div class="quote rv"><p>"I'm a Solid dev who never shipped mobile. <b>skal create → TestFlight in a weekend.</b> The store even survived my schema change with a two-line migrate."</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#ff8fa3,#d45a76)">AR</span><div><div class="n">Ana R.</div><div class="r">web developer</div></div></div></div>
-      <div class="quote rv d1"><p>"The codegen wrapped our internal Flutter design system — <b>forty widgets — in an afternoon</b>. The JS team uses them as JSX and doesn't know Dart exists."</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#9d8bfa,#6f5bd8)">JL</span><div><div class="n">Jonas L.</div><div class="r">Flutter engineer</div></div></div></div>
-      <div class="quote rv d2"><p>"One bundle for Android, iOS, desktop, and web demos. Our release checklist got <b>shorter for the first time in company history</b>."</p><div class="who"><span class="av" style="background:linear-gradient(135deg,#5eead4,#2dd4bf)">PS</span><div><div class="n">Priya S.</div><div class="r">CTO</div></div></div></div>
+    <div class="kicker rv">Components</div>
+    <h2 class="sec rv">Fifty-plus widgets. All of them JSX.</h2>
+    <p class="sec-sub rv d1">Capitalized tags from <code>'skal'</code> compile to binary ops that build real Flutter widgets — layout, form controls, virtualized lists, slivers, navigation, canvas. Every snippet below is lifted from the <a href="https://github.com/skal-multiplatform/skal/tree/main/examples/kitchen-sink">kitchen-sink demo</a>.</p>
+    <div class="comp-grid rv">
+      <div class="win">
+        <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">controls.jsx</span><span class="tag">Switch · Slider · TextField</span></div>
+        <pre><span class="kw">const</span> [name, setName] = <span class="fn">createSignal</span>(<span class="st">''</span>);
+
+&lt;<span class="fn">Switch</span> checked={sw()} onChange={(v) =&gt; <span class="fn">setSw</span>(v)} /&gt;
+&lt;<span class="fn">Slider</span> value={vol()} min={<span class="nm">0</span>} max={<span class="nm">100</span>} onChange={setVol} /&gt;
+&lt;<span class="fn">TextInput</span> value={name()} placeholder=<span class="st">"Type your name…"</span>
+  onChange={setName}
+  onSubmit={(v) =&gt; <span class="fn">showSnackbar</span>(<span class="st">`Hi ${</span>v<span class="st">}`</span>)} /&gt;</pre>
+      </div>
+      <div class="win">
+        <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">feed.jsx</span><span class="tag">ListView.builder</span></div>
+        <pre><span class="cm">// virtualized — 10,000 rows scroll at 60 fps</span>
+&lt;<span class="fn">ListView</span> gap={<span class="nm">8</span>} onRefresh={reload}&gt;
+  &lt;<span class="fn">For</span> each={tweets()}&gt;
+    {(t) =&gt; &lt;<span class="fn">TweetCard</span> tweet={t} /&gt;}
+  &lt;/<span class="fn">For</span>&gt;
+&lt;/<span class="fn">ListView</span>&gt;
+
+<span class="cm">// also: LazyGrid · ReorderableListView · slivers</span></pre>
+      </div>
+      <div class="win">
+        <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">tabs.jsx</span><span class="tag">native navigation</span></div>
+        <pre>&lt;<span class="fn">Tabs</span> activeTab={tab()} onChange={setTab} height=<span class="st">"fill"</span>&gt;
+  &lt;<span class="fn">Tab</span> title=<span class="st">"UI"</span> icon=<span class="st">"grid"</span>&gt;&lt;<span class="fn">UITab</span> /&gt;&lt;/<span class="fn">Tab</span>&gt;
+  &lt;<span class="fn">Tab</span> title=<span class="st">"Feed"</span> icon=<span class="st">"list"</span>&gt;&lt;<span class="fn">FeedTab</span> /&gt;&lt;/<span class="fn">Tab</span>&gt;
+  &lt;<span class="fn">Tab</span> title=<span class="st">"Store"</span> icon=<span class="st">"storage"</span>&gt;&lt;<span class="fn">StoreTab</span> /&gt;&lt;/<span class="fn">Tab</span>&gt;
+&lt;/<span class="fn">Tabs</span>&gt;
+
+<span class="cm">// screens: createRouter → navigate / back, Hero, Drawer</span></pre>
+      </div>
+      <div class="win">
+        <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">chart.jsx</span><span class="tag">Canvas → CustomPaint</span></div>
+        <pre>&lt;<span class="fn">Canvas</span> width={<span class="nm">300</span>} height={<span class="nm">170</span>} draw={(c) =&gt; {
+  vals().forEach((v, i) =&gt;
+    c.<span class="fn">fillStyle</span>(i === <span class="nm">3</span> ? ACCENT : PURPLE)
+     .<span class="fn">fillRect</span>(<span class="nm">28</span> + i * <span class="nm">52</span>, <span class="nm">150</span> - v, <span class="nm">34</span>, v));
+  c.<span class="fn">fillStyle</span>(INK).<span class="fn">fontSize</span>(<span class="nm">12</span>)
+   .<span class="fn">fillText</span>(<span class="st">'live chart'</span>, <span class="nm">18</span>, <span class="nm">22</span>);
+}} /&gt;</pre>
+      </div>
+      <div class="win">
+        <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">pubdev.jsx</span><span class="tag">any Flutter widget</span></div>
+        <pre><span class="cm">// pub.dev packages wrapped by one line of codegen</span>
+&lt;<span class="fn">QrImageView</span> data=<span class="st">"https://github.com/skal-multiplatform"</span>
+  size={<span class="nm">200</span>} /&gt;
+&lt;<span class="fn">ShimmerFromColors</span> baseColor={<span class="nm">0xFFBDBDBD</span>}
+  highlightColor={<span class="nm">0xFFE0E0E0</span>}&gt;
+  &lt;<span class="fn">Greeting</span> name=<span class="st">"loading…"</span> fontSize={<span class="nm">28</span>} /&gt;
+&lt;/<span class="fn">ShimmerFromColors</span>&gt;</pre>
+      </div>
+      <div class="win">
+        <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">dialogs.jsx</span><span class="tag">native dialogs</span></div>
+        <pre><span class="kw">const</span> r = <span class="kw">await</span> <span class="fn">showDialog</span>({
+  title: <span class="st">'Delete file?'</span>,
+  message: <span class="st">'This cannot be undone.'</span>,
+  actions: [
+    { label: <span class="st">'Cancel'</span>, value: <span class="st">'cancel'</span> },
+    { label: <span class="st">'Delete'</span>, value: <span class="st">'delete'</span>, style: <span class="st">'destructive'</span> },
+  ],
+});</pre>
+      </div>
     </div>
+    <p class="rv d1" style="color: var(--muted); font-size: 14.5px; margin-top: 24px;">The full set — <b>Layout</b> Column · Row · Stack · Wrap · Box &nbsp;<b>Scrolling</b> ScrollView · ListView · LazyGrid · PageView · slivers &nbsp;<b>Input</b> Button · TextInput · Switch · Checkbox · Radio · Chip · Dropdown · SegmentedButton · Stepper &nbsp;<b>Motion</b> AnimatedList · CrossFade · Dismissible · Hero · InteractiveViewer &nbsp;— props and events for each in <a href="docs/components.html">the component docs</a>.</p>
   </div>
 </section>
 
@@ -271,19 +330,19 @@
       <div class="rv">
         <div class="win">
           <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">terminal</span></div>
-          <pre><span class="cm"># scaffold — JS app + platform hosts + linked runtime</span>
-<span class="cm">$</span> npx skal create my-app
+          <pre><span class="cm"># scaffold — Solid app + platform hosts + prebuilt native runtime</span>
+<span class="cm">$</span> npm create skal my-app
 
 <span class="cm"># run it — emulator boots automatically if none is attached</span>
-<span class="cm">$</span> cd my-app &amp;&amp; skal dev android
+<span class="cm">$</span> cd my-app &amp;&amp; bun run dev:android
 
-<span class="cm"># ship it — signed APK with bytecode cache</span>
-<span class="cm">$</span> skal build android --release</pre>
+<span class="cm"># ship it — release APK with the bytecode cache baked in</span>
+<span class="cm">$</span> bun run build:android</pre>
         </div>
       </div>
       <div class="rv d1">
         <p style="color: var(--muted); font-size: 15.5px;">The scaffold is a complete app: a Solid entry in <code>src/App.jsx</code>, platform hosts, hot reload wired, a Maestro smoke test, and the store ready to persist. Edit one file, save, watch the device.</p>
-        <p style="margin-top: 16px; color: var(--muted); font-size: 15.5px;">CI templates for GitHub Actions ship in the box — cold caches build the whole native stack; warm ones finish in minutes.</p>
+        <p style="margin-top: 16px; color: var(--muted); font-size: 15.5px;">Prereqs: <a href="https://bun.sh">bun</a> and <a href="https://flutter.dev">Flutter</a> — the native runtime downloads prebuilt, so there's no LLVM, Rust, or NDK to install. Prefer a global command? <code>npm i -g @skal/cli</code> gives you <code>skal dev</code> / <code>build</code> / <code>doctor</code>.</p>
         <p style="margin-top: 18px;"><a href="docs/">Read the getting-started guide →</a></p>
       </div>
     </div>
@@ -297,7 +356,7 @@
       <p>One command scaffolds it. One more runs it on your phone. The third one ships it.</p>
       <div class="hero-cta">
         <a class="btn primary" href="docs/">Get started →</a>
-        <div class="cmd"><span class="p">$</span> <span class="c">npx skal create</span> my-app <button data-copy="npx skal create my-app">copy</button></div>
+        <div class="cmd"><span class="p">$</span> <span class="c">npm create skal</span> my-app <button data-copy="npm create skal my-app">copy</button></div>
       </div>
     </div>
   </div>

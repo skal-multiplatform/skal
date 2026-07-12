@@ -48,7 +48,7 @@ packages:
   - shimmer
   - camera</pre>
     <p>Then run the generator:</p>
-    <pre class="code"><span class="cm">$</span> skal codegen</pre>
+    <pre class="code"><span class="cm">$</span> bun run codegen</pre>
     <p>The builder introspects each package's public widgets with Dart's analyzer — constructors, named constructors, parameter types — and emits adapters that register them with Skal's widget registry. On the JS side, typed components appear under <code>skal-flutter</code>:</p>
     <pre class="code"><span class="kw">import</span> { QrImageView, ShimmerFromColors, Camera } <span class="kw">from</span> <span class="st">'skal-flutter'</span>;
 
@@ -60,23 +60,27 @@ packages:
     <div class="callout">Named constructors surface as their own components — shimmer's <code>Shimmer.fromColors</code> becomes <code>&lt;ShimmerFromColors&gt;</code>. Prop types round-trip: enums, colors, durations, edge insets.</div>
 
     <h2>Calling native APIs (not just widgets)</h2>
-    <p>Plugins with imperative APIs — geolocation, biometrics, file pickers — are exposed through the same bridge as async JS calls. A call writes one RPC op; the reply comes back through the reply heap:</p>
-    <pre class="code"><span class="kw">import</span> { call } <span class="kw">from</span> <span class="st">'skal/native'</span>;
+    <p>Plugins with imperative APIs — geolocation, biometrics, file pickers — ship as shim packages with one async JS surface:</p>
+    <pre class="code"><span class="kw">import</span> { getCurrentPosition } <span class="kw">from</span> <span class="st">'skal-plugin-geolocator'</span>;
 
-<span class="kw">const</span> pos = <span class="kw">await</span> <span class="fn">call</span>(<span class="st">'geolocator.getCurrentPosition'</span>);
-<span class="cm">// { latitude: 38.72, longitude: -9.14, accuracy: 12 }</span></pre>
-    <p>Streams (position updates, sensor events) arrive as async iterables and integrate with Solid resources.</p>
+<span class="kw">const</span> pos = <span class="kw">await</span> <span class="fn">getCurrentPosition</span>();
+<span class="cm">// { lat, lon, accuracy, altitude, speed, timestamp }</span></pre>
+    <p>On web this routes through the hidden Flutter plugin host today; the native routing for the same calls is in progress. Imperative <em>native</em> work is done today through host-widget RPC: bind a <code>ref</code>, then <code>await ref.method(args)</code> — one RPC op out, the reply back through the reply heap, and Dart <code>Stream</code>s subscribe via <code>ref.name$(cb)</code>. The Camera and Ticker demos in kitchen-sink use exactly this.</p>
 
     <h2>Custom Dart widgets</h2>
-    <p>Your own Flutter widgets wrap the same way — point the CLI at the file and it generates the adapter:</p>
-    <pre class="code"><span class="cm">$</span> skal codegen lib/widgets/gauge.dart
-<span class="cm">→ &lt;Gauge value={0.7} /&gt; is now available from 'skal-flutter'</span></pre>
-    <p>For full control (custom prop decoding, children handling, method channels), write a manual adapter against <code>SkalRegistry</code> — the generated code is the documentation for the shape.</p>
+    <p>Your own Flutter widgets register the same way — a small adapter reads props off the node and returns your widget:</p>
+    <pre class="code"><span class="cm">// flutter-host/lib/adapters/gauge.dart</span>
+Widget <span class="fn">_buildGauge</span>(NodeState n, SkalBridge bridge) =&gt;
+    <span class="fn">Gauge</span>(value: n.<span class="fn">getCustomPropF32</span>(<span class="st">'value'</span>, <span class="nm">0</span>));
+
+SkalRegistry.<span class="fn">registerWidget</span>(<span class="st">'gauge'</span>, _buildGauge);
+<span class="cm">// &lt;Gauge value={0.7} /&gt; is now available in JSX</span></pre>
+    <p>For full control (custom prop decoding, children handling, RPC methods), the generated adapters in <code>lib/adapters/generated/</code> are the documentation for the shape.</p>
 
     <h2>When codegen isn't enough</h2>
     <ul>
       <li><b>Function-valued parameters</b> (builders, custom painters) can't cross the bridge declaratively — wrap those widgets manually with a constrained prop surface.</li>
-      <li><b>Web target:</b> plugin calls route through a headless Flutter Web instance, so the same <code>call()</code> works in the browser for plugins with web implementations.</li>
+      <li><b>Web target:</b> plugin calls route through a headless Flutter Web instance, so the same shim API works in the browser for plugins with web implementations.</li>
     </ul>
 
     <div class="pn">

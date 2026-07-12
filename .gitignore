@@ -52,3 +52,10 @@ packages/*/.dart_tool/
 packages/*/.flutter-plugins-dependencies
 # Library packages don't pin a lockfile — only apps under examples/ do.
 packages/*/pubspec.lock
+
+# Website live-gallery embeds — build outputs (bun run build:web / build:web-flutter
+# in examples/gallery, then copy dist/ + flutter-host/build/web here; see
+# website/build-components.mjs + examples/gallery/scripts/shoot-gallery.sh)
+website/gallery/
+website/gallery-flutter/
+examples/gallery/flutter-host/web/skal-app.js

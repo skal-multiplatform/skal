@@ -1,0 +1,18 @@
+		2281DC9D471B4CF69E33804C /* Embed libskal.dylib */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Frameworks/$(PLATFORM_NAME)/libskal.dylib",
+			);
+			name = "Embed libskal.dylib";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/Frameworks/libskal.dylib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nSRC=\"$SRCROOT/Frameworks/$PLATFORM_NAME/libskal.dylib\"\nDEST=\"$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/Frameworks\"\nmkdir -p \"$DEST\"\ncp \"$SRC\" \"$DEST/libskal.dylib\"\ncodesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" --preserve-metadata=identifier,entitlements,flags --timestamp=none \"$DEST/libskal.dylib\"\n";
+			showEnvVarsInLog = 0;
+		};

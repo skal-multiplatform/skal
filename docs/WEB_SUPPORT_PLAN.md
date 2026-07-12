@@ -856,3 +856,86 @@ not in the bridge.
 Phases 0-5 done. The plan as written is fully implemented.
 Shape D ships under both dart2js+canvaskit and dart2wasm+skwasm.
 *Last updated: 2026-05-25. Phases 0–5 done; Shape D-skwasm shipped.*
+
+## Shape E — Prerendered Skal-web (SSG) *(planned)*
+
+Shape B renders the app in the visitor's browser: crawlers, social
+unfurlers, and first paint all receive an empty `<div id="app">` until
+the bundle executes. Shape E closes that gap: render every route **at
+build time** and ship the resulting HTML, with the client bundle taking
+over on load. It's the missing piece for content-shaped Skal apps
+(marketing pages, docs, dashboards that want instant first paint) — and
+for rebuilding skal's own website as a Skal app.
+
+### Mechanism (v1 — prerender + remount)
+
+No new renderer. Run the EXISTING renderer-web against an emulated DOM
+under the vendored bun, then snapshot:
+
+```
+bun (build time)
+  └─ happy-dom Window            ← renderer-web's API surface is tiny:
+       └─ render(<App/>, root)      create/TextNode/head/getElementById,
+            └─ serialize root        rAF, ResizeObserver (shim), window.*
+                 └─ dist/<route>/index.html
+```
+
+1. `vite build` as today (client bundle unchanged).
+2. Prerender pass: for each route, construct a happy-dom window, set
+   `location`, import the bundle, render, await a settle tick
+   (microtasks + one rAF), serialize `#app`'s innerHTML + `document.head`
+   into the route's `index.html`. Styles are inline (renderer-web
+   already emits them), so the snapshot is visually complete — no FOUC.
+3. Client boot: the bundle detects prerendered content and **remounts**
+   (clear + render). Markup is produced by the same renderer, so the
+   swap is pixel-identical; this is the react-snap pattern, not true
+   hydration.
+
+Solid's compiled SSR (`renderToString`) is NOT used: its transform
+targets solid-js/web's DOM runtime, not custom universal renderers.
+The fake-DOM snapshot sidesteps that whole problem.
+
+### The four workstreams
+
+1. **Prerenderer** (`scripts/prerender-web.js`, run by
+   `bun run build:web --prerender`): happy-dom harness, route loop,
+   settle heuristic, HTML emit. Guards: `globalThis.__skalPrerender`
+   flag so effects can skip browser-only work; `HtmlEmbed`/
+   `FlutterEmbed` render a placeholder shell.
+2. **Routes manifest**: apps export `routes` (path → component or
+   location state) from a known module; single-page apps prerender `/`
+   only. No new router — reuses whatever drives the app's own view
+   switching.
+3. **`<Head>` helper** (skal/runtime): title/meta/og tags per route —
+   writes `document.head` at prerender, updates it client-side after
+   remount.
+4. **Semantic islands** (existing mechanism, documented not built):
+   content that needs real `<h1>/<article>/<a>` uses the `*.dom.jsx`
+   island pattern (plain solid-js/web vocabulary) inside the page;
+   widget-vocabulary subtrees keep rendering as styled divs. Websites
+   are DOM-first with Skal islands; apps are Skal-first.
+
+### v2 — adopt-mode hydration
+
+Remount is v1's honest shortcut. True hydration = an "adopt" flag on
+renderer-web: during initial render, instead of creating nodes, walk
+the existing DOM in tandem and claim matching elements (we own
+createElement/insertNode, so this is a renderer feature, not a Solid
+fork). Kills the remount flash and preserves text selection/scroll on
+slow connections. Separate, later.
+
+### Risks
+
+- **Settle detection**: async data at first render (fonts, images,
+  fetch) — v1 rule: prerender what's synchronous + one tick; document
+  that data-dependent content needs explicit readiness signaling.
+- **happy-dom fidelity**: ResizeObserver / virtualization fallbacks in
+  ListView need an eager path at prerender (render all children).
+- **Route × state explosion**: v1 prerenders routes, not states.
+
+### Acceptance test
+
+Rebuild skal's website shell (`website/*.html`) as a Skal-web app and
+prerender it with Shape E: identical HTML on the wire (verify with
+diff + Lighthouse), live gallery islands unchanged. The site becoming
+a Skal app *without losing SEO* is the definition of done.

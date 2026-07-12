@@ -5,6 +5,20 @@
     "": {
       "name": "skal-monorepo",
     },
+    "examples/gallery": {
+      "name": "gallery",
+      "version": "0.1.0",
+      "dependencies": {
+        "skal": "workspace:*",
+        "solid-js": "^1.9.12",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "esbuild": "^0.28.0",
+        "vite": "^8.0.11",
+        "vite-plugin-solid": "^2.11.12",
+      },
+    },
     "examples/kitchen-sink": {
       "name": "kitchen-sink",
       "version": "0.1.0",
@@ -254,6 +268,8 @@
     "fdir": ["fdir@6.5.0", "", { "peerDependencies": { "picomatch": "^3 || ^4" }, "optionalPeers": ["picomatch"] }, "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg=="],
 
     "fsevents": ["fsevents@2.3.3", "", { "os": "darwin" }, "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw=="],
+
+    "gallery": ["gallery@workspace:examples/gallery"],
 
     "gensync": ["gensync@1.0.0-beta.2", "", {}, "sha512-3hN7NaskYvMDLQY55gnW3NQ+mesEAepTqlg+VEbj7zzqEMBVNhzcGYYeqFo/TlYz6eQiFcp1HcsCZO+nGgS8zg=="],
 

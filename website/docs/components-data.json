@@ -1,0 +1,298 @@
+[
+  {
+    "name": "Text",
+    "widget": "Text",
+    "group": "Content",
+    "blurb": "Styled text — size, weight, family, color, alignment, maxLines, overflow.",
+    "code": "<Text label=\"The quick brown fox\" fontSize={24} fontWeight={800} color=\"#FF1C1C1E\" />\n<Text label=\"jumps over the lazy dog.\" fontSize={15} color=\"#FF8E8E93\" />\n<Text label=\"Truncates with an ellipsis when it runs out of space to work with\"\n      maxLines={1} textOverflow={1} fontSize={14} color=\"#FF0A84FF\" />",
+    "img": "../assets/components/00-text.png"
+  },
+  {
+    "name": "RichText",
+    "widget": "Text.rich",
+    "group": "Content",
+    "blurb": "Inline spans — each Text child becomes a styled TextSpan.",
+    "code": "<RichText>\n  <Text label=\"Rich text \" fontSize={17} color=\"#FF1C1C1E\" />\n  <Text label=\"mixes \" fontSize={17} color=\"#FF0A84FF\" fontWeight={800} />\n  <Text label=\"size, \" fontSize={23} color=\"#FFFF453A\" fontWeight={700} />\n  <Text label=\"weight \" fontSize={17} color=\"#FF30D158\" fontWeight={800} />\n  <Text label=\"and colour inline.\" fontSize={17} color=\"#FF1C1C1E\" />\n</RichText>",
+    "img": "../assets/components/01-richtext.png"
+  },
+  {
+    "name": "Image",
+    "widget": "Image",
+    "group": "Content",
+    "blurb": "Network, file://, or asset:// sources; BoxFit via contentScale.",
+    "code": "<Image src=\"https://picsum.photos/seed/skal/640/360\"\n       width=\"fill\" height={180} contentScale={1} cornerRadius={14} />",
+    "img": "../assets/components/02-image.png"
+  },
+  {
+    "name": "Canvas",
+    "widget": "CustomPaint",
+    "group": "Content",
+    "blurb": "A chainable 2-D drawing context — rects, circles, paths, text. Reads signals; redraws when they change.",
+    "code": "<Canvas width={320} height={180} draw={(c) => {\n  [60, 110, 80, 140, 95].forEach((v, i) =>\n    c.fillStyle(i === 3 ? '#FF0A84FF' : '#FFBF5AF2')\n     .fillRect(24 + i * 58, 170 - v, 40, v));\n  c.fillStyle('#FF1C1C1E').fontSize(13).fillText('rendered on a signal', 24, 24);\n}} />",
+    "img": "../assets/components/03-canvas.png"
+  },
+  {
+    "name": "ActivityIndicator",
+    "widget": "CircularProgressIndicator",
+    "group": "Content",
+    "blurb": "Indeterminate spinner; color and size are props.",
+    "code": "<ActivityIndicator color=\"#FF0A84FF\" width={36} />",
+    "img": "../assets/components/04-activityindicator.png"
+  },
+  {
+    "name": "ProgressBar",
+    "widget": "LinearProgressIndicator",
+    "group": "Content",
+    "blurb": "Determinate with progress 0..1, indeterminate without.",
+    "code": "<ProgressBar progress={0.65} color=\"#FF0A84FF\" />\n<ProgressBar color=\"#FFBF5AF2\" />   {/* indeterminate */}",
+    "img": "../assets/components/05-progressbar.png"
+  },
+  {
+    "name": "Box",
+    "widget": "Container",
+    "group": "Layout",
+    "blurb": "The decorated box — padding, background, corners, borders, shadows, tap/hover/drag handlers.",
+    "code": "<Box padding={18} background=\"#FFFFFFFF\" cornerRadius={16}\n     borderWidth={1} borderColor=\"#FFE5E5EA\" shadow={8}\n     onTap={() => setLiked(!liked())}>\n  <Text label=\"Tap me\" fontSize={15} color=\"#FF1C1C1E\" />\n</Box>",
+    "img": "../assets/components/06-box.png"
+  },
+  {
+    "name": "Column",
+    "widget": "Column",
+    "group": "Layout",
+    "blurb": "Vertical flex; gap, padding, alignment; children flex with weight.",
+    "code": "<Column gap={10}>\n  <Box height={44} background=\"#FF0A84FF\" cornerRadius={10} />\n  <Box height={44} background=\"#FF30D158\" cornerRadius={10} />\n  <Box height={44} background=\"#FFFF9F0A\" cornerRadius={10} />\n</Column>",
+    "img": "../assets/components/07-column.png"
+  },
+  {
+    "name": "Row",
+    "widget": "Row",
+    "group": "Layout",
+    "blurb": "Horizontal flex; weight distributes leftover space.",
+    "code": "<Row gap={10}>\n  <Box weight={1} height={64} background=\"#FF0A84FF\" cornerRadius={10} />\n  <Box weight={2} height={64} background=\"#FF30D158\" cornerRadius={10} />\n  <Box weight={1} height={64} background=\"#FFFF9F0A\" cornerRadius={10} />\n</Row>",
+    "img": "../assets/components/08-row.png"
+  },
+  {
+    "name": "Stack",
+    "widget": "Stack",
+    "group": "Layout",
+    "blurb": "Layered children; top/right/bottom/left props position them absolutely.",
+    "code": "<Stack width=\"fill\" height={160}>\n  <Box width=\"fill\" height={160} background=\"#FF0A84FF\" cornerRadius={16} />\n  <Box top={12} right={12} padding={8} background=\"#FFFFFFFF\" cornerRadius={10}>\n    <Text label=\"badge\" fontSize={12} color=\"#FF0A84FF\" />\n  </Box>\n  <Box bottom={12} left={12} padding={10} background=\"#66000000\" cornerRadius={10}>\n    <Text label=\"caption over the fill\" fontSize={13} color=\"#FFFFFFFF\" />\n  </Box>\n</Stack>",
+    "img": "../assets/components/09-stack.png"
+  },
+  {
+    "name": "Wrap",
+    "widget": "Wrap",
+    "group": "Layout",
+    "blurb": "Flow layout — children wrap to the next line; gap sets both spacings.",
+    "code": "<Wrap gap={8}>\n  <For each={['solid', 'flutter', 'bun', 'jsc', 'zero-copy', 'bridge', 'native']}>\n    {(t) => <Box padding={10} background=\"#FFF2F2F7\" cornerRadius={999}>\n      <Text label={t} fontSize={13} color=\"#FF1C1C1E\" /></Box>}\n  </For>\n</Wrap>",
+    "img": "../assets/components/10-wrap.png"
+  },
+  {
+    "name": "ScrollView",
+    "widget": "SingleChildScrollView",
+    "group": "Layout",
+    "blurb": "Eager scrolling for short content; axis 0 = vertical, 1 = horizontal. Use ListView for long lists.",
+    "code": "<ScrollView axis={1} gap={10} height={90}>\n  <For each={colors}>\n    {(c) => <Box width={90} height={90} background={c} cornerRadius={14} />}\n  </For>\n</ScrollView>",
+    "img": "../assets/components/11-scrollview.png"
+  },
+  {
+    "name": "Button",
+    "widget": "ElevatedButton",
+    "group": "Input",
+    "blurb": "label + onClick; disable with enabled={false}.",
+    "code": "<Button label=\"Continue\" onClick={() => submit()} />\n<Button label=\"Disabled\" enabled={false} />",
+    "img": "../assets/components/12-button.png"
+  },
+  {
+    "name": "TextInput",
+    "widget": "TextField",
+    "group": "Input",
+    "blurb": "Controlled text field — onChange per keystroke, onSubmit on Enter, secureEntry for passwords.",
+    "code": "<TextInput value={name()} placeholder=\"Your name…\"\n           onChange={setName} onSubmit={(v) => save(v)} />",
+    "img": "../assets/components/13-textinput.png"
+  },
+  {
+    "name": "Switch",
+    "widget": "Switch",
+    "group": "Input",
+    "blurb": "Boolean toggle; the app owns the state.",
+    "code": "<Switch checked={on()} onChange={setOn} />",
+    "img": "../assets/components/14-switch.png"
+  },
+  {
+    "name": "Checkbox",
+    "widget": "Checkbox",
+    "group": "Input",
+    "blurb": "Checked/unchecked; onChange(bool).",
+    "code": "<Checkbox checked={done()} onChange={setDone} />",
+    "img": "../assets/components/15-checkbox.png"
+  },
+  {
+    "name": "Radio",
+    "widget": "Radio",
+    "group": "Input",
+    "blurb": "One option in a group the app owns — onChange fires with true.",
+    "code": "<For each={options}>\n  {(opt, i) => <Row gap={8}>\n    <Radio checked={sel() === i()} onChange={() => setSel(i())} />\n    <Text label={opt} fontSize={14} />\n  </Row>}\n</For>",
+    "img": "../assets/components/16-radio.png"
+  },
+  {
+    "name": "Chip",
+    "widget": "FilterChip",
+    "group": "Input",
+    "blurb": "Toggleable filter chip — label, checked, onChange(bool).",
+    "code": "<Chip label=\"Solid\" checked={f().solid} onChange={(v) => toggle('solid', v)} />",
+    "img": "../assets/components/17-chip.png"
+  },
+  {
+    "name": "SegmentedButton",
+    "widget": "SegmentedButton",
+    "group": "Input",
+    "blurb": "One-of-N selector; children are the segment labels.",
+    "code": "<SegmentedButton activeTab={seg()} onChange={setSeg}>\n  <Text label=\"Day\" fontSize={13} />\n  <Text label=\"Week\" fontSize={13} />\n  <Text label=\"Month\" fontSize={13} />\n</SegmentedButton>",
+    "img": "../assets/components/18-segmentedbutton.png"
+  },
+  {
+    "name": "Dropdown",
+    "widget": "DropdownButton",
+    "group": "Input",
+    "blurb": "Select from a menu; children are the options.",
+    "code": "<Dropdown activeTab={dd()} onChange={setDd}>\n  <Text label=\"Low\" fontSize={14} />\n  <Text label=\"Medium\" fontSize={14} />\n  <Text label=\"High\" fontSize={14} />\n</Dropdown>",
+    "img": "../assets/components/19-dropdown.png"
+  },
+  {
+    "name": "Slider",
+    "widget": "Slider",
+    "group": "Input",
+    "blurb": "Continuous value between min and max.",
+    "code": "<Slider value={vol()} min={0} max={100} onChange={setVol} />",
+    "img": "../assets/components/20-slider.png"
+  },
+  {
+    "name": "Stepper",
+    "widget": "Stepper",
+    "group": "Input",
+    "blurb": "Multi-step flows; each Step has a title and a body.",
+    "code": "<Stepper activeTab={step()} onChange={setStep}>\n  <Step title=\"Account\"><Text label=\"Name, email, password.\" fontSize={13} /></Step>\n  <Step title=\"Profile\"><Text label=\"Photo and a short bio.\" fontSize={13} /></Step>\n  <Step title=\"Done\"><Text label=\"Review and finish.\" fontSize={13} /></Step>\n</Stepper>",
+    "img": "../assets/components/21-stepper.png"
+  },
+  {
+    "name": "ListView",
+    "widget": "ListView.builder",
+    "group": "Lists",
+    "blurb": "Lazy, virtualized list — thousands of rows stay smooth. axis 1 for horizontal.",
+    "code": "<ListView gap={8} height={260}>\n  <For each={rows()}>\n    {(r) => <Box padding={14} background=\"#FFFFFFFF\" cornerRadius={12}>\n      <Text label={r} fontSize={14} color=\"#FF1C1C1E\" /></Box>}\n  </For>\n</ListView>",
+    "img": "../assets/components/22-listview.png"
+  },
+  {
+    "name": "ListTile",
+    "widget": "ListTile",
+    "group": "Lists",
+    "blurb": "title, subtitle, leading/trailing icons, onTap — the settings-row workhorse.",
+    "code": "<ListTile title=\"Notifications\" subtitle=\"Sounds, banners, badges\"\n          leadingIcon=\"notifications\" trailingIcon=\"chevron_right\"\n          onTap={() => open('notifications')} />",
+    "img": "../assets/components/23-listtile.png"
+  },
+  {
+    "name": "LazyGrid",
+    "widget": "GridView.builder",
+    "group": "Lists",
+    "blurb": "Virtualized grid; crossAxisCount columns, aspectRatio per cell.",
+    "code": "<LazyGrid crossAxisCount={3} aspectRatio={1} gap={10} height={240}>\n  <For each={items}>\n    {(c) => <Box background={c} cornerRadius={14} />}\n  </For>\n</LazyGrid>",
+    "img": "../assets/components/24-lazygrid.png"
+  },
+  {
+    "name": "ReorderableListView",
+    "widget": "ReorderableListView.builder",
+    "group": "Lists",
+    "blurb": "Drag rows to reorder; onReorder(from, to) updates your source array.",
+    "code": "<ReorderableListView height={230} gap={8} onReorder={(from, to) => move(from, to)}>\n  <For each={rows()}>\n    {(r) => <Box padding={14} background=\"#FFFFFFFF\" cornerRadius={12}>\n      <Text label={r} fontSize={14} color=\"#FF1C1C1E\" /></Box>}\n  </For>\n</ReorderableListView>",
+    "img": "../assets/components/25-reorderablelistview.png"
+  },
+  {
+    "name": "PageView",
+    "widget": "PageView",
+    "group": "Lists",
+    "blurb": "Swipeable pages; activeTab is the page index.",
+    "code": "<PageView activeTab={page()} onChange={setPage} height={200}>\n  <Box background=\"#FF0A84FF\" cornerRadius={16} />\n  <Box background=\"#FF30D158\" cornerRadius={16} />\n  <Box background=\"#FFFF9F0A\" cornerRadius={16} />\n</PageView>",
+    "img": "../assets/components/26-pageview.png"
+  },
+  {
+    "name": "AnimatedList",
+    "widget": "AnimatedList",
+    "group": "Lists",
+    "blurb": "Items animate in and out as your array changes.",
+    "code": "<AnimatedList height={220}>\n  <For each={items()}>\n    {(t) => <Box padding={12} background=\"#FFFFFFFF\" cornerRadius={12}>\n      <Text label={t} fontSize={14} color=\"#FF1C1C1E\" /></Box>}\n  </For>\n</AnimatedList>",
+    "img": "../assets/components/27-animatedlist.png"
+  },
+  {
+    "name": "Dismissible",
+    "widget": "Dismissible",
+    "group": "Lists",
+    "blurb": "Swipe a row away; onDismiss removes it from your data.",
+    "code": "<Dismissible onDismiss={() => remove(item.id)}>\n  <Box padding={14} background=\"#FFFFFFFF\" cornerRadius={12}>\n    <Text label=\"Swipe me away\" fontSize={14} color=\"#FF1C1C1E\" />\n  </Box>\n</Dismissible>",
+    "img": "../assets/components/28-dismissible.png"
+  },
+  {
+    "name": "Tabs",
+    "widget": "NavigationBar + IndexedStack",
+    "group": "Navigation",
+    "blurb": "Bottom tab navigation; every tab stays mounted (state survives switching).",
+    "code": "<Tabs activeTab={tab()} onChange={setTab} height=\"fill\">\n  <Tab title=\"Home\" icon=\"grid\"><Home /></Tab>\n  <Tab title=\"Search\" icon=\"explore\"><Search /></Tab>\n  <Tab title=\"Profile\" icon=\"storage\"><Profile /></Tab>\n</Tabs>",
+    "img": "../assets/components/29-tabs.png"
+  },
+  {
+    "name": "ExpansionTile",
+    "widget": "ExpansionTile",
+    "group": "Navigation",
+    "blurb": "Collapsible section; the host animates open/close.",
+    "code": "<ExpansionTile title=\"Advanced settings\">\n  <Box padding={14}>\n    <Text label=\"Hidden until expanded.\" fontSize={13} />\n  </Box>\n</ExpansionTile>",
+    "img": "../assets/components/30-expansiontile.png"
+  },
+  {
+    "name": "SliverAppBar",
+    "widget": "CustomScrollView + SliverAppBar",
+    "group": "Navigation",
+    "blurb": "Collapsing header inside a sliver scroll — pinned, floating, or both.",
+    "code": "<CustomScrollView height={320}>\n  <SliverAppBar title=\"Collapsing\" height={120} sliverMode=\"pinned\" />\n  <SliverList>\n    <For each={rows}>{(r) => <ListTile title={r} />}</For>\n  </SliverList>\n</CustomScrollView>",
+    "img": "../assets/components/31-sliverappbar.png"
+  },
+  {
+    "name": "BottomSheet",
+    "widget": "DraggableScrollableSheet",
+    "group": "Navigation",
+    "blurb": "Drag-resizable sheet anchored to the bottom of a Stack.",
+    "code": "<Stack width=\"fill\" height={340}>\n  <Box width=\"fill\" height={340} background=\"#FF0A84FF\" cornerRadius={16} />\n  <BottomSheet initialSize={0.45} minSize={0.2} maxSize={0.9}>\n    <Column padding={16} gap={8} background=\"#FFFFFFFF\">\n      <Text label=\"Drag me up\" fontSize={15} fontWeight={700} />\n    </Column>\n  </BottomSheet>\n</Stack>",
+    "img": "../assets/components/32-bottomsheet.png"
+  },
+  {
+    "name": "BackdropFilter",
+    "widget": "BackdropFilter",
+    "group": "Effects",
+    "blurb": "Frosted-glass blur over whatever is behind it in a Stack.",
+    "code": "<Stack width=\"fill\" height={200}>\n  {/* colorful content… */}\n  <Box top={50} left={40} right={40} height={100}>\n    <BackdropFilter blurRadius={14}>\n      <Text label=\"frosted\" fontSize={16} />\n    </BackdropFilter>\n  </Box>\n</Stack>",
+    "img": "../assets/components/33-backdropfilter.png"
+  },
+  {
+    "name": "InteractiveViewer",
+    "widget": "InteractiveViewer",
+    "group": "Effects",
+    "blurb": "Pinch-zoom and pan around a child.",
+    "code": "<InteractiveViewer minScale={0.5} maxScale={4}>\n  <Image src=\"…\" width=\"fill\" height={220} />\n</InteractiveViewer>",
+    "img": "../assets/components/34-interactiveviewer.png"
+  },
+  {
+    "name": "CrossFade",
+    "widget": "AnimatedSwitcher",
+    "group": "Effects",
+    "blurb": "Cross-fades between children when the content swaps.",
+    "code": "<CrossFade>\n  {day() ? <SunCard /> : <MoonCard />}\n</CrossFade>",
+    "img": "../assets/components/35-crossfade.png"
+  },
+  {
+    "name": "DragItem & DropZone",
+    "widget": "Draggable + DragTarget",
+    "group": "Effects",
+    "blurb": "Native drag-and-drop; the drop zone receives the item id.",
+    "code": "<DragItem dragData=\"card-1\">\n  <Box padding={14} background=\"#FFFFFFFF\" cornerRadius={12}>\n    <Text label=\"Drag me\" fontSize={14} />\n  </Box>\n</DragItem>\n<DropZone onDrop={(id) => setDropped(id)}>\n  <Box padding={24} borderWidth={2} borderColor=\"#FF0A84FF\" cornerRadius={12}>\n    <Text label={dropped() ?? 'Drop here'} fontSize={14} />\n  </Box>\n</DropZone>",
+    "img": "../assets/components/36-dragitem-dropzone.png"
+  }
+]

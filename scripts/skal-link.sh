@@ -122,6 +122,16 @@ if [[ "${PLATFORM}" == "all" || "${PLATFORM}" == "ios" ]]; then
       cp "${SIM_LIB}" "${APP_ROOT}/ios/Frameworks/iphonesimulator/libskal.dylib"
       did_anything=1
     fi
+
+    # `flutter create` projects don't embed libskal into the .app — same
+    # story as macOS above. Inject the copy build phase (idempotent); it
+    # resolves device vs simulator via $(PLATFORM_NAME) at build time.
+    PBXPROJ_IOS="${APP_ROOT}/ios/Runner.xcodeproj/project.pbxproj"
+    if [[ -f "${PBXPROJ_IOS}" ]]; then
+      echo "→ ensuring libskal embed build phase in ios/Runner.xcodeproj"
+      python3 "${SCRIPT_DIR}/embed-libskal-macos.py" "${PBXPROJ_IOS}" \
+        "${SCRIPT_DIR}/embed-libskal-ios.phase.pbxproj"
+    fi
   elif [[ "${PLATFORM}" == "ios" ]]; then
     echo "error: ${APP_ROOT}/ios missing — run 'flutter create --platforms ios .' first" >&2
     exit 1

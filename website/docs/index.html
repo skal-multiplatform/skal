@@ -48,7 +48,7 @@
     </ul>
 
     <h2>Create an app</h2>
-    <pre class="code"><span class="cm">$</span> npx skal create my-app
+    <pre class="code"><span class="cm">$</span> npm create skal my-app
 <span class="cm">$</span> cd my-app</pre>
     <p>The scaffold is a complete, runnable project:</p>
     <pre class="code">my-app/
@@ -60,11 +60,13 @@
 └── package.json         <span class="cm"># dev / build / test scripts</span></pre>
 
     <h2>Run it</h2>
-    <pre class="code"><span class="cm">$</span> skal dev macos       <span class="cm"># fastest loop for UI work</span>
+    <pre class="code"><span class="cm">$</span> npm i -g @skal/cli   <span class="cm"># once — or use `bun run dev:&lt;target&gt;` directly</span>
+
+<span class="cm">$</span> skal dev macos       <span class="cm"># fastest loop for UI work</span>
 <span class="cm">$</span> skal dev android     <span class="cm"># boots an emulator automatically if none is attached</span>
 <span class="cm">$</span> skal dev ios         <span class="cm"># iOS Simulator</span>
 <span class="cm">$</span> skal dev web         <span class="cm"># Solid → DOM at localhost:5173</span></pre>
-    <p><code>skal dev</code> builds the JS bundle, launches the platform host, and starts the hot-reload server: save any file under <code>src/</code> and the running app re-evaluates the new bundle in place — <a href="tooling.html">navigation and hot state survive</a>.</p>
+    <p><code>skal dev</code> builds the JS bundle and launches the platform host. Add <code>--hot</code> and the hot-reload server pushes every save under <code>src/</code> straight into the running app — <a href="tooling.html">navigation and hot state survive</a>.</p>
 
     <div class="callout">🍻 <b>First run is slower.</b> The platform host compiles once per target (normal Flutter behavior). Every run after that is seconds.</div>
 
@@ -85,10 +87,10 @@
     <p>When a signal changes, Solid updates exactly the widgets that read it — no virtual DOM, no reconciliation pass. The change crosses to Flutter as a handful of binary ops in shared memory. See <a href="components.html">Components</a> for the full widget set.</p>
 
     <h2>Ship it</h2>
-    <pre class="code"><span class="cm">$</span> skal build android --release   <span class="cm"># signed APK, JSC bytecode cache baked in</span>
-<span class="cm">$</span> skal build ios --release       <span class="cm"># .ipa for TestFlight</span>
-<span class="cm">$</span> skal build macos --release
-<span class="cm">$</span> skal build web --release       <span class="cm"># static site bundle</span></pre>
+    <pre class="code"><span class="cm">$</span> skal build android   <span class="cm"># release APK, JSC bytecode cache baked in</span>
+<span class="cm">$</span> skal build ios       <span class="cm"># release build for TestFlight</span>
+<span class="cm">$</span> skal build macos
+<span class="cm">$</span> skal build web       <span class="cm"># static site bundle</span></pre>
     <p>Release builds compile your bundle to JavaScriptCore bytecode, so production cold starts skip the JS parser entirely — that's the <a href="../#performance">36 ms first-eval</a>.</p>
 
     <h2>Where next</h2>

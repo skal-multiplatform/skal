@@ -16,6 +16,7 @@
     "build:web-flutter": "bun run build:web-flutter-js && cd flutter-host && flutter build web --wasm --target lib/main_web.dart",
 
     "_web": "// ── Web preview (DOM via skal/renderer-web) ────────────",
+    "build:web:prerender": "bunx vite build --config vite.config.web.js --base=./ && bun ../../scripts/prerender-web.js dist",
     "dev:web": "vite --config vite.config.web.js",
     "build:web": "vite build --config vite.config.web.js",
 

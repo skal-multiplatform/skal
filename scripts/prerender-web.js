@@ -49,6 +49,8 @@ async function renderRoute(route) {
     ResizeObserver: win.ResizeObserver ?? class { observe() {} unobserve() {} disconnect() {} },
     IntersectionObserver: win.IntersectionObserver ?? class { observe() {} unobserve() {} disconnect() {} },
     getComputedStyle: win.getComputedStyle?.bind(win),
+    matchMedia: win.matchMedia?.bind(win) ?? (() => ({ matches: false, addEventListener() {}, removeEventListener() {} })),
+    MutationObserver: win.MutationObserver ?? class { observe() {} disconnect() {} },
     __skalPrerender: true,
   };
   for (const [k, v] of Object.entries(expose)) { saved[k] = g[k]; g[k] = v; }
@@ -80,7 +82,11 @@ for (const route of routes) {
     /<div id="app">\s*<\/div>/,
     `<div id="app" data-skal-prerender>${appHtml}</div>`,
   );
-  if (headExtra) html = html.replace('</head>', `${headExtra}\n</head>`);
+  if (headExtra) {
+    // The route's <Head> owns the title — drop the shell's static one.
+    if (/<title>/.test(headExtra)) html = html.replace(/<title>[^<]*<\/title>\s*/, '');
+    html = html.replace('</head>', `${headExtra}\n</head>`);
+  }
   // Clear the prerendered tree right before the (deferred) module
   // bundle re-renders — crawlers and no-JS keep the content; browsers
   // swap it for the live app. Adopt-mode hydration replaces this in v2.
@@ -89,8 +95,12 @@ for (const route of routes) {
     `<script>document.getElementById('app').innerHTML=''</script>\n</body>`,
   );
 
-  const out = route === '/' ? join(dist, 'index.html') : join(dist, route.replace(/^\//, ''), 'index.html');
-  if (route !== '/') mkdirSync(join(dist, route.replace(/^\//, '')), { recursive: true });
+  // "/" and "/docs/" → <dir>/index.html; "/docs/state.html" → that file.
+  const rel = route.replace(/^\//, '');
+  const out = route.endsWith('.html')
+    ? join(dist, rel)
+    : join(dist, rel, 'index.html');
+  mkdirSync(join(out, '..'), { recursive: true });
   writeFileSync(out, html);
   console.log(`✓ prerendered ${route} → ${out} (${appHtml.length} bytes of markup)`);
 }

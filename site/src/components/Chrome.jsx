@@ -1,0 +1,95 @@
+// Chrome.jsx — the site's shared shell: top nav, docs sidebar, footers.
+// Real Solid components (the article bodies start as extracted HTML
+// islands — see src/content/).
+
+export function TopNav(props) {
+  const home = props.docs ? '../' : './';
+  return (
+    <nav class="top">
+      <div class="wrap">
+        <a class="logo" href={home}>
+          <img class="mark" src="/assets/skal-logo.png" alt="Skal"
+               style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em" />
+          skal<span class="dot">.</span>
+        </a>
+        <span class="pill">{props.docs ? 'docs' : 'v0.1.0'}</span>
+        <div class="links">
+          {props.docs ? (
+            <>
+              <a href="./" style="color: var(--text)">Docs</a>
+              <a href="../#performance">Performance</a>
+            </>
+          ) : (
+            <>
+              <a href="docs/">Docs</a>
+              <a href="#components">Components</a>
+              <a href="#performance">Performance</a>
+              <a href="#compare">Compare</a>
+            </>
+          )}
+          <a class="gh" href="https://github.com/skal-multiplatform/skal"><span class="star">★</span> GitHub</a>
+        </div>
+      </div>
+    </nav>
+  );
+}
+
+const SIDEBAR = [
+  ['Start', [['Getting Started', './', 'docs-index']]],
+  ['Concepts', [
+    ['Architecture', 'architecture.html', 'architecture'],
+    ['Components', 'components.html', 'components'],
+    ['State & the Store', 'state.html', 'state'],
+  ]],
+  ['Native', [['Wrapping pub.dev packages', 'native.html', 'native']]],
+  ['Workflow', [
+    ['Hot reload & dev loop', 'tooling.html', 'tooling'],
+    ['Testing', 'testing.html', 'testing'],
+  ]],
+];
+
+export function Sidebar(props) {
+  return (
+    <aside class="side">
+      {SIDEBAR.map(([group, items]) => (
+        <>
+          <div class="grp">{group}</div>
+          {items.map(([label, href, key]) => (
+            <a href={href} class={props.active === key ? 'on' : undefined}>{label}</a>
+          ))}
+        </>
+      ))}
+    </aside>
+  );
+}
+
+export function DocsFooter() {
+  return (
+    <footer>
+      <div class="wrap">
+        <div>
+          <span class="logo" style="font-size:16px">skal<span class="dot">.</span></span>
+          <span style="margin-left:10px;">Skål. 🍻</span>
+        </div>
+        <div style="display:flex; gap:22px;">
+          <a href="./">Docs</a>
+          <a href="https://github.com/skal-multiplatform/skal">GitHub</a>
+          <a href="https://github.com/skal-multiplatform/skal/blob/main/LICENSE">Apache-2.0</a>
+        </div>
+      </div>
+    </footer>
+  );
+}
+
+export function DocsPage(props) {
+  return (
+    <>
+      <TopNav docs />
+      <div class="wrap docs">
+        <Sidebar active={props.active} />
+        <article class="doc" innerHTML={props.content} />
+      </div>
+      <DocsFooter />
+    </>
+  );
+}

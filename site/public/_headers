@@ -15,6 +15,17 @@
 # Configuration) OVERRIDES these headers for standard web assets. Set it to
 # "Respect Existing Headers" for the values below to take effect on JS/CSS/etc.
 
+# Agent-facing markdown (docs mirrors + llms.txt) must declare UTF-8 —
+# without a charset, browsers decode text/* as Latin-1 and the em-dashes
+# mojibake. No Cache-Control here: these change with the docs, so they
+# keep the Pages default (max-age=0, must-revalidate).
+/docs/*.md
+  Content-Type: text/markdown; charset=utf-8
+/llms.txt
+  Content-Type: text/plain; charset=utf-8
+/llms-full.txt
+  Content-Type: text/plain; charset=utf-8
+
 # Static site assets: content-hashed JS bundle, plus fixed-name CSS, fonts, and
 # component screenshots. One day of browser cache.
 /assets/*

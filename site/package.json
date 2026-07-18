@@ -6,7 +6,8 @@
   "description": "skal.dev — the website, as a Skal web app (Shape E prerendered).",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && bun run assets && bun run prerender",
+    "build": "vite build && bun run assets && bun run prerender && bun run md",
+    "md": "bun scripts/build-md.mjs",
     "assets": "cp -R ../website/assets/. dist/assets/ && ([ -d ../website/gallery ] && cp -R ../website/gallery dist/gallery || true) && ([ -d ../website/gallery-flutter ] && cp -R ../website/gallery-flutter dist/gallery-flutter || true)",
     "prerender": "bun ../scripts/prerender-web.js dist / /docs/ /docs/architecture.html /docs/components.html /docs/state.html /docs/native.html /docs/tooling.html /docs/testing.html",
     "preview": "python3 -m http.server 8081 --directory dist"
@@ -15,6 +16,8 @@
     "solid-js": "^1.9.12"
   },
   "devDependencies": {
+    "turndown": "^7",
+    "turndown-plugin-gfm": "^1",
     "vite": "^8.0.11",
     "vite-plugin-solid": "^2.11.12"
   }

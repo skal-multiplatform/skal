@@ -53,6 +53,36 @@ export function initSiteBehaviors() {
     });
   });
 
+  /* ── copy-page-as-markdown (docs "Copy for AI") ───────────────── */
+  document.querySelectorAll('[data-copy-md]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const url = btn.dataset.copyMd;
+      const text = () => fetch(url).then(r => {
+        if (!r.ok) throw new Error(String(r.status));
+        return r.text();
+      });
+      try {
+        // Safari invalidates the user-activation token across awaits —
+        // the promise-bearing ClipboardItem form is the sanctioned way
+        // to copy fetched content from a click.
+        if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+          await navigator.clipboard.write([new ClipboardItem({
+            'text/plain': text().then(t => new Blob([t], { type: 'text/plain' })),
+          })]);
+        } else {
+          await navigator.clipboard.writeText(await text());
+        }
+        const was = btn.textContent;
+        btn.textContent = 'copied ✓';
+        setTimeout(() => { btn.textContent = was; }, 1400);
+      } catch {
+        // Clipboard unavailable (permission, plain-http, …) — open the
+        // raw markdown instead so the click always does something.
+        window.location.href = url;
+      }
+    });
+  });
+
   /* ── live phone demo: the hero code drives the mockup ─────────── */
   const label = document.getElementById('demo-label');
   const tapBtn = document.getElementById('demo-tap');

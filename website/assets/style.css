@@ -472,3 +472,19 @@ article.doc .table-scroll { margin: 20px 0; }
   border-radius: 999px; cursor: pointer; vertical-align: 2px;
 }
 .comp h3 .run-live:hover { background: rgba(70, 224, 177, .12); }
+
+/* ── docs → markdown tools ("Copy for AI") ───────────────────────── */
+.doc-col { min-width: 0; }
+.md-tools {
+  display: flex; gap: 8px; justify-content: flex-end;
+  margin-bottom: -34px; position: relative; z-index: 2;
+}
+.md-tools .mdt {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  background: rgba(255,255,255,.05); border: 1px solid var(--line);
+  border-radius: 7px; padding: 4px 9px; cursor: pointer;
+  text-decoration: none; line-height: 1.5;
+  transition: color .2s, border-color .2s;
+}
+.md-tools .mdt:hover { color: var(--accent); border-color: var(--accent-dim); }
+@media (max-width: 880px) { .md-tools { margin-bottom: 0; } }

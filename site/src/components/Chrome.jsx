@@ -82,12 +82,22 @@ export function DocsFooter() {
 }
 
 export function DocsPage(props) {
+  // Every docs page has a markdown mirror at the same URL (built by
+  // scripts/build-md.mjs) — the toolbar feeds it to AI agents.
+  const md = (props.active === 'docs-index' ? 'index' : props.active) + '.md';
   return (
     <>
       <TopNav docs />
       <div class="wrap docs">
         <Sidebar active={props.active} />
-        <article class="doc" innerHTML={props.content} />
+        <div class="doc-col">
+          <div class="md-tools">
+            <button class="mdt" data-copy-md={md}
+                    title="Copy this page as Markdown — paste into any AI agent">⧉ Copy for AI</button>
+            <a class="mdt" href={md} title="This page as raw Markdown">.md</a>
+          </div>
+          <article class="doc" innerHTML={props.content} />
+        </div>
       </div>
       <DocsFooter />
     </>

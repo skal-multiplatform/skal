@@ -53,6 +53,7 @@ import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
+import 'package:flutter/rendering.dart' show RenderProxyBox;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
@@ -1816,7 +1817,12 @@ Widget _buildListView(NodeState n, SkalBridge bridge) {
   final axis = _axisFor(n.getPropU32(propAxis, 0));
   final width = n.getPropU32(propWidth, kNoValue);
   final height = n.getPropU32(propHeight, kNoValue);
-  final count = n.childCount;
+  // Builder mode (`count` + `renderItem` on the JSX side): rows are
+  // pulled on demand through evRowRequest and live in the sparse
+  // `builderRows` map — `childCount` stays 0. Children mode otherwise.
+  final builderCount = n.props[propItemCount];
+  final isBuilder = builderCount != null && n.onRowRequestHandlerId != 0;
+  final count = isBuilder ? builderCount : n.childCount;
 
   // Outer Padding to match the default 16dp content padding column has,
   // since DecoratedBox-via-_applyColdVisual would inset bg inside any
@@ -1846,8 +1852,10 @@ Widget _buildListView(NodeState n, SkalBridge bridge) {
                 ? SizedBox(width: gap.toDouble())
                 : SizedBox(height: gap.toDouble());
           }
+          final row = i ~/ 2;
+          if (isBuilder) return _buildBuilderRow(n, bridge, row, axis);
           // O(1) on list-backed ListChildList for the visible window.
-          final childId = n.childAt(i ~/ 2);
+          final childId = n.childAt(row);
           return SkalNode(
             nodeId: childId,
             bridge: bridge,
@@ -1885,6 +1893,109 @@ Widget _buildListView(NodeState n, SkalBridge bridge) {
   // when set, and `kNoValue` leaves the scroller unconstrained.
   inner = _applyHeight(height, _applyWidth(width, inner));
   return _hotLayer(node: n, child: inner);
+}
+
+/// One slot of a builder-mode `<listView>`: the materialized row when
+/// JS has delivered it, else an extent-correct placeholder plus a row
+/// request. Placeholders reuse the row's last measured extent when
+/// scrolling back through evicted territory (no jumping); never-seen
+/// rows use a constant estimate that Flutter's scroll correction absorbs.
+Widget _buildBuilderRow(NodeState n, SkalBridge bridge, int row, Axis axis) {
+  final childId = n.builderRows?[row];
+  if (childId == null) {
+    _noteMissingRow(n, bridge, row);
+    final extent = n.rowExtents?[row] ?? _kRowExtentEstimate;
+    return axis == Axis.horizontal
+        ? SizedBox(width: extent)
+        : SizedBox(height: extent);
+  }
+  return _RowExtentProbe(
+    list: n,
+    index: row,
+    axis: axis,
+    child: SkalNode(
+      nodeId: childId,
+      bridge: bridge,
+      key: ValueKey<int>(childId),
+    ),
+  );
+}
+
+/// Placeholder extent for a never-measured row. Only matters for the
+/// brief window before the real row lays out; Flutter corrects the
+/// scroll geometry as measured extents land.
+const double _kRowExtentEstimate = 48.0;
+
+/// Record a missing builder row and schedule (at most one per frame per
+/// list) an evRowRequest carrying the EXPLICIT set of missing indices
+/// this frame's layout touched — never a (min,max) span, so two distant
+/// misses (a kept-alive far row + the viewport) don't make JS
+/// materialize the hundreds of thousands of rows between them. The set
+/// is frame-scoped: a still-missing row is simply re-requested on the
+/// next rebuild, so nothing gets permanently stuck.
+void _noteMissingRow(NodeState n, SkalBridge bridge, int row) {
+  (n.pendingRows ??= <int>{}).add(row);
+  if (n.rowRequestScheduled) return;
+  n.rowRequestScheduled = true;
+  SchedulerBinding.instance.addPostFrameCallback((_) {
+    n.rowRequestScheduled = false;
+    final pending = n.pendingRows;
+    n.pendingRows = null;
+    // Bail if the list was removed between scheduling and now — removal
+    // zeroes the handler id (see `_removeSubtree`).
+    if (pending == null || pending.isEmpty || n.onRowRequestHandlerId == 0) {
+      return;
+    }
+    bridge.dispatchEventTuple(
+      n.onRowRequestHandlerId,
+      pending.toList(growable: false),
+      eventKind: evRowRequest,
+    );
+  });
+}
+
+/// Measures a materialized builder row's laid-out main-axis extent into
+/// the list's `rowExtents` cache so a revisited row's placeholder is
+/// extent-perfect. A RenderProxyBox — zero visual effect.
+class _RowExtentProbe extends SingleChildRenderObjectWidget {
+  const _RowExtentProbe({
+    required this.list,
+    required this.index,
+    required this.axis,
+    required Widget child,
+  }) : super(child: child);
+
+  final NodeState list;
+  final int index;
+  final Axis axis;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderRowExtentProbe(list, index, axis);
+
+  @override
+  void updateRenderObject(
+      BuildContext context, _RenderRowExtentProbe renderObject) {
+    renderObject
+      ..list = list
+      ..index = index
+      ..axis = axis;
+  }
+}
+
+class _RenderRowExtentProbe extends RenderProxyBox {
+  _RenderRowExtentProbe(this.list, this.index, this.axis);
+
+  NodeState list;
+  int index;
+  Axis axis;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    final extent = axis == Axis.horizontal ? size.width : size.height;
+    (list.rowExtents ??= <int, double>{})[index] = extent;
+  }
 }
 
 /// Drag-and-drop reorderable list — backed by `ReorderableListView.builder`.

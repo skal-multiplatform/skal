@@ -47,6 +47,11 @@ void main() {
       expect(opLog, 0x28);
       expect(opResetRootSubtree, 0x29);
     });
+
+    test('builder-mode listView opcodes', () {
+      expect(opListSetRow, 0x2A);
+      expect(opListClearRow, 0x2B);
+    });
   });
 
   group('wire constants — widget types', () {
@@ -70,6 +75,7 @@ void main() {
       expect(propHeight, 0x06);
       expect(propAlignment, 0x08);
       expect(propGap, 0x09);
+      expect(propItemCount, 0x11);
     });
 
     test('visual tier (0x20-0x3F)', () {

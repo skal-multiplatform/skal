@@ -262,7 +262,27 @@ export const ScrollView = makeMissingMacroComponent('ScrollView');
  *
  * `scrollbar` adds an always-visible, draggable scrollbar (desktop).
  *
- * @type {Component<BaseProps & { scrollbar?: boolean }>}
+ * **Builder mode** — for huge lists, skip children entirely and let the
+ * host pull rows on demand:
+ *
+ *     <ListView count={feed().length}
+ *               renderItem={(i) => <TweetCard tweet={feed()[i]} />} />
+ *
+ * Only the visible window (plus overscan) exists AT ALL — on both the
+ * JS and host side. Rows materialize when scrolled toward, far-away
+ * rows are evicted, and memory stays O(window) no matter the count:
+ * 1,000,000 rows costs the same as 100. Signals read inside
+ * `renderItem` keep updating their row; each row disposes cleanly on
+ * eviction. Row heights need no declaration — measured extents are
+ * cached per row (scrolling back is placeholder-accurate) and unseen
+ * rows use a self-tuning estimate. `renderItem` must return a single
+ * element (no fragments). `count` + `renderItem` are mutually
+ * exclusive with children — when both are present, children are
+ * ignored. On the DOM (web) target rows render eagerly, capped at
+ * 1500, since the browser culls offscreen paint itself.
+ *
+ * @type {Component<BaseProps & { scrollbar?: boolean, count?: number,
+ *   renderItem?: (index: number) => JSX.Element }>}
  */
 export const ListView = makeMissingMacroComponent('ListView');
 

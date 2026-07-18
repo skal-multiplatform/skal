@@ -507,6 +507,36 @@ class SkalBridge {
           }
           break;
 
+        case opListSetRow:
+          // Builder-mode row attachment: a = list id, b = virtual index,
+          // c = subtree-root id. Sparse map, not the children list.
+          final rowList = ns[a];
+          final rowChild = ns[c];
+          if (rowList != null && rowChild != null) {
+            final rows = rowList.builderRows ??= <int, int>{};
+            final old = rows[b];
+            if (old != null && old != c) _removeSubtree(old, ns);
+            rows[b] = c;
+            rowChild.parent = a;
+            rowList.coldDirty = true;
+            touched.add(a);
+          }
+          break;
+
+        case opListClearRow:
+          // Builder-mode row eviction: tear the row's subtree down here
+          // (JS does NOT also send opRemoveNode for evicted rows).
+          final clearList = ns[a];
+          if (clearList != null) {
+            final evicted = clearList.builderRows?.remove(b);
+            if (evicted != null) {
+              _removeSubtree(evicted, ns);
+              clearList.coldDirty = true;
+              touched.add(a);
+            }
+          }
+          break;
+
         case opInsertBefore:
           // Insert-before-self ("X before X") is a no-op — X stays
           // put. A reconciler may emit it for an adjacent swap;
@@ -566,6 +596,14 @@ class SkalBridge {
             node.coldDirty = true;
             touched.add(a);
             propWrites++;
+            // A builder list's virtual count changed — drop cached row
+            // extents at indices that no longer exist (a shrink/dataset
+            // swap) so stale heights don't size the new data's
+            // placeholders. Indices still in range keep their measured
+            // extents (valid on a pure grow/append).
+            if (b == propItemCount) {
+              node.rowExtents?.removeWhere((k, _) => k >= c);
+            }
             // Stack-positioning props (top/right/bottom/left) live on
             // the CHILD but are consumed by the parent `<stack>`'s
             // builder, which wraps the child in a Positioned. Re-dirty
@@ -652,6 +690,8 @@ class SkalBridge {
               node.onHoverHandlerId = c;
             } else if (b == evKey) {
               node.onKeyHandlerId = c;
+            } else if (b == evRowRequest) {
+              node.onRowRequestHandlerId = c;
             }
             node.coldDirty = true;
             touched.add(a);
@@ -1076,6 +1116,14 @@ class SkalBridge {
       // DFS so removing the list doesn't leak its leaving subtrees.
       final leaving = node.leavingChildren;
       if (leaving != null) stack.addAll(leaving.keys);
+      // Builder-mode rows live in the sparse index map, not childIds —
+      // fold them in too so removing a builder list (or an ancestor,
+      // incl. the hot-reload root sweep) doesn't leak its window. Zero
+      // the request handler so a post-frame row request already queued
+      // for this list bails instead of dispatching to a dead node.
+      final builderRows = node.builderRows;
+      if (builderRows != null) stack.addAll(builderRows.values);
+      node.onRowRequestHandlerId = 0;
       node.clearChildren();
       ns.remove(cur);
       node.dispose();

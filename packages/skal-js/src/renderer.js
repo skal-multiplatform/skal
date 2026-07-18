@@ -13,7 +13,7 @@
 // our `effect`/`memo` exports with createSignal & friends from solid-js.
 
 import { createRenderer } from 'solid-js/universal';
-import { createEffect } from 'solid-js';
+import { createEffect, createRoot, getOwner, onCleanup } from 'solid-js';
 import * as B from './bridge.js';
 
 // Map JSX tag → widget type opcode. Tag names mirror Flutter widget
@@ -468,6 +468,7 @@ function _setCustomProperty(node, name, value) {
   if (t === 'function') {
     const handlerId = B.newHandlerId(value);
     B.bindCustomHandler(node.id, name, handlerId);
+    if (getOwner()) onCleanup(() => B.releaseHandlerId(handlerId));
     B.scheduleCommit();
     return;
   }
@@ -518,6 +519,148 @@ function releaseSubtreeDiffCache(root) {
       c = c.nextSibling;
     }
   }
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Builder-mode <listView count={N} renderItem={(i) => …}> — pull-based
+// rows. The host renders extent-correct placeholders for indices JS
+// hasn't materialized and sends an EV_ROW_REQUEST carrying the explicit
+// list of missing indices a frame's layout touched; we materialize each
+// (plus a small overscan), attach it via LIST_SET_ROW, and evict rows
+// far outside the requested span. Memory is O(window), not O(count).
+//
+// Each row is a wrapper node whose content is mounted with Solid's
+// insert() rather than a hand-rolled unwrap. That buys three things:
+//   • fragments/arrays render in full instead of leaking their tail
+//     nodes (insert manages every child of the wrapper),
+//   • the row is reactive — a renderItem that read a still-loading
+//     signal re-renders when the data arrives (no permanent blank), and
+//   • a throwing renderItem is contained to its own row.
+// Each row owns a createRoot so eviction disposes it — and its bound
+// handlers (released via onCleanup) — cleanly.
+// ───────────────────────────────────────────────────────────────────────
+
+// Rows materialized around each requested index. The host's own cache
+// extent already reaches past the viewport; this margin buys the next
+// fling frame before a request round-trips.
+const ROW_OVERSCAN = 8;
+// Materialized rows kept each side of the requested span before
+// eviction. Because we only ever create rows AT requested indices (never
+// the gap between two distant ones), a wide keep span still retains only
+// the handful of rows that actually exist there.
+const ROW_KEEP_RADIUS = 300;
+
+function _installRowBuilder(node, fn) {
+  const swapped = node._skalRenderItem && node._skalRenderItem !== fn;
+  node._skalRenderItem = fn;
+  if (node._skalRows) {
+    // renderItem swapped reactively — drop materialized rows so they
+    // re-request and re-render with the new function (children mode
+    // re-renders every child on an equivalent swap; match that).
+    if (swapped) _evictAllRows(node);
+    return;
+  }
+  node._skalRows = new Map();
+  const handlerId = B.newHandlerId((...indices) => _fillRows(node, indices));
+  node._skalRowHandlerId = handlerId;
+  B.bindHandler(node.id, B.EV_ROW_REQUEST, handlerId);
+  // Tie teardown to the owner active while <ListView> renders. Builder
+  // rows are attached via LIST_SET_ROW (a bridge op), NOT insertNode, so
+  // they are invisible to Solid's subtree walk — and removeNode only
+  // fires for the root of a removed subtree, so an ancestor unmount
+  // never reaches a nested list. onCleanup fires on direct OR ancestor
+  // disposal, making it the reliable teardown; the removeNode hook is a
+  // redundant fast path for the direct case.
+  if (getOwner()) onCleanup(() => _teardownRowBuilder(node));
+  B.scheduleCommit();
+}
+
+function _materializeRow(node, i) {
+  const rows = node._skalRows;
+  createRoot((dispose) => {
+    const wrapper = createElement('box');
+    insert(wrapper, () => {
+      try {
+        return node._skalRenderItem(i);
+      } catch (e) {
+        B.recordHandlerError(e);
+        return null;
+      }
+    });
+    B.listSetRow(node.id, i, wrapper.id);
+    rows.set(i, { el: wrapper, dispose });
+  });
+}
+
+function _fillRows(node, indices) {
+  const rows = node._skalRows;
+  const count = node._skalRowCount | 0;
+  if (!node._skalRenderItem || !rows || count <= 0 || !indices.length) return;
+  // Materialize each requested index plus a small overscan. The host
+  // sends the explicit set of indices its layout touched this frame, so
+  // even when a kept-alive far row and the viewport are both missing we
+  // create O(requested) rows — never the span between them.
+  let minReq = Infinity;
+  let maxReq = -Infinity;
+  const want = new Set();
+  for (const raw of indices) {
+    const idx = raw | 0;
+    if (idx < 0 || idx >= count) continue;
+    if (idx < minReq) minReq = idx;
+    if (idx > maxReq) maxReq = idx;
+    const lo = Math.max(0, idx - ROW_OVERSCAN);
+    const hi = Math.min(count - 1, idx + ROW_OVERSCAN);
+    for (let i = lo; i <= hi; i++) want.add(i);
+  }
+  if (maxReq < 0) return;
+  for (const i of want) {
+    if (!rows.has(i)) _materializeRow(node, i);
+  }
+  // Evict rows far outside the requested span.
+  const keepLo = minReq - ROW_KEEP_RADIUS;
+  const keepHi = maxReq + ROW_KEEP_RADIUS;
+  for (const [i, row] of rows) {
+    if (i >= keepLo && i <= keepHi && i < count) continue;
+    rows.delete(i);
+    _disposeRow(node, i, row);
+  }
+  B.scheduleCommit();
+}
+
+function _disposeRow(node, index, row) {
+  // Order matters: LIST_CLEAR_ROW first (host tears down the subtree),
+  // then dispose — any OP_REMOVE_NODEs from inner cleanup then target
+  // already-removed ids and no-op host-side.
+  B.listClearRow(node.id, index);
+  releaseSubtreeDiffCache(row.el);
+  try { row.dispose(); } catch (_) { /* user cleanup threw — row is gone regardless */ }
+}
+
+function _evictAllRows(node) {
+  const rows = node._skalRows;
+  if (!rows) return;
+  for (const [i, row] of rows) _disposeRow(node, i, row);
+  rows.clear();
+  B.scheduleCommit();
+}
+
+function _teardownRowBuilder(node) {
+  const rows = node._skalRows;
+  if (!rows) return;
+  // Null the state FIRST so a row request still queued in the event ring
+  // (or a post-frame dispatch from the host) can't re-materialize onto a
+  // dead list: _fillRows / _materializeRow both guard on these.
+  node._skalRows = null;
+  node._skalRenderItem = null;
+  if (node._skalRowHandlerId) {
+    B.releaseHandlerId(node._skalRowHandlerId);
+    node._skalRowHandlerId = 0;
+  }
+  for (const row of rows.values()) {
+    releaseSubtreeDiffCache(row.el);
+    try { row.dispose(); } catch (_) { /* ignore */ }
+  }
+  rows.clear();
 }
 
 /**
@@ -615,8 +758,35 @@ const _renderer = createRenderer({
         };
         const handlerId = B.newHandlerId(wrapped);
         B.bindHandler(node.id, B.EV_REFRESH, handlerId);
+        if (getOwner()) onCleanup(() => B.releaseHandlerId(handlerId));
         B.scheduleCommit();
       }
+      return;
+    }
+    // Builder-mode <listView count={N} renderItem={(i) => …}> — see the
+    // row-builder block above. `count` is the virtual row count (rides
+    // PROP_ITEM_COUNT and is mirrored locally for clamping); a shrink
+    // immediately evicts materialized rows beyond the new count.
+    if (name === 'renderItem' && node.tag === 'listView') {
+      if (typeof value === 'function') _installRowBuilder(node, value);
+      return;
+    }
+    if (name === 'count' && node.tag === 'listView') {
+      const cnt = Math.max(0, value | 0);
+      const prev = node._skalRowCount | 0;
+      node._skalRowCount = cnt;
+      B.setPropU32(node.id, B.PROP_ITEM_COUNT, cnt);
+      // Only a SHRINK can strand rows (indices >= the new count); growth
+      // never evicts, so skip the O(rows) scan on the common append case.
+      const rows = node._skalRows;
+      if (rows && cnt < prev) {
+        for (const [i, row] of rows) {
+          if (i < cnt) continue;
+          rows.delete(i);
+          _disposeRow(node, i, row);
+        }
+      }
+      B.scheduleCommit();
       return;
     }
     // <canvas draw={(ctx) => …}> — record + ship the draw program.
@@ -655,6 +825,10 @@ const _renderer = createRenderer({
       if (typeof value === 'function') {
         const handlerId = B.newHandlerId(value);
         B.bindHandler(node.id, handlerKind, handlerId);
+        // Release the id when the owning scope disposes — otherwise the
+        // handlers map grows unbounded as builder-mode rows evict and
+        // re-materialize on scroll (and children leak on removal too).
+        if (getOwner()) onCleanup(() => B.releaseHandlerId(handlerId));
         B.scheduleCommit();
       }
       return;
@@ -855,6 +1029,9 @@ const _renderer = createRenderer({
   },
 
   removeNode(parent, node) {
+    // Builder-mode list going away — dispose its row roots first (the
+    // host's subtree removal below reaps the row nodes themselves).
+    if (node._skalRows) _teardownRowBuilder(node);
     B.writeOp(B.OP_REMOVE_NODE, node.id, 0, 0);
     // Release the diff cache row(s) for this node and any descendants
     // we know about. The host's _removeSubtree handles the

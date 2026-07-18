@@ -13,6 +13,7 @@
 // tree drives either Flutter-on-native or DOM-in-browser.
 
 import { createRenderer } from 'solid-js/universal';
+import { createRoot, getOwner, onCleanup } from 'solid-js';
 import {
   addFlutterView,
   removeFlutterView,
@@ -1096,6 +1097,98 @@ function warnOnce(tag) {
     `Custom widgets / Flutter plugins need the B.5 plugin host (WEB_SUPPORT_PLAN.md Phases 1–5).`);
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Builder-mode <listView count renderItem> — web fallback. The DOM
+// target has no pull-based row protocol (the browser culls offscreen
+// paint itself), so rows render EAGERLY up to a cap. Native virtualizes
+// the full count; a count above the cap warns once. Each row runs in
+// its own createRoot so signals inside renderItem stay live and
+// unmounting disposes cleanly.
+// ──────────────────────────────────────────────────────────────────────
+const WEB_BUILDER_ROW_CAP = 1500;
+let _warnedBuilderCap = false;
+
+// Tie builder teardown to the owner active while <ListView> renders, so
+// an ANCESTOR unmount (which only calls removeNode on the subtree root,
+// never the nested list) still disposes every row root. Armed once.
+function _armBuilderTeardown(node) {
+  if (node._skalBuilderTeardownArmed) return;
+  node._skalBuilderTeardownArmed = true;
+  if (getOwner()) onCleanup(() => _teardownBuilderRows(node));
+}
+
+function _scheduleBuilderSync(node) {
+  if (node._skalBuilderSyncQueued) return;
+  node._skalBuilderSyncQueued = true;
+  queueMicrotask(() => {
+    node._skalBuilderSyncQueued = false;
+    // The node may have been removed between scheduling and now —
+    // _teardownBuilderRows nulls _skalRenderItem, so _syncBuilderRows
+    // bails rather than rebuilding rows into a detached element.
+    _syncBuilderRows(node);
+  });
+}
+
+function _syncBuilderRows(node) {
+  const fn = node._skalRenderItem;
+  if (!fn) return;
+  const rows = node._skalRows || (node._skalRows = new Map());
+  const count = node._skalRowCount | 0;
+  const want = Math.min(count, WEB_BUILDER_ROW_CAP);
+  if (count > WEB_BUILDER_ROW_CAP && !_warnedBuilderCap) {
+    _warnedBuilderCap = true;
+    console.warn(
+      `skal-web: builder-mode <ListView> renders eagerly on the DOM target — ` +
+      `capped at ${WEB_BUILDER_ROW_CAP} of ${count} rows (native virtualizes the full count).`,
+    );
+  }
+  // Builder mode ignores JSX children (contract matches native, which
+  // reads builderRows and never the child list). Drop any child that
+  // isn't one of our row wrappers so web doesn't render children + rows.
+  for (let c = node.firstChild; c; ) {
+    const next = c.nextSibling;
+    if (!c._skalBuilderRow) node.removeChild(c);
+    c = next;
+  }
+  for (const [i, row] of rows) {
+    if (i < want) continue;
+    rows.delete(i);
+    try { row.el.remove(); } catch (_) { /* already detached */ }
+    try { row.dispose(); } catch (_) { /* user cleanup threw */ }
+  }
+  for (let i = 0; i < want; i++) {
+    if (rows.has(i)) continue;
+    createRoot((dispose) => {
+      // Wrapper + insert() mirrors the native renderer: fragments/null
+      // render correctly and the row is reactive, with no bare `Node`
+      // reference (absent under the happy-dom prerender harness).
+      const wrapper = document.createElement('div');
+      wrapper._skalBuilderRow = true;
+      insert(wrapper, () => {
+        try {
+          return fn(i);
+        } catch (e) {
+          try { console.error('skal:', e); } catch (_) { /* ignore */ }
+          return null;
+        }
+      });
+      node.appendChild(wrapper);
+      rows.set(i, { el: wrapper, dispose });
+    });
+  }
+}
+
+function _teardownBuilderRows(node) {
+  const rows = node._skalRows;
+  if (!rows) return;
+  node._skalRenderItem = null;
+  for (const row of rows.values()) {
+    try { row.dispose(); } catch (_) { /* ignore */ }
+  }
+  rows.clear();
+  node._skalRows = null;
+}
+
 const _renderer = createRenderer({
   createElement(tag) {
     const html = TAG_TO_HTML[tag];
@@ -1142,6 +1235,23 @@ const _renderer = createRenderer({
       if (name === 'props') {
         node._skalEmbedProps = value && typeof value === 'object' ? value : {};
         _scheduleEmbedSync(node);
+        return;
+      }
+    }
+
+    // Builder-mode <listView count renderItem> — web fallback (see the
+    // block above _renderer). Both props coalesce one sync per tick.
+    if (tag === 'listView') {
+      if (name === 'renderItem') {
+        node._skalRenderItem = typeof value === 'function' ? value : null;
+        _armBuilderTeardown(node);
+        _scheduleBuilderSync(node);
+        return;
+      }
+      if (name === 'count') {
+        node._skalRowCount = Math.max(0, value | 0);
+        _armBuilderTeardown(node);
+        _scheduleBuilderSync(node);
         return;
       }
     }
@@ -1313,6 +1423,7 @@ const _renderer = createRenderer({
     if (node._skalTag === 'flutterEmbed') {
       _teardownFlutterEmbed(node);
     }
+    if (node._skalRows) _teardownBuilderRows(node);
   },
 
   isTextNode(node) { return node.nodeType === 3; },

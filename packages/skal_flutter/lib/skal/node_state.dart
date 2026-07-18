@@ -125,6 +125,35 @@ class NodeState {
   /// Map.clear cost. Subtree-teardown path; not per-frame.
   void clearChildren() => _children.clear();
 
+  // ── Builder-mode `<listView>` (propItemCount + evRowRequest) ───────
+  // All nullable/zero-cost — only lists that actually opt into builder
+  // mode allocate them. Rows live HERE, keyed by index, instead of in
+  // [_children]: the map is sparse (only the materialized window), and
+  // eviction is a key removal + subtree teardown.
+
+  /// Materialized rows: virtual index → subtree-root node id. Null on
+  /// every non-builder node.
+  Map<int, int>? builderRows;
+
+  /// Missing indices this frame's layout touched, dispatched (deduped)
+  /// as ONE evRowRequest per frame. Frame-scoped — cleared on dispatch,
+  /// not a permanent dedupe — so a still-missing row is re-requested on
+  /// the next rebuild rather than getting stuck if JS never delivered.
+  Set<int>? pendingRows;
+  bool rowRequestScheduled = false;
+
+  /// Measured main-axis extent (dp) per row laid out at least once, so a
+  /// placeholder for a revisited row is extent-perfect (no scroll-back
+  /// jump). Pruned to indices < count on a count change; never-seen rows
+  /// use a constant estimate.
+  Map<int, double>? rowExtents;
+
+  /// `evRowRequest` handler id — bound by the renderer when JSX passes
+  /// `renderItem`. Non-zero (with propItemCount present) switches
+  /// `_buildListView` to the pull-based builder path. Zeroed on removal
+  /// so a pending post-frame request for a torn-down list is dropped.
+  int onRowRequestHandlerId = 0;
+
   /// `<animatedList>` only — children that JS removed but which the
   /// bridge kept alive for their exit animation (ANIMATION.md §6).
   /// Maps the leaving child id → the list index it occupied at

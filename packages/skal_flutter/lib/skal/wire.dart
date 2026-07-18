@@ -142,6 +142,16 @@ const int opLog             = 0x28;
 // b = 0, c = 0. The handler disposes the subtree, cancels all stream
 // subscriptions, and re-attaches the root method dispatcher.
 const int opResetRootSubtree = 0x29;
+// Builder-mode `<listView>` rows (see propItemCount / evRowRequest).
+// A builder list's rows are keyed by INDEX in a sparse map, not held
+// in the ordered children list — JS materializes a window on demand
+// and evicts far-away rows, so row count in memory is O(window).
+//   opListSetRow(listId, index, childId) — attach a materialized row.
+//     Replacing an existing index tears down the old row's subtree.
+//   opListClearRow(listId, index, 0) — evict: tears down the row's
+//     subtree host-side (JS does NOT also emit opRemoveNode).
+const int opListSetRow   = 0x2A;
+const int opListClearRow = 0x2B;
 
 // ── Widget types (NodeState.type) ─────────────────────────────────────
 //
@@ -449,6 +459,12 @@ const int evHover        = 0x16;
 // normalized combo string: "meta+s", "escape", "arrow up". The JS app
 // builds any shortcut layer on top. See DONE_OR_STALE/FLUTTER_COMPONENTS_TODO_2.md §3.
 const int evKey          = 0x17;
+// Builder-mode `<listView>` row request — the host's itemBuilder hit
+// indices JS hasn't materialized. Dispatched as an [eventArgTuple]
+// (firstIndex, lastIndex), coalesced to at most one event per frame
+// per list. JS materializes the range (plus overscan margin), attaches
+// each row via [opListSetRow], and evicts rows far outside the window.
+const int evRowRequest   = 0x18;
 
 // ── Event record layout (16 bytes per slot in the event ring) ────────
 //
@@ -538,6 +554,11 @@ const int propLeft            = 0x0E;
 // Grid layout (lazyGrid).
 const int propCrossAxisCount  = 0x0F;   // column count
 const int propAspectRatio     = 0x10;   // f32 → propsF — cell w/h ratio
+// Builder-mode `<listView count={N} renderItem={…}>` — the virtual row
+// count. Setting this (with an evRowRequest handler bound) switches the
+// list to pull-based rows: Flutter renders placeholders for missing
+// indices and requests them; JS materializes only the visible window.
+const int propItemCount       = 0x11;
 
 // Visual (u32 ARGB for colors)
 const int propBgColor         = 0x20;

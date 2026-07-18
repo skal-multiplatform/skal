@@ -121,6 +121,12 @@ export const OP_LOG               = 0x28;
 // shell, so a re-evaluated bundle rebuilds the tree from a clean host state.
 // See hot.js (beginReload) + bridge.dart's opResetRootSubtree handler.
 export const OP_RESET_ROOT_SUBTREE = 0x29;
+// Builder-mode <listView> rows — sparse, index-keyed attachment. See
+// wire.dart's opListSetRow / opListClearRow for the full contract.
+// listClearRow tears down the row's subtree HOST-side; the JS caller
+// must not also emit OP_REMOVE_NODE for it.
+export const OP_LIST_SET_ROW   = 0x2A;
+export const OP_LIST_CLEAR_ROW = 0x2B;
 
 // Widget types — naming mirrors Flutter's widget vocabulary.
 export const WT_BOX                  = 0;
@@ -258,6 +264,10 @@ export const EV_DROP          = 0x15;
 export const EV_HOVER         = 0x16;
 // Keyboard — onKey on a focused container; a normalized combo string.
 export const EV_KEY           = 0x17;
+// Builder-mode <listView> row request — host's itemBuilder hit missing
+// indices. Tuple payload (firstIndex, lastIndex); handled internally by
+// the renderer (materialize window + evict), never by user code.
+export const EV_ROW_REQUEST   = 0x18;
 
 // Event-arg types — encoded in byte 1 of the event record. See
 // flutter/skal_flutter/lib/skal/wire.dart's `eventArg*` constants.
@@ -312,6 +322,8 @@ export const PROP_LEFT             = 0x0E;
 // Grid layout (lazyGrid).
 export const PROP_CROSS_AXIS_COUNT = 0x0F;
 export const PROP_ASPECT_RATIO     = 0x10;
+// Builder-mode <listView count> — virtual row count (pull-based rows).
+export const PROP_ITEM_COUNT       = 0x11;
 
 // Visual
 export const PROP_BG_COLOR         = 0x20;
@@ -1277,6 +1289,26 @@ export function completeRefresh(nodeId) {
 }
 
 /**
+ * Builder-mode <listView> row attachment — bind an already-created
+ * subtree root as the row at `index`. Sparse + index-keyed on the host
+ * (NOT the ordered children list); replacing an occupied index tears
+ * the old row down host-side.
+ */
+export function listSetRow(listId, index, childId) {
+  writeOp(OP_LIST_SET_ROW, listId, index, childId);
+}
+
+/**
+ * Builder-mode <listView> row eviction. The host tears down the row's
+ * whole subtree — callers must NOT also emit OP_REMOVE_NODE for it
+ * (the renderer still disposes the Solid root and releases the JS-side
+ * diff-cache rows).
+ */
+export function listClearRow(listId, index) {
+  writeOp(OP_LIST_CLEAR_ROW, listId, index, 0);
+}
+
+/**
  * Imperative dialog API — FLUTTER_JS_COMPONENTS.md §10.2. Each call
  * crosses the bridge as an RPC on the root node and returns a Promise
  * that resolves with the chosen action's `value` (or null/undefined
@@ -1622,6 +1654,26 @@ export function newHandlerId(fn) {
   const id = nextHandlerId++;
   handlers.set(id, fn);
   return id;
+}
+
+// Release a handler id when its owning reactive scope disposes (the
+// renderer registers an onCleanup for every bound handler). Without
+// this the map grows for the life of the process — normally bounded by
+// node count, but a builder-mode <listView> that evicts and
+// re-materializes rows on every scroll would grow it without bound.
+// A late event addressed to a released id simply finds nothing and
+// no-ops in the drain below.
+export function releaseHandlerId(id) {
+  handlers.delete(id);
+}
+
+// Record an error caught outside the event drain (e.g. a throwing
+// renderItem in a builder-mode row) so `skalStatus()` surfaces it,
+// mirroring the drain's own catch. console is safe here — the native
+// console shim is installed long before any row materializes.
+export function recordHandlerError(e) {
+  lastHandlerError = (e && (e.stack || e.message || String(e))) || 'unknown';
+  try { console.error('skal:', lastHandlerError); } catch (_) { /* ignore */ }
 }
 
 export function bindHandler(nodeId, eventKind, handlerId) {

@@ -474,17 +474,28 @@ article.doc .table-scroll { margin: 20px 0; }
 .comp h3 .run-live:hover { background: rgba(70, 224, 177, .12); }
 
 /* ── docs → markdown tools ("Copy for AI") ───────────────────────── */
-.doc-col { min-width: 0; }
+/* A single segmented pill (Copy · .md), floated top-right of the doc,
+   vertically aligned with the H1. Both segments share one border so it
+   reads as one intentional control, not a button next to a stray link. */
+.doc-col { min-width: 0; position: relative; }
+.md-toolbar { display: flex; justify-content: flex-end; margin: 0 0 8px; }
 .md-tools {
-  display: flex; gap: 8px; justify-content: flex-end;
-  margin-bottom: -34px; position: relative; z-index: 2;
+  display: inline-flex; align-items: stretch;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--bg-card); overflow: hidden;
 }
 .md-tools .mdt {
-  font-family: var(--mono); font-size: 11px; color: var(--muted);
-  background: rgba(255,255,255,.05); border: 1px solid var(--line);
-  border-radius: 7px; padding: 4px 9px; cursor: pointer;
-  text-decoration: none; line-height: 1.5;
-  transition: color .2s, border-color .2s;
+  appearance: none; -webkit-appearance: none;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 12px; line-height: 1;
+  color: var(--muted); background: transparent; border: 0; margin: 0;
+  padding: 7px 12px; cursor: pointer; text-decoration: none;
+  transition: color .18s, background .18s;
 }
-.md-tools .mdt:hover { color: var(--accent); border-color: var(--accent-dim); }
-@media (max-width: 880px) { .md-tools { margin-bottom: 0; } }
+.md-tools .mdt + .mdt { border-left: 1px solid var(--line); }
+.md-tools .mdt:hover { color: var(--accent); background: rgba(70, 224, 177, .08); }
+.md-tools .mdt .ico { width: 13px; height: 13px; opacity: .85; }
+.md-tools .mdt.raw { color: var(--faint); }
+/* Pull the toolbar up so it sits beside the H1 on wide screens; drop
+   the overlap on narrow layouts where it would collide with the title. */
+@media (min-width: 881px) { .md-toolbar { margin-bottom: -32px; position: relative; z-index: 2; } }

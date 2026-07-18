@@ -91,10 +91,19 @@ export function DocsPage(props) {
       <div class="wrap docs">
         <Sidebar active={props.active} />
         <div class="doc-col">
-          <div class="md-tools">
-            <button class="mdt" data-copy-md={md}
-                    title="Copy this page as Markdown — paste into any AI agent">⧉ Copy for AI</button>
-            <a class="mdt" href={md} title="This page as raw Markdown">.md</a>
+          <div class="md-toolbar">
+            <div class="md-tools">
+              <button class="mdt" data-copy-md={md}
+                      title="Copy this page as Markdown — paste into any AI agent">
+                <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="9" y="9" width="11" height="11" rx="2" />
+                  <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+                </svg>
+                <span class="lbl">Copy for AI</span>
+              </button>
+              <a class="mdt raw" href={md} title="View this page as raw Markdown">.md</a>
+            </div>
           </div>
           <article class="doc" innerHTML={props.content} />
         </div>

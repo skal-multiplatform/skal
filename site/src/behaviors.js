@@ -72,9 +72,12 @@ export function initSiteBehaviors() {
         } else {
           await navigator.clipboard.writeText(await text());
         }
-        const was = btn.textContent;
-        btn.textContent = 'copied ✓';
-        setTimeout(() => { btn.textContent = was; }, 1400);
+        // Swap only the label text node — the button also holds an SVG
+        // icon that setting btn.textContent would wipe.
+        const lbl = btn.querySelector('.lbl') || btn;
+        const was = lbl.textContent;
+        lbl.textContent = 'copied ✓';
+        setTimeout(() => { lbl.textContent = was; }, 1400);
       } catch {
         // Clipboard unavailable (permission, plain-http, …) — open the
         // raw markdown instead so the click always does something.

@@ -1,0 +1,29 @@
+# Cloudflare Pages cache policy. Vite copies this file to the deploy root.
+#
+# NOTE: Pages MERGES every matching rule (it does not pick the most specific),
+# so rules must NOT overlap for the same header — a broad `/*` plus a specific
+# `/assets/*` yields a doubled, contradictory Cache-Control. We therefore set
+# Cache-Control only on the asset directories and let Pages apply its default
+# (max-age=0, must-revalidate) to HTML documents.
+#
+# The edge cache is separate and automatic: Cloudflare caches each asset at the
+# POP and PURGES it on every deploy, so the edge is never stale across a deploy.
+# These rules govern the BROWSER cache — sparing repeat visitors the re-download
+# (notably the ~4 MB wasm gallery).
+#
+# Caveat: a zone-level "Browser Cache TTL" set to a fixed value (Caching →
+# Configuration) OVERRIDES these headers for standard web assets. Set it to
+# "Respect Existing Headers" for the values below to take effect on JS/CSS/etc.
+
+# Static site assets: content-hashed JS bundle, plus fixed-name CSS, fonts, and
+# component screenshots. One day of browser cache.
+/assets/*
+  Cache-Control: public, max-age=86400
+
+# Live component galleries. The Flutter-wasm build (main.dart.wasm ~2.7 MB,
+# skwasm.wasm ~1.2 MB) and the DOM build have fixed filenames; a day of browser
+# cache is the sweet spot — fast repeat loads, safe across redeploys.
+/gallery-flutter/*
+  Cache-Control: public, max-age=86400
+/gallery/*
+  Cache-Control: public, max-age=86400

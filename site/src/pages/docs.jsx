@@ -3,7 +3,7 @@
 import { onMount } from 'solid-js';
 import { DocsPage } from '../components/Chrome.jsx';
 import { setHead } from '../head.js';
-import { initSiteBehaviors } from '../behaviors.js';
+import { initSiteBehaviors, initRunLive } from '../behaviors.js';
 
 import * as docsIndex from '../content/docs-index.js';
 import * as architecture from '../content/architecture.js';
@@ -21,7 +21,7 @@ export function docsPage(key) {
   const mod = CONTENT[key];
   return function Docs() {
     setHead({ title: mod.title, description: mod.description });
-    onMount(initSiteBehaviors);
+    onMount(() => { initSiteBehaviors(); initRunLive(); });
     return <DocsPage active={key} content={mod.default} />;
   };
 }

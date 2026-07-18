@@ -104,3 +104,8 @@ for (const route of routes) {
   writeFileSync(out, html);
   console.log(`✓ prerendered ${route} → ${out} (${appHtml.length} bytes of markup)`);
 }
+
+// Force-exit: app bundles may leave live handles behind (timers, global
+// event listeners) that would otherwise keep bun's loop — and any build
+// chain waiting on us — alive forever. All output is already on disk.
+process.exit(0);

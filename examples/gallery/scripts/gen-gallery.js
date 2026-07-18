@@ -17,12 +17,11 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEMOS } from '../src/demos.jsx';
+import { slug } from '../src/slug.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP = join(HERE, '..');
 const SITE = join(APP, '..', '..', 'website');
-
-const slug = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 // ── .maestro/gallery.yaml ────────────────────────────────────────────
 // Screenshot paths are relative to where `maestro test` runs (the

@@ -464,3 +464,11 @@ article.doc .table-scroll { margin: 20px 0; }
 .live-gallery .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #46e0b1; margin-right: 4px; animation: pulse 2s infinite; }
 .live-gallery iframe { display: block; width: 100%; height: 560px; border: 0; background: #fff; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* per-component "run live" buttons (components reference) */
+.comp h3 .run-live {
+  margin-left: 10px; padding: 3px 10px; font: 600 11.5px var(--mono, ui-monospace, monospace);
+  color: #46e0b1; background: none; border: 1px solid rgba(70, 224, 177, .35);
+  border-radius: 999px; cursor: pointer; vertical-align: 2px;
+}
+.comp h3 .run-live:hover { background: rgba(70, 224, 177, .12); }

@@ -103,3 +103,33 @@ export function initSiteBehaviors() {
   const yr = document.getElementById('yr');
   if (yr) yr.textContent = String(new Date().getFullYear());
 }
+
+// "▶ run live" buttons on the components reference: drive the shared
+// Flutter-wasm player to that demo (one engine, per-component links).
+// The player boots asynchronously (lazy iframe + wasm engine), so a click
+// before its listener is registered is queued and flushed when the player
+// posts back `skal-gallery-ready`. Demos are addressed by slug so the
+// wiring survives the docs and the wasm bundle being regenerated apart.
+export function initRunLive() {
+  const box = document.querySelector('.live-gallery');
+  if (!box) return;
+  const player = box.querySelector('iframe');
+  if (!player) return;
+  let ready = false;
+  let pending = null;
+  const send = (slug) =>
+    player.contentWindow?.postMessage({ type: 'skal-gallery-demo', slug }, '*');
+  window.addEventListener('message', (e) => {
+    if (e.data?.type !== 'skal-gallery-ready') return;
+    ready = true;
+    if (pending != null) { send(pending); pending = null; }
+  });
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest?.('[data-run-demo]');
+    if (!btn) return;
+    const slug = btn.dataset.runDemo;
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (ready) send(slug);
+    else pending = slug;
+  });
+}

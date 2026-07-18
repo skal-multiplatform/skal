@@ -11,12 +11,12 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { slug } from '../examples/gallery/src/slug.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DATA = JSON.parse(readFileSync(join(HERE, 'docs', 'components-data.json'), 'utf8'));
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 const groups = [...new Set(DATA.map((d) => d.group))];
 
@@ -30,7 +30,8 @@ const sections = groups
       .map(
         (d) => `
     <div class="comp" id="${slug(d.name)}">
-      <h3>&lt;${esc(d.name)}&gt; <span class="maps">→ ${esc(d.widget)}</span></h3>
+      <h3>&lt;${esc(d.name)}&gt; <span class="maps">→ ${esc(d.widget)}</span>
+        <button class="run-live" data-run-demo="${slug(d.name)}" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">${esc(d.blurb)}</p>
       <div class="comp-body">
         <pre class="code">${esc(d.code)}</pre>
@@ -117,6 +118,32 @@ ${sections}
     <div style="display:flex; gap:22px;"><a href="./">Docs</a><a href="https://github.com/skal-multiplatform/skal">GitHub</a><a href="https://github.com/skal-multiplatform/skal/blob/main/LICENSE">Apache-2.0</a></div>
   </div>
 </footer>
+
+<script>
+// Wire the per-component "▶ run live" buttons to the shared wasm player.
+// The Solid site (site/src/behaviors.js initRunLive) does the same for the
+// componentized build; this inline copy keeps the standalone static page
+// working. The player boots asynchronously (lazy iframe + wasm engine), so
+// a click before it's ready is queued and flushed on the ready handshake.
+(function () {
+  var box = document.querySelector('.live-gallery');
+  if (!box) return;
+  var player = box.querySelector('iframe');
+  if (!player) return;
+  var ready = false, pending = null;
+  function send(slug) { try { player.contentWindow.postMessage({ type: 'skal-gallery-demo', slug: slug }, '*'); } catch (e) {} }
+  window.addEventListener('message', function (e) {
+    if (e.data && e.data.type === 'skal-gallery-ready') { ready = true; if (pending != null) { send(pending); pending = null; } }
+  });
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('[data-run-demo]');
+    if (!btn) return;
+    var slug = btn.getAttribute('data-run-demo');
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (ready) send(slug); else pending = slug;
+  });
+})();
+</script>
 
 </body>
 </html>

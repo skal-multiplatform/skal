@@ -12,10 +12,52 @@
 import { createSignal } from 'solid-js';
 import { Box, Column, Row, Text, Button } from 'skal';
 import { DEMOS } from './demos.jsx';
+import { slug } from './slug.js';
+
+// Resolve a demo address to an index: a slug (canonical), or a numeric
+// index (legacy). Returns -1 if it matches nothing.
+function demoIndex(q) {
+  if (q == null) return -1;
+  const bySlug = DEMOS.findIndex((d) => slug(d.name) === String(q));
+  if (bySlug >= 0) return bySlug;
+  const byIndex = Number(q);
+  return Number.isInteger(byIndex) && DEMOS[byIndex] ? byIndex : -1;
+}
+
+// Web embeds deep-link a demo (?demo=<slug|index>) and drive the player
+// from the docs page via postMessage — both no-ops on native, where
+// location/addEventListener don't exist.
+function initialDemo() {
+  try {
+    const q = /[?&]demo=([a-z0-9-]+)/.exec(globalThis.location?.search ?? '')?.[1];
+    const idx = demoIndex(q);
+    return idx >= 0 ? idx : 0;
+  } catch { return 0; }
+}
 
 export default function App() {
-  const [i, setI] = createSignal(0);
+  const [i, setI] = createSignal(initialDemo());
   const demo = () => DEMOS[i()];
+  // Browser only (DOM build + Flutter-wasm iframe): both expose
+  // addEventListener + postMessage. Native JSC has neither. (This app
+  // never runs under the happy-dom prerender — only the site's own
+  // routes do — so no bun-event-loop concern applies here.) NB: don't
+  // gate on `window === globalThis`; that reads false at bundle-eval
+  // time inside the Flutter-wasm host, so the listener never binds.
+  if (typeof globalThis.addEventListener === 'function' &&
+      typeof globalThis.postMessage === 'function') {
+    globalThis.addEventListener('message', (e) => {
+      const d = e?.data;
+      if (!d || d.type !== 'skal-gallery-demo') return;
+      // Accept a slug (canonical, regen-skew-proof) or a legacy index.
+      const idx = demoIndex(d.slug ?? d.index);
+      if (idx >= 0) setI(idx);
+    });
+    // Announce readiness so the docs page can flush a demo request that
+    // was clicked before this bundle — which only runs once the wasm
+    // engine has booted — registered its listener.
+    try { globalThis.parent?.postMessage({ type: 'skal-gallery-ready' }, '*'); } catch { /* no parent */ }
+  }
   return (
     <Column padding={0} background="#FFF7F7F9">
       <Row padding={12} gap={10} background="#FFFFFFFF">

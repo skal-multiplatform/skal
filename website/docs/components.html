@@ -56,7 +56,8 @@
     <h2 id="content">Content</h2>
 
     <div class="comp" id="text">
-      <h3>&lt;Text&gt; <span class="maps">→ Text</span></h3>
+      <h3>&lt;Text&gt; <span class="maps">→ Text</span>
+        <button class="run-live" data-run-demo="text" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Styled text — size, weight, family, color, alignment, maxLines, overflow.</p>
       <div class="comp-body">
         <pre class="code">&lt;Text label="The quick brown fox" fontSize={24} fontWeight={800} color="#FF1C1C1E" /&gt;
@@ -68,7 +69,8 @@
     </div>
 
     <div class="comp" id="richtext">
-      <h3>&lt;RichText&gt; <span class="maps">→ Text.rich</span></h3>
+      <h3>&lt;RichText&gt; <span class="maps">→ Text.rich</span>
+        <button class="run-live" data-run-demo="richtext" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Inline spans — each Text child becomes a styled TextSpan.</p>
       <div class="comp-body">
         <pre class="code">&lt;RichText&gt;
@@ -83,7 +85,8 @@
     </div>
 
     <div class="comp" id="image">
-      <h3>&lt;Image&gt; <span class="maps">→ Image</span></h3>
+      <h3>&lt;Image&gt; <span class="maps">→ Image</span>
+        <button class="run-live" data-run-demo="image" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Network, file://, or asset:// sources; BoxFit via contentScale.</p>
       <div class="comp-body">
         <pre class="code">&lt;Image src="https://picsum.photos/seed/skal/640/360"
@@ -93,7 +96,8 @@
     </div>
 
     <div class="comp" id="canvas">
-      <h3>&lt;Canvas&gt; <span class="maps">→ CustomPaint</span></h3>
+      <h3>&lt;Canvas&gt; <span class="maps">→ CustomPaint</span>
+        <button class="run-live" data-run-demo="canvas" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">A chainable 2-D drawing context — rects, circles, paths, text. Reads signals; redraws when they change.</p>
       <div class="comp-body">
         <pre class="code">&lt;Canvas width={320} height={180} draw={(c) =&gt; {
@@ -107,7 +111,8 @@
     </div>
 
     <div class="comp" id="activityindicator">
-      <h3>&lt;ActivityIndicator&gt; <span class="maps">→ CircularProgressIndicator</span></h3>
+      <h3>&lt;ActivityIndicator&gt; <span class="maps">→ CircularProgressIndicator</span>
+        <button class="run-live" data-run-demo="activityindicator" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Indeterminate spinner; color and size are props.</p>
       <div class="comp-body">
         <pre class="code">&lt;ActivityIndicator color="#FF0A84FF" width={36} /&gt;</pre>
@@ -116,7 +121,8 @@
     </div>
 
     <div class="comp" id="progressbar">
-      <h3>&lt;ProgressBar&gt; <span class="maps">→ LinearProgressIndicator</span></h3>
+      <h3>&lt;ProgressBar&gt; <span class="maps">→ LinearProgressIndicator</span>
+        <button class="run-live" data-run-demo="progressbar" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Determinate with progress 0..1, indeterminate without.</p>
       <div class="comp-body">
         <pre class="code">&lt;ProgressBar progress={0.65} color="#FF0A84FF" /&gt;
@@ -128,7 +134,8 @@
     <h2 id="layout">Layout</h2>
 
     <div class="comp" id="box">
-      <h3>&lt;Box&gt; <span class="maps">→ Container</span></h3>
+      <h3>&lt;Box&gt; <span class="maps">→ Container</span>
+        <button class="run-live" data-run-demo="box" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">The decorated box — padding, background, corners, borders, shadows, tap/hover/drag handlers.</p>
       <div class="comp-body">
         <pre class="code">&lt;Box padding={18} background="#FFFFFFFF" cornerRadius={16}
@@ -141,7 +148,8 @@
     </div>
 
     <div class="comp" id="column">
-      <h3>&lt;Column&gt; <span class="maps">→ Column</span></h3>
+      <h3>&lt;Column&gt; <span class="maps">→ Column</span>
+        <button class="run-live" data-run-demo="column" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Vertical flex; gap, padding, alignment; children flex with weight.</p>
       <div class="comp-body">
         <pre class="code">&lt;Column gap={10}&gt;
@@ -154,7 +162,8 @@
     </div>
 
     <div class="comp" id="row">
-      <h3>&lt;Row&gt; <span class="maps">→ Row</span></h3>
+      <h3>&lt;Row&gt; <span class="maps">→ Row</span>
+        <button class="run-live" data-run-demo="row" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Horizontal flex; weight distributes leftover space.</p>
       <div class="comp-body">
         <pre class="code">&lt;Row gap={10}&gt;
@@ -167,7 +176,8 @@
     </div>
 
     <div class="comp" id="stack">
-      <h3>&lt;Stack&gt; <span class="maps">→ Stack</span></h3>
+      <h3>&lt;Stack&gt; <span class="maps">→ Stack</span>
+        <button class="run-live" data-run-demo="stack" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Layered children; top/right/bottom/left props position them absolutely.</p>
       <div class="comp-body">
         <pre class="code">&lt;Stack width="fill" height={160}&gt;
@@ -184,7 +194,8 @@
     </div>
 
     <div class="comp" id="wrap">
-      <h3>&lt;Wrap&gt; <span class="maps">→ Wrap</span></h3>
+      <h3>&lt;Wrap&gt; <span class="maps">→ Wrap</span>
+        <button class="run-live" data-run-demo="wrap" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Flow layout — children wrap to the next line; gap sets both spacings.</p>
       <div class="comp-body">
         <pre class="code">&lt;Wrap gap={8}&gt;
@@ -198,7 +209,8 @@
     </div>
 
     <div class="comp" id="scrollview">
-      <h3>&lt;ScrollView&gt; <span class="maps">→ SingleChildScrollView</span></h3>
+      <h3>&lt;ScrollView&gt; <span class="maps">→ SingleChildScrollView</span>
+        <button class="run-live" data-run-demo="scrollview" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Eager scrolling for short content; axis 0 = vertical, 1 = horizontal. Use ListView for long lists.</p>
       <div class="comp-body">
         <pre class="code">&lt;ScrollView axis={1} gap={10} height={90}&gt;
@@ -213,7 +225,8 @@
     <h2 id="input">Input</h2>
 
     <div class="comp" id="button">
-      <h3>&lt;Button&gt; <span class="maps">→ ElevatedButton</span></h3>
+      <h3>&lt;Button&gt; <span class="maps">→ ElevatedButton</span>
+        <button class="run-live" data-run-demo="button" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">label + onClick; disable with enabled={false}.</p>
       <div class="comp-body">
         <pre class="code">&lt;Button label="Continue" onClick={() =&gt; submit()} /&gt;
@@ -223,7 +236,8 @@
     </div>
 
     <div class="comp" id="textinput">
-      <h3>&lt;TextInput&gt; <span class="maps">→ TextField</span></h3>
+      <h3>&lt;TextInput&gt; <span class="maps">→ TextField</span>
+        <button class="run-live" data-run-demo="textinput" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Controlled text field — onChange per keystroke, onSubmit on Enter, secureEntry for passwords.</p>
       <div class="comp-body">
         <pre class="code">&lt;TextInput value={name()} placeholder="Your name…"
@@ -233,7 +247,8 @@
     </div>
 
     <div class="comp" id="switch">
-      <h3>&lt;Switch&gt; <span class="maps">→ Switch</span></h3>
+      <h3>&lt;Switch&gt; <span class="maps">→ Switch</span>
+        <button class="run-live" data-run-demo="switch" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Boolean toggle; the app owns the state.</p>
       <div class="comp-body">
         <pre class="code">&lt;Switch checked={on()} onChange={setOn} /&gt;</pre>
@@ -242,7 +257,8 @@
     </div>
 
     <div class="comp" id="checkbox">
-      <h3>&lt;Checkbox&gt; <span class="maps">→ Checkbox</span></h3>
+      <h3>&lt;Checkbox&gt; <span class="maps">→ Checkbox</span>
+        <button class="run-live" data-run-demo="checkbox" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Checked/unchecked; onChange(bool).</p>
       <div class="comp-body">
         <pre class="code">&lt;Checkbox checked={done()} onChange={setDone} /&gt;</pre>
@@ -251,7 +267,8 @@
     </div>
 
     <div class="comp" id="radio">
-      <h3>&lt;Radio&gt; <span class="maps">→ Radio</span></h3>
+      <h3>&lt;Radio&gt; <span class="maps">→ Radio</span>
+        <button class="run-live" data-run-demo="radio" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">One option in a group the app owns — onChange fires with true.</p>
       <div class="comp-body">
         <pre class="code">&lt;For each={options}&gt;
@@ -265,7 +282,8 @@
     </div>
 
     <div class="comp" id="chip">
-      <h3>&lt;Chip&gt; <span class="maps">→ FilterChip</span></h3>
+      <h3>&lt;Chip&gt; <span class="maps">→ FilterChip</span>
+        <button class="run-live" data-run-demo="chip" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Toggleable filter chip — label, checked, onChange(bool).</p>
       <div class="comp-body">
         <pre class="code">&lt;Chip label="Solid" checked={f().solid} onChange={(v) =&gt; toggle('solid', v)} /&gt;</pre>
@@ -274,7 +292,8 @@
     </div>
 
     <div class="comp" id="segmentedbutton">
-      <h3>&lt;SegmentedButton&gt; <span class="maps">→ SegmentedButton</span></h3>
+      <h3>&lt;SegmentedButton&gt; <span class="maps">→ SegmentedButton</span>
+        <button class="run-live" data-run-demo="segmentedbutton" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">One-of-N selector; children are the segment labels.</p>
       <div class="comp-body">
         <pre class="code">&lt;SegmentedButton activeTab={seg()} onChange={setSeg}&gt;
@@ -287,7 +306,8 @@
     </div>
 
     <div class="comp" id="dropdown">
-      <h3>&lt;Dropdown&gt; <span class="maps">→ DropdownButton</span></h3>
+      <h3>&lt;Dropdown&gt; <span class="maps">→ DropdownButton</span>
+        <button class="run-live" data-run-demo="dropdown" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Select from a menu; children are the options.</p>
       <div class="comp-body">
         <pre class="code">&lt;Dropdown activeTab={dd()} onChange={setDd}&gt;
@@ -300,7 +320,8 @@
     </div>
 
     <div class="comp" id="slider">
-      <h3>&lt;Slider&gt; <span class="maps">→ Slider</span></h3>
+      <h3>&lt;Slider&gt; <span class="maps">→ Slider</span>
+        <button class="run-live" data-run-demo="slider" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Continuous value between min and max.</p>
       <div class="comp-body">
         <pre class="code">&lt;Slider value={vol()} min={0} max={100} onChange={setVol} /&gt;</pre>
@@ -309,7 +330,8 @@
     </div>
 
     <div class="comp" id="stepper">
-      <h3>&lt;Stepper&gt; <span class="maps">→ Stepper</span></h3>
+      <h3>&lt;Stepper&gt; <span class="maps">→ Stepper</span>
+        <button class="run-live" data-run-demo="stepper" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Multi-step flows; each Step has a title and a body.</p>
       <div class="comp-body">
         <pre class="code">&lt;Stepper activeTab={step()} onChange={setStep}&gt;
@@ -324,7 +346,8 @@
     <h2 id="lists">Lists</h2>
 
     <div class="comp" id="listview">
-      <h3>&lt;ListView&gt; <span class="maps">→ ListView.builder</span></h3>
+      <h3>&lt;ListView&gt; <span class="maps">→ ListView.builder</span>
+        <button class="run-live" data-run-demo="listview" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Lazy, virtualized list — thousands of rows stay smooth. axis 1 for horizontal.</p>
       <div class="comp-body">
         <pre class="code">&lt;ListView gap={8} height={260}&gt;
@@ -338,7 +361,8 @@
     </div>
 
     <div class="comp" id="listtile">
-      <h3>&lt;ListTile&gt; <span class="maps">→ ListTile</span></h3>
+      <h3>&lt;ListTile&gt; <span class="maps">→ ListTile</span>
+        <button class="run-live" data-run-demo="listtile" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">title, subtitle, leading/trailing icons, onTap — the settings-row workhorse.</p>
       <div class="comp-body">
         <pre class="code">&lt;ListTile title="Notifications" subtitle="Sounds, banners, badges"
@@ -349,7 +373,8 @@
     </div>
 
     <div class="comp" id="lazygrid">
-      <h3>&lt;LazyGrid&gt; <span class="maps">→ GridView.builder</span></h3>
+      <h3>&lt;LazyGrid&gt; <span class="maps">→ GridView.builder</span>
+        <button class="run-live" data-run-demo="lazygrid" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Virtualized grid; crossAxisCount columns, aspectRatio per cell.</p>
       <div class="comp-body">
         <pre class="code">&lt;LazyGrid crossAxisCount={3} aspectRatio={1} gap={10} height={240}&gt;
@@ -362,7 +387,8 @@
     </div>
 
     <div class="comp" id="reorderablelistview">
-      <h3>&lt;ReorderableListView&gt; <span class="maps">→ ReorderableListView.builder</span></h3>
+      <h3>&lt;ReorderableListView&gt; <span class="maps">→ ReorderableListView.builder</span>
+        <button class="run-live" data-run-demo="reorderablelistview" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Drag rows to reorder; onReorder(from, to) updates your source array.</p>
       <div class="comp-body">
         <pre class="code">&lt;ReorderableListView height={230} gap={8} onReorder={(from, to) =&gt; move(from, to)}&gt;
@@ -376,7 +402,8 @@
     </div>
 
     <div class="comp" id="pageview">
-      <h3>&lt;PageView&gt; <span class="maps">→ PageView</span></h3>
+      <h3>&lt;PageView&gt; <span class="maps">→ PageView</span>
+        <button class="run-live" data-run-demo="pageview" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Swipeable pages; activeTab is the page index.</p>
       <div class="comp-body">
         <pre class="code">&lt;PageView activeTab={page()} onChange={setPage} height={200}&gt;
@@ -389,7 +416,8 @@
     </div>
 
     <div class="comp" id="animatedlist">
-      <h3>&lt;AnimatedList&gt; <span class="maps">→ AnimatedList</span></h3>
+      <h3>&lt;AnimatedList&gt; <span class="maps">→ AnimatedList</span>
+        <button class="run-live" data-run-demo="animatedlist" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Items animate in and out as your array changes.</p>
       <div class="comp-body">
         <pre class="code">&lt;AnimatedList height={220}&gt;
@@ -403,7 +431,8 @@
     </div>
 
     <div class="comp" id="dismissible">
-      <h3>&lt;Dismissible&gt; <span class="maps">→ Dismissible</span></h3>
+      <h3>&lt;Dismissible&gt; <span class="maps">→ Dismissible</span>
+        <button class="run-live" data-run-demo="dismissible" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Swipe a row away; onDismiss removes it from your data.</p>
       <div class="comp-body">
         <pre class="code">&lt;Dismissible onDismiss={() =&gt; remove(item.id)}&gt;
@@ -418,7 +447,8 @@
     <h2 id="navigation">Navigation</h2>
 
     <div class="comp" id="tabs">
-      <h3>&lt;Tabs&gt; <span class="maps">→ NavigationBar + IndexedStack</span></h3>
+      <h3>&lt;Tabs&gt; <span class="maps">→ NavigationBar + IndexedStack</span>
+        <button class="run-live" data-run-demo="tabs" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Bottom tab navigation; every tab stays mounted (state survives switching).</p>
       <div class="comp-body">
         <pre class="code">&lt;Tabs activeTab={tab()} onChange={setTab} height="fill"&gt;
@@ -431,7 +461,8 @@
     </div>
 
     <div class="comp" id="expansiontile">
-      <h3>&lt;ExpansionTile&gt; <span class="maps">→ ExpansionTile</span></h3>
+      <h3>&lt;ExpansionTile&gt; <span class="maps">→ ExpansionTile</span>
+        <button class="run-live" data-run-demo="expansiontile" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Collapsible section; the host animates open/close.</p>
       <div class="comp-body">
         <pre class="code">&lt;ExpansionTile title="Advanced settings"&gt;
@@ -444,7 +475,8 @@
     </div>
 
     <div class="comp" id="sliverappbar">
-      <h3>&lt;SliverAppBar&gt; <span class="maps">→ CustomScrollView + SliverAppBar</span></h3>
+      <h3>&lt;SliverAppBar&gt; <span class="maps">→ CustomScrollView + SliverAppBar</span>
+        <button class="run-live" data-run-demo="sliverappbar" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Collapsing header inside a sliver scroll — pinned, floating, or both.</p>
       <div class="comp-body">
         <pre class="code">&lt;CustomScrollView height={320}&gt;
@@ -458,7 +490,8 @@
     </div>
 
     <div class="comp" id="bottomsheet">
-      <h3>&lt;BottomSheet&gt; <span class="maps">→ DraggableScrollableSheet</span></h3>
+      <h3>&lt;BottomSheet&gt; <span class="maps">→ DraggableScrollableSheet</span>
+        <button class="run-live" data-run-demo="bottomsheet" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Drag-resizable sheet anchored to the bottom of a Stack.</p>
       <div class="comp-body">
         <pre class="code">&lt;Stack width="fill" height={340}&gt;
@@ -476,7 +509,8 @@
     <h2 id="effects">Effects</h2>
 
     <div class="comp" id="backdropfilter">
-      <h3>&lt;BackdropFilter&gt; <span class="maps">→ BackdropFilter</span></h3>
+      <h3>&lt;BackdropFilter&gt; <span class="maps">→ BackdropFilter</span>
+        <button class="run-live" data-run-demo="backdropfilter" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Frosted-glass blur over whatever is behind it in a Stack.</p>
       <div class="comp-body">
         <pre class="code">&lt;Stack width="fill" height={200}&gt;
@@ -492,7 +526,8 @@
     </div>
 
     <div class="comp" id="interactiveviewer">
-      <h3>&lt;InteractiveViewer&gt; <span class="maps">→ InteractiveViewer</span></h3>
+      <h3>&lt;InteractiveViewer&gt; <span class="maps">→ InteractiveViewer</span>
+        <button class="run-live" data-run-demo="interactiveviewer" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Pinch-zoom and pan around a child.</p>
       <div class="comp-body">
         <pre class="code">&lt;InteractiveViewer minScale={0.5} maxScale={4}&gt;
@@ -503,7 +538,8 @@
     </div>
 
     <div class="comp" id="crossfade">
-      <h3>&lt;CrossFade&gt; <span class="maps">→ AnimatedSwitcher</span></h3>
+      <h3>&lt;CrossFade&gt; <span class="maps">→ AnimatedSwitcher</span>
+        <button class="run-live" data-run-demo="crossfade" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Cross-fades between children when the content swaps.</p>
       <div class="comp-body">
         <pre class="code">&lt;CrossFade&gt;
@@ -514,7 +550,8 @@
     </div>
 
     <div class="comp" id="dragitem-dropzone">
-      <h3>&lt;DragItem &amp; DropZone&gt; <span class="maps">→ Draggable + DragTarget</span></h3>
+      <h3>&lt;DragItem &amp; DropZone&gt; <span class="maps">→ Draggable + DragTarget</span>
+        <button class="run-live" data-run-demo="dragitem-dropzone" title="Run this demo in the live player">▶ run live</button></h3>
       <p class="blurb">Native drag-and-drop; the drop zone receives the item id.</p>
       <div class="comp-body">
         <pre class="code">&lt;DragItem dragData="card-1"&gt;
@@ -547,6 +584,32 @@
     <div style="display:flex; gap:22px;"><a href="./">Docs</a><a href="https://github.com/skal-multiplatform/skal">GitHub</a><a href="https://github.com/skal-multiplatform/skal/blob/main/LICENSE">Apache-2.0</a></div>
   </div>
 </footer>
+
+<script>
+// Wire the per-component "▶ run live" buttons to the shared wasm player.
+// The Solid site (site/src/behaviors.js initRunLive) does the same for the
+// componentized build; this inline copy keeps the standalone static page
+// working. The player boots asynchronously (lazy iframe + wasm engine), so
+// a click before it's ready is queued and flushed on the ready handshake.
+(function () {
+  var box = document.querySelector('.live-gallery');
+  if (!box) return;
+  var player = box.querySelector('iframe');
+  if (!player) return;
+  var ready = false, pending = null;
+  function send(slug) { try { player.contentWindow.postMessage({ type: 'skal-gallery-demo', slug: slug }, '*'); } catch (e) {} }
+  window.addEventListener('message', function (e) {
+    if (e.data && e.data.type === 'skal-gallery-ready') { ready = true; if (pending != null) { send(pending); pending = null; } }
+  });
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('[data-run-demo]');
+    if (!btn) return;
+    var slug = btn.getAttribute('data-run-demo');
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (ready) send(slug); else pending = slug;
+  });
+})();
+</script>
 
 </body>
 </html>

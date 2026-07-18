@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Skal — Solid on the inside. Native on the outside.</title>
-<meta name="description" content="Skal runs your SolidJS app inside bun + JavaScriptCore and renders it with Flutter through a zero-copy shared-memory bridge. React Native ergonomics, none of the bridge tax.">
+<title>Skal — the modern alternative to React Native</title>
+<meta name="description" content="Skal is the modern alternative to React Native — one codebase, every platform, real native performance, batteries included. SolidJS rendered by Flutter through a zero-copy shared-memory bridge.">
 <link rel="stylesheet" href="assets/style.css">
 <link rel="icon" type="image/png" href="assets/favicon.png">
 </head>
@@ -28,9 +28,8 @@
   <div class="aurora"></div>
   <div class="grid-bg"></div>
   <div class="wrap">
-    <div class="hero-tag rv in"><span class="blink"></span> v0.1.0 — in development, launching soon</div>
-    <h1 class="headline rv in">Solid on the inside.<br><span class="a">Native on the outside.</span></h1>
-    <p class="sub rv in d1">Skal runs your <strong>SolidJS</strong> app inside <strong>bun&nbsp;+&nbsp;JavaScriptCore</strong> and renders it with <strong>Flutter</strong> — connected by a zero-copy shared-memory bridge. The ergonomics you wanted from React&nbsp;Native, minus the bridge tax.</p>
+    <h1 class="headline rv in">The modern alternative<br><span class="a">to React&nbsp;Native.</span></h1>
+    <p class="sub rv in d1">One codebase, every platform, real native performance — and batteries included, so your first screen doesn't start with ten libraries.</p>
     <div class="hero-cta rv in d2">
       <a class="btn primary" href="docs/">Get started →</a>
       <div class="cmd"><span class="p">$</span> <span class="c">npm create skal</span> my-app <button data-copy="npm create skal my-app">copy</button></div>
@@ -122,11 +121,11 @@
     <h2 class="sec rv">Every layer picked for speed.<br>Then wired together without copies.</h2>
     <p class="sec-sub rv d1">Cross-platform JS frameworks lose their performance in the seams — serialization, VDOM diffing, JIT-less interpreters. Skal removes the seams.</p>
     <div class="cards">
-      <div class="card rv"><span class="ic">⚡</span><h3>Solid + bun + JSC</h3><p>Fine-grained reactivity with no virtual DOM — a signal update touches exactly the widgets that read it. The bundle ships as <code>JSC bytecode</code>, so cold start skips the parser entirely.</p></div>
+      <div class="card rv"><span class="ic">⚡</span><h3>Solid + bun + JSC</h3><p>Fine-grained reactivity with no virtual DOM — a signal update touches exactly the widgets that read it. The bundle ships as <code>JSC bytecode</code>, so cold start skips the parser entirely. And the web platform — <code>crypto</code>, <code>fetch</code>, <code>Buffer</code> — is built in, not polyfilled.</p></div>
       <div class="card rv d1"><span class="ic">🔗</span><h3>A bridge that isn't one</h3><p>JS and Dart share one permanent <code>6 MiB</code> memory region. UI mutations are binary ops in a ring buffer — no JSON, no MessageQueue, no copies. Both sides read the same bytes.</p></div>
       <div class="card rv d2"><span class="ic">🎨</span><h3>Flutter rendering, pub.dev reach</h3><p>Pixels come from Flutter's compositor — consistent on every OS. Need camera, geolocation, biometrics? Wrap any <a href="https://pub.dev">pub.dev</a> package with one line of codegen config.</p></div>
       <div class="card rv"><span class="ic">🔥</span><h3>Sub-second hot reload</h3><p>Save a <code>.jsx</code> file and the running native app re-evaluates it in place — navigation stack and state preserved. Manual <code>r</code> or automatic on save. Compiled out of release builds.</p></div>
-      <div class="card rv d1"><span class="ic">💾</span><h3>A store with a native engine</h3><p><code>createSkalStore</code> is a reactive, deep-object store persisted by a log-structured native engine — writes are sub-millisecond and hydration beats your first render.</p></div>
+      <div class="card rv d1"><span class="ic">🔋</span><h3>Batteries actually included</h3><p><code>createSkalStore</code> is a reactive store persisted by a log-structured native engine — no Redux, writes are sub-millisecond. Navigation with Hero transitions and deep links is first-party too. Zero dependency matrix before your first screen.</p></div>
       <div class="card rv d2"><span class="ic">🧪</span><h3>Testable end to end</h3><p><code>bun test</code> for framework logic, <code>flutter test</code> for the host, and Maestro flows driving the real app on a real device — <code>testID</code> just works.</p></div>
     </div>
   </div>

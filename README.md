@@ -4,19 +4,48 @@
 
 <h1 align="center">Skal</h1>
 
-<p align="center"><em>Solid in JS, Flutter rendering, native plugins, one bridge.</em></p>
+<p align="center"><em>The modern alternative to React Native — Solid in JS, Flutter rendering, one zero-copy bridge.</em></p>
 
 Skal embeds [bun](https://bun.sh) + [JavaScriptCore](https://trac.webkit.org/wiki/JavaScriptCore)
 inside a [Flutter](https://flutter.dev/) app. Your UI is a [SolidJS](https://www.solidjs.com/)
 component tree; Skal's bridge translates Solid's
 [universal renderer](https://www.solidjs.com/docs/latest/api#createcomponent) ops into
-Flutter widgets through a zero-copy 2 MiB shared memory region. Same JS bundle, native
+Flutter widgets through a zero-copy 6 MiB shared memory region. Same JS bundle, native
 performance, pub.dev's plugin ecosystem for camera / location / biometrics / file picker
 and every other RN-shaped native capability.
 
-This is **"RN but actually fast"** — Solid + bun beat React + Hermes on the JS side; a
-permanent shared ArrayBuffer beats RN's old MessageQueue serialization on the bridge side;
-pub.dev's plugin ecosystem covers every native capability you'd otherwise need to bridge by hand.
+## Why
+
+We built Skal because we were tired of fighting React Native: performance
+retrofitted through successive architectures instead of designed in; a
+mobile-subset JS engine that needs polyfills for `crypto` and half the web
+platform; a state layer you assemble yourself from Redux + AsyncStorage + a
+storage lib; navigation from a third-party dependency matrix; and UI composed
+of platform views, so it renders — and breaks — differently on every OS.
+
+Skal is the same promise with the seams removed, designed for performance
+from the first commit:
+
+- **Multiplatform by default.** `npm create skal my-app` and the same codebase runs on
+  iPhone, Android, and desktop — and the web, as plain DOM or real Flutter compiled to
+  wasm. Not "mobile now, desktop via a fork later."
+- **One renderer, every platform.** Your UI is painted by Flutter's GPU renderer — the OS
+  is never asked for a widget. Pixel-identical everywhere, 120fps lists, no
+  "works on iOS, broken on Android 16" class of bug.
+- **Components run once.** Solid's signals update exactly the nodes that changed — no
+  virtual DOM, no reconciliation, no re-render tax. The work simply never happens.
+- **A zero-copy bridge.** UI updates cross one shared-memory boundary as binary ops —
+  nothing serialized, nothing copied, minimal by construction.
+- **A real JavaScript runtime.** bun + JSC with the web platform built in — `crypto`,
+  `fetch`, `TextEncoder`, `Buffer` — no mobile-subset gaps, no polyfill graveyard.
+  Precompiled bytecode boots it in ~50 ms.
+- **Two ecosystems, one app.** npm for your logic, pub.dev for UI and native capabilities —
+  wrap any Flutter package into a JSX component
+  ([`docs/WRAPPING_PUB_PACKAGES.md`](docs/WRAPPING_PUB_PACKAGES.md)).
+- **Batteries actually included.** Navigation (Hero transitions, deep links) and storage
+  (a reactive store both worlds read directly — no Redux, no AsyncStorage round-trips) are
+  first-party, designed around the same shared-memory model. Zero third-party dependency
+  matrix before you write your first screen.
 
 See [`docs/ENGINE_CHOICE.md`](docs/ENGINE_CHOICE.md) for the full decision matrix.
 
@@ -29,7 +58,7 @@ See [`docs/ENGINE_CHOICE.md`](docs/ENGINE_CHOICE.md) for the full decision matri
 | **iOS Device** | ✅ working | bun + WebKit cross-compiled for `aarch64-apple-ios`; libskal.dylib embedded + signed by Xcode |
 | **macOS Desktop** | ✅ working | debug + release; libskal.dylib in `macos/Frameworks/` |
 | **Linux / Windows Desktop** | ⏳ pending | Flutter Desktop supports them; per-platform libskal linkers not written |
-| **Web** | ✅ working | separate target — Solid + DOM directly, no Flutter Web |
+| **Web** | ✅ working | three shapes: Solid→DOM directly, full Flutter Web (wasm), and static prerender (SSG) for SEO |
 
 See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the perf decision log and budget invariants.
 
@@ -55,7 +84,7 @@ init 20 ms · first eval 36 ms (bytecode cache hit) · boot 56 ms
                  │  drains the op ring once per Ticker tick │
                  └──────────────────────────────────────────┘
                           ▲
-                          │ bridge ops (2 MiB shared
+                          │ bridge ops (6 MiB shared
                           │             ArrayBuffer)
                           │
                  ┌──────────────────────────────────┐
@@ -73,12 +102,13 @@ init 20 ms · first eval 36 ms (bytecode cache hit) · boot 56 ms
                  └──────────────────────────────────┘
 ```
 
-The shared region has three rings:
+The shared region (see `wire.dart` for the authoritative layout) carries:
 
-- **Op ring** (1 MiB) — JS writes node-tree mutations, Dart reads them. `CREATE_NODE`,
+- **Op ring** (4 MiB) — JS writes node-tree mutations, Dart reads them. `CREATE_NODE`,
   `INSERT_BEFORE`, `SET_PROP_*`, `SET_TEXT`, etc.
-- **String heap** (512 KiB) — UTF-8 bytes referenced by string ops.
-- **Event ring** (~448 KiB) — Dart writes gesture events, JS reads them.
+- **JS string heap** (768 KiB) — UTF-8 bytes referenced by string ops (JS-write, Dart-read).
+- **Reply heap** (256 KiB) — RPC return values / error strings (Dart-write, JS-read).
+- **Event ring** (~1 MiB) — Dart writes gesture events, JS reads them.
 
 JS sees the region as a `Uint8Array` (zero-copy via JSC's
 `JSObjectMakeArrayBufferWithBytesNoCopy`). Dart sees it as a `Uint8List` view over an

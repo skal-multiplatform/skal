@@ -12,7 +12,8 @@ Last reviewed: 2026-05-12.
 
 - **JS runtime:** bun + JavaScriptCore, statically linked into libskal.
 - **Host renderer:** Flutter on Android / iOS / macOS / Linux / Windows.
-- **Web target:** Solid + DOM directly (no Flutter Web).
+- **Web target:** Solid + DOM directly by default; Flutter Web (wasm) is also
+  available for the live component showcase and plugin-heavy screens.
 
 The JS runtime choice is load-bearing for performance + Web API
 parity with Node/Bun. The host renderer choice is load-bearing for
@@ -143,9 +144,11 @@ linearly as we tried to backfill `Streams`, `URL`, `crypto`,
 - **Dart is fine, not great.** Pragmatic. The JS layer is what
   Skal devs write; Dart is host-only and invisible from the JSX
   side.
-- **Flutter Web is ~5 MB CanvasKit.** We sidestep this by using
-  Solid + DOM (no Flutter) for the web target — same JS bundle,
-  different host.
+- **Flutter Web is ~5 MB CanvasKit.** The DEFAULT web target sidesteps
+  this by using Solid + DOM (no engine download) — same JS bundle,
+  different host. Flutter Web (wasm) is available as an opt-in for the
+  live component showcase and plugin-heavy screens, where a real Flutter
+  render is the point and the download cost is acceptable.
 
 ### Trigger to revisit
 
@@ -156,7 +159,7 @@ linearly as we tried to backfill `Streams`, `URL`, `crypto`,
 
 ---
 
-## Web target — Solid + DOM (no Flutter Web)
+## Web target — Solid + DOM by default (Flutter Web wasm available)
 
 ### Rationale
 
@@ -179,6 +182,13 @@ when we already have:
 
 Web target ships as a static site (HTML + JS + CSS), zero engine
 download, gets SEO and a11y for free.
+
+**Flutter Web (wasm) is now available too**, for the cases where the
+DOM renderer isn't enough: the live component gallery (real Flutter
+widgets, compiled to WebAssembly) and screens that need a pub.dev plugin
+with no DOM equivalent. It's opt-in per build, not the default — the
+three web shapes are Solid→DOM (default, SEO/size), Flutter Web wasm
+(showcase/plugins), and static prerender (SSG) for SEO on either.
 
 ### Trigger to revisit
 

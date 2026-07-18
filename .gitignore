@@ -59,3 +59,12 @@ packages/*/pubspec.lock
 website/gallery/
 website/gallery-flutter/
 examples/gallery/flutter-host/web/skal-app.js
+
+# Gallery JS bundle + JSC bytecode — build outputs of `bun run build`
+# (the .cjs.jsc is JSC-version-keyed and regenerated on every JS change).
+# The gallery is not CI-built and its bundle is rebuilt by the docs
+# pipeline, so it's not tracked. (kitchen-sink, which IS CI-built, keeps
+# its committed bundle.)
+examples/gallery/flutter-host/assets/skal-app.js
+examples/gallery/flutter-host/assets/skal-app.cjs
+examples/gallery/flutter-host/assets/skal-app.cjs.jsc

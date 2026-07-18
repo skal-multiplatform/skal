@@ -10,7 +10,7 @@
 
 import {
   existsSync, mkdirSync, writeFileSync, readFileSync,
-  readdirSync, statSync, chmodSync,
+  readdirSync, statSync, chmodSync, cpSync,
 } from 'node:fs';
 import { join, resolve, extname } from 'node:path';
 import { arrow, ok, die, run, which } from './util.js';
@@ -50,6 +50,14 @@ export async function create(name, opts = {}) {
     `cd ${JSON.stringify(template)} && tar cf - --exclude node_modules ` +
     `--exclude dist --exclude .DS_Store . | (cd ${JSON.stringify(target)} && tar xf -)`,
   ]);
+  // Mirror the agent skill into .agents/ for tools that read that
+  // convention (Codex, Cursor, …). One canonical copy in the template
+  // (.claude/skills/), mirrored at scaffold time so the two can't drift.
+  const skills = join(target, '.claude', 'skills');
+  if (existsSync(skills)) {
+    mkdirSync(join(target, '.agents'), { recursive: true });
+    cpSync(skills, join(target, '.agents', 'skills'), { recursive: true });
+  }
   for (const file of walk(target)) {
     if (!TEXT_EXT.has(extname(file))) continue;
     const src = readFileSync(file, 'utf8');

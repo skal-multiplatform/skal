@@ -110,6 +110,14 @@ mkdir -p "${TARGET}"
     --exclude='build' \
     . ) | ( cd "${TARGET}" && tar xf - )
 
+# Mirror the agent skill into .agents/ for tools that read that
+# convention (Codex, Cursor, …). One canonical copy in the template
+# (.claude/skills/), mirrored at scaffold time so the two can't drift.
+if [[ -d "${TARGET}/.claude/skills" ]]; then
+  mkdir -p "${TARGET}/.agents"
+  cp -R "${TARGET}/.claude/skills" "${TARGET}/.agents/skills"
+fi
+
 # Token-substitute __APP_NAME__ → kebab, __APP_NAME_SNAKE__ → snake.
 # Touched files: every text file under the new tree (sed -i'' on macOS
 # needs an empty backup extension passed positionally; GNU sed treats it

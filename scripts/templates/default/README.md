@@ -72,6 +72,16 @@ bun run link           # drop libskal binaries into them
 but that refuses if `examples/__APP_NAME__/` already exists, so this is
 the recovery path.)
 
+## AI-ready out of the box
+
+The app ships with an agent skill teaching AI tools how to build Skal
+UIs — `.claude/skills/skal/` (Claude Code) mirrored at
+`.agents/skills/skal/` (Codex, Cursor, …), plus `AGENTS.md` /
+`CLAUDE.md` at the root. Ask your agent for a screen and it writes
+idiomatic Solid + Skal instead of hallucinated React Native. The
+component reference in there is generated from the framework source
+(`scripts/gen-skill-reference.mjs` in the Skal repo).
+
 ## Adding custom Flutter widgets
 
 See `examples/kitchen-sink/` for end-to-end examples of:

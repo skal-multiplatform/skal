@@ -13,6 +13,9 @@ zig-out/
 .idea/
 .vscode/
 .claude/
+# …but the app template SHIPS agent config (skill + AGENTS.md) — keep its
+# .claude/ tracked, or `skal create` would scaffold apps without it.
+!scripts/templates/default/.claude/
 
 # Node deps (only in vendor/bun anyway, but defensive)
 node_modules/

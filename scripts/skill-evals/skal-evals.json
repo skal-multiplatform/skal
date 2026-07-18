@@ -1,0 +1,50 @@
+{
+  "skill_name": "skal",
+  "evals": [
+    {
+      "id": 0,
+      "name": "settings-persist-nav",
+      "prompt": "Add a Settings screen to this app, reachable from the home screen via a button, with a native back transition. Settings needs: a dark-mode toggle and a display-name text field, BOTH persisted across app launches (kill the app, reopen, values are still there). The home screen keeps its counter working. When you're done, `bun run build:js-only` must pass.",
+      "expected_output": "createRouter (or Navigator/Screen) navigation; createSkalStore-backed dark + name; controlled Switch/TextInput; build passes",
+      "files": [],
+      "assertions": [
+        "build passes: `bun run build:js-only` exits 0 when re-run by the grader",
+        "no React idioms: src/ has zero matches for useState/useEffect/react-native/from 'react'/className/StyleSheet",
+        "colors are 8-digit #AARRGGBB: every #hex literal in src JSX has exactly 8 hex digits",
+        "persistence via the store: imports 'skal/store' (createSkalStore) rather than faking persistence with plain signals or hand-rolled I/O",
+        "native navigation: uses createRouter from 'skal/runtime' (or Navigator/Screen) so back is a real native transition",
+        "controlled inputs: the dark-mode Switch has checked+onChange and the name TextInput has value+onChange"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "big-list-10k",
+      "prompt": "Build a contacts screen in this app: generate 10,000 fake contacts (name + phone), render them as a scrollable list of rows (name bold, phone dimmed), with a search field at the top that filters by name as you type, and tapping a row shows that contact's name in a header above the list. It must stay smooth with all 10,000 rows. When you're done, `bun run build:js-only` must pass.",
+      "expected_output": "builder-mode ListView (count + renderItem), not an eager For/map over 10k; signal-driven search; build passes",
+      "files": [],
+      "assertions": [
+        "build passes: `bun run build:js-only` exits 0 when re-run by the grader",
+        "no React idioms: src/ has zero matches for useState/useEffect/react-native/from 'react'/className/StyleSheet",
+        "colors are 8-digit #AARRGGBB: every #hex literal in src JSX has exactly 8 hex digits",
+        "virtualized builder list: ListView used with count + renderItem \u2014 NOT an eager <For>/.map mounting all 10,000 rows",
+        "reactive search: a TextInput onChange writes a signal that the filtered list derives from",
+        "row tap updates selection: rows have onClick wiring a selected-contact signal shown in the header"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "animated-dashboard",
+      "prompt": "Turn this app's home screen into a small dashboard: three stat cards side by side (title + big number) that fade in and slide up one after another when the app opens, and a Refresh button that generates new random values with the cards animating on each refresh. When you're done, `bun run build:js-only` must pass.",
+      "expected_output": "animate prop on hot props (opacity/translationY) with staggered delay (or createStagger); no JS timer/rAF-driven per-frame animation; build passes",
+      "files": [],
+      "assertions": [
+        "build passes: `bun run build:js-only` exits 0 when re-run by the grader",
+        "no React idioms: src/ has zero matches for useState/useEffect/react-native/from 'react'/className/StyleSheet",
+        "colors are 8-digit #AARRGGBB: every #hex literal in src JSX has exactly 8 hex digits",
+        "host-side animation: cards animate via the animate prop on hot props (opacity/translationX/Y), not cold-prop hacks",
+        "staggered entrance: per-card animate.delay values differ (or createStagger is used)",
+        "no JS frame loops: no requestAnimationFrame and no setInterval driving animated props per frame"
+      ]
+    }
+  ]
+}

@@ -167,6 +167,20 @@ jobs:
       - name: Install Android NDK
         run: brew install --cask android-ndk
 
+      # Pin CMake to the last 3.x. The macos-15 image moved to CMake 4.x, whose
+      # stricter if() parsing rejects the vendored WebKit's WebKitMacros.cmake —
+      # build-jsc-android.sh then dies at configure ("Unknown arguments" in
+      # _WEBKIT_TARGET_LINK_FRAMEWORK, WebKitMacros.cmake:375). This build
+      # succeeded here through 2026-07-12 and broke on the next cold build once
+      # the image bumped cmake; 3.31 is the newest cmake this WebKit configures
+      # under, well above the 3.20+ the build needs. The darwin job builds JSC
+      # through bun (not this direct cmake path), so it's left on the default.
+      - name: Pin CMake < 4 (vendored WebKit/JSC configure)
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.31.6'
+      - run: cmake --version
+
       - uses: actions/cache@v4
         with:
           path: |

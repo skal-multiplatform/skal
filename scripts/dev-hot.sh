@@ -34,5 +34,11 @@ DEFINES="--dart-define=SKAL_HOT=1"
 if [[ "$DEVICE" == "android" ]]; then
   DEVICE="$("${SCRIPT_DIR}/android-emulator.sh")"
 fi
+# Same story for the iOS Simulator: `iphone-simulator` matches no device id/name
+# on current Flutter — resolve a booted simulator's UDID (`ios` is the new
+# sentinel; `iphone-simulator` kept for apps scaffolded before this change).
+if [[ "$DEVICE" == "ios" || "$DEVICE" == "iphone-simulator" ]]; then
+  DEVICE="$("${SCRIPT_DIR}/ios-simulator.sh")"
+fi
 
 cd flutter-host && flutter run -d "$DEVICE" $DEFINES

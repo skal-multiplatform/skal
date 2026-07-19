@@ -28,9 +28,14 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
-  # The JS bundle — produced by `bun run build` in the parent dir.
-  # Three artifacts: source, CJS wrapper, JSC bytecode.
+  # The JS bundle — produced in the parent dir. skal-app.js is REQUIRED:
+  # listing it explicitly keeps `flutter build` failing loudly if the
+  # bundle was never built, instead of silently shipping a black screen.
+  # The bytecode artifacts (skal-app.cjs / .cjs.jsc) are OPTIONAL — they
+  # only exist after a full `bun run build`; the hot-reload / js-only path
+  # emits just the .js. So they ride the `assets/` directory (present →
+  # bundled, absent → no error) rather than an explicit entry, which is
+  # what previously made `dev:hot:*` fail the build on the missing bytecode.
   assets:
     - assets/skal-app.js
-    - assets/skal-app.cjs
-    - assets/skal-app.cjs.jsc
+    - assets/

@@ -55,6 +55,16 @@ if [[ "${PLATFORM}" == "all" || "${PLATFORM}" == "macos" ]]; then
       echo "→ ensuring libskal embed build phase in Runner.xcodeproj"
       python3 "${SCRIPT_DIR}/embed-libskal-macos.py" "${PBXPROJ}"
     fi
+    # `flutter create` grants the debug app network.server (for the VM
+    # service) but NOT network.client — so the macOS App Sandbox silently
+    # blocks the JS hot-reload client's outgoing WebSocket to the dev
+    # server, and `dev:hot:macos` connects to nothing. Grant it (idempotent).
+    ENT="${APP_ROOT}/macos/Runner/DebugProfile.entitlements"
+    if [[ -f "${ENT}" ]] && \
+       ! /usr/libexec/PlistBuddy -c "Print :com.apple.security.network.client" "${ENT}" >/dev/null 2>&1; then
+      /usr/libexec/PlistBuddy -c "Add :com.apple.security.network.client bool true" "${ENT}" >/dev/null \
+        && echo "→ granted network.client (JS hot reload) in DebugProfile.entitlements"
+    fi
     did_anything=1
   elif [[ "${PLATFORM}" == "macos" ]]; then
     echo "error: ${APP_ROOT}/macos missing — run 'flutter create --platforms macos .' first" >&2

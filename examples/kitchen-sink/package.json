@@ -29,12 +29,12 @@
     "_dev": "// ── Native dev (rebuild JS bundle, hand off to flutter run) ──",
     "dev:flutter": "bun run build && cd flutter-host && flutter run",
     "dev:macos": "bun run build && cd flutter-host && flutter run -d macos",
-    "dev:ios": "bun run build && cd flutter-host && flutter run -d iphone-simulator",
+    "dev:ios": "bun run build && DEV=$(../../scripts/ios-simulator.sh) && cd flutter-host && flutter run -d \"$DEV\"",
     "dev:android": "bun run build && DEV=$(../../scripts/android-emulator.sh) && cd flutter-host && flutter run -d \"$DEV\"",
 
     "_hot": "// ── JS hot reload (auto): dev server watches+pushes the bundle; save a .jsx → live app updates. Manual alt: run `dev` in another shell + press `r`. ──",
     "dev:hot:macos": "bash ../../scripts/dev-hot.sh macos kitchen-sink",
-    "dev:hot:ios": "bash ../../scripts/dev-hot.sh iphone-simulator kitchen-sink",
+    "dev:hot:ios": "bash ../../scripts/dev-hot.sh ios kitchen-sink",
     "dev:hot:android": "bash ../../scripts/dev-hot.sh android kitchen-sink 10.0.2.2",
 
     "_release": "// ── Release builds (ships bytecode cache) ──────────────",

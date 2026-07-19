@@ -18,8 +18,9 @@
 //   bun scripts/hot-reload-server.js [app-name]   # default: kitchen-sink
 //   SKAL_HOT_PORT=8765 bun scripts/hot-reload-server.js my-app
 //
-// Pair it with `flutter run -d macos --dart-define=SKAL_HOT=1` (the app's
-// `dev:hot:*` script wires both up). Native + debug only.
+// The app's `dev:<platform>` script (scripts/dev-hot.sh) starts this server
+// and then launches the app itself with `--dart-define=SKAL_HOT=1`, so the
+// app's debug client knows to connect back here. Native + debug only.
 
 import { watch, readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -73,7 +74,7 @@ const server = Bun.serve({
 });
 
 console.log(`[skal-hot] watching ${APP}  ·  ws://localhost:${PORT}`);
-console.log('[skal-hot] run the app with:  flutter run -d macos --dart-define=SKAL_HOT=1');
+console.log('[skal-hot] waiting for the app to connect — edit a src/*.jsx to push a live reload');
 
 // ── 3. Watch the bundle; debounce (vite writes can fire several events).
 let timer = null;

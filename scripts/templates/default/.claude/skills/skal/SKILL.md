@@ -202,8 +202,7 @@ Full guide: https://skal.run/docs/native.md (fetchable markdown).
 bun run build:js-only   # fastest compile check of src/ (vite, native bundle)
 bun run build:web       # compile check via the web bundle
 bun run dev:web         # run in a browser → http://localhost:5173
-bun run dev:macos       # run the real native app (also dev:ios / dev:android)
-bun run dev:hot:macos   # native + JS hot reload on save
+bun run dev:macos       # run the native app with JS hot reload (also dev:ios / dev:android)
 bun run test:e2e        # Maestro flows in .maestro/ (targets testIDs)
 ```
 

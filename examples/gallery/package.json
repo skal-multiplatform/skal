@@ -20,16 +20,11 @@
     "dev:web": "vite --config vite.config.web.js",
     "build:web": "vite build --config vite.config.web.js",
 
-    "_dev": "// ── Native dev (rebuild JS bundle, hand off to flutter run) ──",
+    "_dev": "// ── Native dev — HOT by default: save a .jsx and the running app live-updates (JS pushed over a socket); r/R in the flutter console hot-reload the Dart side. `dev:flutter` is the plain run (pick a device, no hot server). ──",
+    "dev:macos": "bash ../../scripts/dev-hot.sh macos gallery",
+    "dev:ios": "bash ../../scripts/dev-hot.sh ios gallery",
+    "dev:android": "bash ../../scripts/dev-hot.sh android gallery 10.0.2.2",
     "dev:flutter": "bun run build && cd flutter-host && flutter run",
-    "dev:macos": "bun run build && cd flutter-host && flutter run -d macos",
-    "dev:ios": "bun run build && DEV=$(../../scripts/ios-simulator.sh) && cd flutter-host && flutter run -d \"$DEV\"",
-    "dev:android": "bun run build && DEV=$(../../scripts/android-emulator.sh) && cd flutter-host && flutter run -d \"$DEV\"",
-
-    "_hot": "// ── JS hot reload (auto): dev server watches+pushes the bundle; save a .jsx → live app updates. Manual alt: run `dev` in another shell + press `r`. ──",
-    "dev:hot:macos": "bash ../../scripts/dev-hot.sh macos gallery",
-    "dev:hot:ios": "bash ../../scripts/dev-hot.sh ios gallery",
-    "dev:hot:android": "bash ../../scripts/dev-hot.sh android gallery 10.0.2.2",
 
     "_release": "// ── Release builds (ships bytecode cache) ──────────────",
     "build:macos": "bun run build && cd flutter-host && flutter build macos --release",

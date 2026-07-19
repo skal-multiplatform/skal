@@ -28,11 +28,12 @@ dir, or use `bun --filter __APP_NAME__ <task>` from anywhere in the
 monorepo):
 
 ```sh
-# Native dev — rebuilds JS bundle, then `flutter run` on the chosen target
+# Native dev — HOT by default: launches the app, then watches src/ and
+# live-updates the running app when you save a .jsx (no rebuild/rerun).
 bun run dev:macos
-bun run dev:ios            # iPhone simulator
-bun run dev:android        # Android emulator or attached device
-bun run dev:flutter        # let flutter prompt for a device
+bun run dev:ios            # iPhone simulator (boots one if needed)
+bun run dev:android        # Android emulator (boots one if needed)
+bun run dev:flutter        # plain run — pick a device, no hot server
 
 # Web preview (DOM via skal/renderer-web — degraded; bridge not available)
 bun run dev:web            # → http://localhost:5173
@@ -54,9 +55,12 @@ bun run test               # flutter test
 bun run clean              # flutter clean + drop dist/ + build/
 ```
 
-Hot reload (`r`/`R` in the `flutter run` shell) refreshes the Dart side
-only. For JS-side changes, re-run `bun run dev:<target>` — the script
-rebuilds the JS bundle first, then hands off to Flutter.
+**JS hot reload is automatic.** `bun run dev:<target>` starts a watcher
+that rebuilds your bundle on save and pushes it into the live app — edit
+`src/App.jsx`, save, and the running app updates (in-component signal
+state resets; store-backed state survives). The `r`/`R` keys in the
+`flutter run` console hot-reload/-restart the **Dart** side; you rarely
+need them since the JS side reloads on its own.
 
 ## First-time setup
 

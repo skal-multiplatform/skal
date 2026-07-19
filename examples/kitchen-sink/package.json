@@ -47,7 +47,8 @@
 
     "_setup": "// ── First-time setup helpers ──────────────────────────",
     "platforms": "cd flutter-host && flutter create --org com.skal --project-name kitchen_sink --platforms macos,ios,android .",
-    "link": "../../scripts/skal-link.sh kitchen-sink"
+    "link": "../../scripts/skal-link.sh kitchen-sink",
+    "icons": "SKAL_APP_ROOT=$PWD/flutter-host ../../scripts/skal-icons.sh kitchen-sink"
   },
   "dependencies": {
     "skal": "workspace:*",

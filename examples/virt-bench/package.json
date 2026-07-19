@@ -36,7 +36,8 @@
 
     "_setup": "// ── First-time setup helpers ──────────────────────────",
     "platforms": "cd flutter-host && flutter create --org com.example --project-name virt_bench --platforms macos,ios,android .",
-    "link": "../../scripts/skal-link.sh virt-bench"
+    "link": "../../scripts/skal-link.sh virt-bench",
+    "icons": "SKAL_APP_ROOT=$PWD/flutter-host ../../scripts/skal-icons.sh virt-bench"
   },
   "dependencies": {
     "skal": "workspace:*",

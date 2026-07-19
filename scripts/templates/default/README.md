@@ -52,6 +52,7 @@ bun run pub                # flutter pub get
 bun run codegen            # dart run build_runner build (only if you add skal_codegen YAML)
 bun run analyze            # dart analyze lib/
 bun run test               # flutter test
+bun run icons              # regenerate launcher icons from flutter-host/icon/skal-icon.png
 bun run clean              # flutter clean + drop dist/ + build/
 ```
 
@@ -75,6 +76,11 @@ bun run link           # drop libskal binaries into them
 (Both also runnable from the repo root as `bun run new __APP_NAME__ --with-platforms`,
 but that refuses if `examples/__APP_NAME__/` already exists, so this is
 the recovery path.)
+
+`bun run link` also stamps the launcher icon (macOS/iOS/Android) with
+the Skal mark, replacing the default Flutter logo. To use your own:
+drop a 1024×1024 opaque PNG at `flutter-host/icon/skal-icon.png` and run
+`bun run icons`.
 
 ## AI-ready out of the box
 

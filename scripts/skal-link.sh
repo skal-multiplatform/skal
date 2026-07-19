@@ -156,3 +156,12 @@ fi
 
 echo
 echo "✓ libskal binaries installed into ${APP_ROOT}/"
+
+# Brand the launcher icons with the Skal mark (replaces the Flutter logo
+# `flutter create` dropped in). Only on a full setup — a targeted
+# `bun run link <platform>` shouldn't re-run the generator. Best-effort:
+# icons are cosmetic and skal-icons.sh already swallows its own errors.
+if [[ "${PLATFORM}" == "all" ]]; then
+  echo
+  SKAL_APP_ROOT="${APP_ROOT}" "${SCRIPT_DIR}/skal-icons.sh" "${APP_NAME}" || true
+fi

@@ -41,7 +41,8 @@
 
     "_setup": "// ── First-time setup helpers ──────────────────────────",
     "platforms": "cd flutter-host && flutter create --org com.example --project-name gallery --platforms macos,ios,android .",
-    "link": "../../scripts/skal-link.sh gallery"
+    "link": "../../scripts/skal-link.sh gallery",
+    "icons": "SKAL_APP_ROOT=$PWD/flutter-host ../../scripts/skal-icons.sh gallery"
   },
   "dependencies": {
     "skal": "workspace:*",

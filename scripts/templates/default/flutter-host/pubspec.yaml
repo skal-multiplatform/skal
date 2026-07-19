@@ -25,6 +25,27 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+  # Generates the platform launcher icons (macOS/iOS/Android) from one
+  # source PNG. Run via `bun run icons` — the scaffolder does this once
+  # after `flutter create`, replacing the default Flutter logo with the
+  # Skal mark. Drop your own icon/skal-icon.png (1024×1024, opaque) and
+  # re-run to rebrand.
+  flutter_launcher_icons: ^0.14.1
+
+# ── Launcher-icon generation (flutter_launcher_icons) ──────────────────
+# Legacy square icons on every platform: this mark's horns reach the
+# edges and "SKAL" sits low, so an adaptive (masked) icon would clip
+# them. The scaffolder also strips Flutter's default Android adaptive
+# XML so the launcher uses this full-square icon.
+flutter_launcher_icons:
+  image_path: "icon/skal-icon.png"
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  macos:
+    generate: true
+    image_path: "icon/skal-icon.png"
+
 flutter:
   uses-material-design: true
 

@@ -705,6 +705,118 @@ documented in [FastStorage.md § What we built](FastStorage.md).
 
 ---
 
+## Bench 4 — Bridge RPC (the numbers `docs/NATIVE_SUPPORT.md` required)
+
+The five measurements that had to exist before `skal_codegen` starts
+emitting service methods on top of the RPC path. Unlike Benches 1–3,
+**the harness is still in the tree** — `examples/virt-bench` — so this
+one is reproducible with one command.
+
+- Host: macOS **debug** build, Apple silicon, 60 Hz display.
+- `examples/virt-bench/src/rpc-bench.js` (JS) +
+  `examples/virt-bench/flutter-host/lib/bench_service.dart` (Dart).
+- Warmed up before every sub-bench; distributions, not means (the
+  reason is the headline finding below).
+
+```bash
+cd examples/virt-bench && bun run build:js-only
+cd flutter-host && flutter run -d macos --debug   # grep for `[rpcbench]`
+```
+
+### 1. Round-trip latency — **the headline**
+
+| Measurement | Result |
+|---|---:|
+| Sequential `await`, n=200 | min 8.47 / **p50 16.67** / p95 19.53 / max 24.77 ms |
+| 200 calls via `Promise.all` | **16.74 ms total — 0.084 ms amortized** |
+| 10 chained `await`s | **163.35 ms** |
+
+**A one-shot RPC costs exactly one frame — 16.67 ms at 60 Hz — and the
+payload is irrelevant.** 0.084 ms amortized proves the transport itself
+is nearly free; the entire 16.67 ms is waiting for the next drain.
+
+Mechanism: `root.dart` pumps the op ring once per frame from a Ticker
+(`SchedulerBinding.handleBeginFrame`). A reply is written during that
+pump and wakes JS; JS resolves the Promise and writes its next op
+*after* the frame's pump has already run, so that op waits a full frame.
+Hence a median of exactly one vsync period, with min/max spread by
+where the call lands in the frame.
+
+`NATIVE_SUPPORT.md` predicted "ten chained awaits ≈ 160 ms" from
+first principles. Measured: **163.35 ms**.
+
+### 2. JSON cost by payload size
+
+| Payload | `String` reply | JSON reply | JSON round-trip (arg + reply) |
+|---:|---:|---:|---:|
+| 128 B / 191 B | p50 16.66 | p50 16.65 | p50 16.67 |
+| 1 KB / 1.3 KB | p50 16.80 | p50 16.68 | p50 16.66 |
+| 8 KB / 9.7 KB | p50 16.66 | p50 16.54 | p50 16.67 |
+| 64 KB / 77 KB | p50 16.72 | p50 16.62 | p50 16.71 (p95 33.33) |
+| 200 KB / 241 KB | p50 16.69 | p50 16.78 | **p50 33.35** |
+
+**JSON is free up to ~64 KB** — the frame quantum swallows it entirely.
+The first size where encoding is visible is a 241 KB round-trip, and it
+shows up as *exactly one extra frame*: the work no longer fits in the
+slack, so the reply misses a drain.
+
+Practical reading: at realistic service-payload sizes, choosing
+"binary" over JSON buys nothing. Choosing *fewer calls* buys everything.
+
+### 3. Stream throughput
+
+| Event shape | Sent | Received | Elapsed | Rate |
+|---|---:|---:|---:|---:|
+| bare int | 20,000 | 20,000 | 41.93 ms | **477,008/s** |
+| 256 B JSON | 5,000 | 5,000 | 38.08 ms | **131,307/s** |
+| 4 KB JSON | 1,000 | 1,000 | 70.38 ms | **14,208/s** |
+
+Streams do **not** pay the per-call frame cost — a burst rides one
+drain. That is a ~5,700× throughput difference versus sequential
+`await` for the same event count, and it inverts a design assumption:
+**streams are the fast path, one-shot RPC is the slow one.**
+
+### 4. Reply heap
+
+Capacity confirmed at **262,144 B (256 KiB)**, matching `kReplyHeapSize`.
+
+| Requested | Received | |
+|---:|---:|---|
+| 258,048 B | 258,048 B | exact |
+| 262,144 B | 262,144 B | exact (at capacity) |
+| 270,336 B | 262,144 B | **truncated** |
+| 524,288 B | 262,144 B | **truncated** |
+
+Oversize replies truncate **silently** — no error, no rejection, just a
+short string (`_writeReplyString`, `bridge.dart`). That is a data-loss
+footgun for any service that returns a large blob, and it is the
+enforcement mechanism behind the payload law: pass paths and handles.
+
+Wraparound is cheap: 1,600 KiB pushed through the 256 KiB heap
+(≈6 wraps) delivered all 400 events in 38.58 ms. The documented 50 ms
+spin-wait never fired.
+
+### 5. Backpressure
+
+3,000 events into a JS handler burning real CPU per event: **3,000
+received, 52.16 ms, lossless.**
+
+Policy is therefore **unbounded queue** — nothing coalesces, nothing
+drops. A producer faster than the handler grows memory and delays the
+frame rather than shedding load. Any coalescing a service needs must be
+implemented on the Dart side, before the value enters the stream.
+
+### What these numbers changed
+
+They rewrote the rate-class contract in `NATIVE_SUPPORT.md`. The
+pre-measurement worry was JSON on high-frequency streams; measurement
+says JSON is free at realistic sizes and streams are the fast path. The
+actual cliff is **call count on the one-shot path** — a generated
+service that encourages `await a(); await b(); await c();` spends three
+frames where a batched call spends one.
+
+---
+
 ## How to re-run
 
 To resurrect the bench:

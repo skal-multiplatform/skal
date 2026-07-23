@@ -184,11 +184,15 @@ void main() async {
   // ── 4 + 5. Wrap in the bridge and do an initial drain ──────────────
   final bridge = SkalBridge(skal);
   bridge.ensureRoot();
-  bridge.pumpOps();
 
-  // Register the app-level RPC dispatcher on the (now-existing) root
-  // node — backs the imperative showDialog / showSnackbar JS API.
+  // Register the app-level RPC dispatcher (dialogs + services) BEFORE
+  // the first pump. The eval above already queued ops — and an app that
+  // fires an RPC during its initial render (onMount probes) has that
+  // invoke sitting in the ring right now. Draining it before the
+  // dispatcher exists failed the app's very first call with "no method
+  // dispatcher on node 1" (caught live on the iOS Simulator).
   installAppDispatcher(bridge);
+  bridge.pumpOps();
 
   if (result.isError) {
     debugPrint('[skal] EVAL ERROR: ${result.value}');

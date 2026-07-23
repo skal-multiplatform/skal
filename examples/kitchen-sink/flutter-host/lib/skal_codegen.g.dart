@@ -9,22 +9,82 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use, implementation_imports, unnecessary_import, depend_on_referenced_packages
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use, implementation_imports, unnecessary_import, depend_on_referenced_packages, unnecessary_cast
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
+import 'package:skal_flutter/skal/services.dart';
 import 'dart:convert';
-import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:kitchen_sink/adapters/camera_factory.dart';
+import 'package:kitchen_sink/adapters/device_service.dart';
 import 'package:kitchen_sink/adapters/ticker.dart';
-import 'package:qr_flutter/src/types.dart';
-import 'package:skal_flutter/skal/root.dart';
-
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shimmer/shimmer.dart';
+import 'package:skal_flutter/skal/root.dart';
+import 'package:skal_flutter/skal_flutter.dart';
+
+/// Apply Skal's BaseProps (width / height / padding) around a generated
+/// adapter's widget.
+///
+/// Built-in widgets (`<Box>`, `<Column>`, …) accept these. Codegen'd ones
+/// construct only their own constructor's params, so before this helper
+/// existed `FlutterMap height={520}` was silently ignored — the map
+/// went unbounded inside a Column and overflowed by 99,477 pixels.
+///
+/// Cost when unset is two null-map lookups; the wrapper widgets are
+/// only constructed when the prop is actually present.
+///
+/// [owned] names props whose bare numeric wire slot the widget's own
+/// generated reader already consumes (a `double width` param), which
+/// therefore must NOT be applied twice. Ownership never covers the
+/// string `'fill'` form — a numeric reader ignores the string slot, so
+/// the wrapper still honors `width="fill"` even on an owned dimension.
+Widget _skalApplyBaseProps(
+  NodeState n,
+  Widget child, [
+  Set<String> owned = const {},
+]) {
+  if (!owned.contains('padding')) {
+    final pad = n.getCustomPropF32OrNull('padding');
+    if (pad != null) {
+      child = Padding(padding: EdgeInsets.all(pad), child: child);
+    }
+  }
+  final w = owned.contains('width')
+      ? _skalFillDim(n, 'width')
+      : _skalBaseDim(n, 'width');
+  final h = owned.contains('height')
+      ? _skalFillDim(n, 'height')
+      : _skalBaseDim(n, 'height');
+  if (w != null || h != null) {
+    // SkalFill, not SizedBox: `'fill'` maps to double.infinity, and a
+    // raw SizedBox(∞) inside an unbounded axis (codegen widget in a
+    // Row, fill-height in a Column) throws and silently blanks the
+    // whole layout flush. SkalFill fills when bounded, wraps when not.
+    child = SkalFill(width: w, height: h, child: child);
+  }
+  return child;
+}
+
+/// The `'fill'`-only read for dimensions the widget itself owns
+/// numerically: its own param handles numbers, but its F32 reader
+/// cannot see the string slot, so the wrapper still supplies
+/// "as much as the parent allows".
+double? _skalFillDim(NodeState n, String name) =>
+    n.getCustomPropStr(name) == 'fill' ? double.infinity : null;
+
+/// Read a dimension prop. Numbers pass through; the string `'fill'`
+/// means "as much as the parent allows", matching the built-in
+/// widgets' `width="fill"`.
+double? _skalBaseDim(NodeState n, String name) {
+  final v = n.getCustomPropF32OrNull(name);
+  if (v != null) return v;
+  if (n.getCustomPropStr(name) == 'fill') return double.infinity;
+  return null;
+}
 
 Map<String, dynamic>? _skalDecodeMap(Object? raw) {
   if (raw == null) return null;
@@ -181,88 +241,90 @@ Size? _skalParseSize(Object? raw) {
 }
 
 Widget _build_QrImageView(NodeState n, SkalBridge bridge) {
-  return QrImageView(
-    data: n.getCustomPropStr('data') ?? '',
-    size: n.getCustomPropF32OrNull('size'),
-    padding: EdgeInsets.fromLTRB(
-      n.getCustomPropF32('paddingLeft', 10.0),
-      n.getCustomPropF32('paddingTop', 10.0),
-      n.getCustomPropF32('paddingRight', 10.0),
-      n.getCustomPropF32('paddingBottom', 10.0),
+  return _skalApplyBaseProps(
+    n,
+    QrImageView(
+      data: n.getCustomPropStr('data') ?? '',
+      size: n.getCustomPropF32OrNull('size'),
+      padding: EdgeInsets.fromLTRB(
+        n.getCustomPropF32('paddingLeft', 10.0),
+        n.getCustomPropF32('paddingTop', 10.0),
+        n.getCustomPropF32('paddingRight', 10.0),
+        n.getCustomPropF32('paddingBottom', 10.0),
+      ),
+      backgroundColor: Color(n.getCustomPropU32('backgroundColor', 0x00000000)),
+      version: n.getCustomPropU32('version', QrVersions.auto),
+      errorCorrectionLevel: n.getCustomPropU32(
+        'errorCorrectionLevel',
+        QrErrorCorrectLevel.L,
+      ),
+      constrainErrorBounds: n.getCustomPropU32('constrainErrorBounds', 1) != 0,
+      gapless: n.getCustomPropU32('gapless', 1) != 0,
+      embeddedImage:
+          (imageProviderFromSrc(n.getCustomPropStr('embeddedImage') ?? '')
+              as ImageProvider?),
+      embeddedImageStyle: _skalParseQrEmbeddedImageStyle(
+        n.getCustomPropStr('embeddedImageStyle'),
+      ),
+      semanticsLabel: n.getCustomPropStr('semanticsLabel') ?? 'qr code',
+      eyeStyle:
+          (_skalParseQrEyeStyle(n.getCustomPropStr('eyeStyle')) ??
+          const QrEyeStyle(eyeShape: QrEyeShape.square, color: Colors.black)),
+      dataModuleStyle:
+          (_skalParseQrDataModuleStyle(n.getCustomPropStr('dataModuleStyle')) ??
+          const QrDataModuleStyle(
+            dataModuleShape: QrDataModuleShape.square,
+            color: Colors.black,
+          )),
+      embeddedImageEmitsError:
+          n.getCustomPropU32('embeddedImageEmitsError', 0) != 0,
+      foregroundColor: (() {
+        final v = n.getCustomPropU32OrNull('foregroundColor');
+        return v == null ? null : Color(v);
+      })(),
     ),
-    backgroundColor: Color(n.getCustomPropU32('backgroundColor', 0x00000000)),
-    version: n.getCustomPropU32('version', QrVersions.auto),
-    errorCorrectionLevel: n.getCustomPropU32(
-      'errorCorrectionLevel',
-      QrErrorCorrectLevel.L,
-    ),
-    constrainErrorBounds: n.getCustomPropU32('constrainErrorBounds', 1) != 0,
-    gapless: n.getCustomPropU32('gapless', 1) != 0,
-    embeddedImage:
-        ((() {
-              final s = n.getCustomPropStr('embeddedImage') ?? '';
-              if (s.isEmpty) return null;
-              if (s.startsWith('http')) return NetworkImage(s);
-              if (s.startsWith('file://'))
-                return FileImage(File(s.substring(7)));
-              if (s.startsWith('/')) return FileImage(File(s));
-              return AssetImage(s);
-            })()
-            as ImageProvider?),
-    embeddedImageStyle: _skalParseQrEmbeddedImageStyle(
-      n.getCustomPropStr('embeddedImageStyle'),
-    ),
-    semanticsLabel: n.getCustomPropStr('semanticsLabel') ?? 'qr code',
-    eyeStyle:
-        (_skalParseQrEyeStyle(n.getCustomPropStr('eyeStyle')) ??
-        const QrEyeStyle(eyeShape: QrEyeShape.square, color: Colors.black)),
-    dataModuleStyle:
-        (_skalParseQrDataModuleStyle(n.getCustomPropStr('dataModuleStyle')) ??
-        const QrDataModuleStyle(
-          dataModuleShape: QrDataModuleShape.square,
-          color: Colors.black,
-        )),
-    embeddedImageEmitsError:
-        n.getCustomPropU32('embeddedImageEmitsError', 0) != 0,
-    foregroundColor: (() {
-      final v = n.getCustomPropU32OrNull('foregroundColor');
-      return v == null ? null : Color(v);
-    })(),
   );
 }
 
 Widget _build_Shimmer(NodeState n, SkalBridge bridge) {
-  return Shimmer(
-    child: n.childCount > 0
-        ? SkalNode(
-            nodeId: n.childAt(0),
-            bridge: bridge,
-            key: ValueKey<int>(n.childAt(0)),
-          )
-        : const SizedBox.shrink(),
-    gradient: (_skalParseGradient(n.getCustomPropStr('gradient')) as Gradient),
-    direction: ShimmerDirection.values[n.getCustomPropU32('direction', 0)],
-    period: Duration(milliseconds: n.getCustomPropU32('period', 1500)),
-    loop: n.getCustomPropU32('loop', 0),
-    enabled: n.getCustomPropU32('enabled', 1) != 0,
+  return _skalApplyBaseProps(
+    n,
+    Shimmer(
+      child: n.childCount > 0
+          ? SkalNode(
+              nodeId: n.childAt(0),
+              bridge: bridge,
+              key: ValueKey<int>(n.childAt(0)),
+            )
+          : const SizedBox.shrink(),
+      gradient:
+          (_skalParseGradient(n.getCustomPropStr('gradient')) as Gradient),
+      direction: ShimmerDirection.values[n.getCustomPropU32('direction', 0)],
+      period: Duration(milliseconds: n.getCustomPropU32('period', 1500)),
+      loop: n.getCustomPropU32('loop', 0),
+      enabled: n.getCustomPropU32('enabled', 1) != 0,
+    ),
   );
 }
 
 Widget _build_ShimmerFromColors(NodeState n, SkalBridge bridge) {
-  return Shimmer.fromColors(
-    child: n.childCount > 0
-        ? SkalNode(
-            nodeId: n.childAt(0),
-            bridge: bridge,
-            key: ValueKey<int>(n.childAt(0)),
-          )
-        : const SizedBox.shrink(),
-    baseColor: Color(n.getCustomPropU32('baseColor', 0xFF000000)),
-    highlightColor: Color(n.getCustomPropU32('highlightColor', 0xFF000000)),
-    period: Duration(milliseconds: n.getCustomPropU32('period', 1500)),
-    direction: ShimmerDirection.values[n.getCustomPropU32('direction', 0)],
-    loop: n.getCustomPropU32('loop', 0),
-    enabled: n.getCustomPropU32('enabled', 1) != 0,
+  return _skalApplyBaseProps(
+    n,
+    Shimmer.fromColors(
+      child: n.childCount > 0
+          ? SkalNode(
+              nodeId: n.childAt(0),
+              bridge: bridge,
+              key: ValueKey<int>(n.childAt(0)),
+            )
+          : const SizedBox.shrink(),
+      baseColor: Color(n.getCustomPropU32('baseColor', 0xFF000000)),
+      highlightColor: Color(n.getCustomPropU32('highlightColor', 0xFF000000)),
+      period: Duration(milliseconds: n.getCustomPropU32('period', 1500)),
+      direction: ShimmerDirection.values[n.getCustomPropU32('direction', 0)],
+      loop: n.getCustomPropU32('loop', 0),
+      enabled: n.getCustomPropU32('enabled', 1) != 0,
+    ),
   );
 }
 
@@ -498,10 +560,33 @@ Widget _build_Ticker(NodeState n, SkalBridge bridge) {
   );
 }
 
+void _registerService_device() {
+  registerService('device', (String method, List<Object?> args) {
+    switch (method) {
+      case 'copy':
+        return DeviceService.copy(
+          (((args.isNotEmpty ? args[0] : null)) as String? ?? ''),
+        );
+      case 'impact':
+        return DeviceService.impact(
+          ((((args.isNotEmpty ? args[0] : null)) as num?)?.toInt() ?? 0),
+        );
+      case 'paste':
+        return DeviceService.paste();
+      case 'tap':
+        return DeviceService.tap();
+      case 'vibrate':
+        return DeviceService.vibrate();
+    }
+    throw 'skal service "device": unknown method "$method"';
+  });
+}
+
 void registerAll() {
   SkalRegistry.registerWidget('qrImageView', _build_QrImageView);
   SkalRegistry.registerWidget('shimmer', _build_Shimmer);
   SkalRegistry.registerWidget('shimmerFromColors', _build_ShimmerFromColors);
   SkalRegistry.registerWidget('camera', _build_Camera);
   SkalRegistry.registerWidget('ticker', _build_Ticker);
+  _registerService_device();
 }

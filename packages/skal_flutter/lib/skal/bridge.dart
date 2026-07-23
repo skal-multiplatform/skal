@@ -36,6 +36,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import '../skal_ffi.dart';
+import 'handles.dart';
 import 'node_state.dart';
 import 'registry.dart';
 import 'wire.dart';
@@ -160,10 +161,31 @@ class SkalBridge {
   }
 
   /// App-level RPC dispatcher for the root node — backs the imperative
-  /// dialog API (skal/dialogs.dart). Held on the bridge (not just the
-  /// node) so it survives a root-node recreation: `opCreateNode`
-  /// re-attaches it whenever id 1 is (re)created.
-  SkalMethodDispatcher? rootDispatcher;
+  /// dialog API (skal/dialogs.dart) and the service registry
+  /// (skal/services.dart). Held on the bridge (not just the node) so it
+  /// survives a root-node recreation: `opCreateNode` re-attaches it
+  /// whenever id 1 is (re)created.
+  ///
+  /// Assigning re-attaches to the live root node as a side effect. That
+  /// is not a nicety — the root node caches its own `methodDispatcher`,
+  /// so the obvious app-side idiom
+  ///
+  /// ```dart
+  /// final base = bridge.rootDispatcher;
+  /// bridge.rootDispatcher = (m, a) => m == 'ping' ? 'pong' : base!(m, a);
+  /// ```
+  ///
+  /// used to appear to work and silently dispatch to the *old* closure
+  /// forever. The setter closes that trap; app code never has to know
+  /// `kRootNodeId` exists.
+  SkalMethodDispatcher? _rootDispatcher;
+
+  SkalMethodDispatcher? get rootDispatcher => _rootDispatcher;
+
+  set rootDispatcher(SkalMethodDispatcher? dispatcher) {
+    _rootDispatcher = dispatcher;
+    nodes[kRootNodeId]?.methodDispatcher = dispatcher;
+  }
 
   /// Latches true once any `<richText>` node is created. Gates the
   /// drain's pass-0 (richText child→parent rebuild propagation) so a
@@ -442,6 +464,14 @@ class SkalBridge {
             sub.cancel();
           }
           _streamSubscriptions.clear();
+          // The outgoing generation's opaque handles (A3) die with it:
+          // JS-held handle ids are numbers in the discarded bundle, so
+          // nothing can ever release them again. Without this sweep,
+          // every hot reload stranded the previous generation's
+          // controllers — camera hardware stayed locked, liveCount grew
+          // monotonically — with no missing-release bug anywhere in the
+          // app's code. releaseAll() also runs each object's dispose().
+          SkalHandles.releaseAll();
           final resetRoot = ns[kRootNodeId];
           // We deliberately do NOT dispose the swept NodeStates: their SkalNode
           // widgets (and any host-side AnimationControllers) are still mounted
@@ -519,6 +549,18 @@ class SkalBridge {
             rows[b] = c;
             rowChild.parent = a;
             rowList.coldDirty = true;
+            touched.add(a);
+          }
+          break;
+
+        case opClearCustomProp:
+          // a = nodeId, b = nameHash. Remove the prop from every typed
+          // map — see wire.dart's rationale (type-change invalidation).
+          final clearNode = ns[a];
+          final clearName = _nameDict[b];
+          if (clearNode != null && clearName != null) {
+            clearNode.clearCustomProp(clearName);
+            clearNode.coldDirty = true;
             touched.add(a);
           }
           break;
@@ -805,6 +847,25 @@ class SkalBridge {
               final offset = c;
               args.add(_readString(kStringHeapOff + offset, length));
               break;
+            case eventArgJson:
+              // Same packing as eventArgStr — the discriminator is the
+              // only difference. JS stringified an object/array; the
+              // dispatcher receives the decoded Map/List rather than
+              // having to jsonDecode a String arg by convention (which
+              // is what dialogs.dart's `_decodeSpec` had to do before
+              // this case existed).
+              final length = (b >> 8) & 0xFFFFFF;
+              final offset = c;
+              final raw = _readString(kStringHeapOff + offset, length);
+              try {
+                args.add(jsonDecode(raw));
+              } catch (_) {
+                // Malformed JSON can only come from a corrupt ring;
+                // degrade to the raw string rather than killing the
+                // whole drain loop.
+                args.add(raw);
+              }
+              break;
             default:
               args.add(null);
           }
@@ -831,7 +892,10 @@ class SkalBridge {
           if (dispatcher == null) {
             _writeMethodError(c,
                 'skal RPC: no method dispatcher on node $a — host not '
-                'mounted yet, or this widget isn\'t a host-pattern target');
+                'mounted yet, or this widget isn\'t a host-pattern target'
+                '${a == kRootNodeId ? '. Node $kRootNodeId is the root: '
+                    'call installAppDispatcher(bridge) BEFORE the first '
+                    'pumpOps() in your host\'s main()' : ''}');
             break;
           }
           try {

@@ -9,15 +9,76 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use, implementation_imports, unnecessary_import, depend_on_referenced_packages
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use, implementation_imports, unnecessary_import, depend_on_referenced_packages, unnecessary_cast
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
 import 'dart:convert';
+import 'package:skal_flutter/skal/root.dart';
 
 import 'value_class.dart';
+
+/// Apply Skal's BaseProps (width / height / padding) around a generated
+/// adapter's widget.
+///
+/// Built-in widgets (`<Box>`, `<Column>`, …) accept these. Codegen'd ones
+/// construct only their own constructor's params, so before this helper
+/// existed `FlutterMap height={520}` was silently ignored — the map
+/// went unbounded inside a Column and overflowed by 99,477 pixels.
+///
+/// Cost when unset is two null-map lookups; the wrapper widgets are
+/// only constructed when the prop is actually present.
+///
+/// [owned] names props whose bare numeric wire slot the widget's own
+/// generated reader already consumes (a `double width` param), which
+/// therefore must NOT be applied twice. Ownership never covers the
+/// string `'fill'` form — a numeric reader ignores the string slot, so
+/// the wrapper still honors `width="fill"` even on an owned dimension.
+Widget _skalApplyBaseProps(
+  NodeState n,
+  Widget child, [
+  Set<String> owned = const {},
+]) {
+  if (!owned.contains('padding')) {
+    final pad = n.getCustomPropF32OrNull('padding');
+    if (pad != null) {
+      child = Padding(padding: EdgeInsets.all(pad), child: child);
+    }
+  }
+  final w = owned.contains('width')
+      ? _skalFillDim(n, 'width')
+      : _skalBaseDim(n, 'width');
+  final h = owned.contains('height')
+      ? _skalFillDim(n, 'height')
+      : _skalBaseDim(n, 'height');
+  if (w != null || h != null) {
+    // SkalFill, not SizedBox: `'fill'` maps to double.infinity, and a
+    // raw SizedBox(∞) inside an unbounded axis (codegen widget in a
+    // Row, fill-height in a Column) throws and silently blanks the
+    // whole layout flush. SkalFill fills when bounded, wraps when not.
+    child = SkalFill(width: w, height: h, child: child);
+  }
+  return child;
+}
+
+/// The `'fill'`-only read for dimensions the widget itself owns
+/// numerically: its own param handles numbers, but its F32 reader
+/// cannot see the string slot, so the wrapper still supplies
+/// "as much as the parent allows".
+double? _skalFillDim(NodeState n, String name) =>
+    n.getCustomPropStr(name) == 'fill' ? double.infinity : null;
+
+/// Read a dimension prop. Numbers pass through; the string `'fill'`
+/// means "as much as the parent allows", matching the built-in
+/// widgets' `width="fill"`.
+double? _skalBaseDim(NodeState n, String name) {
+  final v = n.getCustomPropF32OrNull(name);
+  if (v != null) return v;
+  if (n.getCustomPropStr(name) == 'fill') return double.infinity;
+  return null;
+}
 
 Map<String, dynamic>? _skalDecodeMap(Object? raw) {
   if (raw == null) return null;
@@ -75,10 +136,13 @@ MapInit? _skalParseMapInit(Object? raw) {
 }
 
 Widget _build_MiniMap(NodeState n, SkalBridge bridge) {
-  return MiniMap(
-    init: _skalParseMapInit(n.getCustomPropStr('init'))!,
-    cameraBounds: _skalParseGeoBounds(n.getCustomPropStr('cameraBounds')),
-    label: n.getCustomPropStr('label') ?? 'map',
+  return _skalApplyBaseProps(
+    n,
+    MiniMap(
+      init: _skalParseMapInit(n.getCustomPropStr('init'))!,
+      cameraBounds: _skalParseGeoBounds(n.getCustomPropStr('cameraBounds')),
+      label: n.getCustomPropStr('label') ?? 'map',
+    ),
   );
 }
 

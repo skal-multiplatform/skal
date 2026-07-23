@@ -11,7 +11,7 @@ universal renderer, the deep-object store, and the runtime primitives
 | `skal` (default) | Capitalized-component barrel — `<Column>`, `<Row>`, `<Text>`, `<Button>`, `<ListView>`, ... |
 | `skal/renderer` | Solid universal renderer hooked to the native bridge (libskal → Flutter) |
 | `skal/renderer-web` | Same shape, but emits DOM ops — used by `bun run dev:web` |
-| `skal/runtime` | `createRouter`, `createSkalRef`, `<Screen>`, navigation primitives |
+| `skal/runtime` | `createRouter`, `createSkalRef`, `createSkalService`, `registerWebService`, `<Screen>`, navigation primitives |
 | `skal/store` | `createSkalStore`, `createSkalEffect`, `STORE` |
 | `skal/bridge` | Low-level bridge ops — most apps don't need this directly |
 

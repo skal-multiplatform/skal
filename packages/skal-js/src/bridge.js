@@ -84,6 +84,7 @@ export const OP_DECLARE_NAME        = 0x17;
 export const OP_SET_CUSTOM_PROP_U32 = 0x18;
 export const OP_SET_CUSTOM_PROP_F32 = 0x19;
 export const OP_SET_CUSTOM_PROP_STR = 0x1A;
+export const OP_CLEAR_CUSTOM_PROP  = 0x2C;
 export const OP_BIND_CUSTOM_HANDLER = 0x1B;
 // JS → Dart RPC. JSX side calls `await ref.takePicture()`. The macro
 // resolves the method name to a hash (same FNV-1a as custom-prop
@@ -454,6 +455,14 @@ export const ALIGN_SPACE_EVENLY  = 5;
 
 export const HAS_NATIVE_BRIDGE =
   typeof globalThis.__skal_acquireBridge === 'function';
+
+// A DOM window exists. NOT the inverse of HAS_NATIVE_BRIDGE — Flutter
+// Web (Shape D) has both. The three-valued platform picture (native /
+// DOM browser / Flutter Web) is documented at the sites that branch on
+// it; consumers should import this rather than re-deriving
+// `typeof window` locally, so a future environment shift (SSR shims,
+// workers) is one edit, not a scavenger hunt.
+export const IS_BROWSER = typeof window !== 'undefined';
 
 let buffer;
 if (HAS_NATIVE_BRIDGE) {
@@ -1122,6 +1131,16 @@ const _customCacheStr = new Map();
 // subscription + its closure on the JS heap.
 const _streamsByNode = new Map();
 
+// Remove one callId from a node's live-stream index, dropping the Set
+// when it empties. Shared by unsubscribe and the terminal-event paths
+// (done/error) so no path can forget the index half of the cleanup.
+function _dropStreamIndex(nodeId, callId) {
+  const idx = _streamsByNode.get(nodeId);
+  if (!idx) return;
+  idx.delete(callId);
+  if (idx.size === 0) _streamsByNode.delete(nodeId);
+}
+
 export function diffCacheReleaseNode(nodeId) {
   const row = nodeIdToRow.get(nodeId);
   if (row !== undefined) {
@@ -1317,6 +1336,16 @@ export function listClearRow(listId, index) {
  *   spec: { title?, message?, actions?: [{ label, value, style? }] }
  *
  * `style: 'destructive'` renders the action emphasized (red).
+ *
+ * The spec deliberately ships as a JSON STRING arg, not an object arg
+ * (EVENT_ARG_JSON), even though the wire now supports objects. Reason:
+ * version skew. JS hot reload is the default dev flow, so a newer JS
+ * bundle routinely runs against an app binary built with an older
+ * skal_flutter — and an old host's opMethodArg switch decodes the JSON
+ * arg type as null, turning every dialog into an empty shell with no
+ * error anywhere. The string shape is decodable by every host version;
+ * new APIs (services) may use object args freely because no older host
+ * ever dispatched them.
  */
 export function showDialog(spec) {
   return invokeMethod(ROOT_NODE_ID, 'showDialog', [JSON.stringify(spec || {})]);
@@ -1469,6 +1498,22 @@ export function setCustomPropStr(nodeId, name, value) {
   propWritesCounter++;
 }
 
+// Clear a custom prop from ALL Dart-side typed maps AND the JS dedup
+// caches. The renderer calls this when a prop's value TYPE changes
+// (number → string, string → object, …): the typed maps are
+// insert-only, so without the clear a stale numeric slot permanently
+// shadows a later string write for readers that probe the typed slot
+// first. Purging the JS caches matters just as much — toggling
+// 300 → 'fill' → 300 must NOT be deduped against the pre-clear 300,
+// or the F32 slot stays empty on the way back.
+export function clearCustomProp(nodeId, name) {
+  const h = _internName(name);
+  _customCacheU32.get(nodeId)?.delete(h);
+  _customCacheF32.get(nodeId)?.delete(h);
+  _customCacheStr.get(nodeId)?.delete(h);
+  writeOp(OP_CLEAR_CUSTOM_PROP, nodeId, h, 0);
+}
+
 export function bindCustomHandler(nodeId, name, handlerId) {
   const h = _internName(name);
   writeOp(OP_BIND_CUSTOM_HANDLER, nodeId, h, handlerId);
@@ -1518,18 +1563,60 @@ let nextCallId = globalThis.__skalNextCallId || 1;
 // encoding rules from drifting between the two paths.
 //
 // Order matters — Dart's dispatcher reads positional args in op-
-// arrival order. Unsupported JS types (object/array/null) land as
-// EVENT_ARG_VOID, which the Dart side maps to null in that arg slot.
+// arrival order. Objects and arrays ship as EVENT_ARG_JSON (same heap
+// packing as a string; Dart jsonDecodes on receipt), so a dispatcher
+// gets a real Map/List. `null`, `undefined`, functions and symbols land
+// as EVENT_ARG_VOID, which the Dart side maps to null in that arg slot.
+//
+// Payload law (docs/NATIVE_SUPPORT.md): the string heap is a budget
+// invariant, not an elastic buffer. Pass paths and handles, never bulk
+// bytes — do not stringify a base64 image into an arg.
+// Write one string-backed method arg (STR or JSON discriminator).
+// Returns false — WITHOUT having written any op — when the string
+// alone exceeds the heap, so the caller can substitute a VOID op and
+// keep the call's arg slots aligned. The payload law (PERFORMANCE.md)
+// says bulk bytes should never be here in the first place; this makes
+// violating it a warned-null instead of a wire desync.
+function _writeStringArgOp(callId, s, discriminator) {
+  try {
+    writeString(s);
+  } catch (e) {
+    console.warn('[skal] RPC arg dropped: string/JSON arg exceeds the '
+      + `string heap (${s.length} chars). Pass a path or handle instead `
+      + 'of bulk bytes — see PERFORMANCE.md payload law.');
+    return false;
+  }
+  const offset = _strOffset >>> 0;
+  const lenAndType = discriminator | ((_strLength & 0xFFFFFF) << 8);
+  writeOp(OP_METHOD_ARG, callId, lenAndType, offset);
+  return true;
+}
+
 function _writeMethodArgs(callId, args) {
   for (let i = 0; i < args.length; i++) {
     const v = args[i];
     if (typeof v === 'number') {
-      if (Number.isInteger(v)) {
+      // Only encodings that survive the trip. `v | 0` silently WRAPS
+      // integers outside int32 (Date.now() becomes a garbage negative),
+      // and F32 rounds doubles that need the full 53 bits (GPS
+      // coordinates drift by ~1e-6). Anything either encoding would
+      // corrupt rides the JSON path instead — Dart jsonDecode returns
+      // the exact num. RPC args are cold-path; the heap write is noise.
+      if (Number.isInteger(v) && v >= -0x80000000 && v <= 0x7FFFFFFF) {
         writeOp(OP_METHOD_ARG, callId, EVENT_ARG_I32, v | 0);
-      } else {
+      } else if (!Number.isInteger(v) && Math.fround(v) === v) {
         // f32 bit-cast via the same _f32buf scratch the prop-write uses.
         _f32buf[0] = v;
         writeOp(OP_METHOD_ARG, callId, EVENT_ARG_F32, _u32view[0]);
+      } else if (Number.isFinite(v)) {
+        writeString(String(v));
+        const offset = _strOffset >>> 0;
+        const lenAndType = EVENT_ARG_JSON | ((_strLength & 0xFFFFFF) << 8);
+        writeOp(OP_METHOD_ARG, callId, lenAndType, offset);
+      } else {
+        // NaN / Infinity — not JSON-encodable; VOID → null, and the
+        // dispatcher's own default applies.
+        writeOp(OP_METHOD_ARG, callId, EVENT_ARG_VOID, 0);
       }
     } else if (typeof v === 'boolean') {
       writeOp(OP_METHOD_ARG, callId, EVENT_ARG_BOOL, v ? 1 : 0);
@@ -1539,10 +1626,32 @@ function _writeMethodArgs(callId, args) {
       // bits) in word3. Length is therefore bounded only by the heap
       // capacity (~768 KiB), not by the wire encoding — fine for any
       // realistic RPC string arg.
-      writeString(v);
-      const offset = _strOffset >>> 0;
-      const lenAndType = EVENT_ARG_STR | ((_strLength & 0xFFFFFF) << 8);
-      writeOp(OP_METHOD_ARG, callId, lenAndType, offset);
+      //
+      // writeString THROWS when a single string cannot fit the heap
+      // even after a flush — and by this point earlier args' ops are
+      // already in the ring, so letting it propagate would orphan them
+      // (a callId with args but no INVOKE ever arriving) and throw
+      // synchronously out of invokeMethod instead of rejecting.
+      // Degrade the one oversized arg to VOID, loudly.
+      if (!_writeStringArgOp(callId, v, EVENT_ARG_STR)) {
+        writeOp(OP_METHOD_ARG, callId, EVENT_ARG_VOID, 0);
+      }
+    } else if (v !== null && (typeof v === 'object')) {
+      // Objects + arrays → JSON, identical heap packing to a string;
+      // only the discriminator differs so Dart knows to decode. A
+      // non-serializable value (cyclic, BigInt, a live handle) throws
+      // in stringify — degrade that one arg to VOID rather than
+      // failing the whole call with a wire desync (the arg ops for
+      // this callId are already partly written by now).
+      let json;
+      try {
+        json = JSON.stringify(v);
+      } catch (_) {
+        json = undefined;
+      }
+      if (json === undefined || !_writeStringArgOp(callId, json, EVENT_ARG_JSON)) {
+        writeOp(OP_METHOD_ARG, callId, EVENT_ARG_VOID, 0);
+      }
     } else {
       writeOp(OP_METHOD_ARG, callId, EVENT_ARG_VOID, 0);
     }
@@ -1607,11 +1716,7 @@ export function subscribeStream(nodeId, methodName, args, onValue, opts) {
   return function unsubscribe() {
     if (!streamHandlers.has(callId)) return;  // already cleaned up
     streamHandlers.delete(callId);
-    const idx = _streamsByNode.get(nodeId);
-    if (idx) {
-      idx.delete(callId);
-      if (idx.size === 0) _streamsByNode.delete(nodeId);
-    }
+    _dropStreamIndex(nodeId, callId);
     writeOp(OP_UNSUBSCRIBE_STREAM, callId, 0, 0);
     scheduleCommit();
   };
@@ -1827,10 +1932,16 @@ function _drainEvents() {
         }
       }
     } else if (eventKind === EV_STREAM_DONE) {
-      // Stream completed. Fire onDone if registered, then clean up.
+      // Stream completed. Fire onDone if registered, then clean up —
+      // INCLUDING the per-node index: service streams live on the root
+      // node, which never unmounts, so an index entry left behind here
+      // accumulated forever for every naturally-completed stream (the
+      // unsubscribe short-circuits on streamHandlers.has and could
+      // never remove it).
       const sub = streamHandlers.get(idSlot);
       if (sub) {
         streamHandlers.delete(idSlot);
+        _dropStreamIndex(sub.nodeId, idSlot);
         try { if (sub.onDone) sub.onDone(); }
         catch (e) {
           lastHandlerError = e && (e.stack || e.message || String(e)) || 'unknown';
@@ -1838,10 +1949,12 @@ function _drainEvents() {
       }
     } else if (eventKind === EV_STREAM_ERROR) {
       // Stream errored. Fire onError if registered (defaults to a
-      // console.warn-shaped log via lastHandlerError), clean up.
+      // console.warn-shaped log via lastHandlerError), clean up — same
+      // index purge as the done path.
       const sub = streamHandlers.get(idSlot);
       if (sub) {
         streamHandlers.delete(idSlot);
+        _dropStreamIndex(sub.nodeId, idSlot);
         try {
           if (sub.onError) sub.onError(new Error(
             typeof arg === 'string' ? arg : 'skal stream error'));

@@ -337,6 +337,19 @@ Future<int> _runCodegen({
   final result = generate(
     units: units,
     sourceRelativeImports: relImports,
+    // Same conditional-export defense as the build_runner path (see
+    // _addCanonicalImport): a src/-declared class whose package has a
+    // canonical barrel imports the barrel, so the analyzer-resolved
+    // STUB of a conditional export never collides with the CFE-resolved
+    // variant at compile time. Without this the CLI emitted the exact
+    // ambiguous-import failure the Builder was fixed for.
+    barrelResolver: (pkg) {
+      final libDir = resolvePackageLibDir(pkgRoot, pkg);
+      if (libDir == null) return null;
+      return File(p.join(libDir, '$pkg.dart')).existsSync()
+          ? 'package:$pkg/$pkg.dart'
+          : null;
+    },
   );
 
   // Ensure the output directory exists, then write.
@@ -344,10 +357,13 @@ Future<int> _runCodegen({
   File(absOutput).writeAsStringSync(result.source);
 
   // Sibling JSON manifest — same shape the build_runner Builder
-  // writes (see lib/builder.dart). Lets the Vite plugin pick up local
-  // CLI-emitted widgets via the same `skalCodegen({manifests: […]})`
-  // mechanism it uses for pub-package widgets, with no per-widget JS
-  // stub or per-package vite.config.js edits required.
+  // writes (see lib/builder.dart), INCLUDING the builders/services/
+  // skipped sections, so a CLI-emitted manifest is interchangeable
+  // with a Builder-emitted one for every consumer (the Vite plugin
+  // reads `builders` to wire B2 props; omitting it silently degraded
+  // any CLI-wrapped builder widget to an event handler). The CLI path
+  // has no skal_codegen.yaml, so `services` is always empty here —
+  // but the KEY exists, keeping the shapes identical.
   //
   // Filename: swap the `.g.dart` suffix for `.json` so the two
   // outputs stay paired. `skal_adapters.g.dart` → `skal_adapters.json`.
@@ -357,6 +373,22 @@ Future<int> _runCodegen({
   final manifest = {
     'widgets': {
       for (final w in result.generated) w.className: w.registryKey,
+    },
+    'builders': {
+      for (final w in result.generated)
+        if (w.builderParams.isNotEmpty) w.registryKey: w.builderParams,
+    },
+    'services': const <String, Object?>{},
+    'skipped': {
+      'widgets': {
+        for (final w in result.skipped) w.className: w.skipReason,
+      },
+      'services': const <String, Object?>{},
+      'omittedProps': {
+        for (final w in result.generated)
+          if (w.omittedOptionalParams.isNotEmpty)
+            w.className: w.omittedOptionalParams,
+      },
     },
   };
   File(manifestPath).writeAsStringSync(

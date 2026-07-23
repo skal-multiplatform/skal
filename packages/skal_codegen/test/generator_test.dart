@@ -596,6 +596,470 @@ void main() {
           reason: 'complex-types generator output does NOT match '
               'complex_types.expected.dart');
     });
+
+    test('List<ValueClass>: element gets a registerValue builder, parent '
+        'reads child nodes', () async {
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/value_list.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/value_list.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unit = await ctx.currentSession.getResolvedUnit(fixturePath)
+          as ResolvedUnitResult;
+
+      final result = generate(
+        units: [unit],
+        sourceRelativeImports: ['value_list.dart'],
+      );
+
+      // The widget that `List<Pin>` used to kill now ships.
+      expect(result.generated.map((w) => w.className), contains('PinLayer'));
+      expect(result.skipped, isEmpty);
+
+      // The element class gets a VALUE builder — registerValue, not
+      // registerWidget. That's what makes bridge.buildValue<Pin>()
+      // resolve it from a child node.
+      expect(result.source, contains("SkalRegistry.registerValue<Pin>('pin'"));
+      expect(result.source, contains('Pin _buildValue_Pin('));
+
+      // The parent walks child nodes rather than parsing a JSON array —
+      // this is the O(changed) vs O(n) decision, and it is the whole
+      // point of B5. A JSON-array reader here would be a regression
+      // even though it would pass a "does MarkerLayer work" test.
+      expect(result.source, contains('_skalChildValues<Pin>(n, bridge)'));
+      expect(result.source, isNot(contains("jsonDecode(n.getCustomPropStr('pins')")));
+
+      // The element's own nested value class still goes through the
+      // normal JSON encoder — child composition is for the LIST, not
+      // for every field below it.
+      expect(result.source, contains('_skalParseLatLng'));
+
+      _expectSnapshot(result.source, expectedPath,
+          reason: 'value-list generator output does NOT match '
+              'value_list.expected.dart');
+    });
+
+    test(r'subtype unions: an abstract param dispatches on $type to its '
+        'concrete subclasses', () async {
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/subtype_union.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/subtype_union.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unit = await ctx.currentSession.getResolvedUnit(fixturePath)
+          as ResolvedUnitResult;
+
+      final result = generate(
+        units: [unit],
+        sourceRelativeImports: ['subtype_union.dart'],
+      );
+
+      // Card ships: `Frame` is abstract, but all three of its concrete
+      // subclasses are ordinary value classes.
+      expect(result.generated.map((w) => w.className), contains('Card'));
+      expect(result.source, contains('_skalParseFrame'));
+      for (final sub in ['SquareFrame', 'RoundFrame', 'BeveledFrame']) {
+        expect(result.source, contains("case '$sub':"),
+            reason: '$sub must be a dispatch arm');
+        expect(result.source, contains('_skalParse$sub'),
+            reason: '$sub must get its own value-class parser');
+      }
+      // Dispatch is on a `$type` field. With three subtypes there is
+      // no safe guess, so an unrecognized discriminator must return
+      // null and let the param's declared default apply — never pick
+      // an arbitrary subtype and render the wrong thing silently.
+      expect(result.source, contains(r"j[r'$type']"));
+      expect(result.source, contains('const SquareFrame()'),
+          reason: "the param's own default must still be the fallback");
+
+      // An abstract type with NO concrete subclasses is still a dead
+      // end — B1 must not manufacture an empty switch, and the widget
+      // that requires it must still be skipped with a reason.
+      expect(result.source, isNot(contains('_skalParseUnknowable')));
+      expect(
+        result.skipped.singleWhere((w) => w.className == 'Unbuildable')
+            .skipReason,
+        contains('Unknowable'),
+      );
+
+      _expectSnapshot(result.source, expectedPath,
+          reason: 'subtype-union generator output does NOT match '
+              'subtype_union.expected.dart');
+    });
+
+    test('builder: an indexed builder param wires to SkalBuilderChild; '
+        'a non-indexed one is refused', () async {
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/overrides.dart');
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unit = await ctx.currentSession.getResolvedUnit(fixturePath)
+          as ResolvedUnitResult;
+
+      // Without opting in, a builder param is unmappable and required,
+      // so Feed is skipped. That default is the perf gate: nothing gets
+      // a JS round-trip per build call by accident.
+      final before = generate(
+        units: [unit], sourceRelativeImports: ['overrides.dart']);
+      expect(before.skipped.map((w) => w.className), contains('Feed'));
+
+      final after = generate(
+        units: [unit],
+        sourceRelativeImports: ['overrides.dart'],
+        overrides: {
+          'Feed': const WidgetOverride(
+            params: {'rowBuilder': ParamOverride(builder: true)},
+          ),
+        },
+      );
+      expect(after.generated.map((w) => w.className), contains('Feed'));
+      expect(after.source, contains('SkalBuilderChild(host: n, index: i'));
+      expect(after.source, contains('rowBuilder: (_, i) =>'));
+      // The prop name must reach the manifest — the JS renderer can't
+      // tell a builder from a callback on its own, so without this it
+      // would bind rowBuilder as an event handler and nothing would
+      // render.
+      final feed = after.generated.singleWhere((w) => w.className == 'Feed');
+      expect(feed.builderParams, ['rowBuilder']);
+
+      // `Widget Function(BuildContext, Widget)` has no index to key a
+      // subtree by. Refuse it, and say why.
+      final refused = generate(
+        units: [unit],
+        sourceRelativeImports: ['overrides.dart'],
+        overrides: {
+          'Feed': const WidgetOverride(
+            params: {
+              'rowBuilder': ParamOverride(builder: true),
+              'decorator': ParamOverride(builder: true),
+            },
+          ),
+        },
+      );
+      final skip = refused.skipped.singleWhere((w) => w.className == 'Feed');
+      expect(skip.skipReason, contains('not an indexed widget builder'));
+    });
+
+    test('handle: a widget controller param resolves an opaque handle '
+        'supplied by JS', () async {
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/overrides.dart');
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unit = await ctx.currentSession.getResolvedUnit(fixturePath)
+          as ResolvedUnitResult;
+
+      // Not opted in: a controller param is unmappable and required, so
+      // the widget is skipped. That default is deliberate — silently
+      // turning it into a handle would swap a build-time skip the dev
+      // can read for a runtime null they cannot.
+      final before = generate(
+        units: [unit], sourceRelativeImports: ['overrides.dart']);
+      expect(before.skipped.map((w) => w.className), contains('Playback'));
+
+      final after = generate(
+        units: [unit],
+        sourceRelativeImports: ['overrides.dart'],
+        overrides: {
+          'Playback': const WidgetOverride(
+            params: {'controller': ParamOverride(handle: true)},
+          ),
+        },
+      );
+      expect(after.generated.map((w) => w.className), contains('Playback'));
+      expect(after.source,
+          contains("_skalHandleProp<PlaybackController>(n, 'controller')"));
+      // Required param → asserts rather than silently constructing with
+      // a null controller.
+      expect(after.source, contains("'controller')!"));
+      // Sibling props still map.
+      expect(after.source, contains('muted'));
+
+      // A Widget-typed param is not handle-able — widgets are child
+      // nodes, and saying so beats a confusing type error downstream.
+      final refused = generate(
+        units: [unit],
+        sourceRelativeImports: ['overrides.dart'],
+        overrides: {
+          'Playback': const WidgetOverride(
+            params: {
+              'controller': ParamOverride(handle: true),
+              'overlay': ParamOverride(handle: true),
+            },
+          ),
+        },
+      );
+      final skip =
+          refused.skipped.singleWhere((w) => w.className == 'Playback');
+      expect(skip.skipReason, contains('handle'));
+      expect(skip.skipReason, contains('child nodes'),
+          reason: 'the message must say what a Widget param IS, not just '
+              'what it is not');
+    });
+
+    test('typeArgs: a generic widget class is pinned to a concrete type',
+        () async {
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/subtype_union.dart');
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unit = await ctx.currentSession.getResolvedUnit(fixturePath)
+          as ResolvedUnitResult;
+
+      // Without typeArgs a generic widget is skipped — and the message
+      // has to name the fix, since "codegen can't pick" is useless on
+      // its own.
+      final before = generate(
+        units: [unit], sourceRelativeImports: ['subtype_union.dart']);
+      final skip = before.skipped.singleWhere((w) => w.className == 'Chip');
+      expect(skip.skipReason, contains('typeArgs'));
+
+      final after = generate(
+        units: [unit],
+        sourceRelativeImports: ['subtype_union.dart'],
+        overrides: {'Chip': const WidgetOverride(typeArgs: ['Object'])},
+      );
+      expect(after.generated.map((w) => w.className), contains('Chip'));
+      expect(after.source, contains('Chip<Object>('));
+      // The payoff: `List<T>` substituted to `List<Object>` means the
+      // encoder sees a concrete element type. Reading the ctor off the
+      // uninstantiated class would leave a bare type variable here.
+      expect(after.source, contains('payloads:'));
+
+      // A wrong arity is refused rather than emitting `Chip<>(`.
+      final wrongArity = generate(
+        units: [unit],
+        sourceRelativeImports: ['subtype_union.dart'],
+        overrides: {
+          'Chip': const WidgetOverride(typeArgs: ['Object', 'int'])
+        },
+      );
+      expect(
+        wrongArity.skipped.singleWhere((w) => w.className == 'Chip').skipReason,
+        contains('typeArgs'),
+      );
+    });
+
+    test('overrides: a const: expression rescues a widget that one '
+        'unmappable required param would otherwise kill', () async {
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/overrides.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/overrides.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+      final unit = unitResult as ResolvedUnitResult;
+
+      // Baseline: without an override, one required TileSource takes
+      // the whole widget down. This is the behaviour B4 exists to fix,
+      // so assert it explicitly — if it ever stops being true the
+      // override test below would silently stop proving anything.
+      final before = generate(
+        units: [unit],
+        sourceRelativeImports: ['overrides.dart'],
+      );
+      expect(before.generated.map((w) => w.className), isNot(contains('Tiles')));
+      expect(
+        before.skipped.singleWhere((w) => w.className == 'Tiles').skipReason,
+        contains('TileSource'),
+      );
+
+      // With the override, the widget ships — and the twenty props that
+      // were always fine come with it.
+      final after = generate(
+        units: [unit],
+        sourceRelativeImports: ['overrides.dart'],
+        overrides: {
+          'Tiles': const WidgetOverride(
+            params: {
+              'provider': ParamOverride(constExpr: "TileSource('osm')"),
+              'builder': ParamOverride(ignore: true),
+            },
+          ),
+        },
+      );
+      // Scoped to Tiles: the fixture also carries `Feed`, which the
+      // B2 test drives and which is correctly skipped without its own
+      // override.
+      expect(after.skipped.map((w) => w.className), isNot(contains('Tiles')));
+      expect(after.generated.map((w) => w.className), contains('Tiles'));
+      expect(after.source, contains("provider: TileSource('osm')"));
+      // The ignored param is reported as omitted, not silently gone.
+      expect(
+        after.generated
+            .singleWhere((w) => w.className == 'Tiles')
+            .omittedOptionalParams,
+        contains('builder'),
+      );
+      // The mappable props still map.
+      expect(after.source, contains('urlTemplate'));
+      expect(after.source, contains('maxZoom'));
+
+      _expectSnapshot(after.source, expectedPath,
+          reason: 'override generator output does NOT match '
+              'overrides.expected.dart');
+    });
+
+    test('overrides: ignore on a REQUIRED param is refused, not '
+        'silently emitted as uncompilable code', () async {
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/overrides.dart');
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unit = await ctx.currentSession.getResolvedUnit(fixturePath)
+          as ResolvedUnitResult;
+
+      final result = generate(
+        units: [unit],
+        sourceRelativeImports: ['overrides.dart'],
+        overrides: {
+          'Tiles': const WidgetOverride(
+            params: {'provider': ParamOverride(ignore: true)},
+          ),
+        },
+      );
+      final skip = result.skipped.singleWhere((w) => w.className == 'Tiles');
+      expect(skip.skipReason, contains('ignore'));
+      expect(skip.skipReason, contains('const'),
+          reason: 'the message must name the fix, not just the problem');
+    });
+
+    test('services: emits a static-method dispatcher, drops what it '
+        "can't map, keeps the rest", () async {
+      final pkgRoot = p.normalize(p.absolute('.'));
+      final fixturePath = p.join(pkgRoot, 'test/fixtures/service_class.dart');
+      final expectedPath =
+          p.join(pkgRoot, 'test/fixtures/service_class.expected.dart');
+
+      final collection = AnalysisContextCollection(
+        includedPaths: [pkgRoot],
+        resourceProvider: PhysicalResourceProvider.INSTANCE,
+      );
+      final ctx = collection.contextFor(fixturePath);
+      final unitResult = await ctx.currentSession.getResolvedUnit(fixturePath);
+      expect(unitResult, isA<ResolvedUnitResult>());
+      final unit = unitResult as ResolvedUnitResult;
+
+      final geo = unit.libraryElement2.classes
+          .firstWhere((c) => c.name3 == 'Geo');
+
+      final result = generate(
+        units: const [],
+        sourceRelativeImports: const [],
+        services: [
+          ServiceConfig(
+            name: 'geo',
+            cls: geo,
+            importUri: 'service_class.dart',
+          ),
+        ],
+      );
+
+      expect(result.services, hasLength(1));
+      final svc = result.services.single;
+      expect(svc.skipReason, isNull,
+          reason: 'the service must survive even though two of its '
+              'methods are unmappable');
+      expect(svc.name, 'geo');
+      expect(svc.className, 'Geo');
+
+      // Every mappable static method is present…
+      expect(
+        svc.methods,
+        containsAll(<String>[
+          'battery',
+          'currentAccuracy',
+          'describe',
+          'getCurrentPosition',
+          'history',
+          'isInside',
+          'pickAccuracy',
+          'positionStream',
+          'startTracking',
+        ]),
+      );
+      // FutureOr<T> exposes only Object members — the wrapped return
+      // must normalize through Future.value before `.then` exists, or
+      // the generated file doesn't compile.
+      // (Format-agnostic: dart_style may break the expression across
+      // lines, so match the two halves separately.)
+      expect(result.source, contains('Future.value('));
+      expect(result.source,
+          contains('.then((LocationAccuracy v) => v.name)'));
+      // A stream of unserializable values must be REFUSED, not wrapped:
+      // `map(skalHandleOf)` would retain one Dart-side object per event
+      // with nothing releasing them.
+      expect(svc.methods, isNot(contains('handleStream')));
+      expect(svc.skippedMethods['handleStream'], contains('handle per event'));
+      // …including the two that touch a NativeHandle. Nothing about
+      // that type can be serialized, and before A3 both methods were
+      // dropped. Now the object stays on the Dart side and JS gets a
+      // handle, so the methods ship.
+      expect(svc.methods, containsAll(<String>['attach', 'acquire']));
+      // The only legitimate skip left is the stream-of-handles leak
+      // guard, asserted below by name.
+      expect(svc.skippedMethods.keys, ['handleStream']);
+      expect(result.source, contains('(skalHandleOf)(Geo.acquire())'),
+          reason: 'an unserializable return becomes a handle');
+      expect(result.source, contains('skalHandleArg<NativeHandle>'),
+          reason: 'a handle comes back in as an argument');
+      // Instance methods are not part of a service's surface.
+      expect(svc.methods, isNot(contains('ignored')));
+
+      // List args decode ELEMENTWISE — they must never fall through to
+      // the opaque-handle route, which erases the type parameter
+      // (`skalHandleArg<List>` → List<dynamic>) and breaks the call
+      // site. Caught live wrapping share_plus's shareXFiles.
+      expect(svc.methods, containsAll(<String>['sharePaths', 'coversAll']));
+      expect(result.source, contains('List<String>.from'),
+          reason: 'List<primitive> arg decodes via List<T>.from');
+      expect(result.source, contains('.whereType<Region>().toList()'),
+          reason: 'List<value class> arg parses per element and drops '
+              'malformed entries via whereType');
+      expect(result.source, isNot(contains('skalHandleArg<List')),
+          reason: 'no List arg may route through the handle fallback');
+
+      // Position has toJson() — the bridge's jsonEncode calls it, so no
+      // encoder should be synthesized for it. Battery has none, so one
+      // must be.
+      expect(result.source, isNot(contains('_skalEncodePosition')));
+      expect(result.source, contains('_skalEncodeBattery'));
+      // Enum returns serialize by name, not index — stable across a
+      // reordering of the Dart enum.
+      expect(result.source, contains('.name'));
+
+      _expectSnapshot(result.source, expectedPath,
+          reason: 'service generator output does NOT match '
+              'service_class.expected.dart');
+    });
   });
 }
 

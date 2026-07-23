@@ -24,7 +24,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'bridge.dart';
-import 'wire.dart';
+import 'services.dart';
 
 /// Navigator handle so dialog code can run without a widget
 /// `BuildContext`. main.dart wires this into the `MaterialApp`.
@@ -39,12 +39,18 @@ final GlobalKey<ScaffoldMessengerState> skalScaffoldMessengerKey =
 /// `showActionSheet` / `showSnackbar` calls arrive as RPC invocations
 /// on `kRootNodeId`.
 ///
-/// The dispatcher is stored on the bridge (`rootDispatcher`) and also
-/// attached to the current root node — `opCreateNode` re-attaches it
-/// on any future root recreation, so this is safe to call regardless
+/// The dispatcher is stored on the bridge (`rootDispatcher`), whose
+/// setter also attaches it to the current root node; `opCreateNode`
+/// re-attaches on any future root recreation. Safe to call regardless
 /// of whether the root node exists yet.
+///
+/// Anything this switch doesn't recognize falls through to the service
+/// registry (skal/services.dart), so `registerService('geo', …)` needs
+/// no changes here and no changes in the app's `main.dart`.
 void installAppDispatcher(SkalBridge bridge) {
+  registerBuiltinServices();
   bridge.rootDispatcher = (method, args) {
+    if (isServiceMethod(method)) return dispatchService(method, args);
     final spec = _decodeSpec(args);
     switch (method) {
       case 'showDialog':
@@ -63,13 +69,18 @@ void installAppDispatcher(SkalBridge bridge) {
         throw 'skal: unknown app method "$method"';
     }
   };
-  bridge.nodes[kRootNodeId]?.methodDispatcher = bridge.rootDispatcher;
 }
 
-/// The JS side ships the spec as a single JSON string arg.
+/// The JS side ships the spec as a single JSON STRING arg — kept on
+/// the string shape deliberately, because every host version can
+/// decode it (an old host reads an object arg as null, and JS hot
+/// reload routinely pairs a new bundle with an old host). The Map
+/// branch below exists because the wire also supports real object
+/// args now (`eventArgJson`), and a future caller may use them.
 Map<String, dynamic> _decodeSpec(List<Object?> args) {
   if (args.isEmpty) return const {};
   final raw = args.first;
+  if (raw is Map) return raw.cast<String, dynamic>();
   if (raw is String && raw.isNotEmpty) {
     final decoded = jsonDecode(raw);
     if (decoded is Map) return decoded.cast<String, dynamic>();

@@ -165,12 +165,52 @@ export function skalCodegen(opts) {
   // immediately. The startup read populates the macroModules fragment
   // (whose shape is frozen into the babel config at vite-config-eval
   // time — see the limitation note at the bottom of handleHotUpdate).
+  function _mergeBuilders() {
+    const merged = {};
+    for (const path of manifestPaths) {
+      Object.assign(merged, _readBuilders(path));
+    }
+    return merged;
+  }
+
   let widgets = _mergeManifests();
+  let builders = _mergeBuilders();
   const macroModules = { [moduleName]: { ...widgets } };
 
   /** @type {import('vite').Plugin} */
   const vitePlugin = {
     name: 'skal-codegen',
+    // B2 — hand the renderer the set of props that are indexed widget
+    // builders rather than event handlers. It cannot be a side effect
+    // of importing the virtual module (the babel macro strips every
+    // import of that module before it reaches the runtime), and it
+    // must NOT be a Vite `define` (defines freeze at config-resolve
+    // time, so a `builder: true` added mid-session would silently keep
+    // binding as an event handler until a full restart). Instead the
+    // global is injected where each build mode re-evaluates it:
+    //
+    //   • native (vite build --watch): a banner on the entry chunk,
+    //     re-emitted on EVERY rebuild → always fresh;
+    //   • web dev server: a head script via transformIndexHtml,
+    //     re-run per request → fresh after a manifest hot-update.
+    //
+    // Both call _mergeBuilders() at injection time, never a captured
+    // snapshot.
+    renderChunk(code, chunk) {
+      if (!chunk.isEntry) return null;
+      const inject =
+        'globalThis.__SKAL_BUILDER_PROPS__ = '
+        + JSON.stringify(_mergeBuilders()) + ';\n';
+      return { code: inject + code, map: null };
+    },
+    transformIndexHtml() {
+      return [{
+        tag: 'script',
+        children: 'globalThis.__SKAL_BUILDER_PROPS__ = '
+          + JSON.stringify(_mergeBuilders()) + ';',
+        injectTo: 'head-prepend',
+      }];
+    },
     resolveId(source) {
       if (source === moduleName) return virtualId;
       return null;
@@ -204,6 +244,7 @@ export function skalCodegen(opts) {
     handleHotUpdate({ file, server }) {
       if (!manifestPaths.includes(file)) return;
       widgets = _mergeManifests();
+      builders = _mergeBuilders();
       const mod = server.moduleGraph.getModuleById(virtualId);
       if (mod) {
         server.moduleGraph.invalidateModule(mod);
@@ -229,6 +270,22 @@ function _readManifest(manifestPath) {
   const widgets = (parsed && parsed.widgets) || {};
   if (typeof widgets !== 'object' || Array.isArray(widgets)) return {};
   return widgets;
+}
+
+// B2 — `{ registryKey: ['itemBuilder', ...] }`. These prop names carry
+// an indexed widget builder rather than a callback, and the renderer
+// cannot tell the two apart (both are functions). Codegen knows, so it
+// writes them here and the synthesized module registers them.
+function _readBuilders(manifestPath) {
+  if (!existsSync(manifestPath)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+    const builders = (parsed && parsed.builders) || {};
+    if (typeof builders !== 'object' || Array.isArray(builders)) return {};
+    return builders;
+  } catch (_) {
+    return {};
+  }
 }
 
 function _synthesizeModule(widgets, moduleName) {

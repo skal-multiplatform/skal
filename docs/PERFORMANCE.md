@@ -48,6 +48,74 @@ Workload: 5000-tweet feed scroll:
 | Widget Elements mounted at any time               | < 100 (lazy column virtualization) |
 | Memory after full scroll-through                  | ≤ 200 MB |
 
+Fixed-size regions (`wire.dart`) — these are **invariants, not elastic
+buffers**. Exceeding them is silent, not an error:
+
+| Region | Size | Direction | Overflow behaviour |
+|---|---:|---|---|
+| Op ring | see `kOpRingSize` | JS → Dart | rewind + host re-checkpoint |
+| JS string heap | 768 KiB | JS → Dart | reset on commit; bounds every string prop + string/JSON method arg |
+| Reply heap | 256 KiB | Dart → JS | **silently truncates** an oversize reply; wraparound spin-waits up to 50 ms |
+
+---
+
+## Bridge RPC — rate classes
+
+Measured 2026-07-21 on a macOS debug build, 60 Hz. Full distributions
+in [BENCHMARKS.md § Bench 4](BENCHMARKS.md); this is the contract those
+numbers imply. It is a DOCUMENTED contract, not a mechanically enforced
+one — the registry cannot observe call rates, and an earlier
+`assertRateClass` shim claimed enforcement while nothing called it,
+which was worse than no enforcement at all. If a real guard ever lands
+it will come from the generator, per method, with tests.
+
+**The one number that matters: a one-shot RPC round-trip costs one
+frame — p50 16.67 ms at 60 Hz — regardless of payload size.**
+
+The transport is not the cost. 200 calls issued together complete in
+16.74 ms total (0.084 ms amortized); the 16.67 ms is purely waiting for
+the next per-frame op drain (`root.dart`'s Ticker). Three consequences,
+in priority order:
+
+1. **Call count is the budget, not bytes.** Ten chained `await`s
+   measured 163 ms. The same ten batched through `Promise.all` cost
+   one frame. Any generated service API that reads naturally as
+   `await a(); await b(); await c();` is a latency bug by construction.
+
+2. **Streams are the fast path.** A stream burst rides a single drain:
+   477k bare-int events/sec, 131k/sec at 256 B of JSON per event. That
+   is ~5,700× the throughput of the same event count as sequential
+   RPC. Prefer `svc.foo$(cb)` over polling `await svc.foo()`.
+
+3. **JSON is free below ~64 KB.** Encode/decode does not become visible
+   until a 241 KB round-trip, and even then it costs exactly one extra
+   frame (the work stops fitting in the slack). Do not trade JSON for a
+   binary encoding to save microseconds inside a 16.67 ms quantum.
+
+| Tier | Rate | Contract |
+|---|---|---|
+| One-shot RPC | human-paced | JSON args/returns fine. **Batch** anything issued together. |
+| Low-rate stream | ≤ ~10 Hz (GPS, battery, connectivity) | JSON per event — fine, with margin to spare. |
+| Frame-rate | ≥ 60 Hz (sensors, per-frame callbacks) | A *stream* is fine (it rides one drain). A per-frame `await` is not — it cannot beat one frame per call by construction. |
+
+**Payload law.** Bulk bytes never cross the bridge — paths and handles,
+not payloads. This is not a preference: a reply over 256 KiB is
+truncated silently (measured: 270,336 B in → 262,144 B out, no error).
+`XFile` already conforms by returning a path. Never base64 a photo into
+a reply.
+
+**Backpressure is an unbounded queue.** 3,000 events into a
+deliberately slow JS handler: 3,000 delivered, nothing dropped or
+coalesced. A producer faster than its consumer grows memory and delays
+the frame. Coalescing, if a service needs it, belongs on the Dart side
+before the value enters the stream.
+
+**Cold-path rule.** Custom-widget JSON props (`options` on
+`<FlutterMap>`) parse on *change*, not per frame, and `propSkips`
+already dedupes unchanged strings. Frame-rate mutation of custom-widget
+props from JS is forbidden — that is what imperative methods and
+host-side animation are for (same doctrine as ANIMATION.md).
+
 ---
 
 ## Already optimal (don't regress)
@@ -88,6 +156,27 @@ Workload: 5000-tweet feed scroll:
 - **Cost:** ~50 LOC.
 - **Trigger to land:** when a real-device first-install benchmark
   shows > 500 ms.
+
+### 1b. Decouple RPC reply latency from the frame Ticker
+- **Status:** ◇ pending — identified by [Bench 4](BENCHMARKS.md).
+- **Problem:** `root.dart` drains the op ring once per frame. A JS
+  method call written just after a pump waits a full vsync, so every
+  one-shot RPC round-trip costs p50 **16.67 ms** and ten chained
+  `await`s cost 163 ms. The transport itself is 0.084 ms amortized —
+  the latency is 99.5% scheduling.
+- **Impact:** High for Roadmap A (native services). Batching via
+  `Promise.all` is the current mitigation and it works, but it is a
+  workaround the API shouldn't need.
+- **Cost:** Unknown, and the reason this is pending rather than done.
+  Draining on JS's wake signal instead of (or in addition to) vsync
+  means mutating `NodeState` outside `handleBeginFrame`, which is
+  exactly the ordering the current design depends on for
+  same-frame rebuilds. Needs a design, not a patch.
+- **Do not** "fix" this by pumping on a short timer — that trades a
+  latency win for continuous CPU and reintroduces the mid-frame
+  notify hazard.
+- **Trigger to land:** a real service workload where batching is not
+  expressible (a genuine request → response → request chain).
 
 ### 2. Defer-mount the tweet feed tail
 - **Status:** ⊖ deferred (made largely redundant by `<lazyColumn>`).
@@ -188,6 +277,14 @@ Workload: 5000-tweet feed scroll:
 - **Why rejected:** V8's mandatory JIT bans it from iOS App Store.
   Hermes is RN-coupled and lacks Web APIs. JSC + bytecode cache
   already hits our cold-start target.
+
+### Synchronous JS → Dart returns (blocking the UI thread on JS)
+- **Why rejected:** Inverts the architecture's core promise — JS never
+  blocks the frame. Shared memory makes it *possible*; that is not the
+  same as sane. Any JS work on the critical path becomes frame time,
+  and a JS exception becomes a stalled UI thread.
+- **Escape hatch:** precompute and pass the data, or restructure as
+  async. Recorded as S4 in [NATIVE_SUPPORT.md](NATIVE_SUPPORT.md).
 
 ### Replacing dart:ffi with platform channels
 - **Why rejected:** Platform channels serialize via MessageCodec

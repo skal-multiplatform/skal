@@ -9,7 +9,7 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use, implementation_imports, unnecessary_import, depend_on_referenced_packages
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use, implementation_imports, unnecessary_import, depend_on_referenced_packages, unnecessary_cast
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';

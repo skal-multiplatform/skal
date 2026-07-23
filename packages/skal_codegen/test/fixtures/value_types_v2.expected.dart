@@ -9,57 +9,130 @@
 // own default — if the JSX consumer omits a prop, they get the same
 // behaviour as a direct Dart caller would.
 //
-// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use, implementation_imports, unnecessary_import, depend_on_referenced_packages
+// ignore_for_file: non_constant_identifier_names, sort_child_properties_last, unused_import, deprecated_member_use, implementation_imports, unnecessary_import, depend_on_referenced_packages, unnecessary_cast
 
 import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
+import 'package:skal_flutter/skal/root.dart';
 import 'package:skal_flutter/skal_flutter.dart';
 
 import 'value_types_v2.dart';
 
+/// Apply Skal's BaseProps (width / height / padding) around a generated
+/// adapter's widget.
+///
+/// Built-in widgets (`<Box>`, `<Column>`, …) accept these. Codegen'd ones
+/// construct only their own constructor's params, so before this helper
+/// existed `FlutterMap height={520}` was silently ignored — the map
+/// went unbounded inside a Column and overflowed by 99,477 pixels.
+///
+/// Cost when unset is two null-map lookups; the wrapper widgets are
+/// only constructed when the prop is actually present.
+///
+/// [owned] names props whose bare numeric wire slot the widget's own
+/// generated reader already consumes (a `double width` param), which
+/// therefore must NOT be applied twice. Ownership never covers the
+/// string `'fill'` form — a numeric reader ignores the string slot, so
+/// the wrapper still honors `width="fill"` even on an owned dimension.
+Widget _skalApplyBaseProps(
+  NodeState n,
+  Widget child, [
+  Set<String> owned = const {},
+]) {
+  if (!owned.contains('padding')) {
+    final pad = n.getCustomPropF32OrNull('padding');
+    if (pad != null) {
+      child = Padding(padding: EdgeInsets.all(pad), child: child);
+    }
+  }
+  final w = owned.contains('width')
+      ? _skalFillDim(n, 'width')
+      : _skalBaseDim(n, 'width');
+  final h = owned.contains('height')
+      ? _skalFillDim(n, 'height')
+      : _skalBaseDim(n, 'height');
+  if (w != null || h != null) {
+    // SkalFill, not SizedBox: `'fill'` maps to double.infinity, and a
+    // raw SizedBox(∞) inside an unbounded axis (codegen widget in a
+    // Row, fill-height in a Column) throws and silently blanks the
+    // whole layout flush. SkalFill fills when bounded, wraps when not.
+    child = SkalFill(width: w, height: h, child: child);
+  }
+  return child;
+}
+
+/// The `'fill'`-only read for dimensions the widget itself owns
+/// numerically: its own param handles numbers, but its F32 reader
+/// cannot see the string slot, so the wrapper still supplies
+/// "as much as the parent allows".
+double? _skalFillDim(NodeState n, String name) =>
+    n.getCustomPropStr(name) == 'fill' ? double.infinity : null;
+
+/// Read a dimension prop. Numbers pass through; the string `'fill'`
+/// means "as much as the parent allows", matching the built-in
+/// widgets' `width="fill"`.
+double? _skalBaseDim(NodeState n, String name) {
+  final v = n.getCustomPropF32OrNull(name);
+  if (v != null) return v;
+  if (n.getCustomPropStr(name) == 'fill') return double.infinity;
+  return null;
+}
+
 Widget _build_Styled(NodeState n, SkalBridge bridge) {
-  return Styled(
-    style: TextStyle(
-      fontSize: n.getCustomPropF32('styleFontSize', 14.0),
-      color: Color(n.getCustomPropU32('styleColor', 0xFF000000)),
-      fontWeight: FontWeight.values[n.getCustomPropU32('styleFontWeight', 3)],
-      letterSpacing: n.getCustomPropF32('styleLetterSpacing', 0.5),
-      height: n.getCustomPropF32('styleHeight', 1.2),
+  return _skalApplyBaseProps(
+    n,
+    Styled(
+      style: TextStyle(
+        fontSize: n.getCustomPropF32('styleFontSize', 14.0),
+        color: Color(n.getCustomPropU32('styleColor', 0xFF000000)),
+        fontWeight: FontWeight.values[n.getCustomPropU32('styleFontWeight', 3)],
+        letterSpacing: n.getCustomPropF32('styleLetterSpacing', 0.5),
+        height: n.getCustomPropF32('styleHeight', 1.2),
+      ),
     ),
   );
 }
 
 Widget _build_Card(NodeState n, SkalBridge bridge) {
-  return Card(
-    decoration: BoxDecoration(
-      color: Color(n.getCustomPropU32('decorationColor', 0xFFEEEEEE)),
-      borderRadius: BorderRadius.all(
-        Radius.circular(n.getCustomPropF32('decorationBorderRadius', 8.0)),
+  return _skalApplyBaseProps(
+    n,
+    Card(
+      decoration: BoxDecoration(
+        color: Color(n.getCustomPropU32('decorationColor', 0xFFEEEEEE)),
+        borderRadius: BorderRadius.all(
+          Radius.circular(n.getCustomPropF32('decorationBorderRadius', 8.0)),
+        ),
       ),
-    ),
-    radius: BorderRadius.all(
-      Radius.circular(n.getCustomPropF32('radiusRadius', 4.0)),
+      radius: BorderRadius.all(
+        Radius.circular(n.getCustomPropF32('radiusRadius', 4.0)),
+      ),
     ),
   );
 }
 
 Widget _build_Anchored(NodeState n, SkalBridge bridge) {
-  return Anchored(
-    position: Offset(
-      n.getCustomPropF32('positionX', 10.0),
-      n.getCustomPropF32('positionY', 20.0),
-    ),
-    anchor: Alignment(
-      n.getCustomPropF32('anchorX', 0.0),
-      n.getCustomPropF32('anchorY', 0.0),
+  return _skalApplyBaseProps(
+    n,
+    Anchored(
+      position: Offset(
+        n.getCustomPropF32('positionX', 10.0),
+        n.getCustomPropF32('positionY', 20.0),
+      ),
+      anchor: Alignment(
+        n.getCustomPropF32('anchorX', 0.0),
+        n.getCustomPropF32('anchorY', 0.0),
+      ),
     ),
   );
 }
 
 Widget _build_Pic(NodeState n, SkalBridge bridge) {
-  return Pic(image: (imageProviderFromSrc(n.getCustomPropStr('image') ?? '')!));
+  return _skalApplyBaseProps(
+    n,
+    Pic(image: (imageProviderFromSrc(n.getCustomPropStr('image') ?? '')!)),
+  );
 }
 
 void registerAll() {

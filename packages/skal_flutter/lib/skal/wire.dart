@@ -153,6 +153,16 @@ const int opResetRootSubtree = 0x29;
 const int opListSetRow   = 0x2A;
 const int opListClearRow = 0x2B;
 
+// Clear one custom prop from ALL typed maps (u32 + f32 + str) —
+// (nodeId, nameHash, 0). Emitted by the JS renderer when a prop's
+// VALUE TYPE changes (number → string, string → object, …). The three
+// typed maps are insert-only and independently lived, so without this
+// a stale numeric slot permanently shadows a later string write for
+// readers that probe the typed slot first (`width={cond ? 'fill' :
+// 300}` stuck at 300 forever). Old hosts skip unknown 16-byte ops
+// harmlessly — records are fixed-size, so nothing desyncs.
+const int opClearCustomProp = 0x2C;
+
 // ── Widget types (NodeState.type) ─────────────────────────────────────
 //
 // Naming mirrors Flutter's widget vocabulary so the layer underneath

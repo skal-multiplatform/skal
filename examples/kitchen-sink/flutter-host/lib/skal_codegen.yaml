@@ -12,6 +12,14 @@
 # can't be encoded over the bridge (CameraController, animation
 # controllers, plugin-channel-backed objects in general).
 #
+# `services:` declares HEADLESS capabilities — no widget, no node.
+# Codegen walks the named class's STATIC methods and emits one
+# `registerService` dispatcher per entry, reachable from JS as
+# `createSkalService('<name>')`. No factory function is needed (a
+# static method has no constructor to cross the bridge), which is why
+# most capability plugins — geolocator, share_plus, local_auth — need
+# zero hand-written Dart.
+#
 # Re-run `dart run build_runner build` after editing this file.
 
 packages:
@@ -45,3 +53,11 @@ hosts:
   Ticker:
     widget: TickView
     factory: package:kitchen_sink/adapters/ticker.dart#createTicker
+
+services:
+  # Clipboard + haptics — capabilities #10 and #11 in
+  # docs/NATIVE_SUPPORT.md, and the zero-dependency proof for the
+  # service path: pure Flutter SDK, no pub package, no widget.
+  device:
+    package: kitchen_sink
+    class: DeviceService

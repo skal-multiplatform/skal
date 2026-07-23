@@ -66,6 +66,7 @@
 
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/element/element2.dart';
+import 'package:analyzer/dart/element/nullability_suffix.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:dart_style/dart_style.dart';
 import 'package:path/path.dart' as p;
@@ -155,19 +156,172 @@ class GeneratedWidget {
   /// (padding, embeddedImage, errorStateBuilder)".
   final List<String> omittedOptionalParams;
 
+  /// True for a B5 element class registered on the VALUE table rather
+  /// than the widget table. It is still an importable JSX symbol —
+  /// `<Marker>` is written exactly like `<TileLayer>` — so it belongs
+  /// in the manifest the Vite plugin reads; this flag only keeps the
+  /// build log honest about which table it landed on.
+  final bool isValue;
+
+  /// B2 — params wired to the indexed-builder protocol. The JS side has
+  /// to know these prop names so it installs the row machinery instead
+  /// of binding them as ordinary callbacks; they travel in the manifest.
+  final List<String> builderParams;
+
   GeneratedWidget(
     this.className,
     this.registryKey, {
     this.skipReason,
     this.omittedOptionalParams = const [],
+    this.isValue = false,
+    this.builderParams = const [],
+  });
+}
+
+/// What to do with one constructor parameter instead of encoding it.
+///
+/// Exists because of a specific, measured failure mode: a single
+/// unmappable REQUIRED field nulls a value class, which skips the whole
+/// widget. `flutter_map`'s `TileLayer` is lost to one `TileProvider`
+/// param; the other twenty props were fine. Losing a package over one
+/// exotic type is a bad trade the dev should be able to refuse.
+class ParamOverride {
+  /// A Dart expression pasted verbatim as the argument value. The dev
+  /// asserts it compiles in the generated file's import scope; add
+  /// `imports:` to the widget's override entry if it doesn't.
+  final String? constExpr;
+
+  /// B2 — treat this param as an indexed widget builder: Flutter calls
+  /// it with an index, JS supplies the subtree asynchronously.
+  ///
+  /// Opt-in per param, never inferred, and that is the perf gate rather
+  /// than an ergonomic oversight. `Widget Function(BuildContext, int)`
+  /// is the same Dart type whether it fires once per list row or once
+  /// per map tile per frame during a pan, and only the second one is a
+  /// jank bug. Nothing in the signature distinguishes them, so the
+  /// human has to.
+  final bool builder;
+
+  /// B3 — accept an opaque handle (A3) for this param instead of
+  /// trying to encode it. JSX passes what an earlier service call
+  /// returned:
+  ///
+  /// ```jsx
+  /// const player = await video.open(url);
+  /// <VideoPlayer controller={player} />
+  /// ```
+  ///
+  /// Opt-in, unlike the service-return path where handles are automatic.
+  /// The asymmetry is deliberate: a service RETURN has no ambiguity
+  /// about who supplies the handle (Dart just did) and the alternative
+  /// was dropping the method. A widget PROP has to be supplied by JS,
+  /// so turning one on silently would trade a build-time skip the dev
+  /// can read for a runtime null the dev cannot.
+  final bool handle;
+
+  /// Drop the param entirely. Only valid for optional params — the
+  /// constructor's own default takes over. Ignoring a REQUIRED param
+  /// would emit uncompilable code, so that is rejected with a reason.
+  final bool ignore;
+
+  const ParamOverride({
+    this.constExpr,
+    this.ignore = false,
+    this.builder = false,
+    this.handle = false,
+  });
+}
+
+/// Per-widget escape valves from `overrides:` in skal_codegen.yaml.
+class WidgetOverride {
+  /// param name → what to do with it.
+  final Map<String, ParamOverride> params;
+
+  /// Extra imports the `const:` expressions need.
+  final List<String> imports;
+
+  /// B6 — concrete type arguments for a generic widget class, by name
+  /// (`['Object']`). Codegen cannot pick these on its own: nothing in
+  /// `PolygonLayer<R>` says what R should be, and guessing would bake
+  /// an arbitrary choice into every consumer's JSX.
+  final List<String> typeArgs;
+
+  const WidgetOverride({
+    this.params = const {},
+    this.imports = const [],
+    this.typeArgs = const [],
+  });
+}
+
+/// One `services:` entry, resolved to the class whose static methods
+/// become the service's dispatch table.
+///
+/// `Geolocator`, `Clipboard`, `Share`, `LocalAuthentication` — the
+/// shape most capability plugins already expose. Unlike `hosts:`, no
+/// dev-written factory is needed: static methods have no constructor
+/// to cross the bridge.
+class ServiceConfig {
+  /// JS-side namespace — `createSkalService('<name>')`.
+  final String name;
+
+  /// The class whose static methods are wrapped.
+  final ClassElement2 cls;
+
+  /// Import for [cls]'s library, as it should appear in the output.
+  final String importUri;
+
+  ServiceConfig({
+    required this.name,
+    required this.cls,
+    required this.importUri,
+  });
+}
+
+/// Per-service emission summary, for build-log reporting + the skip
+/// manifest. Mirrors [GeneratedWidget]'s role on the widget side.
+class GeneratedService {
+  final String name;
+  final String className;
+
+  /// Method names that made it into the dispatcher.
+  final List<String> methods;
+
+  /// method name → why it was dropped. Empty when everything mapped.
+  final Map<String, String> skippedMethods;
+
+  /// method name → optional params that were unmappable and OMITTED.
+  /// Their declaration-ordinal arg slots exist but are never read, so
+  /// the Dart defaults stand; a JS caller passing a value there is
+  /// silently ignored — which is exactly why this is recorded.
+  final Map<String, List<String>> omittedParams;
+
+  /// Non-null when the whole service failed to resolve.
+  final String? skipReason;
+
+  GeneratedService(
+    this.name,
+    this.className, {
+    this.methods = const [],
+    this.skippedMethods = const {},
+    this.omittedParams = const {},
+    this.skipReason,
   });
 }
 
 class GenerationResult {
   final String source;
   final List<GeneratedWidget> widgets;
+  final List<GeneratedService> services;
 
-  GenerationResult(this.source, this.widgets);
+  /// `overrides:` keys that matched NO widget in this run — a typo'd
+  /// key used to be total silence (the widget kept its old skip reason
+  /// and nothing anywhere said the override was ignored), which is the
+  /// same silent-miss class the synthesized-name lookup bug already
+  /// shipped once.
+  final List<String> unmatchedOverrideKeys;
+
+  GenerationResult(this.source, this.widgets,
+      [this.services = const [], this.unmatchedOverrideKeys = const []]);
 
   /// Widgets that DID make it into the output.
   Iterable<GeneratedWidget> get generated =>
@@ -191,8 +345,12 @@ GenerationResult generate({
   required List<ResolvedUnitResult> units,
   required List<String> sourceRelativeImports,
   List<HostConfig> hosts = const [],
+  List<ServiceConfig> services = const [],
+  Map<String, WidgetOverride> overrides = const {},
+  String? Function(String packageName)? barrelResolver,
 }) {
   final widgets = <GeneratedWidget>[];
+  final serviceSummaries = <GeneratedService>[];
   final adapterBodies = <String>[];
   final registryCalls = <String>[];
   // Extra imports an encoding needs beyond the standard framework
@@ -219,6 +377,33 @@ GenerationResult generate({
   // synthesized `_build_Camera` host. Whoever declared the host owns
   // how the underlying widget gets constructed.
   final hostedWidgetNames = {for (final h in hosts) h.wrappedWidgetName};
+
+  // B1 — tell the type mapper which concrete classes exist in this
+  // run, so an abstract param type can dispatch to its subclasses
+  // instead of being a dead end. Set unconditionally at the top of
+  // every call, so a previous run's universe can never leak into this
+  // one even if that run threw.
+  // Dedupe by LIBRARY before spreading: part files share one
+  // libraryElement2, and every part-file unit reports the same
+  // library-scoped class set. Without this, each class in a k-part
+  // library lands k times in the universe — inflating every union scan
+  // and, worse, tripping the subtype-union ambiguity guard
+  // (nameCounts == 1), which silently excluded every such class from
+  // B1 for exactly the multi-part layout flutter_map uses.
+  final seenLibs = <int>{};
+  final universe = <ClassElement2>[];
+  for (final unit in units) {
+    final lib = unit.libraryElement2;
+    if (!seenLibs.add(identityHashCode(lib))) continue;
+    universe.addAll(lib.classes);
+  }
+  setSubtypeUniverse(universe);
+  // Same defensive reset for the OTHER encoder global: a previous run
+  // that threw between registering element classes and draining them
+  // must not leak its (stale-session) classes into this run's output.
+  clearPendingValueBuilders();
+  _consumedOverrideKeys.clear();
+  setBarrelResolver(barrelResolver);
 
   // Track classes we've already emitted an adapter for, so a class
   // that's surfaced by multiple input units (the `part of` case in
@@ -254,11 +439,24 @@ GenerationResult generate({
         continue;
       }
       for (final ctor in ctors) {
-        final result = _emitAdapter(cls, ctor);
+        final result = _emitAdapter(cls, ctor, overrides);
         widgets.add(result.summary);
         if (result.body != null) {
           adapterBodies.add(result.body!);
           contributingUnitIdx.add(i);
+          // Import the class's OWN declaring library, not just the
+          // package barrel the unit walk maps to. A package can declare
+          // a public widget in an internal `src/` library that the
+          // barrel does not re-export (scrollable_positioned_list's
+          // `UnboundedCustomScrollView`); the generated adapter then
+          // names a symbol nothing brought into scope.
+          //
+          // This is what the value-class encoder has always done, and
+          // it does not reintroduce ambiguity: importing both a barrel
+          // and the src library it re-exports is the SAME declaration.
+          // Ambiguity needs two different declarations sharing a name,
+          // which the subtype-union encoder skips explicitly.
+          addCanonicalImport(cls, extraImports);
           extraImports.addAll(result.requiredImports);
           for (final e in result.requiredHelpers.entries) {
             extraHelpers[e.key] = e.value;
@@ -286,6 +484,63 @@ GenerationResult generate({
   for (final host in hosts) {
     final result = _emitHostAdapter(host);
     widgets.add(result.summary);
+    if (result.body != null) {
+      adapterBodies.add(result.body!);
+      extraImports.addAll(result.requiredImports);
+      for (final e in result.requiredHelpers.entries) {
+        extraHelpers[e.key] = e.value;
+      }
+    }
+    if (result.registryLine != null) {
+      registryCalls.add(result.registryLine!);
+    }
+  }
+
+  // ── Value builders (B5) ───────────────────────────────────────────
+  //
+  // A `List<Marker>` param mapped above recorded `Marker` as needing a
+  // `registerValue` builder. Emit one per element class: same
+  // prop-reading machinery as a widget adapter, but it returns the
+  // value object instead of a Widget, and registers on the VALUE table
+  // so `bridge.buildValue<Marker>(childId)` finds it.
+  //
+  // Drained in a loop because emitting one builder can discover
+  // another (a `List<Marker>` whose Marker takes a `List<Anchor>`).
+  var pendingValues = takePendingValueBuilders();
+  final emittedValueNames = <String>{};
+  while (pendingValues.isNotEmpty) {
+    for (final cls in pendingValues) {
+      final name = cls.name3 ?? '';
+      if (name.isEmpty || !emittedValueNames.add(name)) continue;
+      final result = _emitValueBuilder(cls);
+      if (result.body != null) {
+        adapterBodies.add(result.body!);
+        extraImports.addAll(result.requiredImports);
+        for (final e in result.requiredHelpers.entries) {
+          extraHelpers[e.key] = e.value;
+        }
+      }
+      if (result.registryLine != null) {
+        registryCalls.add(result.registryLine!);
+      }
+      widgets.add(result.summary);
+    }
+    // No .where() filter here — the in-loop `emittedValueNames.add`
+    // is the single dedup. A refill of already-emitted names costs one
+    // skip pass and then an empty refill, terminating identically
+    // (including on cyclic discovery like Marker → Anchor → Marker).
+    pendingValues = takePendingValueBuilders();
+  }
+
+  // ── Services (Roadmap A2) ─────────────────────────────────────────
+  //
+  // Headless native capability — no widget, no node. Each entry emits
+  // one `registerService(name, dispatcher)` over a class's STATIC
+  // methods, which is the shape most service plugins already have
+  // (`Geolocator.getCurrentPosition()`, `Clipboard.setData()`).
+  for (final svc in services) {
+    final result = _emitService(svc);
+    serviceSummaries.add(result.summary);
     if (result.body != null) {
       adapterBodies.add(result.body!);
       extraImports.addAll(result.requiredImports);
@@ -352,16 +607,24 @@ GenerationResult generate({
     //     of flutter_map, not of the consumer directly). The import
     //     resolves fine via the package config; the lint just wants
     //     the consumer to declare it. Not actionable from generated code.
+    //   • unnecessary_cast — value readers cast defensively
+    //     (`(_ctl as dynamic)`, subtype-union parse results); whether a
+    //     given cast is redundant depends on the wrapped package's type
+    //     hierarchy, which the emitter doesn't specialize per site.
     ..writeln('//')
     ..writeln('// ignore_for_file: non_constant_identifier_names, '
         'sort_child_properties_last, unused_import, '
         'deprecated_member_use, implementation_imports, '
-        'unnecessary_import, depend_on_referenced_packages')
+        'unnecessary_import, depend_on_referenced_packages, '
+        'unnecessary_cast')
     ..writeln()
     ..writeln("import 'package:flutter/material.dart';")
     ..writeln("import 'package:skal_flutter/skal/bridge.dart';")
     ..writeln("import 'package:skal_flutter/skal/node_state.dart';")
     ..writeln("import 'package:skal_flutter/skal/registry.dart';");
+  if (services.isNotEmpty) {
+    buffer.writeln("import 'package:skal_flutter/skal/services.dart';");
+  }
   // Conditional extra framework imports — one per encoding that
   // requested it. Sorted for deterministic output across runs.
   for (final imp in extraImports.toList()..sort()) {
@@ -371,7 +634,11 @@ GenerationResult generate({
   // Dedupe imports: when multiple input files come from the same
   // pub-cache package, the CLI maps them all to a single `package:`
   // entry-point URI. Emitting that twice is a Dart compile error.
-  final emittedImports = <String>{};
+  // Seeded with the extra imports already emitted above: an encoder
+  // can request a package's barrel (`package:shimmer/shimmer.dart`)
+  // that a contributing unit also maps to, and Dart rejects the same
+  // URI twice.
+  final emittedImports = <String>{...extraImports};
   for (var i = 0; i < sourceRelativeImports.length; i++) {
     if (!contributingUnitIdx.contains(i)) continue;
     final imp = sourceRelativeImports[i];
@@ -419,8 +686,301 @@ GenerationResult generate({
   } on FormatterException {
     formatted = raw;
   }
-  return GenerationResult(formatted, widgets);
+  final unmatched = [
+    for (final k in overrides.keys)
+      if (!_consumedOverrideKeys.contains(k)) k,
+  ]..sort();
+  return GenerationResult(formatted, widgets, serviceSummaries, unmatched);
 }
+
+/// Override keys consumed during the current `generate()` run. Module
+/// state with the same reset-at-entry lifecycle as the encoder globals
+/// — resolution happens per-constructor deep inside emission, and only
+/// the run as a whole can know which keys never matched.
+final Set<String> _consumedOverrideKeys = <String>{};
+
+class _ServiceResult {
+  final GeneratedService summary;
+  final String? body;
+  final String? registryLine;
+  final List<String> requiredImports;
+  final Map<String, String> requiredHelpers;
+  _ServiceResult(
+    this.summary, {
+    this.body,
+    this.registryLine,
+    this.requiredImports = const [],
+    this.requiredHelpers = const {},
+  });
+}
+
+/// Emit one `registerService` dispatcher over [svc]'s static methods.
+///
+/// Method selection is deliberately narrow — public, static, not an
+/// operator, no function-typed parameters. A plugin's static surface is
+/// its capability API; its instance methods usually belong to a
+/// controller, which is A3 (opaque handles) territory, not this.
+///
+/// Every method's arguments are rebuilt from the decoded bridge args by
+/// the same machinery that reconstructs JSON widget props, and its
+/// return value is checked against what `jsonEncode` can see. A method
+/// that fails either check is dropped WITH a reason and the rest of the
+/// service still ships — the "one bad param nukes the whole thing"
+/// failure mode is the exact thing B4 exists to prevent, and there is
+/// no reason to reproduce it here.
+_ServiceResult _emitService(ServiceConfig svc) {
+  final className = svc.cls.name3 ?? '';
+  final imports = <String>{svc.importUri};
+  final helpers = <String, String>{};
+  final arms = <String>[];
+  final emitted = <String>[];
+  final skipped = <String, String>{};
+  final omittedParams = <String, List<String>>{};
+
+  final methods = svc.cls.methods2.where((m) => m.isStatic).toList()
+    ..sort((a, b) => (a.name3 ?? '').compareTo(b.name3 ?? ''));
+
+  for (final m in methods) {
+    final name = m.name3;
+    if (name == null || name.isEmpty || name.startsWith('_')) continue;
+    if (m.isOperator) continue;
+
+    // Unwrap Future<T> / Stream<T>: the bridge awaits Futures and
+    // listens to Streams itself, so what matters is the element type.
+    final rt = m.returnType;
+    var inner = rt;
+    var shape = _ReturnShape.value;
+    if (rt is InterfaceType) {
+      final n = rt.element3.name3;
+      if (n == 'Future' && rt.typeArguments.length == 1) {
+        inner = rt.typeArguments.first;
+        shape = _ReturnShape.future;
+      } else if (n == 'FutureOr' && rt.typeArguments.length == 1) {
+        // FutureOr exposes only Object members — no `.then` — so a
+        // wrapped return must normalize through Future.value first.
+        inner = rt.typeArguments.first;
+        shape = _ReturnShape.futureOr;
+      } else if (n == 'Stream' && rt.typeArguments.length == 1) {
+        inner = rt.typeArguments.first;
+        shape = _ReturnShape.stream;
+      }
+    }
+
+    final ret = serviceReturnEncoding(inner);
+    if (ret == null) {
+      skipped[name] = 'return type '
+          "'${inner.getDisplayString()}' can't be serialized — give it a "
+          'toJson(), or return a handle instead';
+      continue;
+    }
+    // A STREAM whose element can only cross as an opaque handle would
+    // retain one Dart-side object per event, forever — the A3 lifetime
+    // contract (explicit release per handle) was designed for one-shot
+    // returns, and applying it per emission makes unbounded growth the
+    // default. Refuse rather than leak.
+    if (shape == _ReturnShape.stream && ret.isHandle) {
+      skipped[name] = 'Stream<${inner.getDisplayString()}> would retain '
+          'an opaque handle per event with nothing releasing them. Give '
+          "'${inner.getDisplayString()}' a toJson(), or expose a "
+          'different API shape';
+      continue;
+    }
+
+    // Arguments. Positional first, then named, matching Dart call
+    // syntax. Bridge args are positional only, so a named parameter is
+    // filled from the same ordinal position — the JS side passes them
+    // in declaration order.
+    final positional = <String>[];
+    final named = <String>[];
+    final omitted = <String>[];
+    String? argSkip;
+    // The wire contract is "JS passes args in DECLARATION order", so
+    // every formal parameter owns its declaration-ordinal slot whether
+    // it maps or not. An omitted param's slot is simply never read —
+    // compacting the indices instead (the original bug) made every
+    // later argument silently read its predecessor's value.
+    var argIndex = -1;
+    for (final p in m.formalParameters) {
+      argIndex++;
+      final pName = p.name3 ?? '';
+      // `args.isNotEmpty` for slot 0 rather than `args.length > 0` —
+      // the latter is correct but trips prefer_is_empty, and generated
+      // code that lints is generated code developers stop reading.
+      final argExpr = argIndex == 0
+          ? '(args.isNotEmpty ? args[0] : null)'
+          : '(args.length > $argIndex ? args[$argIndex] : null)';
+      final enc = serviceArgEncoding(
+        type: p.type,
+        argExpr: argExpr,
+        defaultLiteral: p.defaultValueCode,
+      );
+      if (enc == null) {
+        final required = p.isRequiredNamed || p.isRequiredPositional;
+        if (required) {
+          argSkip = "required param '$pName' has unsupported type "
+              "'${p.type.getDisplayString()}'";
+          break;
+        }
+        // Optional and unmappable — the Dart default stands. Recorded
+        // in the manifest so a JS caller can see the hole in the
+        // signature instead of discovering it as a silently-ignored
+        // argument.
+        omitted.add(pName);
+        continue;
+      }
+      imports.addAll(enc.requiredImports);
+      helpers.addAll(enc.requiredHelpers);
+      if (p.isPositional) {
+        positional.add('        ${enc.readerExpression},');
+      } else {
+        named.add('        $pName: ${enc.readerExpression},');
+      }
+    }
+    if (argSkip != null) {
+      skipped[name] = argSkip;
+      continue;
+    }
+    if (omitted.isNotEmpty) {
+      omittedParams[name] = omitted;
+    }
+
+    imports.addAll(ret.requiredImports);
+    helpers.addAll(ret.requiredHelpers);
+
+    final callArgs = [...positional, ...named];
+    final call = callArgs.isEmpty
+        ? '$className.$name()'
+        : '$className.$name(\n${callArgs.join('\n')}\n      )';
+
+    final String expr;
+    if (ret.wrapperFn == null) {
+      expr = call;
+    } else {
+      switch (shape) {
+        case _ReturnShape.future:
+          expr = '($call).then(${ret.wrapperFn})';
+        case _ReturnShape.futureOr:
+          // Future.value(FutureOr<T>) → Future<T>: normalizes the
+          // sync case so `.then` exists in both.
+          expr = 'Future.value($call).then(${ret.wrapperFn})';
+        case _ReturnShape.stream:
+          expr = '($call).map(${ret.wrapperFn})';
+        case _ReturnShape.value:
+          // Always parenthesized — valid Dart for a bare name and a
+          // lambda alike, and one branch fewer to reason about.
+          expr = '(${ret.wrapperFn})($call)';
+      }
+    }
+
+    arms.add("      case '$name':\n        return $expr;");
+    emitted.add(name);
+  }
+
+  if (emitted.isEmpty) {
+    return _ServiceResult(GeneratedService(
+      svc.name,
+      className,
+      skippedMethods: skipped,
+      skipReason: 'no static methods could be wrapped '
+          '(${skipped.length} considered and dropped)',
+    ));
+  }
+
+  final fnName = '_registerService_${_identifierSafe(svc.name)}';
+  final body = StringBuffer()
+    ..writeln('void $fnName() {')
+    ..writeln("  registerService('${svc.name}', "
+        '(String method, List<Object?> args) {')
+    ..writeln('    switch (method) {')
+    ..writeAll(arms.map((a) => '$a\n'))
+    ..writeln('    }')
+    ..writeln("    throw 'skal service \"${svc.name}\": unknown method "
+        '"\$method"\';')
+    ..writeln('  });')
+    ..write('}');
+
+  return _ServiceResult(
+    GeneratedService(svc.name, className,
+        methods: emitted,
+        skippedMethods: skipped,
+        omittedParams: omittedParams),
+    body: body.toString(),
+    registryLine: '$fnName();',
+    requiredImports: imports.toList(),
+    requiredHelpers: helpers,
+  );
+}
+
+/// Arity of an indexed widget builder, or null when [t] isn't one.
+///
+/// Accepts `Widget Function(BuildContext, int)` (2) and
+/// `Widget Function(int)` (1). Anything else — a builder keyed by a
+/// domain object rather than an index, like flutter_map's
+/// `tileBuilder(context, tileWidget, tile)` — has nothing to key a
+/// subtree by and is refused.
+int? _indexedBuilderArity(DartType t) {
+  if (t is! FunctionType) return null;
+  final ret = t.returnType.element3?.name3;
+  if (ret != 'Widget') return null;
+  final ps = t.formalParameters;
+  if (ps.any((p) => p.isNamed)) return null;
+  if (ps.length == 1 && ps.first.type.isDartCoreInt) return 1;
+  if (ps.length == 2 &&
+      ps[0].type.element3?.name3 == 'BuildContext' &&
+      ps[1].type.isDartCoreInt) {
+    return 2;
+  }
+  return null;
+}
+
+/// Resolve `typeArgs:` names to real types for [cls]'s type parameters.
+///
+/// Returns null when the count is wrong or a name can't be resolved —
+/// the caller then reports the widget as skipped with a message naming
+/// `typeArgs:` as the fix, which is far more useful than emitting an
+/// adapter that doesn't compile.
+///
+/// Resolvable names: the dart:core types a type argument is realistically
+/// pinned to, plus any class in the analyzed set. `Object` covers the
+/// flutter_map case (`PolygonLayer<R>` where R is an unconstrained
+/// payload type) and is the answer most of the time.
+List<DartType>? _resolveTypeArgs(ClassElement2 cls, List<String> names) {
+  if (names.length != cls.typeParameters2.length) return null;
+  final tp = cls.library2.typeProvider;
+  final out = <DartType>[];
+  for (final raw in names) {
+    final name = raw.trim();
+    final DartType? t = switch (name) {
+      'Object' => tp.objectType,
+      'dynamic' => tp.dynamicType,
+      'int' => tp.intType,
+      'double' => tp.doubleType,
+      'num' => tp.numType,
+      'String' => tp.stringType,
+      'bool' => tp.boolType,
+      _ => _namedTypeFromUniverse(name),
+    };
+    if (t == null) return null;
+    out.add(t);
+  }
+  return out;
+}
+
+/// Look a class name up in the classes this run is analyzing. Lets
+/// `typeArgs: [MyPayload]` work when the payload type ships in the same
+/// package as the widget.
+DartType? _namedTypeFromUniverse(String name) {
+  for (final c in subtypeUniverse) {
+    if (c.name3 == name && c.typeParameters2.isEmpty) return c.thisType;
+  }
+  return null;
+}
+
+enum _ReturnShape { value, future, futureOr, stream }
+
+/// Make a service name safe to embed in a Dart identifier.
+String _identifierSafe(String s) =>
+    s.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
 
 class _AdapterResult {
   final GeneratedWidget summary;
@@ -443,29 +1003,12 @@ class _AdapterResult {
   });
 }
 
-_AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
+_AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctorIn,
+    [Map<String, WidgetOverride> overrides = const {}]) {
+  var ctor = ctorIn;
   final className = cls.name3 ?? '';
-  final ctorName = ctor.name3 ?? '';
+  final ctorName = ctorIn.name3 ?? '';
   final isDefaultCtor = ctorName.isEmpty || ctorName == 'new';
-
-  // Generic widgets — `class Foo<T> extends StatelessWidget` — need
-  // a concrete type argument that codegen can't pick on its own.
-  // Most generic Flutter widgets (Consumer, Selector, AnimatedBuilder)
-  // also take a `Widget Function(BuildContext, T, …)` builder, which
-  // we couldn't encode anyway. Skip with a clear reason so the build
-  // log surfaces what got filtered.
-  if (cls.typeParameters2.isNotEmpty) {
-    final typeParamNames =
-        cls.typeParameters2.map((t) => t.name3 ?? '?').join(', ');
-    return _AdapterResult(GeneratedWidget(
-      className,
-      _camelCase(className),
-      skipReason: 'generic widget class (type params: <$typeParamNames>) '
-          '— codegen can\'t pick concrete type arguments. Wrap manually '
-          'with a non-generic Dart subclass that fixes the type, then '
-          'add THAT class to your codegen scope.',
-    ));
-  }
 
   // JSX-facing symbol. Default ctor: keep the class name (`Shimmer`).
   // Named ctor: concatenate PascalCased (`ShimmerFromColors`). This
@@ -475,6 +1018,70 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
       ? className
       : '$className${_pascalCase(ctorName)}';
   final registryKey = _camelCase(synthesizedName);
+
+  // Look the override up by the SYNTHESIZED symbol first, then the bare
+  // class name. A class with a named constructor surfaces to JSX as
+  // `ScrollablePositionedListBuilder`, and that is the name the skip
+  // message prints — so it must also be the name an override accepts,
+  // or a dev copying the message's own suggestion gets silence. The
+  // class name still works and covers every constructor of that class.
+  final override = overrides[synthesizedName] ?? overrides[className];
+  if (override != null) {
+    _consumedOverrideKeys
+        .add(overrides.containsKey(synthesizedName) ? synthesizedName : className);
+  }
+
+  // Generic widgets — `class Foo<T> extends StatelessWidget` — need
+  // a concrete type argument that codegen can't pick on its own.
+  // Most generic Flutter widgets (Consumer, Selector, AnimatedBuilder)
+  // also take a `Widget Function(BuildContext, T, …)` builder, which
+  // we couldn't encode anyway. Skip with a clear reason so the build
+  // log surfaces what got filtered.
+  //
+  // B6: an `overrides:` entry may supply them, in which case we
+  // instantiate the class and read the constructor off the INSTANTIATED
+  // type — so a param declared `List<Polygon<R>>` arrives already
+  // substituted to `List<Polygon<Object>>` and the encoder sees a
+  // concrete type rather than a type variable.
+  var ctorToWalk = ctor;
+  var typeArgSuffix = '';
+  // Declared here because the typeArgs block runs before the param
+  // walk that owns requiredImports; merged into it below.
+  final typeArgImports = <String>{};
+  if (cls.typeParameters2.isNotEmpty) {
+    final wanted = override?.typeArgs ?? const <String>[];
+    final resolved = _resolveTypeArgs(cls, wanted);
+    if (resolved == null) {
+      final typeParamNames =
+          cls.typeParameters2.map((t) => t.name3 ?? '?').join(', ');
+      return _AdapterResult(GeneratedWidget(
+        synthesizedName,
+        registryKey,
+        skipReason: 'generic widget class (type params: <$typeParamNames>) '
+            "— codegen can't pick concrete type arguments. Add "
+            '`overrides: { $synthesizedName: { typeArgs: [Object] } } ` to '
+            'skal_codegen.yaml, or wrap manually with a non-generic Dart '
+            'subclass that fixes the type.',
+      ));
+    }
+    // A type argument resolved from the analyzed set is a class the
+    // generated file must be able to NAME — import its declaring
+    // library, or `Chip<MyPayload>(` refers to an unimported symbol
+    // whenever MyPayload's own library contributes no adapter.
+    for (final t in resolved) {
+      final tEl = t.element3;
+      if (tEl != null) addCanonicalImport(tEl, typeArgImports);
+    }
+    final instantiated = cls.instantiate(
+      typeArguments: resolved,
+      nullabilitySuffix: NullabilitySuffix.none,
+    );
+    final substituted = instantiated.constructors2.where(
+        (c) => (c.name3 ?? '') == (ctor.name3 ?? ''));
+    if (substituted.isNotEmpty) ctorToWalk = substituted.first;
+    typeArgSuffix = '<${wanted.join(', ')}>';
+  }
+  ctor = ctorToWalk;
 
   // Walk named parameters. Three outcomes per param:
   //
@@ -490,7 +1097,8 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
   // mapped, 3 omitted (padding, embeddedImage, errorStateBuilder)" so
   // devs know what they can't drive from JSX.
   final omittedOptionalParams = <String>[];
-  final requiredImports = <String>{};
+  final builderParams = <String>[];
+  final requiredImports = <String>{...typeArgImports};
   final requiredHelpers = <String, String>{};
   String? skipReason;
 
@@ -500,10 +1108,89 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
   // would produce uncompilable code.
   final positionalLines = <String>[];
   final namedLines = <String>[];
+  if (override != null) requiredImports.addAll(override.imports);
+
   for (final param in ctor.formalParameters) {
     final name = param.name3;
     if (name == null || name.isEmpty) continue;
     if (name == 'key') continue; // skip Flutter's universal `Key? key`
+
+    // Dev overrides win over anything the type mapper would decide —
+    // they exist precisely for params the mapper gets wrong or can't
+    // reach at all.
+    final po = override?.params[name];
+    if (po != null) {
+      final isRequired = (param.isRequiredNamed && param.defaultValueCode == null) ||
+          param.isRequiredPositional;
+      if (po.ignore) {
+        if (isRequired) {
+          skipReason = "override marks required param '$name' as "
+              'ignore — dropping it would not compile. Use '
+              "`{ const: \"…\" }` to supply a value instead";
+          break;
+        }
+        omittedOptionalParams.add(name);
+        continue;
+      }
+      if (po.builder) {
+        final arity = _indexedBuilderArity(param.type);
+        if (arity == null) {
+          skipReason = "override marks '$name' as a builder, but its type "
+              "'${param.type.getDisplayString()}' is not an indexed widget "
+              'builder. B2 handles `Widget Function(BuildContext, int)` and '
+              '`Widget Function(int)`; anything else has no index to key a '
+              'subtree by';
+          break;
+        }
+        builderParams.add(name);
+        // `_` for the BuildContext: the subtree is built by JS, so the
+        // Dart-side context is not something the generated code can
+        // meaningfully forward.
+        final lambda = arity == 2
+            ? '(_, i) => SkalBuilderChild(host: n, index: i, bridge: bridge)'
+            : '(i) => SkalBuilderChild(host: n, index: i, bridge: bridge)';
+        if (param.isPositional) {
+          positionalLines.add('    $lambda,');
+        } else {
+          namedLines.add('    $name: $lambda,');
+        }
+        requiredImports.add('package:skal_flutter/skal/root.dart');
+        continue;
+      }
+      if (po.handle) {
+        final el = param.type.element3;
+        final tName = el is ClassElement2 ? el.name3 : null;
+        if (el is! ClassElement2 ||
+            tName == null ||
+            extendsWidgetTransitively(el)) {
+          skipReason = "override marks '$name' as a handle, but its type "
+              "'${param.type.getDisplayString()}' is not a class Skal can "
+              'hold a handle to (widgets are child nodes, not handles)';
+          break;
+        }
+        requiredHelpers['_skalHandleProp'] = _handlePropHelperSource;
+        requiredImports.add('package:skal_flutter/skal/handles.dart');
+        requiredImports.add('dart:convert');
+        addCanonicalImport(el, requiredImports);
+        final nullable = param.type.getDisplayString().endsWith('?');
+        final read = "_skalHandleProp<$tName>(n, '$name')";
+        final expr = nullable ? read : '$read!';
+        if (param.isPositional) {
+          positionalLines.add('    $expr,');
+        } else {
+          namedLines.add('    $name: $expr,');
+        }
+        continue;
+      }
+      if (po.constExpr != null) {
+        if (param.isPositional) {
+          positionalLines.add('    ${po.constExpr},');
+        } else {
+          namedLines.add('    $name: ${po.constExpr},');
+        }
+        continue;
+      }
+    }
 
     // FormalParameterElement exposes the default-value expression
     // both as source text (for types we can paste verbatim — strings,
@@ -581,13 +1268,47 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
   // named. The function name uses the synthesized symbol (so a class
   // with multiple ctors gets distinct `_build_Foo` / `_build_FooBar`
   // helpers — no collisions).
-  final ctorInvocation = isDefaultCtor ? className : '$className.$ctorName';
+  final ctorInvocation = isDefaultCtor
+      ? '$className$typeArgSuffix'
+      : '$className$typeArgSuffix.$ctorName';
+  final ctorCall = StringBuffer()
+    ..writeln('$ctorInvocation(')
+    ..writeAll(lines.map((l) => '$l\n'))
+    ..write('  )');
+
+  // BaseProps forwarding (S3). Built-in widgets accept width / height /
+  // padding; generated ones used to drop them on the floor, which is
+  // how `height={520}` on a <FlutterMap> silently produced a
+  // 99,477-pixel overflow instead of a 520-pixel map. Wrap only when
+  // the prop is actually present, and never DOUBLE-apply a prop the
+  // widget consumes itself.
+  //
+  // Ownership is name AND encoding-slot based, not name-only. A param
+  // owns the base prop only when its generated reader actually consumes
+  // the same bare wire slot the base wrapper would read — i.e. its type
+  // is a plain number. An `EdgeInsets padding` param reads only the
+  // paddingLeft/Top/Right/Bottom sub-props, so the bare `padding={12}`
+  // slot would be consumed by NEITHER path if the name alone claimed
+  // ownership — the exact silent-drop this wrapper exists to kill.
+  final ownedBaseProps = {
+    for (final p in ctor.formalParameters)
+      if (_kBaseProps.contains(p.name3) &&
+          (_isBareNumberEncoding(p.type)))
+        p.name3!,
+  };
+  requiredHelpers['_skalApplyBaseProps'] = _basePropsHelperSource;
+  // The helper constructs SkalFill, declared in the framework's
+  // root.dart (same import the builder route adds for SkalBuilderChild).
+  requiredImports.add('package:skal_flutter/skal/root.dart');
+  final ownedArg = ownedBaseProps.isEmpty
+      ? ''
+      : ", const {${(ownedBaseProps.toList()..sort()).map((s) => "'$s'").join(', ')}}";
+  final returnExpr = '_skalApplyBaseProps(n, $ctorCall$ownedArg)';
+
   final body = StringBuffer()
     ..writeln(
         'Widget _build_$synthesizedName(NodeState n, SkalBridge bridge) {')
-    ..writeln('  return $ctorInvocation(')
-    ..writeAll(lines.map((l) => '$l\n'))
-    ..writeln('  );')
+    ..writeln('  return $returnExpr;')
     ..write('}');
 
   return _AdapterResult(
@@ -595,6 +1316,7 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
       synthesizedName,
       registryKey,
       omittedOptionalParams: omittedOptionalParams,
+      builderParams: builderParams,
     ),
     body: body.toString(),
     registryLine:
@@ -603,6 +1325,192 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctor) {
     requiredHelpers: requiredHelpers,
   );
 }
+
+/// Emit a `registerValue` builder for [cls] — B5's element half.
+///
+/// Structurally a widget adapter that returns a value instead of a
+/// Widget: same `encodingFor` per constructor param, same optional-omit
+/// / required-skip rules. It does NOT get BaseProps (a `Marker` has no
+/// layout) and it does not accept children.
+_AdapterResult _emitValueBuilder(ClassElement2 cls) {
+  final className = cls.name3 ?? '';
+  final registryKey = _camelCase(className);
+  final ctor = pickValueClassCtor(cls);
+  if (ctor == null) {
+    return _AdapterResult(GeneratedWidget(className, registryKey,
+        isValue: true,
+        skipReason: 'value element has no usable public constructor'));
+  }
+
+  final requiredImports = <String>{};
+  addCanonicalImport(cls, requiredImports);
+  final requiredHelpers = <String, String>{};
+  final positionalLines = <String>[];
+  final namedLines = <String>[];
+  final omitted = <String>[];
+  String? skipReason;
+
+  for (final param in ctor.formalParameters) {
+    final name = param.name3;
+    if (name == null || name.isEmpty) continue;
+    // Skip `key` only when it is Flutter's `Key` — a widget-tree
+    // concern with no place on a data record. A value class with its
+    // own `key` field (a `String key` on a chart series, say) keeps
+    // it; skipping by NAME alone made such a field silently unsettable
+    // and, when required, produced an uncompilable builder with no
+    // skip reason.
+    if (name == 'key' && param.type.element3?.name3 == 'Key') continue;
+    final encoding = encodingFor(
+      type: param.type,
+      paramName: name,
+      defaultLiteral: param.defaultValueCode,
+      defaultConstant: param.computeConstantValue(),
+    );
+    if (encoding == null) {
+      final isRequired =
+          (param.isRequiredNamed && param.defaultValueCode == null) ||
+              param.isRequiredPositional;
+      if (isRequired || param.isPositional) {
+        skipReason = "value element '$className': required param '$name' "
+            "has unsupported type '${param.type.getDisplayString()}'";
+        break;
+      }
+      omitted.add(name);
+      continue;
+    }
+    if (param.isPositional) {
+      positionalLines.add('    ${encoding.readerExpression},');
+    } else {
+      namedLines.add('    $name: ${encoding.readerExpression},');
+    }
+    requiredImports.addAll(encoding.requiredImports);
+    for (final e in encoding.requiredHelpers.entries) {
+      requiredHelpers[e.key] = e.value;
+    }
+  }
+
+  if (skipReason != null) {
+    return _AdapterResult(GeneratedWidget(className, registryKey,
+        isValue: true, skipReason: skipReason));
+  }
+
+  final ctorName = ctor.name3 ?? '';
+  final invocation =
+      (ctorName.isEmpty || ctorName == 'new') ? className : '$className.$ctorName';
+  final body = StringBuffer()
+    ..writeln('$className _buildValue_$className(NodeState n, '
+        'SkalBridge bridge) {')
+    ..writeln('  return $invocation(')
+    ..writeAll([...positionalLines, ...namedLines].map((l) => '$l\n'))
+    ..writeln('  );')
+    ..write('}');
+
+  return _AdapterResult(
+    GeneratedWidget(className, registryKey,
+        omittedOptionalParams: omitted, isValue: true),
+    body: body.toString(),
+    registryLine: "SkalRegistry.registerValue<$className>('$registryKey', "
+        '_buildValue_$className);',
+    requiredImports: requiredImports.toList(),
+    requiredHelpers: requiredHelpers,
+  );
+}
+
+/// The Skal `BaseProps` subset generated adapters forward. Deliberately
+/// small: these three are the ones whose absence produces a *layout
+/// explosion* rather than a cosmetic difference, and every one of them
+/// is expressible as a wrapper widget with no cost when unset.
+const Set<String> _kBaseProps = {'width', 'height', 'padding'};
+
+/// True when a param of this type generates a reader over the BARE
+/// F32/U32 wire slot for its own name — the only case where the widget
+/// genuinely consumes what the BaseProps wrapper would otherwise read.
+/// Composite encodings (EdgeInsets → four sub-props) do not qualify.
+bool _isBareNumberEncoding(DartType t) {
+  final name = t.element3?.name3;
+  return name == 'double' || name == 'int' || name == 'num';
+}
+
+const String _handlePropHelperSource = r"""
+/// Resolve an opaque-handle prop (B3) to its Dart object.
+///
+/// JSX may pass either the whole wire object a service returned
+/// (`{ $skalHandle: 7, $type: 'VideoPlayerController' }`, which the
+/// renderer writes as a JSON string prop) or just the number. Both are
+/// accepted so neither half of an app has to remember which shape the
+/// other prefers.
+///
+/// Returns null for an unknown or released handle. The generated call
+/// site decides whether that is fatal: a required param asserts, an
+/// optional one falls through to the constructor's default.
+T? _skalHandleProp<T>(NodeState n, String name) {
+  final i = n.getCustomPropU32OrNull(name);
+  if (i != null) return skalHandleArg<T>(i);
+  final s = n.getCustomPropStr(name);
+  if (s != null && s.isNotEmpty) {
+    try {
+      return skalHandleArg<T>(jsonDecode(s));
+    } catch (_) {}
+  }
+  return null;
+}""";
+
+const String _basePropsHelperSource = r'''
+/// Apply Skal's BaseProps (width / height / padding) around a generated
+/// adapter's widget.
+///
+/// Built-in widgets (`<Box>`, `<Column>`, …) accept these. Codegen'd ones
+/// construct only their own constructor's params, so before this helper
+/// existed `FlutterMap height={520}` was silently ignored — the map
+/// went unbounded inside a Column and overflowed by 99,477 pixels.
+///
+/// Cost when unset is two null-map lookups; the wrapper widgets are
+/// only constructed when the prop is actually present.
+///
+/// [owned] names props whose bare numeric wire slot the widget's own
+/// generated reader already consumes (a `double width` param), which
+/// therefore must NOT be applied twice. Ownership never covers the
+/// string `'fill'` form — a numeric reader ignores the string slot, so
+/// the wrapper still honors `width="fill"` even on an owned dimension.
+Widget _skalApplyBaseProps(NodeState n, Widget child,
+    [Set<String> owned = const {}]) {
+  if (!owned.contains('padding')) {
+    final pad = n.getCustomPropF32OrNull('padding');
+    if (pad != null) {
+      child = Padding(padding: EdgeInsets.all(pad), child: child);
+    }
+  }
+  final w =
+      owned.contains('width') ? _skalFillDim(n, 'width') : _skalBaseDim(n, 'width');
+  final h = owned.contains('height')
+      ? _skalFillDim(n, 'height')
+      : _skalBaseDim(n, 'height');
+  if (w != null || h != null) {
+    // SkalFill, not SizedBox: `'fill'` maps to double.infinity, and a
+    // raw SizedBox(∞) inside an unbounded axis (codegen widget in a
+    // Row, fill-height in a Column) throws and silently blanks the
+    // whole layout flush. SkalFill fills when bounded, wraps when not.
+    child = SkalFill(width: w, height: h, child: child);
+  }
+  return child;
+}
+
+/// The `'fill'`-only read for dimensions the widget itself owns
+/// numerically: its own param handles numbers, but its F32 reader
+/// cannot see the string slot, so the wrapper still supplies
+/// "as much as the parent allows".
+double? _skalFillDim(NodeState n, String name) =>
+    n.getCustomPropStr(name) == 'fill' ? double.infinity : null;
+
+/// Read a dimension prop. Numbers pass through; the string `'fill'`
+/// means "as much as the parent allows", matching the built-in
+/// widgets' `width="fill"`.
+double? _skalBaseDim(NodeState n, String name) {
+  final v = n.getCustomPropF32OrNull(name);
+  if (v != null) return v;
+  if (n.getCustomPropStr(name) == 'fill') return double.infinity;
+  return null;
+}''';
 
 // ───────────────────────────────────────────────────────────────────────
 // Host adapter emission
@@ -696,6 +1604,17 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
       ? (host.factoryFn.returnType as InterfaceType).typeArguments.first
       : host.factoryFn.returnType;
   final controllerName = controllerType.element3?.name3 ?? 'Object';
+  // The dispatcher names the controller type (`_ctl as $controllerName`),
+  // so its declaring library must be imported explicitly. The widget
+  // import and the factory import don't guarantee it: a factory file
+  // that IMPORTS the controller's package does not re-export it
+  // (WebShell adapting webview_flutter's WebViewController). Camera and
+  // Ticker only worked without this because their controllers happen to
+  // live in the wrapped widget's own barrel / the factory file itself.
+  final controllerEl = controllerType.element3;
+  if (controllerEl is ClassElement2) {
+    addCanonicalImport(controllerEl, hostRequiredImports);
+  }
   final dispatchCases = _collectControllerMethods(controllerType);
 
   final body = StringBuffer()

@@ -72,6 +72,7 @@
 
 import 'package:analyzer/dart/constant/value.dart';
 import 'package:analyzer/dart/element/element2.dart';
+import 'package:analyzer/dart/element/nullability_suffix.dart';
 import 'package:analyzer/dart/element/type.dart';
 
 /// A single constructor parameter's bridge encoding.
@@ -237,18 +238,27 @@ PropEncoding? encodingFor({
     // `values[defaultIndex]`. Same nullable-coercion gap the numeric
     // + Color encoders had; the IIFE reads the U32 slot once and maps
     // null → null.
+    // The generated code names `<Enum>.values`, so the enum's library
+    // has to be in scope. Widget adapters usually get it free via the
+    // wrapped package's own import; a value-class builder for a type
+    // from another library (dart:ui's ColorSpace) does not.
+    final enumImports = <String>{};
+    final enumEl = type.element3;
+    if (enumEl != null) _addCanonicalImport(enumEl, enumImports);
     if (typeName.endsWith('?')) {
       return PropEncoding(
         readerExpression:
             "(() { final i = n.getCustomPropU32OrNull('$paramName'); "
             "return i == null ? null : $cleanTypeName.values[i]; })()",
         dartTypeName: typeName,
+        requiredImports: enumImports.toList(),
       );
     }
     return PropEncoding(
       readerExpression:
           "$cleanTypeName.values[n.getCustomPropU32('$paramName', $defaultIndex)]",
       dartTypeName: typeName,
+      requiredImports: enumImports.toList(),
     );
   }
 
@@ -752,6 +762,21 @@ PropEncoding? encodingFor({
   );
   if (valueClassEnc != null) return valueClassEnc;
 
+  // B5 — `List<ValueClass>` as CHILD NODES, not a JSON array.
+  //
+  // `List<Marker>` is what kills MarkerLayer, and markers are the
+  // single most-used map feature. The obvious fix — one JSON array
+  // prop — is an O(n) trap: add one marker and you re-encode, re-send
+  // and re-parse all 1,000. The built-in ListView grew builder mode
+  // precisely to kill that cost class; repeating it here would be
+  // relitigating a decision the repo already made.
+  //
+  // Child nodes are diffed per-node by the existing tree machinery, so
+  // adding a marker costs one node. Must come AFTER the value-class
+  // attempt above so a plain value param isn't misread as a list.
+  final listEnc = _tryValueClassListEncoding(type: type);
+  if (listEnc != null) return listEnc;
+
   // Unsupported (yet). Caller decides: skip the widget with a warning,
   // or fall through to a hand-written adapter slot.
   return null;
@@ -846,9 +871,17 @@ PropEncoding? _tryValueClassEncoding({
     reader = "($helperName(n.getCustomPropStr('$paramName')) ?? "
         "$defaultLiteral)";
   } else {
-    // No default + non-nullable. Mark with `!` so the developer's
-    // failure mode is a clear NPE pointing at the prop rather than
-    // a constructor with all-null args.
+    // No default + non-nullable. For a CONCRETE value class the `!`
+    // is a sharp-but-fair contract: the JSX consumer must supply the
+    // prop, and the failure names it. For an ABSTRACT type it is not —
+    // the union parser deliberately returns null on a missing or
+    // unrecognized `\$type`, and with no declared default to fall
+    // back on, every discriminator typo would become a runtime
+    // null-assertion crash deep in generated code. Refuse instead:
+    // the caller skips the widget at build time with a reason naming
+    // the param and type, which is what happened before B1 existed.
+    final el = type.element3;
+    if (el is ClassElement2 && el.isAbstract) return null;
     reader = "$helperName(n.getCustomPropStr('$paramName'))!";
   }
 
@@ -881,8 +914,25 @@ String? _buildValueClassHelper({
   if (className == null || className.isEmpty) return null;
 
   // Eligibility heuristics — fast-rejects first.
-  if (el.isAbstract) return null;
   if (_kStatefulDenylist.contains(className)) return null;
+  if (el.isAbstract) {
+    // B1 — subtype unions. An abstract param type is not a dead end if
+    // the analyzed set contains concrete subclasses the value-class
+    // encoder can already build: emit a `$type`-discriminated parser
+    // that dispatches to them.
+    //
+    // `Gradient` was this pattern hand-written for exactly one type
+    // (_skalParseGradient) while `:884` rejected every other one:
+    // ShapeBorder, ScrollPhysics, Decoration, TileProvider,
+    // SliverGridDelegate. This is that branch, generalized.
+    return _buildSubtypeUnionHelper(
+      base: el,
+      helpers: helpers,
+      visiting: visiting,
+      imports: imports,
+      depth: depth,
+    );
+  }
   // Widget subclasses are NOT value classes — they're UI nodes. A
   // constructor param typed as a narrow Widget subtype (e.g.
   // `Text source` on flutter_map's SimpleAttributionWidget) must go
@@ -994,6 +1044,12 @@ String? _buildValueClassHelper({
     // helper at scale (the flutter_map run emits ~10 value-class
     // helpers — about 100 lines of boilerplate condensed to 1).
     helpers['_skalDecodeMap'] = _decodeMapHelperSource;
+    // _skalDecodeMap calls jsonDecode. The widget-prop caller
+    // (_tryValueClassEncoding) seeds 'dart:convert' itself, but the
+    // service-arg caller reaches this helper without going through
+    // that path — so register the import where the dependency
+    // actually is, rather than at each call site.
+    imports.add('dart:convert');
 
     final body = StringBuffer()
       ..writeln('$className? $helperName(Object? raw) {')
@@ -1133,6 +1189,724 @@ Offset? _skalParseOffset(Object? raw) {
   return null;
 }
 
+// ── B5: lists of value classes as child nodes ───────────────────────
+
+/// Element classes that need a `registerValue` builder emitted for
+/// them, discovered while mapping `List<T>` params. Keyed by class name
+/// so two widgets taking `List<Marker>` share one builder.
+///
+/// Same library-private-state rationale as [_subtypeUniverse]: threading
+/// an accumulator through the whole encoder tree for one feature is a
+/// worse trade than a variable `generate()` owns.
+final Map<String, ClassElement2> _pendingValueBuilders = {};
+
+/// Element classes requiring a `registerValue` builder from the last
+/// encoding pass, in deterministic order. Consumed by `generate()`.
+List<ClassElement2> takePendingValueBuilders() {
+  final out = _pendingValueBuilders.values.toList()
+    ..sort((a, b) => (a.name3 ?? '').compareTo(b.name3 ?? ''));
+  _pendingValueBuilders.clear();
+  return out;
+}
+
+/// `List<T>` where T is a mappable value class → read the parent's
+/// child nodes and build one T per child.
+///
+/// ```jsx
+/// <MarkerLayer>
+///   <For each={pins()}>{(p) =>
+///     <Marker point={{ latitude: p.lat, longitude: p.lng }} />
+///   }</For>
+/// </MarkerLayer>
+/// ```
+///
+/// The runtime half already existed — `registerValue` /
+/// `bridge.buildValue<T>` and `registry.dart`'s own doc example is
+/// exactly this shape. All that was missing is codegen emitting the
+/// element builder and the child-walking reader.
+PropEncoding? _tryValueClassListEncoding({required DartType type}) {
+  if (!type.isDartCoreList) return null;
+  if (type is! InterfaceType || type.typeArguments.length != 1) return null;
+  final element = type.typeArguments.first;
+  final el = element.element3;
+  if (el is! ClassElement2) return null;
+  final name = el.name3;
+  if (name == null || name.isEmpty) return null;
+
+  // The element must be something we could build from props. Widgets
+  // are excluded here because `List<Widget>` has its own (earlier)
+  // encoding — these are DATA children, not UI children.
+  if (el.isAbstract) return null;
+  if (_extendsWidgetTransitively(el)) return null;
+  if (_kStatefulDenylist.contains(name)) return null;
+  // Elements that already have a dedicated scalar encoding must NOT
+  // become child nodes. `List<Color>` is gradient stops — expressing
+  // those as `<Color>` child elements would be absurd, and the attempt
+  // emitted a `_buildValue_Color` calling `Color.from(colorSpace: …)`.
+  // Child composition is for records, not for scalars.
+  if (_isFlutterColor(element) ||
+      _isDuration(element) ||
+      _isEnum(element) ||
+      _isCoreString(element) ||
+      _isCoreInt(element) ||
+      _isCoreDouble(element) ||
+      _isCoreBool(element) ||
+      _isFlutterOffset(element) ||
+      _isFlutterAlignment(element) ||
+      _isFlutterEdgeInsets(element) ||
+      _isFlutterTextStyle(element)) {
+    return null;
+  }
+  // NOT `_looksStateful` — deliberately. That heuristic answers "can I
+  // rebuild this from a JSON blob?", and a private lazily-memoized
+  // field (`LatLng? _labelPosition` behind a computed getter) makes it
+  // say no. flutter_map's `Polygon` is exactly that shape, and it is a
+  // perfectly ordinary value class.
+  //
+  // A child-node builder asks a weaker question: can I CONSTRUCT one
+  // from props? Memo fields are irrelevant to that — the object is
+  // built fresh through its public constructor and never round-tripped.
+  // What still disqualifies a class is owning a resource, which is what
+  // `dispose()` and the denylist mark.
+  if (_ownsResources(el)) return null;
+  if (_pickValueClassCtor(el) == null) return null;
+
+  _pendingValueBuilders[name] = el;
+
+  final listImports = <String>{};
+  _addCanonicalImport(el, listImports);
+  return PropEncoding(
+    readerExpression: '_skalChildValues<$name>(n, bridge)',
+    dartTypeName: type.getDisplayString(),
+    requiredImports: listImports.toList(),
+    requiredHelpers: const {'_skalChildValues': _childValuesHelperSource},
+  );
+}
+
+/// The narrow half of [_looksStateful]: does this class own something
+/// that has to be torn down?
+///
+/// Used by the child-node builder path, which constructs objects rather
+/// than reconstructing them, so mutable or memoized FIELDS are none of
+/// its business — only lifecycle is.
+bool _ownsResources(ClassElement2 cls) {
+  for (final m in cls.methods2) {
+    if (m.name3 == 'dispose' || m.name3 == 'close') return true;
+  }
+  for (final mx in cls.mixins) {
+    if (_kStatefulMixinNames.contains(mx.element3.name3)) return true;
+  }
+  var sup = cls.supertype;
+  while (sup != null) {
+    if (_kStatefulMixinNames.contains(sup.element3.name3)) return true;
+    sup = sup.element3.supertype;
+  }
+  for (final f in cls.fields2) {
+    if (f.isStatic || f.isSynthetic) continue;
+    final n = f.type.element3?.name3;
+    if (n == 'Stream' || n == 'Future' || n == 'StreamController') return true;
+  }
+  return false;
+}
+
+const String _childValuesHelperSource = '''
+/// Collect one typed value per child node — the O(changed) shape for a
+/// `List<T>` constructor param.
+///
+/// A child that doesn't resolve to a T is skipped rather than throwing:
+/// it means the JSX nested something under a parent that only accepts
+/// data children, and dropping one marker beats blanking the map.
+List<T> _skalChildValues<T>(NodeState n, SkalBridge bridge) {
+  final out = <T>[];
+  for (final id in n.childIds) {
+    final v = bridge.buildValue<T>(id);
+    if (v != null) out.add(v);
+  }
+  return out;
+}''';
+
+// ── B1: subtype unions ──────────────────────────────────────────────
+
+/// Classes visible to the current `generate()` call. The subtype-union
+/// encoder needs to know which concrete implementations of an abstract
+/// param type actually exist, and that is a property of the whole run,
+/// not of any one type.
+///
+/// Library-private mutable state rather than a threaded parameter
+/// because the encoder is a tree of top-level functions and threading
+/// it would touch every one of them. `generate()` owns the lifecycle
+/// and the codegen is single-threaded per invocation.
+List<ClassElement2> _subtypeUniverse = const [];
+
+/// Class-name occurrence counts over [_subtypeUniverse]. Depends only
+/// on the universe, so it is computed ONCE per `generate()` run here
+/// instead of being rebuilt inside every abstract-param encounter —
+/// which was O(widgets × universe) of pure recomputation on packages
+/// the size of flutter_map.
+Map<String, int> _universeNameCounts = const {};
+
+/// Read-only view for the generator, which needs the same set to
+/// resolve `typeArgs:` names (B6).
+List<ClassElement2> get subtypeUniverse => _subtypeUniverse;
+
+/// Set the classes the subtype-union encoder may dispatch to. Called by
+/// `generate()` at the start of a run; pass an empty list to disable.
+void setSubtypeUniverse(List<ClassElement2> classes) {
+  _subtypeUniverse = classes;
+  final counts = <String, int>{};
+  for (final c in classes) {
+    final n = c.name3;
+    if (n != null && n.isNotEmpty) counts[n] = (counts[n] ?? 0) + 1;
+  }
+  _universeNameCounts = counts;
+}
+
+/// Maps a package name to its canonical barrel URI
+/// (`package:foo/foo.dart`) when that file exists on disk, else null.
+/// Injected per run by the driver (builder/CLI), which owns the
+/// package_config; reset alongside the universe.
+String? Function(String packageName)? _barrelResolver;
+
+/// Install the barrel resolver for this run (null clears it).
+void setBarrelResolver(String? Function(String packageName)? resolver) {
+  _barrelResolver = resolver;
+}
+
+/// Drop any element classes queued for `registerValue` emission by a
+/// PREVIOUS run. `takePendingValueBuilders` clears on drain, but a run
+/// that throws between registration and drain would otherwise leak its
+/// pending classes — from a by-then-disposed analyzer session — into
+/// the next build in the same process. Mirrors the unconditional
+/// universe reset above.
+void clearPendingValueBuilders() {
+  _pendingValueBuilders.clear();
+}
+
+/// Above this many concrete subclasses we decline rather than emit a
+/// parser nobody will read. A param typed as a broad framework base
+/// (`Decoration`, `ShapeBorder`) can have dozens of implementations in
+/// a large package; a 40-case dispatch is not the ergonomic win B1 is
+/// after, and each case drags in its own imports.
+const int _kMaxUnionSubtypes = 16;
+
+/// Emit a `$type`-discriminated parser for an abstract [base], or null
+/// when no viable concrete subtypes exist.
+///
+/// ```jsx
+/// <Card shape={{ $type: 'RoundedRectangleBorder', radius: 8 }} />
+/// ```
+///
+/// Discriminator policy:
+///
+///   • Exactly one concrete subtype → `$type` is optional. There is
+///     nothing to disambiguate, so `{ radius: 8 }` is accepted as-is.
+///   • More than one → `$type` is required. A missing or unrecognized
+///     one returns null, which lets the parameter's own declared
+///     default take over.
+///
+/// Returning null rather than guessing is deliberate. Picking "the
+/// first subtype" on a typo'd `$type` would hand the dev a silently
+/// wrong shape, and a wrong shape that renders is far harder to debug
+/// than a default that renders.
+String? _buildSubtypeUnionHelper({
+  required ClassElement2 base,
+  required Map<String, String> helpers,
+  required Set<int> visiting,
+  required Set<String> imports,
+  required int depth,
+}) {
+  if (depth > _kValueClassMaxDepth) return null;
+  final baseName = base.name3;
+  if (baseName == null || baseName.isEmpty) return null;
+  if (_extendsWidgetTransitively(base)) return null;
+  if (_subtypeUniverse.isEmpty) return null;
+
+  final helperName = '_skalParse$baseName';
+  // Names the HAND-WRITTEN parsers own (`_skalParseGradient` et al.).
+  // A union helper for an abstract base with the same simple name
+  // would land on the same helpers-map key with an incompatible body
+  // and signature — last writer wins, silently. The hand-written
+  // parser always takes precedence; the union declines.
+  if (_kReservedHelperNames.contains(helperName)) return null;
+  if (helpers.containsKey(helperName)) {
+    _addCanonicalImport(base, imports);
+    return helperName;
+  }
+
+  // Skip names that more than one library in the universe declares.
+  // Conditional exports produce exactly this: flutter_map ships
+  // `FileTileProvider` twice (native + stub), the package barrel
+  // re-exports one of them, and generated code that names it bare
+  // hits `ambiguous_import`. Picking one would be a coin flip between
+  // a real implementation and a throwing stub — and the discriminator
+  // is a string, so it could not express the difference anyway.
+  // (Counts precomputed in setSubtypeUniverse — they depend only on
+  // the universe, not on this base type.)
+  final concrete = <ClassElement2>[
+    for (final c in _subtypeUniverse)
+      if (!c.isAbstract &&
+          !identical(c, base) &&
+          (_universeNameCounts[c.name3] ?? 0) == 1 &&
+          _isSubtypeOf(c, base) &&
+          !_extendsWidgetTransitively(c) &&
+          !_looksStateful(c))
+        c,
+  ]..sort((a, b) => (a.name3 ?? '').compareTo(b.name3 ?? ''));
+
+  if (concrete.isEmpty || concrete.length > _kMaxUnionSubtypes) return null;
+
+  final id = identityHashCode(base);
+  if (!visiting.add(id)) return null;
+  try {
+    // Reserve the name before recursing — a subtype whose own ctor
+    // takes the base type (a decorated border wrapping a border) would
+    // otherwise recurse forever.
+    helpers[helperName] = '';
+    _addCanonicalImport(base, imports);
+
+    final cases = <String>[];
+    for (final c in concrete) {
+      final sub = _buildValueClassHelper(
+        type: c.thisType,
+        helpers: helpers,
+        visiting: visiting,
+        imports: imports,
+        depth: depth + 1,
+      );
+      if (sub == null) continue;
+      cases.add("    case '${c.name3}':\n      return $sub(j);");
+    }
+    if (cases.isEmpty) {
+      helpers.remove(helperName);
+      return null;
+    }
+
+    helpers['_skalDecodeMap'] = _decodeMapHelperSource;
+    imports.add('dart:convert');
+    final b = StringBuffer()
+      ..writeln('$baseName? $helperName(Object? raw) {')
+      ..writeln('  final j = _skalDecodeMap(raw);')
+      ..writeln('  if (j == null) return null;');
+    if (cases.length == 1) {
+      // Only one implementation — nothing to disambiguate, so don't
+      // make the JSX side spell out a discriminator it has no choice
+      // about.
+      final only = cases.first.split('return ').last.replaceAll(';', '');
+      b
+        ..writeln('  // Single concrete subtype — no discriminator needed.')
+        ..write('  return $only;');
+    } else {
+      b.writeln("  switch (j[r'\$type']) {");
+      for (final c in cases) {
+        b.writeln(c);
+      }
+      b
+        ..writeln('  }')
+        ..writeln('  // Missing or unrecognized \$type. Return null so the')
+        ..writeln("  // parameter's own default applies — guessing a")
+        ..writeln('  // subtype here would render the wrong thing silently.')
+        ..write('  return null;');
+    }
+    b.write('\n}');
+    helpers[helperName] = b.toString();
+    return helperName;
+  } finally {
+    visiting.remove(id);
+  }
+}
+
+/// True if [cls] transitively extends, implements, or mixes in [base].
+bool _isSubtypeOf(ClassElement2 cls, ClassElement2 base) {
+  for (final t in cls.allSupertypes) {
+    if (identical(t.element3, base)) return true;
+  }
+  return false;
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Service mapping (Roadmap A2) — headless static methods, not widgets
+// ───────────────────────────────────────────────────────────────────────
+//
+// A service method is reached over the bridge as an ordinary root-node
+// RPC (skal_flutter/lib/skal/services.dart). The dispatcher receives
+// `List<Object?> args` already decoded by the bridge — ints, doubles,
+// bools, Strings, and (since the eventArgJson case landed) real Maps
+// and Lists. So the ARGUMENT direction is exactly the problem the
+// value-class encoder already solves for JSON widget props, and it is
+// reused verbatim here: `_emitJsonReaderForField` against `args[i]`
+// instead of against a decoded prop string.
+//
+// The RETURN direction is new. The bridge's `_writeMethodReply` falls
+// back to `jsonEncode`, which handles primitives, Maps, Lists, and any
+// class with a `toJson()` — so most plugin result types need no code at
+// all. What's left is classes without `toJson()`, for which we emit a
+// getter-walking encoder. Anything we can't encode is skipped WITH a
+// reason rather than emitted and left to throw at runtime.
+
+/// How one service-method parameter is reconstructed from `args`.
+class ServiceArgEncoding {
+  /// Dart expression producing the argument value, e.g.
+  /// `(( args.length > 0 ? args[0] : null) as num?)?.toDouble() ?? 0.0`.
+  final String readerExpression;
+  final Set<String> requiredImports;
+  final Map<String, String> requiredHelpers;
+  const ServiceArgEncoding(
+      this.readerExpression, this.requiredImports, this.requiredHelpers);
+}
+
+/// How a service method's result is turned into something
+/// `jsonEncode` can serialize.
+class ServiceReturnEncoding {
+  /// Applied to the raw call expression. `null` means "pass through
+  /// unchanged" — the bridge already handles it.
+  final String? wrapperFn;
+  final Set<String> requiredImports;
+  final Map<String, String> requiredHelpers;
+
+  /// True when the encoding fell to the opaque-handle last resort —
+  /// the value cannot be serialized at all and JS gets a retained
+  /// reference. Callers use this to refuse shapes where per-value
+  /// retention is a leak (streams).
+  final bool isHandle;
+
+  const ServiceReturnEncoding(
+      this.wrapperFn, this.requiredImports, this.requiredHelpers,
+      {this.isHandle = false});
+}
+
+/// Map a service-method parameter type to an expression that rebuilds
+/// it from `argExpr` (the already-decoded bridge arg). Returns null if
+/// the type isn't reachable from JSON — the caller skips that method
+/// with a reason rather than emitting a broken dispatcher arm.
+ServiceArgEncoding? serviceArgEncoding({
+  required DartType type,
+  required String argExpr,
+  String? defaultLiteral,
+}) {
+  final helpers = <String, String>{};
+  final imports = <String>{};
+  final visiting = <int>{};
+
+  // Enums arrive as either an index (int) or a name (String). Accept
+  // both: JS-side code reads far better with `'high'` than with `2`,
+  // but an index is what a naive caller sends.
+  //
+  // Decode policy matches the widget path and B1's no-guessing rule:
+  // an unrecognized name or out-of-range index yields null, so the
+  // parameter's own declared default applies. The earlier inline
+  // decoder silently substituted `values.first` on a typo — a
+  // wrong-but-plausible value is strictly worse to debug than the
+  // declared default. Emitted as one helper per enum per file rather
+  // than a re-inlined quadruple interpolation per call site.
+  if (_isEnum(type)) {
+    final name = type.element3?.name3;
+    if (name == null) return null;
+    final el = type.element3;
+    if (el != null) _addCanonicalImport(el, imports);
+    final helperName = '_skalEnumArg$name';
+    helpers[helperName] = '$name? $helperName(Object? raw) {\n'
+        '  if (raw is String) {\n'
+        '    for (final e in $name.values) {\n'
+        '      if (e.name == raw) return e;\n'
+        '    }\n'
+        '    return null;\n'
+        '  }\n'
+        '  if (raw is num) {\n'
+        '    final i = raw.toInt();\n'
+        '    if (i < 0 || i >= $name.values.length) return null;\n'
+        '    return $name.values[i];\n'
+        '  }\n'
+        '  return null;\n'
+        '}';
+    final fallback = defaultLiteral ?? '$name.values.first';
+    final nullable = type.nullabilitySuffix == NullabilitySuffix.question;
+    final expr = nullable
+        ? '$helperName($argExpr)'
+        : '($helperName($argExpr) ?? $fallback)';
+    return ServiceArgEncoding(expr, imports, helpers);
+  }
+
+  // Core List args decode elementwise from the JSON array the bridge
+  // hands us. This must run BEFORE the handle fallback: a List is
+  // never a handle, and letting it fall through there erased the type
+  // argument (`skalHandleArg<List>` → List<dynamic>, which does not
+  // assign to List<XFile> and broke the generated file's compile).
+  if (type.isDartCoreList &&
+      type is InterfaceType &&
+      type.typeArguments.length == 1) {
+    final elementType = type.typeArguments.first;
+    final elName = elementType.element3?.name3;
+    final nullable = type.nullabilitySuffix == NullabilitySuffix.question;
+    String? listExpr;
+    if (_isCoreString(elementType) ||
+        _isCoreInt(elementType) ||
+        _isCoreDouble(elementType) ||
+        _isCoreBool(elementType)) {
+      // Eager List<T>.from so a wrong-typed element throws a clear
+      // TypeError at the call boundary, not lazily mid-plugin.
+      final bare = elementType.getDisplayString().replaceAll('?', '');
+      listExpr =
+          '(($argExpr) is List ? List<$bare>.from(($argExpr) as List) : null)';
+    } else if (elName != null) {
+      final elReader = _emitJsonReaderForField(
+        type: elementType,
+        jsonExpr: 'e',
+        helpers: helpers,
+        visiting: visiting,
+        imports: imports,
+        depth: 0,
+      );
+      if (elReader != null) {
+        // Per-element decode; undecodable entries drop via whereType
+        // rather than nulling the whole list.
+        listExpr = '(($argExpr) is List'
+            ' ? [for (final e in ($argExpr) as List) $elReader]'
+            '.whereType<$elName>().toList()'
+            ' : null)';
+      }
+    }
+    if (listExpr == null) return null;
+    return ServiceArgEncoding(
+        nullable ? listExpr : '($listExpr ?? const [])', imports, helpers);
+  }
+
+  final reader = _emitJsonReaderForField(
+    type: type,
+    jsonExpr: argExpr,
+    helpers: helpers,
+    visiting: visiting,
+    imports: imports,
+    depth: 0,
+  );
+  if (reader == null) {
+    // A3, argument direction — and B3's handle half. A param typed as
+    // a controller (or anything else JSON can't rebuild) accepts a
+    // handle JS got from an earlier call. This is what lets
+    // `camera.takePicture(cam)` exist without a bespoke host widget.
+    //
+    // Core collections are NEVER handles — an unmappable Map/Set/
+    // Iterable arg refuses instead, so the param rules (skip required,
+    // omit-and-record optional) produce a legible outcome.
+    if (type.isDartCoreMap ||
+        type.isDartCoreSet ||
+        type.isDartCoreIterable) {
+      return null;
+    }
+    final el = type.element3;
+    if (el is ClassElement2) {
+      final name = el.name3;
+      if (name != null && name.isNotEmpty && !_extendsWidgetTransitively(el)) {
+        _addCanonicalImport(el, imports);
+        imports.add('package:skal_flutter/skal/handles.dart');
+        final nullable =
+            type.nullabilitySuffix == NullabilitySuffix.question;
+        final call = 'skalHandleArg<$name>($argExpr)';
+        return ServiceArgEncoding(
+            nullable ? call : '($call)!', imports, helpers);
+      }
+    }
+    return null;
+  }
+
+  // `_emitJsonReaderForField` is nullable by construction. A
+  // non-nullable parameter needs a fallback, same ladder the value-class
+  // encoder uses: source default → type-shaped zero → `!`.
+  final typeName = type.getDisplayString();
+  String expr;
+  if (typeName.endsWith('?')) {
+    expr = reader;
+  } else if (defaultLiteral != null) {
+    expr = '($reader ?? $defaultLiteral)';
+  } else {
+    final zero = _zeroValueForType(type);
+    expr = zero != null ? '($reader ?? $zero)' : '($reader)!';
+  }
+  return ServiceArgEncoding(expr, imports, helpers);
+}
+
+/// Decide how a service method's return type reaches JS.
+///
+/// [type] should already be unwrapped from `Future`/`Stream` by the
+/// caller — this asks only "can jsonEncode see this value?".
+ServiceReturnEncoding? serviceReturnEncoding(DartType type) {
+  final helpers = <String, String>{};
+  final imports = <String>{};
+
+  if (type is VoidType || type.isDartCoreNull) {
+    return ServiceReturnEncoding(null, imports, helpers);
+  }
+  if (_isCoreString(type) ||
+      _isCoreInt(type) ||
+      _isCoreDouble(type) ||
+      _isCoreBool(type) ||
+      type.isDartCoreObject ||
+      type is DynamicType) {
+    return ServiceReturnEncoding(null, imports, helpers);
+  }
+  // Emitted lambdas spell out their parameter type and match the
+  // source's nullability. Writing `(v) => v?.name` instead would be a
+  // warning in the (common) non-nullable case, and generated code that
+  // trips the analyzer is generated code developers learn to ignore.
+  final display = type.getDisplayString();
+  final q = type.nullabilitySuffix == NullabilitySuffix.question ? '?' : '';
+
+  // Enums serialize as their name — stable across reorderings of the
+  // Dart enum, which an index is not.
+  if (_isEnum(type)) {
+    final el = type.element3;
+    if (el != null) _addCanonicalImport(el, imports);
+    return ServiceReturnEncoding('($display v) => v$q.name', imports, helpers);
+  }
+  if (type.isDartCoreMap) {
+    // Same rule as List: the VALUE type must itself be encodable, or
+    // jsonEncode throws at runtime inside _writeMethodReply — an
+    // opaque rejection where every other unencodable shape gets a
+    // build-time skip naming the fix. Passthrough-compatible value
+    // types need no wrapper; anything needing one is refused (a
+    // wrapped-Map re-encoder is not worth its complexity — give the
+    // value type a toJson()).
+    final args =
+        type is InterfaceType ? type.typeArguments : const <DartType>[];
+    if (args.length == 2) {
+      final inner = serviceReturnEncoding(args[1]);
+      if (inner == null || inner.wrapperFn != null) return null;
+    }
+    return ServiceReturnEncoding(null, imports, helpers);
+  }
+  if (type.isDartCoreList || type.isDartCoreIterable || type.isDartCoreSet) {
+    final args = type is InterfaceType ? type.typeArguments : const <DartType>[];
+    if (args.isEmpty) return ServiceReturnEncoding(null, imports, helpers);
+    final inner = serviceReturnEncoding(args.first);
+    if (inner == null) return null;
+    imports.addAll(inner.requiredImports);
+    helpers.addAll(inner.requiredHelpers);
+    if (inner.wrapperFn == null) {
+      // A List already encodes; an Iterable/Set does not, so normalize.
+      if (type.isDartCoreList && q.isEmpty) {
+        return ServiceReturnEncoding(null, imports, helpers);
+      }
+      return ServiceReturnEncoding(
+          '($display v) => v$q.toList()', imports, helpers);
+    }
+    return ServiceReturnEncoding(
+        '($display v) => v$q.map(${inner.wrapperFn}).toList()',
+        imports, helpers);
+  }
+
+  final el = type.element3;
+  if (el is! ClassElement2) return null;
+
+  // A `toJson()` means the plugin author already answered this question.
+  // jsonEncode calls it automatically, so nothing to emit.
+  for (final m in el.methods2) {
+    if (m.name3 == 'toJson' && !m.isStatic && m.formalParameters.isEmpty) {
+      return ServiceReturnEncoding(null, imports, helpers);
+    }
+  }
+
+  final encoder = _buildValueEncoder(
+    el: el,
+    helpers: helpers,
+    imports: imports,
+    visiting: <int>{},
+    depth: 0,
+  );
+  if (encoder != null) {
+    return ServiceReturnEncoding(encoder, imports, helpers);
+  }
+
+  // A3 — opaque handle. Nothing about this object can be serialized,
+  // which for a controller or a connection is the correct answer:
+  // its identity IS the value. Hand JS a handle instead of dropping
+  // the method, which is what used to happen.
+  //
+  // Deliberately the LAST resort. A type that can be serialized should
+  // be, because a serialized value needs no lifetime management and a
+  // handle does.
+  imports.add('package:skal_flutter/skal/handles.dart');
+  return ServiceReturnEncoding('skalHandleOf', imports, helpers,
+      isHandle: true);
+}
+
+/// Emit (and register) `_skalEncode<Class>` — a Map builder over the
+/// class's public, zero-arg, non-static getters. Returns the helper
+/// name, or null when nothing encodable is reachable.
+///
+/// Only used for result types the plugin author did NOT give a
+/// `toJson()`. Deliberately conservative: a getter whose own type we
+/// can't encode is DROPPED rather than blocking the class, because a
+/// `Position` missing its `floor` field is still useful, whereas no
+/// `Position` at all is not.
+String? _buildValueEncoder({
+  required ClassElement2 el,
+  required Map<String, String> helpers,
+  required Set<String> imports,
+  required Set<int> visiting,
+  required int depth,
+}) {
+  if (depth > _kValueClassMaxDepth) return null;
+  final className = el.name3;
+  if (className == null || className.isEmpty) return null;
+  if (_extendsWidgetTransitively(el)) return null;
+  if (_kStatefulDenylist.contains(className)) return null;
+
+  final id = identityHashCode(el);
+  if (!visiting.add(id)) return null;
+  try {
+    final helperName = '_skalEncode$className';
+    if (helpers.containsKey(helperName)) {
+      _addCanonicalImport(el, imports);
+      return helperName;
+    }
+    _addCanonicalImport(el, imports);
+    // Reserve the name before recursing so a self-referential type
+    // (`Foo get parent`) finds it and stops instead of looping.
+    helpers[helperName] = '';
+
+    final fields = <String>[];
+    for (final g in el.getters2) {
+      if (g.isStatic) continue;
+      final name = g.name3;
+      if (name == null || name.isEmpty || name.startsWith('_')) continue;
+      if (name == 'hashCode' || name == 'runtimeType') continue;
+      final rt = g.returnType;
+      final nullable = rt.nullabilitySuffix == NullabilitySuffix.question;
+      final access = nullable ? 'v.$name?' : 'v.$name';
+      if (_isCoreString(rt) ||
+          _isCoreInt(rt) ||
+          _isCoreDouble(rt) ||
+          _isCoreBool(rt)) {
+        fields.add("      '$name': v.$name,");
+      } else if (_isEnum(rt)) {
+        fields.add("      '$name': $access.name,");
+      } else if (_isDuration(rt)) {
+        fields.add("      '$name': $access.inMilliseconds,");
+      }
+      // Nested objects and collections are intentionally omitted at
+      // this tier — see the doc comment. A plugin type that needs them
+      // should ship a toJson().
+    }
+    if (fields.isEmpty) {
+      helpers.remove(helperName);
+      return null;
+    }
+    final buf = StringBuffer()
+      ..writeln('Object? $helperName($className? v) {')
+      ..writeln('  if (v == null) return null;')
+      ..writeln('  return <String, Object?>{');
+    for (final f in fields) {
+      buf.writeln(f);
+    }
+    buf
+      ..writeln('  };')
+      ..write('}');
+    helpers[helperName] = buf.toString();
+    return helperName;
+  } finally {
+    visiting.remove(id);
+  }
+}
+
 /// Add the import URI for [el]'s declaring library to [imports].
 ///
 /// Only `package:` URIs are added. For nested value-class references
@@ -1153,18 +1927,54 @@ Offset? _skalParseOffset(Object? raw) {
 /// `sourceRelativeImports` machinery per top-level walked unit. We
 /// can't predict the right relative path from the encoder; the unit
 /// walk already handled it.
+/// Public alias so the generator's emission paths route through the
+/// same canonicalization (and future normalization) as the encoders,
+/// instead of re-deriving `lib.uri.scheme == 'package'` inline.
+void addCanonicalImport(Element2 el, Set<String> imports) =>
+    _addCanonicalImport(el, imports);
+
 void _addCanonicalImport(Element2 el, Set<String> imports) {
   final lib = el.library2;
   if (lib == null) return;
-  final uri = lib.uri;
-  if (uri.scheme != 'package') return;
-  imports.add(uri.toString());
+  final chosen = canonicalImportUriFor(lib.uri, _barrelResolver);
+  if (chosen != null) imports.add(chosen);
+}
+
+/// Testable core of [_addCanonicalImport]: map a declaring-library URI
+/// to the URI the generated file should import (null = don't import,
+/// e.g. dart: core libraries).
+///
+/// Conditional exports make the DECLARING library the wrong thing to
+/// import: the analyzer resolves `export 'io.dart' if (...)` chains
+/// to the STUB (cross_file's interface.dart), while the CFE compile
+/// resolves them to the io variant — so importing the stub path
+/// explicitly collides with any barrel in scope ("`XFile` is imported
+/// from both …interface.dart and …io.dart"). For a class declared
+/// under src/, prefer the package's canonical barrel when one exists;
+/// the barrel names the conditionally-correct declaration on every
+/// target. Packages whose barrel isn't `<pkg>.dart` (latlong2) fall
+/// back to the actual URI, which is the pre-existing behavior.
+String? canonicalImportUriFor(
+    Uri uri, String? Function(String packageName)? barrelResolver) {
+  if (uri.scheme != 'package') return null;
+  final segments = uri.pathSegments;
+  if (segments.length > 2 && segments[1] == 'src') {
+    final barrel = barrelResolver?.call(segments.first);
+    if (barrel != null) return barrel;
+  }
+  return uri.toString();
 }
 
 /// Pick a constructor we can call with all named/positional args derived
 /// from JSON. Prefer the default (unnamed) constructor; fall back to the
 /// first public, non-factory, non-redirecting named constructor. Reject
 /// classes with NO suitable ctor.
+/// Public alias for the generator's value-builder emission (B5) — the
+/// SAME picker that gates B5 eligibility above, so the gate and the
+/// emitter can never disagree about which constructor a class uses.
+ConstructorElement2? pickValueClassCtor(ClassElement2 cls) =>
+    _pickValueClassCtor(cls);
+
 ConstructorElement2? _pickValueClassCtor(ClassElement2 cls) {
   ConstructorElement2? best;
   for (final c in cls.constructors2) {
@@ -1186,6 +1996,9 @@ ConstructorElement2? _pickValueClassCtor(ClassElement2 cls) {
 /// (for the "render a child here" encoding); this one walks the whole
 /// supertype chain so narrow subclasses (`Text`, `Container`, package-
 /// defined widgets) are caught too.
+bool extendsWidgetTransitively(ClassElement2 cls) =>
+    _extendsWidgetTransitively(cls);
+
 bool _extendsWidgetTransitively(ClassElement2 cls) {
   if (cls.name3 == 'Widget') return true;
   var sup = cls.supertype;
@@ -1214,47 +2027,18 @@ String? _zeroValueForType(DartType t) {
 /// class" — it just means "no obvious red flag." The denylist above
 /// handles known-bad cases the heuristic might miss.
 bool _looksStateful(ClassElement2 cls) {
-  // dispose() method → almost always resource-management.
-  for (final m in cls.methods2) {
-    if (m.name3 == 'dispose') return true;
-  }
-  // Mixin or supertype names that signal stateful behavior.
-  for (final mx in cls.mixins) {
-    if (_kStatefulMixinNames.contains(mx.element3.name3)) return true;
-  }
-  var sup = cls.supertype;
-  while (sup != null) {
-    final n = sup.element3.name3;
-    if (_kStatefulMixinNames.contains(n)) return true;
-    sup = sup.element3.supertype;
-  }
-  // Walk the instance fields looking for signals of mutable state.
+  // Resource ownership (dispose/close, lifecycle mixins, Stream/Future
+  // fields) is the shared half — one walker, so B5 eligibility and
+  // JSON-reconstruction eligibility can't drift on it. What remains
+  // specific to reconstruction is MUTABILITY: a class with non-final
+  // fields (flutter_map's LatLngBounds: `double north;`) is intended
+  // to be mutated post-construction, and rebuilding it from JSON each
+  // render would silently discard those mutations. Synthetic fields
+  // (backing entries for explicit getters — `int get hashCode`) are
+  // skipped: they report isFinal == false but are not stored state.
+  if (_ownsResources(cls)) return true;
   for (final f in cls.fields2) {
-    if (f.isStatic) continue;
-    // Skip SYNTHETIC fields — these are the analyzer's induced
-    // backing entries for explicit getters/setters (`int get hashCode`,
-    // `bool get isEmpty`, etc.), not real stored state. They report
-    // `isFinal == false`, so without this skip ANY value class that
-    // overrides `==`/`hashCode` or exposes a computed getter — which
-    // is most well-written value classes — gets wrongly flagged
-    // stateful and rejected. Real declared fields (`final double x`
-    // or the mutable `double x`) are NOT synthetic and still checked.
-    if (f.isSynthetic) continue;
-    final ft = f.type;
-    final n = ft.element3?.name3;
-    // Stream/Future/StreamController fields → definitely not a value
-    // class.
-    if (n == 'Stream' || n == 'Future' || n == 'StreamController') {
-      return true;
-    }
-    // NON-FINAL instance fields → mutable state. flutter_map's
-    // LatLngBounds is the motivating case: `double north;` (not
-    // final) means the class is intended to be mutated post-
-    // construction. Reconstructing it from JSON each render loses
-    // any mutations the dev applied. Skip these and let the dev
-    // wrap manually (or via the host pattern if they need lifecycle).
-    // (`late final` and `late` non-final follow the same rule —
-    // `late` without `final` is mutable too.)
+    if (f.isStatic || f.isSynthetic) continue;
     if (!f.isFinal) return true;
   }
   return false;
@@ -1355,6 +2139,16 @@ bool _isFlutterGradient(DartType t) {
 /// on missing/unknown type. Returns null on empty input so nullable
 /// params (`Gradient?`) get a clean null instead of a zero-color
 /// LinearGradient at runtime.
+/// Helper names owned by hand-written parser sources in this file.
+/// The subtype-union generator must never claim one of these keys —
+/// see the reservation check in [_buildSubtypeUnionHelper].
+const Set<String> _kReservedHelperNames = {
+  '_skalParseGradient',
+  '_skalParseColor',
+  '_skalParseAlignment',
+  '_skalDecodeMap',
+};
+
 const String _gradientHelperSource = '''
 Gradient? _skalParseGradient(String? json) {
   if (json == null || json.isEmpty) return null;

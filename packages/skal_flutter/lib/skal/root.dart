@@ -79,9 +79,26 @@ class _SkalRootState extends State<SkalRoot>
     with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
 
+  static bool _errorEchoInstalled = false;
+
   @override
   void initState() {
     super.initState();
+    // Compact one-line echo of every FlutterError. The full multi-line
+    // report still goes to the default handler, but on iOS the unified
+    // log drops/truncates that spew — a first-frame layout exception
+    // rendered the app blank with NOTHING in `log show` (2026-07-23).
+    // One short `[skal]` line survives every platform's logging.
+    if (kDebugMode && !_errorEchoInstalled) {
+      _errorEchoInstalled = true;
+      final prev = FlutterError.onError;
+      FlutterError.onError = (details) {
+        debugPrint(
+            '[skal] FlutterError: '
+            '${details.exceptionAsString().split('\n').first}');
+        prev?.call(details);
+      };
+    }
     // Ticker fires from SchedulerBinding.handleBeginFrame, before the
     // build phase. So pumpOps mutates state and fires notifyListeners
     // BEFORE Flutter walks the dirty element list — touched nodes are
@@ -356,7 +373,7 @@ class _SkalBrightness extends InheritedWidget {
 Widget _applyWidth(int v, Widget child) {
   if (v == kNoValue) return child;
   if (v == kFillMax) {
-    return SizedBox(width: double.infinity, child: child);
+    return SkalFill(width: double.infinity, child: child);
   }
   if (v == kWrapContent) return child;
   return SizedBox(width: v.toDouble(), child: child);
@@ -365,10 +382,145 @@ Widget _applyWidth(int v, Widget child) {
 Widget _applyHeight(int v, Widget child) {
   if (v == kNoValue) return child;
   if (v == kFillMax) {
-    return SizedBox(height: double.infinity, child: child);
+    return SkalFill(height: double.infinity, child: child);
   }
   if (v == kWrapContent) return child;
   return SizedBox(height: v.toDouble(), child: child);
+}
+
+/// Bounded-aware sizing — the widget behind every `width="fill"` /
+/// `height="fill"`, both for the intrinsics above and for codegen
+/// adapters' `_skalApplyBaseProps` (which passes finite dp values
+/// through the same widget).
+///
+/// Semantics per axis:
+///   • finite value          → exact dp, clamped to the incoming
+///                             constraints (SizedBox behavior)
+///   • double.infinity       → fill the axis IF the incoming max is
+///                             bounded; otherwise leave the axis loose
+///                             (wrap content)
+///   • null                  → pass constraints through untouched
+///
+/// The third row is the reason this class exists. A raw
+/// `SizedBox(width: double.infinity)` inside an unbounded axis — any
+/// `<Column>` (which DEFAULTS to fill width) nested in a `<Row>`, or a
+/// fill-height child inside a `<Column>` — throws "BoxConstraints
+/// forces an infinite width/height", and one throwing node aborts the
+/// entire layout flush: the whole app renders blank, silently on
+/// platforms where the console spew never surfaces (observed on the
+/// iOS Simulator, 2026-07-23). Degrading fill→wrap under unbounded
+/// constraints matches the dev's intent ("as much as the parent
+/// allows" — an unbounded parent allows anything, so let content
+/// decide) and makes the failure class unrepresentable.
+class SkalFill extends SingleChildRenderObjectWidget {
+  const SkalFill({super.key, this.width, this.height, super.child});
+
+  /// Finite = exact dp; infinity = fill-if-bounded; null = untouched.
+  final double? width;
+  final double? height;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      RenderSkalFill(width: width, height: height);
+
+  @override
+  void updateRenderObject(
+      BuildContext context, covariant RenderSkalFill renderObject) {
+    renderObject
+      ..width = width
+      ..height = height;
+  }
+}
+
+class RenderSkalFill extends RenderProxyBox {
+  RenderSkalFill({double? width, double? height})
+      : _width = width,
+        _height = height;
+
+  double? _width;
+  set width(double? v) {
+    if (v != _width) {
+      _width = v;
+      markNeedsLayout();
+    }
+  }
+
+  double? _height;
+  set height(double? v) {
+    if (v != _height) {
+      _height = v;
+      markNeedsLayout();
+    }
+  }
+
+  BoxConstraints _innerConstraints(BoxConstraints c) {
+    double minW = c.minWidth, maxW = c.maxWidth;
+    double minH = c.minHeight, maxH = c.maxHeight;
+    final w = _width;
+    if (w != null) {
+      if (w.isFinite) {
+        minW = maxW = w.clamp(c.minWidth, c.maxWidth);
+      } else if (c.maxWidth.isFinite) {
+        minW = maxW = c.maxWidth;
+      }
+      // else: fill under unbounded width — leave loose, content decides.
+    }
+    final h = _height;
+    if (h != null) {
+      if (h.isFinite) {
+        minH = maxH = h.clamp(c.minHeight, c.maxHeight);
+      } else if (c.maxHeight.isFinite) {
+        minH = maxH = c.maxHeight;
+      }
+    }
+    return BoxConstraints(
+      minWidth: minW, maxWidth: maxW, minHeight: minH, maxHeight: maxH);
+  }
+
+  @override
+  void performLayout() {
+    final inner = _innerConstraints(constraints);
+    if (child != null) {
+      child!.layout(inner, parentUsesSize: true);
+      size = constraints.constrain(child!.size);
+    } else {
+      size = inner.smallest;
+    }
+  }
+
+  @override
+  Size computeDryLayout(covariant BoxConstraints constraints) {
+    final inner = _innerConstraints(constraints);
+    if (child != null) return constraints.constrain(child!.getDryLayout(inner));
+    return inner.smallest;
+  }
+
+  // Exact finite dims answer intrinsics directly (SizedBox parity);
+  // fill can't be resolved without incoming constraints, so it defers
+  // to the child like a plain proxy.
+  @override
+  double computeMinIntrinsicWidth(double height) =>
+      (_width?.isFinite ?? false)
+          ? _width!
+          : super.computeMinIntrinsicWidth(height);
+
+  @override
+  double computeMaxIntrinsicWidth(double height) =>
+      (_width?.isFinite ?? false)
+          ? _width!
+          : super.computeMaxIntrinsicWidth(height);
+
+  @override
+  double computeMinIntrinsicHeight(double width) =>
+      (_height?.isFinite ?? false)
+          ? _height!
+          : super.computeMinIntrinsicHeight(width);
+
+  @override
+  double computeMaxIntrinsicHeight(double width) =>
+      (_height?.isFinite ?? false)
+          ? _height!
+          : super.computeMaxIntrinsicHeight(width);
 }
 
 /// ALIGN_* wire enum → Flutter MainAxisAlignment for Column/Row.
@@ -1919,6 +2071,86 @@ Widget _buildBuilderRow(NodeState n, SkalBridge bridge, int row, Axis axis) {
       key: ValueKey<int>(childId),
     ),
   );
+}
+
+/// A builder-callback slot for a codegen'd widget — Roadmap B2.
+///
+/// A wrapped package's `Widget Function(BuildContext, int)` param
+/// (itemBuilder, separatorBuilder) can't be encoded as a prop: the
+/// return type isn't `void`, so the event machinery has nothing to
+/// send back. But "host asks JS to build a subtree for index i" is
+/// exactly what builder-mode `<ListView>` already does, and the
+/// protocol behind it — `builderRows`, `evRowRequest`, `opListSetRow` —
+/// is keyed by (node, index) with nothing list-specific in it. This
+/// widget is that protocol made public, so a generated adapter can
+/// hand it to any indexed builder param.
+///
+/// **Async by construction, and that is the perf gate.** JS builds the
+/// subtree on its own schedule; until it lands this renders
+/// [placeholder]. A builder that fires per frame (flutter_map's
+/// `tileBuilder` during a pan) would therefore show a pop-in cascade —
+/// which is why B2 is opt-in per param in `skal_codegen.yaml` and never
+/// applied automatically. The alternative, a synchronous JS round-trip
+/// inside a Flutter build, would put JS execution on the frame's
+/// critical path; see S4.
+class SkalBuilderChild extends StatelessWidget {
+  const SkalBuilderChild({
+    super.key,
+    required this.host,
+    required this.index,
+    required this.bridge,
+    this.placeholder,
+  });
+
+  /// The generated adapter's own node — the builder rows hang off it.
+  final NodeState host;
+
+  /// Index the host widget asked for.
+  final int index;
+
+  final SkalBridge bridge;
+
+  /// Shown until JS delivers the subtree. Defaults to a zero-size box:
+  /// a generic builder has no axis, so there is no honest extent to
+  /// estimate (unlike a list row, which reuses its measured height).
+  final Widget? placeholder;
+
+  /// Nodes already warned about a missing JS row-builder binding, so
+  /// the diagnostic fires once per host instead of once per frame.
+  static final Set<int> _warnedHosts = <int>{};
+
+  @override
+  Widget build(BuildContext context) {
+    final childId = host.builderRows?[index];
+    if (childId == null) {
+      // Dart expects rows but JS never bound EV_ROW_REQUEST: the JS
+      // side doesn't know this prop is a builder. The two known causes
+      // are both build-tooling, and both used to fail as silent blank
+      // rows — a vendored pre-B2 vite-plugin-skal-codegen.js that
+      // never injects __SKAL_BUILDER_PROPS__, or a bundle built before
+      // the prop was marked `builder: true`. Say so, once.
+      if (host.onRowRequestHandlerId == 0 && kDebugMode) {
+        if (_warnedHosts.add(identityHashCode(host))) {
+          debugPrint(
+            '[skal] builder widget "${host.customWidgetName}" is waiting '
+            'for rows, but the JS side never installed a row builder — '
+            'its function prop was bound as an event handler. Usually a '
+            'stale vendored vite-plugin-skal-codegen.js (missing the '
+            '__SKAL_BUILDER_PROPS__ injection) or a bundle built before '
+            'the `builder: true` override. Update the plugin from '
+            'scripts/templates/default/ and rebuild the JS bundle.',
+          );
+        }
+      }
+      _noteMissingRow(host, bridge, index);
+      return placeholder ?? const SizedBox.shrink();
+    }
+    return SkalNode(
+      nodeId: childId,
+      bridge: bridge,
+      key: ValueKey<int>(childId),
+    );
+  }
 }
 
 /// Placeholder extent for a never-measured row. Only matters for the

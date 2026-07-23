@@ -24,6 +24,8 @@ import 'package:skal_flutter/skal/dialogs.dart';
 import 'package:skal_flutter/skal/root.dart';
 import 'package:skal_flutter/skal_ffi.dart';
 
+import 'bench_service.dart';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // E2E visibility — force Flutter's semantics tree on so Maestro can read it.
@@ -92,8 +94,17 @@ Future<void> _boot() async {
 
   final bridge = SkalBridge(skal);
   bridge.ensureRoot();
-  bridge.pumpOps();
+  // Install the app dispatcher BEFORE the first pump: the eval above
+  // already queued ops, and an app that fires an RPC during its initial
+  // render (onMount probes, boot telemetry) has that invoke sitting in
+  // the ring RIGHT NOW. Draining it before the dispatcher exists fails
+  // the app's very first call with "no method dispatcher on node 1".
   installAppDispatcher(bridge);
+  bridge.pumpOps();
+  // The RPC-bench service. Registration is global and order-independent
+  // relative to installAppDispatcher — the root dispatcher resolves
+  // service namespaces at call time.
+  registerBenchService();
 
   // Boot signal — confirms libskal loaded, the JS bundle evaluated, and
   // the first op pump produced a node tree. Also what E2E smoke tests

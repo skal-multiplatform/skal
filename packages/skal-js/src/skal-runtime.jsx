@@ -45,9 +45,11 @@ import { Navigator, Screen } from 'skal';
  *    Promise will reject with `status 2` (no dispatcher registered).
  *
  *  • The Promise resolves with the Dart method's return value, decoded
- *    by the bridge's argType discriminator: int/double/bool/void today.
- *    String + object returns are deferred (need producer-side string
- *    heap + flat-object serialization).
+ *    by the bridge's argType discriminator: int, double, bool, String,
+ *    void, and **any `jsonEncode`-able object** (Map, List, or a class
+ *    with `toJson()` — `XFile` and friends). Objects arrive on the JS
+ *    side already parsed. See `_writeMethodReply` in
+ *    `skal_flutter/lib/skal/bridge.dart`.
  *
  *  • If the ref's node hasn't mounted yet when you call a method, the
  *    Promise rejects (status 2). Either await the next tick after
@@ -55,8 +57,11 @@ import { Navigator, Screen } from 'skal';
  *    after mount by construction).
  *
  *  • Arg encoding: integers → I32, fractional numbers → F32, booleans
- *    → BOOL. Strings + objects pass as VOID (effectively dropped) —
- *    same deferred-plumbing reason as returns.
+ *    → BOOL, strings → STR via the JS string heap (bounded by heap
+ *    capacity, ~768 KiB — not by the wire encoding). Objects and arrays
+ *    → JSON via the same heap; the Dart side hands your dispatcher the
+ *    decoded `Map` / `List`. `null` and unsupported types → VOID, which
+ *    Dart reads as `null` in that arg slot.
  *
  * Returns: a Proxy you assign to `ref=` on a host widget.
  */
@@ -114,16 +119,9 @@ export function createSkalRef() {
               `skal ref: cannot call .${String(prop)}() before the host `
               + `mounts. Move the call into a JSX event handler.`);
           }
-          const cb = args[args.length - 1];
-          if (typeof cb !== 'function') {
-            throw new TypeError(
-              `skal ref: .${String(prop)}() requires a callback as `
-              + `its last argument (got ${typeof cb})`);
-          }
-          // Pop the callback off the arg list. The leading args are
-          // forwarded to Dart as the method's positional args.
-          const realArgs = args.slice(0, -1);
-          return B.subscribeStream(nodeId, methodName, realArgs, cb);
+          const h = _streamHandlers(args, `ref .${String(prop)}()`);
+          return B.subscribeStream(
+            nodeId, methodName, h.args, h.onValue, h.opts);
         };
       }
       // One-shot RPC.
@@ -140,6 +138,240 @@ export function createSkalRef() {
       };
     },
   });
+}
+
+/**
+ * Handle for a **nodeless** native service — geolocation, clipboard,
+ * share sheet, biometrics, secure storage, permissions. Anything with
+ * no widget to mount.
+ *
+ * ```jsx
+ * const clip = createSkalService('clipboard');
+ * await clip.write('hello');
+ * const text = await clip.read();
+ *
+ * const geo = createSkalService('geolocator');
+ * const pos  = await geo.getCurrentPosition();      // JSON object back
+ * const stop = geo.positionStream$(p => setPos(p)); // Stream<Position>
+ * onCleanup(stop);
+ * ```
+ *
+ * Mechanics — identical to {@link createSkalRef}, with two differences:
+ *
+ *  • It targets the ROOT node rather than a mounted host, so there is
+ *    no bind step and no "called before mount" failure mode. The root
+ *    node exists from `ensureRoot()` onward, i.e. before any JS runs.
+ *
+ *  • Method names are namespaced on the wire — `clip.read()` dispatches
+ *    `'clipboard.read'`. The Dart side routes on the namespace via
+ *    `registerService` (`skal_flutter/lib/skal/services.dart`). The
+ *    wire format is unchanged; this is a naming convention layered over
+ *    the same ops that already back the dialog API.
+ *
+ * The `$` suffix means the same thing here as on a ref: subscribe to a
+ * Dart `Stream<T>`, last argument is the callback, returns an
+ * unsubscribe function.
+ *
+ * Rate classes apply (docs/PERFORMANCE.md): a one-shot RPC costs one
+ * frame regardless of payload, so batch calls issued together and
+ * prefer streams for anything recurring.
+ *
+ * @param {string} name  The registered service namespace, e.g. 'geolocator'.
+ * @returns {any} A Proxy whose every property is a callable RPC.
+ */
+export function createSkalService(name) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new TypeError(
+      `createSkalService: name must be a non-empty string (got ${typeof name})`);
+  }
+  if (name.includes('.')) {
+    throw new TypeError(
+      `createSkalService('${name}'): the name must not contain "." — `
+      + `the dot separates service from method on the wire.`);
+  }
+  return new Proxy(Object.create(null), {
+    get(_, prop) {
+      // Symbols (util.inspect, Proxy iteration) and `then` must NOT
+      // become RPC calls. `then` especially: returning a function for
+      // it makes the proxy look thenable, so `await someService` would
+      // hang forever on a Promise that never settles.
+      if (typeof prop === 'symbol' || prop === 'then') return undefined;
+
+      const isStream = prop.endsWith('$') && prop.length > 1;
+      const method = isStream ? prop.slice(0, -1) : prop;
+      const qualified = `${name}.${method}`;
+
+      // Web first — see S1 in docs/NATIVE_SUPPORT.md. A browser API
+      // called straight from JS beats a hop into the Flutter-web
+      // runtime, which pays a copy on its "shared" buffer. So in ANY
+      // browser context (DOM target or Flutter Web), a registered web
+      // impl wins over the bridge.
+      const webImpl = IS_BROWSER ? _webServices.get(name) : undefined;
+      if (webImpl) {
+        return (...args) => _callWebService(
+          webImpl, qualified, name, method, isStream, args);
+      }
+
+      if (!B.HAS_NATIVE_BRIDGE) {
+        // DOM target, no web impl: fail with the fix, not a hang.
+        return () => {
+          const err = new Error(
+            `skal service: "${qualified}" is not available on this target. `
+            + `No native bridge, and no web implementation registered for `
+            + `"${name}". Call registerWebService('${name}', …) in your `
+            + `web entry, or guard the call with a platform check.`);
+          if (isStream) throw err;
+          return Promise.reject(err);
+        };
+      }
+
+      if (isStream) {
+        return (...args) => {
+          const h = _streamHandlers(args, `service ${name}.${prop}()`);
+          return B.subscribeStream(
+            B.ROOT_NODE_ID, qualified, h.args, h.onValue, h.opts);
+        };
+      }
+      return (...args) => B.invokeMethod(B.ROOT_NODE_ID, qualified, args);
+    },
+  });
+}
+
+// Parse the trailing subscription handlers off a `$`-method's arg list.
+//
+// Two accepted shapes, because a stream that can only report values —
+// never errors or completion — pushes every consumer into inventing
+// their own sentinel:
+//
+//   svc.foo$(a, b, (v) => …)
+//   svc.foo$(a, b, { onValue, onError?, onDone? })
+//
+// Everything before the handler is forwarded to Dart as positional
+// args. `label` only shapes the error message.
+function _streamHandlers(args, label) {
+  const last = args[args.length - 1];
+  if (typeof last === 'function') {
+    return { args: args.slice(0, -1), onValue: last, opts: undefined };
+  }
+  if (last && typeof last === 'object' && typeof last.onValue === 'function') {
+    return {
+      args: args.slice(0, -1),
+      onValue: last.onValue,
+      opts: { onError: last.onError, onDone: last.onDone },
+    };
+  }
+  throw new TypeError(
+    `skal ${label} requires a callback — or an { onValue, onError?, onDone? } `
+    + `object — as its last argument (got ${last === null ? 'null' : typeof last})`);
+}
+
+// From the bridge — the shared three-valued platform picture (see
+// bridge.js). Local `typeof window` re-derivations drift.
+const IS_BROWSER = B.IS_BROWSER;
+
+/** name → method-bag. See {@link registerWebService}. */
+const _webServices = new Map();
+
+/**
+ * Provide a JS implementation of a service for browser targets.
+ *
+ * Rationale (S1): on web, the capability usually *is* a browser API —
+ * `navigator.geolocation`, `navigator.clipboard`, `navigator.share`.
+ * Calling it from JS is strictly faster than routing through the Dart
+ * web runtime, which copies across its emulated shared buffer. So a web
+ * impl, when present, wins in any browser context.
+ *
+ * `impl` is either a method bag or a dispatcher:
+ *
+ * ```js
+ * registerWebService('clipboard', {
+ *   read:  () => navigator.clipboard.readText(),
+ *   write: (t) => navigator.clipboard.writeText(t),
+ * });
+ * ```
+ *
+ * A STREAM method (`svc.foo$(…)`) receives its leading args plus a
+ * final handlers object — `{ onValue, onDone, onError }`, all three
+ * always callable — and returns an unsubscribe function. The impl owns
+ * its own `watchPosition` / `removeEventListener` lifecycle and calls
+ * `onDone`/`onError` so completion semantics match the native path:
+ *
+ * ```js
+ * registerWebService('geolocator', {
+ *   positionStream: (opts, h) => {
+ *     const id = navigator.geolocation.watchPosition(
+ *       (p) => h.onValue(p), (e) => h.onError(e));
+ *     return () => navigator.geolocation.clearWatch(id);
+ *   },
+ * });
+ * ```
+ *
+ * Method bags only — a `(method, args)` dispatcher form used to be
+ * accepted, but it had no stream discriminator and an undocumented
+ * handler convention nothing implemented; a dispatcher-shaped impl can
+ * wrap itself in a Proxy in one line if it ever needs to.
+ *
+ * @param {string} name
+ * @param {Record<string, Function>} impl
+ */
+export function registerWebService(name, impl) {
+  if (typeof name !== 'string' || !name) {
+    throw new TypeError('registerWebService: name must be a non-empty string');
+  }
+  if (!impl || typeof impl !== 'object' || Array.isArray(impl)) {
+    throw new TypeError(
+      `registerWebService('${name}'): impl must be an object of methods `
+      + `({ read: () => … }); the (method, args) dispatcher form is no `
+      + `longer accepted`);
+  }
+  _webServices.set(name, impl);
+}
+
+/** True when `name` has a web implementation registered. */
+export function hasWebService(name) {
+  return _webServices.has(name);
+}
+
+// Shared call path for both the one-shot and stream forms. Kept out of
+// the Proxy body so the hot path there stays a single property lookup.
+function _callWebService(impl, qualified, name, method, isStream, args) {
+  const fn = impl[method];
+  if (typeof fn !== 'function') {
+    const err = new Error(
+      `skal service: web implementation for "${name}" has no method `
+      + `"${method}". Registered: ${Object.keys(impl).join(', ') || '(none)'}.`);
+    if (isStream) throw err;
+    return Promise.reject(err);
+  }
+  if (isStream) {
+    // Stream contract for web impls: the LAST argument is a handlers
+    // OBJECT — { onValue, onDone?, onError? } — and the return value
+    // unsubscribes. An object rather than a bare callback, because a
+    // stream that can only report values has no way to signal
+    // completion or failure: the previous shape smuggled onDone/
+    // onError as properties on a function that no impl knew to read,
+    // so every drain-until-done consumer hung forever on web while
+    // identical code worked on native.
+    //
+    // onDone/onError are always-present no-op defaults so an impl can
+    // call them unconditionally. A missing unsubscribe return degrades
+    // to a no-op rather than an undefined the caller will call.
+    const h = _streamHandlers(args, `web service ${qualified}`);
+    const handlers = {
+      onValue: (v) => h.onValue(v),
+      onDone: (h.opts && h.opts.onDone) || (() => {}),
+      onError: (h.opts && h.opts.onError) || (() => {}),
+    };
+    const stop = fn(...h.args, handlers);
+    return typeof stop === 'function' ? stop : () => {};
+  }
+  // Normalize to a Promise so callers can always await, whether the
+  // web impl is sync (clipboard write via execCommand) or async.
+  try {
+    return Promise.resolve(fn(...args));
+  } catch (e) {
+    return Promise.reject(e);
+  }
 }
 
 /**

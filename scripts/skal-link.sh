@@ -165,3 +165,17 @@ if [[ "${PLATFORM}" == "all" ]]; then
   echo
   SKAL_APP_ROOT="${APP_ROOT}" "${SCRIPT_DIR}/skal-icons.sh" "${APP_NAME}" || true
 fi
+
+# Translate `flutter-host/skal-permissions.json` into each platform's
+# config (Info.plist usage strings, macOS entitlements, AndroidManifest
+# entries). No-op when the file is absent, which is the default — an app
+# that needs no permissions declares none.
+#
+# Runs on EVERY link, not just a full setup: a dev adds a capability
+# mid-project, and the next `bun run link` should pick it up. The script
+# only ever adds missing keys, so re-running is free.
+if [[ -f "${APP_ROOT}/skal-permissions.json" ]]; then
+  echo
+  python3 "${SCRIPT_DIR}/skal-permissions.py" "${APP_ROOT}" || \
+    echo "  ! permissions step failed — platform config unchanged" >&2
+fi

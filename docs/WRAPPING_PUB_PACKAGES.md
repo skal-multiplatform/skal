@@ -6,25 +6,36 @@ want to expose a Flutter package's widget to JSX.
 ## Decision tree
 
 ```
-              Does the widget need lifecycle (init / dispose)
-              OR a stateful controller object?
+              Is there a WIDGET to render at all?
                           │
                 ┌─────────┴─────────┐
               NO                   YES
                │                     │
                ▼                     ▼
-   ┌─────────────────────┐   ┌─────────────────────┐
-   │  Pattern A: PROPS   │   │  Pattern C: HOST    │
-   │  (qr_flutter)       │   │  (camera, video,    │
-   │                     │   │   ticker, webview)  │
-   │  Multi-child?       │   │                     │
-   │  → Pattern B        │   │  Needs imperative   │
-   │  (Wrap, Stack)      │   │  methods?           │
-   │                     │   │  → Pattern D: RPC   │
-   └─────────────────────┘   └─────────────────────┘
+   ┌─────────────────────┐   Does it need lifecycle
+   │ Pattern E: SERVICE  │   (init / dispose) or a
+   │ (geolocation,       │   stateful controller?
+   │  clipboard, share,  │             │
+   │  haptics, biometrics)│   ┌─────────┴─────────┐
+   └─────────────────────┘  NO                   YES
+                             │                     │
+                             ▼                     ▼
+                  ┌─────────────────────┐ ┌─────────────────────┐
+                  │  Pattern A: PROPS   │ │  Pattern C: HOST    │
+                  │  (qr_flutter)       │ │  (camera, video,    │
+                  │                     │ │   ticker, webview)  │
+                  │  Multi-child?       │ │                     │
+                  │  → Pattern B        │ │  Needs imperative   │
+                  │  (Wrap, Stack)      │ │  methods?           │
+                  │                     │ │  → Pattern D: RPC   │
+                  └─────────────────────┘ └─────────────────────┘
 ```
 
-All four patterns share the same five-step ritual:
+Ask the widget question first. Nine of the twelve capabilities in
+[NATIVE_SUPPORT.md](NATIVE_SUPPORT.md) have no widget, and reaching for
+Pattern C on one of them is the most common wrong turn.
+
+All the widget patterns share the same five-step ritual:
 
 1. Add the package to `examples/kitchen-sink/flutter-host/pubspec.yaml` + `flutter pub get`
 2. (Patterns C/D only) Write a tiny factory function in `lib/adapters/<name>_factory.dart`
@@ -307,17 +318,131 @@ try {
 
 ---
 
+## Pattern E — headless service (no widget at all)
+
+Nine of the twelve capabilities in
+[NATIVE_SUPPORT.md](NATIVE_SUPPORT.md) have nothing to mount:
+geolocation, clipboard, haptics, share sheet, secure storage,
+biometrics, permissions. Patterns A–D are all about widgets; this one
+is for everything else.
+
+Most capability plugins expose **static** methods, which means no
+factory is needed (a static method has no constructor to cross the
+bridge). Name the class in `services:` and you are done:
+
+```yaml
+# lib/skal_codegen.yaml
+services:
+  - geolocator                  # class inferred as `Geolocator`
+  device:                       # or spell it out
+    package: my_app
+    class: DeviceService
+```
+
+```jsx
+import { createSkalService } from 'skal/runtime';
+
+const geo = createSkalService('geolocator');
+const pos  = await geo.getCurrentPosition();       // JSON object back
+const stop = geo.positionStream$(p => setPos(p));  // Stream<Position>
+onCleanup(stop);
+```
+
+Dart hand-written: **none** — unless you want to reshape the API, which
+is often worth it. See
+`examples/kitchen-sink/flutter-host/lib/adapters/device_service.dart`
+for why: `Clipboard.getData()` returns a `ClipboardData?` whose useful
+content is one nullable field, and each `await` costs a frame, so
+collapsing "call then read the field" into one method is the difference
+between one frame and two.
+
+For a service without a static surface, `registerService` takes a
+hand-written dispatcher directly — see
+`packages/skal_flutter/lib/skal/services.dart`.
+
+**Web:** `registerWebService('clipboard', { read: … })` answers with a
+browser API instead. A registered web impl wins in any browser context.
+Without one, the call rejects with a message naming the fix.
+
+**Batch.** A one-shot RPC costs one frame
+([PERFORMANCE.md](PERFORMANCE.md)), so:
+
+```jsx
+const [a, b, c] = await Promise.all([svc.a(), svc.b(), svc.c()]);  // 1 frame
+// NOT: await svc.a(); await svc.b(); await svc.c();               // 3 frames
+```
+
+---
+
+## When codegen can't map a param
+
+Codegen drops a widget when a **required** constructor param has a type
+it can't rebuild from bridge props. Every drop is now reported twice:
+as a build warning, and in `lib/skal_codegen.json` under `skipped`
+(along with optional props that were silently omitted). Read that file
+before concluding a package "doesn't work."
+
+Two escape valves, both in `lib/skal_codegen.yaml`:
+
+```yaml
+overrides:
+  TileLayer:
+    imports: ['package:flutter_map/flutter_map.dart']
+    tileProvider: { const: 'NetworkTileProvider()' }  # supply a fixed value
+    tileBuilder:  { ignore: true }                    # drop it, keep the widget
+  PolygonLayer:
+    typeArgs: [Object]                                # pin a generic widget
+  MyFeed:
+    itemBuilder: { builder: true }                    # JS builds each row
+  VideoView:
+    controller: { handle: true }                      # JS owns the object
+```
+
+Key the entry by the symbol JSX uses. For a named constructor that is
+the synthesized name (`ScrollablePositionedListBuilder`), which is also
+what the skip message prints; the bare class name also works and covers
+every constructor of that class.
+
+`const:` pastes a Dart expression verbatim — use it when a param is
+unmappable but a single fixed instance is fine, which is the common
+case for providers and strategies. `ignore:` only applies to *optional*
+params; using it on a required one is refused with an error that names
+`const:` as the fix, rather than emitting code that won't compile.
+
+---
+
 ## What doesn't work yet (intentional gaps)
 
-| Type / Pattern                          | Status      | Notes                                              |
-|-----------------------------------------|-------------|----------------------------------------------------|
-| `Stream<T>` returns                     | not encoded | One-shot Promises only. Subscriptions on the roadmap. |
-| `Function`-valued props (other than `VoidCallback`/`ValueChanged<T>`) | partial | Most lifecycle is covered; multi-arg callbacks need design. |
-| `ImageProvider`                         | unsupported | Needs a "string → NetworkImage/AssetImage" coercion. |
-| `Gradient`, `BoxDecoration`, `TextStyle` | unsupported | Mechanical to add; each is a sub-prop expansion like `EdgeInsets`. |
-| Positional ctor params (non-host)       | silently dropped | The host pattern handles positional ctors fine; the regular widget walk skips them today. |
-| `String` length > heap capacity         | truncates   | JS heap: 768 KiB, reply heap: 256 KiB. Per-string limit. |
-| Hot-reload of `skal_codegen.yaml`       | manual      | Re-run `build_runner build` after edits.           |
+| Type / Pattern | Status | Notes |
+|---|---|---|
+
+| Builder callbacks keyed by something other than an index | unsupported | `Widget Function(BuildContext, int)` works via `builder: true`. A builder keyed by a domain object (flutter_map's `tileBuilder`) has nothing to key a subtree by. |
+| Non-`void` callbacks (`bool Function(T)`) | permanently out of scope | Needs a synchronous JS→Dart return, which would block the frame. See S4. |
+| `String` longer than the heap | truncates **silently** | JS heap 768 KiB, reply heap 256 KiB. Pass paths and handles, not payloads. |
+| Hot-reload of `skal_codegen.yaml` | manual | Re-run `build_runner build` after edits. |
+
+Things this table used to list that now work: `Stream<T>` returns
+(`ref.foo$(cb)`), `ImageProvider`, `Gradient`, `BoxDecoration`,
+`TextStyle`, positional constructor params, abstract param types with
+concrete subclasses (B1), `width`/`height`/`padding` on generated
+widgets (S3), `List<ValueClass>` as child nodes (B5), generic widget
+classes via `typeArgs:` (B6), indexed builder callbacks via
+`builder: true` (B2), and controller params via `handle: true` (B3).
+
+### Platform truths (verified live, iOS Simulator 2026-07-23)
+
+Not Skal limitations — per-package / per-platform behavior you will
+hit wrapping these exact packages, recorded so nobody rediscovers them:
+
+| Package | Truth | What to do |
+|---|---|---|
+| `permission_handler` | iOS compiles each permission strategy only when its `PERMISSION_*` macro is set in the Podfile; without it every request answers `permanentlyDenied`, no error. No macOS implementation at all. | Declare the capability in `skal-permissions.json` — `skal-permissions.py` injects the macros into `ios/Podfile` automatically when the package is a dependency. |
+| `share_plus` | iOS 26 (and iPadOS generally) rejects the share sheet unless `sharePositionOrigin` is a non-zero rect: `PlatformException(sharePositionOrigin: argument must be set)`. `Rect` isn't bridge-encodable, so JS can't pass it. | One static wrapper method that calls `Share.share(text, sharePositionOrigin: const Rect.fromLTWH(0, 0, 200, 200))`; keep the raw walk for other platforms. |
+| `camera` | Simulators report no usable camera even though iOS 26 sims expose a virtual capture device. The host pattern surfaces the factory's error text in place of the preview. | Expected on simulator; test on hardware. |
+| `geolocator` | Fully functional on simulator once `simctl location set` and a location grant are in place — including `getPositionStream$`. | Nothing; this is the zero-Dart raw-walk proof. |
+| `local_auth` | Simulator biometrics need enrollment (`notifyutil -s com.apple.BiometricKit.enrollmentChanged 1` + `-p` post). Query methods then report Face ID; `authenticate()` still needs the Simulator's Face ID menu to answer the prompt. | Query in probes; keep `authenticate()` behind a button. |
+| Photos on iOS 26 | The limited-library flow prompts even when TCC was pre-granted via `simctl privacy grant photos`. | Probe `status`, not `request`, in headless runs. |
+| Emoji on iOS 26 **simulator** | Non-text glyphs render as tofu on the iOS 26.3 simulator runtime — a Flutter-engine ↔ new-runtime gap, not a Skal bug. Same binary renders full color emoji on the iOS 18.6 simulator and macOS. | Test emoji-bearing UI on an 18.x sim or hardware until the engine catches up. |
 
 ---
 
@@ -331,6 +456,7 @@ The minimum number of files / lines for each pattern:
 | B. Multi-child  | _none_                   | 1          | 0                  |
 | C. Host         | `<name>_factory.dart`    | 4          | ~15                |
 | D. Host + RPC   | (same as C)              | 4          | ~15                |
+| E. Service      | _none_                   | 1–3        | 0 (static surface) |
 
 JSX-side: 1 import line + however much UI code you'd write anyway.
 

@@ -433,6 +433,19 @@ function _isJsonShaped(value) {
   return proto === Object.prototype || proto === null;
 }
 
+// The typed wire slot a custom-prop value lands in, for type-change
+// detection. 'json' and 'str' both write the string map but their
+// READERS differ, so a swap between them still needs a clear (a JSON
+// reader would choke on a bare string and vice versa is fine — cheap
+// to just clear on any kind change).
+function _customPropKind(t, value) {
+  if (t === 'number') return 'num';
+  if (t === 'boolean') return 'bool';
+  if (t === 'string') return 'str';
+  if (t === 'object') return 'json';
+  return null; // functions/refs don't occupy value slots
+}
+
 function _setCustomProperty(node, name, value) {
   if (value == null) return;
   // `ref={someRef}` — bind the SkalRef's nodeId so subsequent
@@ -445,6 +458,21 @@ function _setCustomProperty(node, name, value) {
     return;
   }
   const t = typeof value;
+  // Type-change invalidation. The Dart-side typed maps (u32/f32/str)
+  // are insert-only, and generated readers probe a preferred slot
+  // first — so `width={cond ? 'fill' : 300}` would leave 300 in the
+  // F32 slot shadowing 'fill' forever. On a kind change, clear the
+  // prop from every map (Dart AND the JS dedup caches) before the new
+  // write repopulates its own slot.
+  const kind = _customPropKind(t, value);
+  if (kind !== null) {
+    const kinds = node._skalPropKinds || (node._skalPropKinds = {});
+    const prev = kinds[name];
+    if (prev !== undefined && prev !== kind) {
+      B.clearCustomProp(node.id, name);
+    }
+    kinds[name] = kind;
+  }
   // Plain-object or array prop values → JSON-stringify, send as a
   // string. Lets codegen-emitted Dart parsers reconstruct complex
   // value types (Gradient, BoxShadow lists, per-side Border, etc.)
@@ -466,6 +494,33 @@ function _setCustomProperty(node, name, value) {
     return;
   }
   if (t === 'function') {
+    // B2 — a builder param, not a callback. Codegen declared it via
+    // registerBuilderProp, so it gets the same pull-based row machinery
+    // that backs builder-mode <ListView>: the host requests indices, we
+    // materialize subtrees and attach them with LIST_SET_ROW.
+    if (_isBuilderProp(node.tag, name)) {
+      // No `count` prop on a custom node — the wrapped widget owns its
+      // own item count, so JS materializes whatever indices the host
+      // actually asks for rather than clamping to a mirror it doesn't
+      // have. _fillRows guards on this being > 0.
+      //
+      // int32 max, NOT Number.MAX_SAFE_INTEGER: _fillRows reads the
+      // count through `| 0`, and MAX_SAFE_INTEGER coerces to -1 there,
+      // which trips the `count <= 0` guard and silently materializes
+      // nothing. Costly to debug precisely because every other part of
+      // the chain looks correct.
+      node._skalRowCount = 0x7FFFFFFF;
+      // …and BECAUSE the count is a sentinel, overscan must be zero:
+      // the intrinsic ListView clamps overscan to its mirrored count,
+      // but here `Math.min(count - 1, idx + 8)` would never clamp and
+      // the user's builder gets called with indices past the wrapped
+      // widget's real item count (throws recorded as phantom errors,
+      // phantom rows attached). The host's own cache extent already
+      // requests ahead of the viewport, so nothing is lost.
+      node._skalRowOverscan = 0;
+      _installRowBuilder(node, value);
+      return;
+    }
     const handlerId = B.newHandlerId(value);
     B.bindCustomHandler(node.id, name, handlerId);
     if (getOwner()) onCleanup(() => B.releaseHandlerId(handlerId));
@@ -550,6 +605,65 @@ const ROW_OVERSCAN = 8;
 // the handful of rows that actually exist there.
 const ROW_KEEP_RADIUS = 300;
 
+// B2 — prop names on codegen'd widgets that carry an indexed builder
+// rather than a plain callback. Keyed `"<registryKey>:<propName>"`.
+//
+// The renderer can't infer this: a function-valued custom prop is
+// normally an event handler, and treating every one as a builder would
+// silently break every `onTap`. Codegen knows which params it wired to
+// `SkalBuilderChild`, so it publishes them in `skal_codegen.json` and
+// the generated `skal-flutter` module registers them at import time.
+const _builderProps = new Set();
+
+// Seeded lazily from `globalThis.__SKAL_BUILDER_PROPS__`, which
+// vite-plugin-skal-codegen injects as a compile-time define from the
+// codegen manifest's `builders` map.
+//
+// A define rather than a module side effect, because there is no module
+// guaranteed to be imported: the babel macro strips every import of the
+// synthesized `skal-flutter` module before it reaches the runtime, so
+// registrations placed there would never execute — which is exactly the
+// bug that shipped the first time this was wired.
+let _builderPropsSeeded = false;
+
+function _seedBuilderProps() {
+  const declared = globalThis.__SKAL_BUILDER_PROPS__;
+  if (!declared || typeof declared !== 'object') return;
+  // Latch only on SUCCESS — if the global isn't there yet (injection
+  // order, or a bundler that never injects it), keep checking so a
+  // late-arriving global still takes effect instead of being
+  // permanently ignored by a first-render latch.
+  _builderPropsSeeded = true;
+  for (const tag of Object.keys(declared)) {
+    const props = declared[tag];
+    if (!Array.isArray(props)) continue;
+    for (const prop of props) _builderProps.add(`${tag}:${prop}`);
+  }
+}
+
+function _isBuilderProp(tag, name) {
+  if (!_builderPropsSeeded) _seedBuilderProps();
+  // Zero-allocation common case: an app with no builder props pays one
+  // size check per function-valued prop, not a string concat + probe.
+  if (_builderProps.size === 0) return false;
+  return _builderProps.has(`${tag}:${name}`);
+}
+
+/**
+ * Declare that `<Tag prop={…}>` is an indexed widget builder.
+ *
+ * Codegen normally supplies this via the manifest, so devs don't call
+ * it. It stays exported for a hand-written adapter that wants the same
+ * pull-based behaviour without going through `skal_codegen.yaml`.
+ *
+ * @param {string} tag   Registry key (lowercase first letter), e.g. 'myList'.
+ * @param {string} prop  Constructor param name, e.g. 'itemBuilder'.
+ */
+export function registerBuilderProp(tag, prop) {
+  if (!_builderPropsSeeded) _seedBuilderProps();
+  _builderProps.add(`${tag}:${prop}`);
+}
+
 function _installRowBuilder(node, fn) {
   const swapped = node._skalRenderItem && node._skalRenderItem !== fn;
   node._skalRenderItem = fn;
@@ -608,8 +722,9 @@ function _fillRows(node, indices) {
     if (idx < 0 || idx >= count) continue;
     if (idx < minReq) minReq = idx;
     if (idx > maxReq) maxReq = idx;
-    const lo = Math.max(0, idx - ROW_OVERSCAN);
-    const hi = Math.min(count - 1, idx + ROW_OVERSCAN);
+    const over = node._skalRowOverscan ?? ROW_OVERSCAN;
+    const lo = Math.max(0, idx - over);
+    const hi = Math.min(count - 1, idx + over);
     for (let i = lo; i <= hi; i++) want.add(i);
   }
   if (maxReq < 0) return;

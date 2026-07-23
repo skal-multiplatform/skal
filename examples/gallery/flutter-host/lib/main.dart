@@ -92,8 +92,13 @@ Future<void> _boot() async {
 
   final bridge = SkalBridge(skal);
   bridge.ensureRoot();
-  bridge.pumpOps();
+  // Install the app dispatcher BEFORE the first pump: the eval above
+  // already queued ops, and an app that fires an RPC during its initial
+  // render (onMount probes, boot telemetry) has that invoke sitting in
+  // the ring RIGHT NOW. Draining it before the dispatcher exists fails
+  // the app's very first call with "no method dispatcher on node 1".
   installAppDispatcher(bridge);
+  bridge.pumpOps();
 
   // Boot signal — confirms libskal loaded, the JS bundle evaluated, and
   // the first op pump produced a node tree. Also what E2E smoke tests

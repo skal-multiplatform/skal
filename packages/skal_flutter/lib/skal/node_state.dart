@@ -310,6 +310,18 @@ class NodeState {
   void setCustomPropStr(String name, String value) {
     (_customPropsStr ??= <String, String>{})[name] = value;
   }
+
+  /// Remove [name] from every typed custom-prop map. Fired by
+  /// [opClearCustomProp] when the JS side detects a value-TYPE change
+  /// for a prop — the maps are insert-only otherwise, and a stale
+  /// entry in one map shadows fresher writes in another for readers
+  /// that probe a preferred slot first (`width={cond ? 'fill' : 300}`
+  /// would stick at 300 forever).
+  void clearCustomProp(String name) {
+    _customPropsU32?.remove(name);
+    _customPropsF32?.remove(name);
+    _customPropsStr?.remove(name);
+  }
   void setCustomHandler(String name, int handlerId) {
     (_customHandlers ??= <String, int>{})[name] = handlerId;
   }

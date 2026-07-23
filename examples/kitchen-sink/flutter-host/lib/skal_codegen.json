@@ -5,5 +5,29 @@
     "ShimmerFromColors": "shimmerFromColors",
     "Camera": "camera",
     "Ticker": "ticker"
+  },
+  "builders": {},
+  "services": {
+    "device": {
+      "class": "DeviceService",
+      "methods": [
+        "copy",
+        "impact",
+        "paste",
+        "tap",
+        "vibrate"
+      ]
+    }
+  },
+  "skipped": {
+    "widgets": {
+      "QrImageViewWithQr": "required param 'qr' has unsupported type 'QrCode'"
+    },
+    "services": {},
+    "omittedProps": {
+      "QrImageView": [
+        "errorStateBuilder"
+      ]
+    }
   }
 }

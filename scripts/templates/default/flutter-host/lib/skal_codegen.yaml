@@ -1,0 +1,53 @@
+# skal_codegen marker file — wrap native / pub.dev libraries here.
+#
+# Declare what you want; `bun run codegen` (build_runner) generates the
+# Dart adapter (lib/skal_codegen.g.dart), a manifest
+# (lib/skal_codegen.json), and the JSX-side `'skal-flutter'` imports.
+# No platform channels, no JS glue.
+#
+# After every codegen run READ THE SKIP REPORT — anything codegen
+# can't map is listed in lib/skal_codegen.json under "skipped" with
+# the reason and the exact remedy. Full guide + escape-hatch ladder:
+# .claude/skills/skal/references/codegen.md
+#
+# Every section below is optional. Uncomment what you need.
+
+# ── Widgets: walk a pub package's widget classes → JSX components ──
+# (add the package to pubspec.yaml + `flutter pub get` first)
+#
+# packages:
+#   - qr_flutter          # → import { QrImageView } from 'skal-flutter'
+#   - flutter_map
+
+# ── Hosts: stateful widgets needing a live controller / async init ──
+# You write a small factory fn; its params become JSX props and the
+# controller's methods become `createSkalRef()` calls automatically.
+#
+# hosts:
+#   Camera:
+#     widget: CameraPreview
+#     factory: package:__APP_NAME_SNAKE__/adapters/camera_factory.dart#createCamera
+
+# ── Services: HEADLESS capabilities — no widget, called from JS ──
+# A class's static methods become awaitable RPCs:
+#   const geo = createSkalService('geo');       // from 'skal/runtime'
+#   await geo.getCurrentPosition();
+#   geo.getPositionStream$((p) => ...);         // $ = Dart Stream
+# Static-API plugins (geolocator) need ZERO Dart. Instance-shaped ones
+# (local_auth) need a ~15-line static forwarder class in lib/adapters/.
+#
+# services:
+#   geo:
+#     package: geolocator
+#     class: Geolocator
+
+# ── Overrides: rescue widgets the skip report flags ──
+#
+# overrides:
+#   PolygonLayer:
+#     typeArgs: [Object]                 # pin a generic widget
+#   SomeWidget:
+#     someParam: { const: "const MyDefault()" }
+#     optionalParam: { ignore: true }
+#     itemBuilder: { builder: true }     # indexed builder → JSX children
+#     controller: { handle: true }       # opaque JS-held handle

@@ -84,7 +84,8 @@ export async function create(name, opts = {}) {
 
   const pubspecPath = join(target, 'flutter-host', 'pubspec.yaml');
   writeFileSync(pubspecPath, readFileSync(pubspecPath, 'utf8')
-    .replaceAll('path: ../../../packages/skal_flutter', 'path: ../.skal-runtime/packages/skal_flutter'));
+    .replaceAll('path: ../../../packages/skal_flutter', 'path: ../.skal-runtime/packages/skal_flutter')
+    .replaceAll('path: ../../../packages/skal_codegen', 'path: ../.skal-runtime/packages/skal_codegen'));
 
   linkRuntimeIntoApp(target, runtime);
   writeFileSync(join(target, 'skal.json'), JSON.stringify({

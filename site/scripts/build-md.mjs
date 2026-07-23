@@ -108,6 +108,15 @@ Key facts for code generation:
   \`'skal/runtime'\` (native push/pop, keep-alive back stack).
 - Animation: set the target prop + \`animate={{ duration }}\`; Flutter
   tweens host-side. Never animate per-frame from JS.
+- Native capabilities & pub.dev packages: NEVER write platform
+  channels. Declare in \`flutter-host/lib/skal_codegen.yaml\`
+  (\`packages:\` → JSX components, \`services:\` → awaitable RPCs via
+  \`createSkalService\`, \`hosts:\` → stateful widgets with ref methods),
+  run \`bun run codegen\`, read the skip report in
+  \`skal_codegen.json\`, then climb the escape-hatch ladder
+  (yaml \`overrides:\` → ~15-line static forwarder / factory → raw
+  registry). Permissions: declare once in \`skal-permissions.json\`;
+  \`bun run link\` generates every platform's config.
 - Scaffold: \`npm create skal my-app\`. Apps ship with an agent skill
   (\`.claude/skills/skal/\`, mirrored in \`.agents/skills/\`) teaching
   these idioms plus the generated component reference.

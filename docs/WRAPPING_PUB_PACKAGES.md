@@ -50,6 +50,39 @@ edits to `vite.config.js` or any per-widget stub module.
 
 ---
 
+## The escape-hatch ladder
+
+When codegen can't map a library, don't drop to platform channels and
+don't fork the generator — escalate one rung at a time. Every rung is
+a shipped pattern with a measured cost (line counts are from real
+plugins wrapped during the 2026-07-23 iOS verification run):
+
+| Rung | When | You write | Proven on |
+|---|---|---|---|
+| 1. `overrides:` in the yaml | one unmappable ctor param; generic type args | **0 Dart** | flutter_map's `PolygonLayer` (`typeArgs:`) |
+| 2. Static forwarder + `services:` | plugin API is instance-shaped, not static | ~10–25 lines | local_auth (24 lines), permission_handler |
+| 3. Platform-quirk shim method | a platform needs an arg codegen can't encode | ~8 lines | share_plus's `sharePositionOrigin` on iOS 26 |
+| 4. `hosts:` factory (Patterns C/D) | live controller / async init | ~15–20 lines | camera, webview_flutter (`WebShell`) |
+| 5. Plain local widget class | you'd rather just write Flutter | normal widget code — codegen walks YOUR lib like any package | kitchen-sink's Greeting, Ticker |
+| 6. Raw `SkalRegistry.registerWidget` / `registerService` | full control | untyped NodeState reads | last resort |
+
+Two properties keep the ladder cheap. First, **hand-written Dart is
+codegen input, not a parallel system**: a forwarder class or local
+widget is walked exactly like a pub package — same manifest, same
+synthesized `'skal-flutter'` imports, same typed prop readers, streams
+and arg decoding for free. Second, **the skip report names the rung**:
+every widget/method codegen drops is listed in `skal_codegen.json`
+under `"skipped"` (and in the build log) with the reason and the exact
+remedy — never diff generated output to find out what's missing.
+
+The scaffold ships this ladder to coding agents too:
+`scripts/templates/default/.claude/skills/skal/references/codegen.md`
+(mirrored into `.agents/skills/` at scaffold time), so an AI working
+inside a generated app climbs the same rungs instead of inventing
+platform channels.
+
+---
+
 ## Pattern A — pure-prop widget
 
 The widget's constructor takes only primitive/value-typed params. No

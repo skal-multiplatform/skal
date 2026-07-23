@@ -1,6 +1,6 @@
 ---
 name: skal
-description: How to build UI in this Skal app. Use this skill whenever you create or modify screens, components, layouts, lists, forms, state, navigation, storage, or animations here — even for a "small tweak," and even if the request never says "Skal." Skal looks like React Native but is NOT — it is SolidJS (signals, not hooks) rendered natively by Flutter. Writing from React/React Native memory produces code that does not compile; consult this skill first.
+description: How to build UI in this Skal app. Use this skill whenever you create or modify screens, components, layouts, lists, forms, state, navigation, storage, or animations here — even for a "small tweak," and even if the request never says "Skal." Also use it when integrating ANY native capability or pub.dev package (maps, camera, geolocation, biometrics, share, permissions) — Skal wraps those through codegen, not platform channels. Skal looks like React Native but is NOT — it is SolidJS (signals, not hooks) rendered natively by Flutter. Writing from React/React Native memory produces code that does not compile; consult this skill first.
 ---
 
 # Building Skal apps
@@ -188,13 +188,39 @@ per-frame from JS (no rAF loops, no timers driving props).
   `<CrossFade>`. Shared-element across screens: `<Hero tag="...">`.
   Staggers: `createStagger(ms)` from `'skal/runtime'`.
 
-## Custom native widgets
+## Native capabilities & pub.dev packages (codegen)
 
-When the catalog lacks something (a map, a chart, a camera preview),
-wrap any Flutter/pub.dev widget via `skal_codegen` — declare it in
-`flutter-host/lib/skal_codegen.yaml`, run `bun run codegen`, and it
-becomes a JSX component. Imperative methods use `createSkalRef()`.
-Full guide: https://skal.run/docs/native.md (fetchable markdown).
+When the catalog lacks something — a map, a camera, geolocation,
+biometrics, the share sheet, ANY pub.dev package — never write
+platform channels or JS glue. Declare it in
+`flutter-host/lib/skal_codegen.yaml` and run `bun run codegen`:
+
+- **Widgets** (`packages:`): the package's widget classes become JSX
+  components — `import { FlutterMap } from 'skal-flutter'`.
+- **Headless capabilities** (`services:`): a class's static methods
+  become awaitable RPCs — `createSkalService('geo').getCurrentPosition()`;
+  `$`-suffixed calls subscribe Dart streams. Plugins with static APIs
+  (geolocator) wrap with ZERO Dart.
+- **Stateful widgets** (`hosts:`): a ~15-line factory function; the
+  controller's methods become `createSkalRef()` calls automatically.
+- **Permissions**: declare intent once in
+  `flutter-host/skal-permissions.json`; `bun run link` generates every
+  platform's config (plists, entitlements, manifest, Podfile macros).
+
+After every codegen run, **read the skip report** (build log +
+`flutter-host/lib/skal_codegen.json` → `"skipped"`): anything codegen
+could not map is listed with the reason and the exact remedy. Then
+climb the **escape-hatch ladder** one rung at a time — yaml
+`overrides:` (0 Dart) → static forwarder class (~10–25 lines) →
+platform-quirk shim (~8 lines) → `hosts:` factory (~15–20 lines) →
+plain local widget (codegen walks your own code like any package) →
+raw `SkalRegistry` (last resort). Hand-written Dart is codegen INPUT,
+not a parallel system: it lands in the same manifest and the same
+`'skal-flutter'` imports with zero JS-side glue.
+
+Full guide with the ladder, worked examples, and per-package platform
+truths: [references/codegen.md](references/codegen.md). Read it BEFORE
+integrating any native library or touching `skal_codegen.yaml`.
 
 ## Verify your work
 

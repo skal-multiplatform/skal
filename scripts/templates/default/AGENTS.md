@@ -16,6 +16,11 @@ with this app:
 - `.claude/skills/skal/references/components.md` — the ~50-component
   catalog with per-prop documentation (generated from source; trust it
   over memory, and do not invent props)
+- `.claude/skills/skal/references/codegen.md` — wrapping native /
+  pub.dev libraries (maps, camera, geolocation, biometrics, share,
+  permissions): the `skal_codegen.yaml` workflow and the escape-hatch
+  ladder for when codegen can't map something. Never write platform
+  channels — this is the path.
 
 (The same files are mirrored at `.agents/skills/skal/`.)
 
@@ -39,5 +44,11 @@ const [count, setCount] = createSignal(0);
 - Verify a change: `bun run build:js-only` (compile check) ·
   `bun run dev:web` (browser preview) · `bun run dev:macos` (native)
 
-Entry point: `src/App.jsx`. The Flutter host in `flutter-host/` rarely
-needs edits — UI work happens in JS/JSX.
+- Native library / pub.dev capability: declare in
+  `flutter-host/lib/skal_codegen.yaml` → `bun run codegen` → import
+  from `'skal-flutter'` (see `references/codegen.md`)
+
+Entry point: `src/App.jsx`. UI work happens in JS/JSX; the Flutter
+host in `flutter-host/` is edited only for native wrapping — the yaml,
+`skal-permissions.json`, and small adapter classes under
+`flutter-host/lib/adapters/` (see `references/codegen.md`).

@@ -40,7 +40,11 @@ from the first commit:
   `fetch`, `TextEncoder`, `Buffer` — no mobile-subset gaps, no polyfill graveyard.
   Precompiled bytecode boots it in ~50 ms.
 - **Two ecosystems, one app.** npm for your logic, pub.dev for UI and native capabilities —
-  wrap any Flutter package into a JSX component
+  wrap any Flutter package into a JSX component, and any plugin API into an awaitable
+  JS call (`createSkalService`), all from one yaml file. Static-API plugins like
+  geolocator need **zero hand-written Dart**; when codegen can't map something, the
+  skip report names the fix and a six-rung escape-hatch ladder (yaml overrides → a
+  ~15-line forwarder → raw registry) covers the rest
   ([`docs/WRAPPING_PUB_PACKAGES.md`](docs/WRAPPING_PUB_PACKAGES.md)).
 - **Batteries actually included.** Navigation (Hero transitions, deep links) and storage
   (a reactive store both worlds read directly — no Redux, no AsyncStorage round-trips) are

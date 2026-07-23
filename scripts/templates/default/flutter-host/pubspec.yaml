@@ -25,6 +25,13 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+  # Native/pub.dev wrapping (`bun run codegen`): build_runner drives
+  # skal_codegen, which reads lib/skal_codegen.yaml and emits the
+  # adapter + manifest. See .claude/skills/skal/references/codegen.md.
+  build_runner: ^2.4.0
+  skal_codegen:
+    path: ../../../packages/skal_codegen
+
   # Generates the platform launcher icons (macOS/iOS/Android) from one
   # source PNG. Run via `bun run icons` — the scaffolder does this once
   # after `flutter create`, replacing the default Flutter logo with the

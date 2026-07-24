@@ -73,6 +73,14 @@ services:
   <span class="kw">static</span> Future&lt;bool&gt; <span class="fn">authenticate</span>(String reason) =&gt;
       _auth.<span class="fn">authenticate</span>(localizedReason: reason);
 }</pre>
+    <p>And services aren't just plugin wrappers — they're the general "run this in Dart, call it from JS" hatch for <em>your own</em> logic. Crypto is the canonical case: native-speed hashing, heavy work on a background isolate, keys and file bytes that never enter JS (big inputs cross as <b>paths</b>, never payloads):</p>
+    <pre class="code"><span class="cm">// flutter-host/lib/adapters/crypto_service.dart   deps: crypto: ^3.0.0</span>
+<span class="kw">class</span> <span class="fn">CryptoService</span> {
+  <span class="kw">static</span> String <span class="fn">sha256Hex</span>(String input) =&gt;
+      sha256.<span class="fn">convert</span>(utf8.<span class="fn">encode</span>(input)).<span class="fn">toString</span>();
+  <span class="kw">static</span> Future&lt;String&gt; <span class="fn">sha256File</span>(String path) =&gt; Isolate.<span class="fn">run</span>(
+      () <span class="kw">async</span> =&gt; (<span class="kw">await</span> sha256.<span class="fn">bind</span>(<span class="fn">File</span>(path).<span class="fn">openRead</span>()).last).<span class="fn">toString</span>());
+}</pre>
 
     <h2>Stateful widgets — hosts</h2>
     <p>Widgets whose constructor needs a live controller (camera preview, webview, video) use the <b>host pattern</b>: you write a ~15-line factory function; its parameters become JSX props, and the controller's public methods become imperative calls on a ref — one RPC op out, the reply back through the reply heap:</p>

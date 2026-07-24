@@ -120,6 +120,26 @@ services:
 That is the ENTIRE integration. `await createSkalService('auth')
 .authenticate('Unlock')` now works from JSX.
 
+Rung 2 also covers **your own Dart with no plugin at all** — crypto,
+parsers, file processing. Same shape; heavy work hops isolates inside
+the method (codegen only sees the `Future`), and big inputs cross as
+PATHS, never bytes:
+
+```dart
+// flutter-host/lib/adapters/crypto_service.dart   deps: crypto: ^3.0.0
+class CryptoService {
+  static String sha256Hex(String input) =>
+      sha256.convert(utf8.encode(input)).toString();
+  static Future<String> sha256File(String path) => Isolate.run(
+      () async => (await sha256.bind(File(path).openRead()).last).toString());
+}
+```
+
+```yaml
+services:
+  crypto: { package: __APP_NAME_SNAKE__, class: CryptoService }
+```
+
 ## Permissions
 
 Declare intent once in `flutter-host/skal-permissions.json`:

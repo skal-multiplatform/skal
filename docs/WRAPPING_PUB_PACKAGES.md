@@ -389,6 +389,41 @@ content is one nullable field, and each `await` costs a frame, so
 collapsing "call then read the field" into one method is the difference
 between one frame and two.
 
+**Services are not just plugin wrappers** — they are the general "run
+this in Dart, call it from JS" hatch for your own logic: crypto,
+parsers, file processing, anything better done native-side. The
+canonical crypto shape (verified against codegen — both methods map):
+
+```dart
+// lib/adapters/crypto_service.dart      deps: crypto: ^3.0.0
+import 'dart:convert';
+import 'dart:io';
+import 'dart:isolate';
+import 'package:crypto/crypto.dart';
+
+class CryptoService {
+  static String sha256Hex(String input) =>
+      sha256.convert(utf8.encode(input)).toString();
+
+  // Payload law in action: hash a PATH, not bytes — file contents
+  // never cross the bridge (a reply over 256 KiB would truncate).
+  // Isolate.run keeps big files off the UI isolate.
+  static Future<String> sha256File(String path) => Isolate.run(
+      () async => (await sha256.bind(File(path).openRead()).last).toString());
+}
+```
+
+```yaml
+services:
+  crypto: { package: my_app, class: CryptoService }
+```
+
+```jsx
+const crypto = createSkalService('crypto');
+await crypto.sha256Hex('hello');          // '2cf24dba…'
+await crypto.sha256File('/tmp/big.bin');  // bytes stay in Dart
+```
+
 For a service without a static surface, `registerService` takes a
 hand-written dispatcher directly — see
 `packages/skal_flutter/lib/skal/services.dart`.

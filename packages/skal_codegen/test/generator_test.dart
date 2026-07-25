@@ -557,6 +557,29 @@ void main() {
       expect(result.skipped, isEmpty,
           reason: 'host emission with valid factories should not skip');
 
+      // `Future<void>` must be RETURNED, not fire-and-forget. The bridge
+      // only awaits what the dispatcher returns (`result is
+      // Future<Object?>` → `.then(_writeMethodReply)`), so dropping the
+      // future made `await ref.slowReset()` resolve on DISPATCH instead
+      // of on completion, and turned a throw inside it into an unhandled
+      // async error rather than a promise rejection. The classifier used
+      // to unwrap Future BEFORE testing for void, so Future<void> was
+      // misfiled as void. Caught 2026-07-25.
+      expect(result.source, contains('return ctl.slowReset();'),
+          reason: 'Future<void> returns the future so the bridge awaits '
+              'it — never `call(); return null;`');
+      expect(result.source, isNot(contains('ctl.slowReset();\n        return null')),
+          reason: 'the fire-and-forget shape must not come back');
+      // …while a BARE synchronous void still uses the statement form,
+      // because a void expression has no value to return.
+      expect(result.source, contains('ctl.reset();'));
+      expect(result.source, isNot(contains('return ctl.reset()')),
+          reason: 'bare sync void is called as a statement');
+      // And the service path must agree about the same Dart shape — the
+      // two emitters disagreeing is what produced this bug.
+      expect(result.source, contains('return ctl.ping();'),
+          reason: 'Future<T> unchanged');
+
       _expectSnapshot(result.source, expectedPath,
           reason: 'host generator output does NOT match '
               'host.expected.dart');
@@ -1046,6 +1069,29 @@ void main() {
               'malformed entries via whereType');
       expect(result.source, isNot(contains('skalHandleArg<List')),
           reason: 'no List arg may route through the handle fallback');
+
+      // A BARE synchronous void must be called as a statement followed
+      // by `return null` — never `return <voidExpr>`. A void expression
+      // has no value, so putting one in return position makes the whole
+      // dispatcher closure infer as `void`, and then EVERY sibling arm
+      // that returns a real value fails to compile with "Can't return a
+      // value from a void function". One void method broke the entire
+      // generated file. Caught live 2026-07-25 wrapping a debug service.
+      expect(svc.methods, contains('clearCache'));
+      expect(result.source, contains('Geo.clearCache();'),
+          reason: 'a bare-void service method is CALLED, not returned');
+      expect(result.source, isNot(contains('return Geo.clearCache()')),
+          reason: 'returning a void expression poisons the dispatcher '
+              "closure's inferred return type for every other arm");
+      expect(result.source, isNot(contains('return Geo.attach(')),
+          reason: 'attach() is bare-void too — same rule');
+      // …but Future<void> is an ordinary value and MUST still be
+      // returned, so the bridge awaits it: the JS promise settles when
+      // the work finishes and errors propagate. Collapsing it to
+      // `return null` would make every async void call fire-and-forget.
+      expect(result.source, contains('return Geo.startTracking('),
+          reason: 'Future<void> returns normally — it is awaited, not '
+              'fire-and-forget');
 
       // Position has toJson() — the bridge's jsonEncode calls it, so no
       // encoder should be synthesized for it. Battery has none, so one

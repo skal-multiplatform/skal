@@ -98,7 +98,25 @@ class Geo {
 
   static String describe() => 'geo';
 
-  /// Dropped: no way to rebuild a NativeHandle from a bridge arg.
+  /// BARE synchronous void, with args that map cleanly so the method
+  /// actually ships. This is the shape that used to break the build:
+  /// `return Geo.clearCache();` returns a void expression, which makes
+  /// the dispatcher closure's return type `void` and then rejects
+  /// every sibling arm that returns a real value.
+  ///
+  /// `attach()` below is ALSO bare-void and has always shipped (its
+  /// NativeHandle arg resolves via `skalHandleArg`), so the golden has
+  /// carried uncompilable `return Geo.attach(...)` this whole time and
+  /// the suite passed — snapshot tests compare text, never compile.
+  /// This method exists so the shape is named and obvious rather than
+  /// incidental. Keep it arg-clean.
+  static void clearCache() {}
+
+  /// SHIPS (since A3): the NativeHandle arg resolves via
+  /// `skalHandleArg`. Also bare-void, so it exercises the same
+  /// statement-form rule as [clearCache]. This doc comment used to say
+  /// "Dropped" and was stale — believing it is what made the void bug
+  /// look untestable.
   static void attach(NativeHandle handle) {}
 
   /// Dropped: nothing can serialize a NativeHandle back to JS.

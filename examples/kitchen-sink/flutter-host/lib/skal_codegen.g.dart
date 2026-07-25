@@ -385,30 +385,23 @@ class _CameraHostState extends State<_CameraHost> {
         ctl.debugCheckIsDisposed();
         return null;
       case 'initialize':
-        ctl.initialize();
-        return null;
+        return ctl.initialize();
       case 'prepareForVideoRecording':
-        ctl.prepareForVideoRecording();
-        return null;
+        return ctl.prepareForVideoRecording();
       case 'pausePreview':
-        ctl.pausePreview();
-        return null;
+        return ctl.pausePreview();
       case 'resumePreview':
-        ctl.resumePreview();
-        return null;
+        return ctl.resumePreview();
       case 'takePicture':
         return ctl.takePicture();
       case 'stopImageStream':
-        ctl.stopImageStream();
-        return null;
+        return ctl.stopImageStream();
       case 'stopVideoRecording':
         return ctl.stopVideoRecording();
       case 'pauseVideoRecording':
-        ctl.pauseVideoRecording();
-        return null;
+        return ctl.pauseVideoRecording();
       case 'resumeVideoRecording':
-        ctl.resumeVideoRecording();
-        return null;
+        return ctl.resumeVideoRecording();
       case 'buildPreview':
         return ctl.buildPreview();
       case 'getMaxZoomLevel':
@@ -416,8 +409,7 @@ class _CameraHostState extends State<_CameraHost> {
       case 'getMinZoomLevel':
         return ctl.getMinZoomLevel();
       case 'setZoomLevel':
-        ctl.setZoomLevel(args[0] as double);
-        return null;
+        return ctl.setZoomLevel(args[0] as double);
       case 'getMinExposureOffset':
         return ctl.getMinExposureOffset();
       case 'getMaxExposureOffset':
@@ -427,8 +419,7 @@ class _CameraHostState extends State<_CameraHost> {
       case 'setExposureOffset':
         return ctl.setExposureOffset(args[0] as double);
       case 'unlockCaptureOrientation':
-        ctl.unlockCaptureOrientation();
-        return null;
+        return ctl.unlockCaptureOrientation();
       case 'supportsImageStreaming':
         return ctl.supportsImageStreaming();
       default:

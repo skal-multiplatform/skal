@@ -20,6 +20,13 @@ on:
       - packages/skal_flutter/pubspec.yaml
       - packages/skal_flutter/analysis_options.yaml
       - packages/skal_codegen/**
+      # The JS half of the wire format, the C ABI entry point, and the
+      # public header. Without these the drift check this workflow
+      # exists for is one-way: a PR touching only bridge.js or
+      # skal_entry.zig got zero signal.
+      - packages/skal-js/**
+      - patches/**
+      - packages/skal_native/include/**
       - .github/workflows/tests.yml
   push:
     branches: [main]
@@ -29,6 +36,13 @@ on:
       - packages/skal_flutter/pubspec.yaml
       - packages/skal_flutter/analysis_options.yaml
       - packages/skal_codegen/**
+      # The JS half of the wire format, the C ABI entry point, and the
+      # public header. Without these the drift check this workflow
+      # exists for is one-way: a PR touching only bridge.js or
+      # skal_entry.zig got zero signal.
+      - packages/skal-js/**
+      - patches/**
+      - packages/skal_native/include/**
       - .github/workflows/tests.yml
   workflow_call:
   workflow_dispatch: {}
@@ -65,3 +79,19 @@ jobs:
         run: |
           dart pub get
           dart test
+
+      # The integration test is the ONLY thing that compiles generated
+      # output. Everything else — snapshots included — compares text,
+      # which is exactly how an emitter that produced uncompilable Dart
+      # shipped with a green suite. It needs the demo's real deps
+      # (package:flutter, package:skal_flutter) because the snapshot
+      # fixtures can't resolve them inside a pure-Dart package.
+      - name: flutter pub get (demo project)
+        working-directory: examples/kitchen-sink/flutter-host
+        run: flutter pub get
+
+      - name: dart test (skal_codegen — integration, compiles generated output)
+        working-directory: packages/skal_codegen
+        env:
+          SKAL_INTEGRATION: '1'
+        run: dart test test/integration_test.dart

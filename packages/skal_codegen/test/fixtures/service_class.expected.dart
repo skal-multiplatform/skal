@@ -74,11 +74,15 @@ void _registerService_geo() {
       case 'acquire':
         return (skalHandleOf)(Geo.acquire());
       case 'attach':
-        return Geo.attach(
+        Geo.attach(
           (skalHandleArg<NativeHandle>((args.isNotEmpty ? args[0] : null)))!,
         );
+        return null;
       case 'battery':
         return (_skalEncodeBattery)(Geo.battery());
+      case 'clearCache':
+        Geo.clearCache();
+        return null;
       case 'coversAll':
         return Geo.coversAll(
           ((((args.isNotEmpty ? args[0] : null)) is List

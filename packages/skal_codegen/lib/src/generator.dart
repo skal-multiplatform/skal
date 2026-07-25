@@ -872,7 +872,41 @@ _ServiceResult _emitService(ServiceConfig svc) {
       }
     }
 
-    arms.add("      case '$name':\n        return $expr;");
+    // A BARE synchronous `void` must be called as a statement, then
+    // `return null` — never `return <voidExpr>`. A void expression has
+    // no value in Dart, and putting one in return position poisons the
+    // dispatcher closure's inferred return type for every sibling arm:
+    //
+    //   case 'doorbell':  return DebugService.doorbell();   // int
+    //   case 'report':    return DebugService.report(...);  // void  ← poison
+    //
+    //   Error: Can't return a value from a void function.
+    //          return DebugService.doorbell();
+    //
+    // so ONE void method makes the whole generated file fail to
+    // compile. Same treatment the host-adapter emitter already applies
+    // (see `_RpcReturnInfo.isVoid`); the service emitter simply never
+    // got it.
+    //
+    // It survived because nothing compiled the generated output: the
+    // golden in test/fixtures/service_class.expected.dart contained
+    // `return Geo.attach(...)` — uncompilable Dart — and the whole
+    // suite passed against it, because snapshot tests only compare
+    // text. `test/integration_test.dart` now runs `flutter analyze`
+    // over the demo's generated file and CI sets SKAL_INTEGRATION=1,
+    // so this class fails there instead of in someone's app build.
+    // (Verified by reintroducing the bug and watching it fail.)
+    //
+    // Deliberately NOT applied to `Future<void>` / `FutureOr<void>`:
+    // those are ordinary values, they return legally, and the bridge
+    // awaits them — so the JS promise settles when the work actually
+    // finishes and errors propagate. Collapsing them to `return null`
+    // would silently make every async void service call
+    // fire-and-forget.
+    final isBareVoid = shape == _ReturnShape.value && inner is VoidType;
+    arms.add(isBareVoid
+        ? "      case '$name':\n        $expr;\n        return null;"
+        : "      case '$name':\n        return $expr;");
     emitted.add(name);
   }
 
@@ -1726,7 +1760,9 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
 /// Walk a controller class's own (non-inherited) methods and emit one
 /// `case '<methodName>':` arm per RPC-eligible method. Each arm casts
 /// args to the right types, invokes the controller method, and
-/// returns the result (for void methods: returns null after the call).
+/// returns the result. A bare synchronous `void` method is called as a
+/// statement and returns null; `Future<void>` returns the future so the
+/// bridge can await it.
 ///
 /// Eligibility rules:
 ///   • Public (name doesn't start with `_`)
@@ -1775,9 +1811,12 @@ List<String> _collectControllerMethods(DartType controllerType) {
     final returnInfo = _classifyRpcReturn(rt);
     if (returnInfo == null) continue;
 
-    // Build the case body. For async methods that return Future<void>
-    // we still RETURN the future (the bridge awaits it). For Future<T>
-    // we return the future (bridge unwraps + encodes T).
+    // Build the case body. Only a BARE synchronous void is called as a
+    // statement + `return null` — a void expression has no value, so it
+    // cannot be returned. Everything else, `Future<void>` included, is
+    // RETURNED so the bridge awaits it: the JS promise then settles on
+    // completion rather than on dispatch, and a throw rejects it
+    // instead of escaping as an unhandled async error.
     final callExpr = 'ctl.$name(${argCasts.join(", ")})';
     if (returnInfo.isVoid) {
       out.add(
@@ -1825,13 +1864,32 @@ class _RpcReturnInfo {
 /// nullable for symmetry with future "truly unsupported" return
 /// types (e.g. Iterable that's neither List nor JSON-encodable).
 _RpcReturnInfo? _classifyRpcReturn(DartType t) {
+  // BARE synchronous void — and ONLY that — gets the `call(); return
+  // null;` treatment, because a void expression has no value and can't
+  // sit in return position at all.
+  //
+  // `Future<void>` must NOT be lumped in with it. This used to unwrap
+  // Future BEFORE testing for void, so `Future<void>` classified as
+  // void and the emitter dropped the future on the floor:
+  //
+  //   case 'slowReset':
+  //     ctl.slowReset();      // future discarded
+  //     return null;          // bridge replies immediately
+  //
+  // The bridge only awaits what the dispatcher RETURNS (`result is
+  // Future<Object?>` → `.then(_writeMethodReply)`), so returning null
+  // made `await ref.slowReset()` resolve on DISPATCH rather than on
+  // completion, and turned a throw inside the future into an unhandled
+  // async error instead of a promise rejection. The service path never
+  // had this bug, so the two paths disagreed about the same Dart shape.
+  if (t is VoidType) return const _RpcReturnInfo(true);
+
   // Unwrap Future<X> — the bridge's RPC dispatch awaits async methods
-  // transparently. Future<void> counts as void.
+  // transparently, so what matters below is the element type.
   DartType inner = t;
   if (_isFuture(t) && (t as InterfaceType).typeArguments.length == 1) {
     inner = t.typeArguments.first;
   }
-  if (inner is VoidType) return const _RpcReturnInfo(true);
   if (_isRpcInt(inner) || _isRpcDouble(inner) || _isRpcBool(inner) ||
       _isRpcString(inner)) {
     return const _RpcReturnInfo(false);

@@ -76,5 +76,38 @@ void main() {
     expect(generated, contains('_build_QrImageView'));
     expect(generated, contains('_build_Camera'));
     expect(generated, contains('_CameraHost'));
-  }, timeout: const Timeout(Duration(minutes: 2)));
+
+    // ── The check that actually matters: does it COMPILE? ──────────
+    //
+    // Everything above — here and in generator_test.dart — compares
+    // TEXT. That is how two bugs shipped:
+    //
+    //   • a service with a bare `void` static method emitted
+    //     `return Foo.bar();`, which Dart rejects outright, and the
+    //     golden carried that uncompilable line while the whole suite
+    //     passed;
+    //   • a host controller's `Future<void>` method was emitted as
+    //     `ctl.m(); return null;`, discarding the future, which no
+    //     string assertion would ever notice.
+    //
+    // Both surfaced only when a real app tried to build. The snapshot
+    // fixtures can't catch this class at all: they import
+    // `package:flutter/...` and `package:skal_flutter/...`, neither of
+    // which resolves inside skal_codegen (a pure-Dart package), so the
+    // analyzer can't type-check them there. The demo project can — it
+    // has the real dependencies — which is why the check lives here.
+    //
+    // `--no-fatal-infos` so lints don't fail the build; errors and
+    // warnings still do.
+    final analyze = Process.runSync(
+      'flutter',
+      ['analyze', '--no-fatal-infos', 'lib/skal_codegen.g.dart'],
+      workingDirectory: demoRoot,
+    );
+    expect(analyze.exitCode, 0,
+        reason: 'GENERATED DART DOES NOT ANALYZE CLEANLY.\n'
+            'This is the check that catches emitters producing code no '
+            'compiler will accept.\n'
+            '${analyze.stdout}\n${analyze.stderr}');
+  }, timeout: const Timeout(Duration(minutes: 5)));
 }

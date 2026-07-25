@@ -263,6 +263,16 @@ class FakeController {
   void reset() { _value = 0; }
   int getValue() => _value;
   Future<bool> ping() async => true;
+  /// `Future<void>` — the shape the host emitter used to collapse to
+  /// `call(); return null;`, which made an awaited JS call resolve on
+  /// DISPATCH rather than on completion, and turned a throw into an
+  /// unhandled async error instead of a promise rejection. Must return
+  /// the future so the bridge can await it, exactly as the service
+  /// path does.
+  Future<void> slowReset() async {
+    await Future<void>.delayed(Duration.zero);
+    _value = 0;
+  }
   // String args + returns. Exercises both directions of the string
   // bridge: JS → Dart via OP_METHOD_ARG with eventArgStr, Dart → JS
   // via _writeMethodReply emitting eventArgStr (reply heap).

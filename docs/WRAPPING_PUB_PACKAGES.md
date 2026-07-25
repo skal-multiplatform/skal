@@ -387,7 +387,9 @@ is often worth it. See
 for why: `Clipboard.getData()` returns a `ClipboardData?` whose useful
 content is one nullable field, and each `await` costs a frame, so
 collapsing "call then read the field" into one method is the difference
-between one frame and two.
+between one frame and two — before the off-frame doorbell landed.
+Since then both are sub-millisecond, so this is now an argument about
+API shape rather than latency.
 
 **Services are not just plugin wrappers** — they are the general "run
 this in Dart, call it from JS" hatch for your own logic: crypto,
@@ -432,7 +434,7 @@ hand-written dispatcher directly — see
 browser API instead. A registered web impl wins in any browser context.
 Without one, the call rejects with a message naming the fix.
 
-**Batch.** A one-shot RPC costs one frame
+**Batch.** A one-shot RPC used to cost one frame
 ([PERFORMANCE.md](PERFORMANCE.md)), so:
 
 ```jsx

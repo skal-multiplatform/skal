@@ -69,18 +69,38 @@ one — the registry cannot observe call rates, and an earlier
 which was worse than no enforcement at all. If a real guard ever lands
 it will come from the generator, per method, with tests.
 
-**The one number that matters: a one-shot RPC round-trip costs one
-frame — p50 16.67 ms at 60 Hz — regardless of payload size.**
+**Superseded 2026-07-25 — a one-shot RPC no longer costs a frame.**
+The off-frame doorbell landed (see
+[`TODO_OPTIMIZATIONS.md`](TODO_OPTIMIZATIONS.md) §2b): JS rings
+`__skal_notifyHost()` after committing a batch containing a
+root-targeted (logic) invoke, and the host drains immediately instead
+of at the next vsync. Measured on macOS, debug and release:
 
-The transport is not the cost. 200 calls issued together complete in
-16.74 ms total (0.084 ms amortized); the 16.67 ms is purely waiting for
-the next per-frame op drain (`root.dart`'s Ticker). Three consequences,
-in priority order:
+| | p50 |
+|---|---:|
+| before (per-frame drain only) | 16.67 ms |
+| after (doorbell) | **0.03 ms** |
 
-1. **Call count is the budget, not bytes.** Ten chained `await`s
-   measured 163 ms. The same ten batched through `Promise.all` cost
-   one frame. Any generated service API that reads naturally as
-   `await a(); await b(); await c();` is a latency bug by construction.
+with a tail up to the current frame's remaining UI work (max 4.4 ms
+debug / 1.2 ms release), because the engine pauses the Dart event loop
+during frame production. Batched calls improved too — 30 via
+`Promise.all` went 16.4 → 0.29 ms — so batching and the doorbell
+compose.
+
+**What that changes, and what it doesn't.** UI ops are untouched: they
+still drain from the Ticker at `handleBeginFrame`, which is free
+(nothing paints before vsync) and preserves same-frame rebuilds. The
+old numbers below described the pre-doorbell world and are kept because
+they still describe the *transport*, which was never the cost: 200
+calls issued together complete in 16.74 ms total (0.084 ms amortized).
+
+1. **Call count is no longer a latency emergency.** Ten chained
+   `await`s measured 163 ms before the doorbell; the same ten batched
+   cost one frame. Both are now sub-millisecond. Batching still helps
+   op-count and is still better API design, and coarse-graining a
+   chatty plugin into one Dart method is still the right shape — but
+   `await a(); await b(); await c();` is no longer a latency bug by
+   construction.
 
 2. **Streams are the fast path.** A stream burst rides a single drain:
    477k bare-int events/sec, 131k/sec at 256 B of JSON per event. That
@@ -88,15 +108,14 @@ in priority order:
    RPC. Prefer `svc.foo$(cb)` over polling `await svc.foo()`.
 
 3. **JSON is free below ~64 KB.** Encode/decode does not become visible
-   until a 241 KB round-trip, and even then it costs exactly one extra
-   frame (the work stops fitting in the slack). Do not trade JSON for a
-   binary encoding to save microseconds inside a 16.67 ms quantum.
+   until a 241 KB round-trip. Do not trade JSON for a binary encoding
+   to save microseconds.
 
 | Tier | Rate | Contract |
 |---|---|---|
-| One-shot RPC | human-paced | JSON args/returns fine. **Batch** anything issued together. |
+| One-shot RPC | human-paced | JSON args/returns fine. Batching is an op-count win, no longer a latency one. |
 | Low-rate stream | ≤ ~10 Hz (GPS, battery, connectivity) | JSON per event — fine, with margin to spare. |
-| Frame-rate | ≥ 60 Hz (sensors, per-frame callbacks) | A *stream* is fine (it rides one drain). A per-frame `await` is not — it cannot beat one frame per call by construction. |
+| Frame-rate | ≥ 60 Hz (sensors, per-frame callbacks) | A *stream* is still the right shape — it rides one drain and one wake, rather than one doorbell per call. |
 
 **Payload law.** Bulk bytes never cross the bridge — paths and handles,
 not payloads. This is not a preference: a reply over 256 KiB is
@@ -123,7 +142,7 @@ host-side animation are for (same doctrine as ANIMATION.md).
 | # | Item | Where landed | Note |
 |---|------|--------------|------|
 | ✓ | Bun + JSC via static-linked libskal | core architecture | No platform-channel serialization. dart:ffi calls into a single shared library. |
-| ✓ | Permanent shared 2 MiB ArrayBuffer between JS and host | core architecture | Zero-copy. JS writes ops, host reads. Atomic seq counter publishes per-frame batches. |
+| ✓ | Permanent shared 6 MiB ArrayBuffer between JS and host | core architecture | Zero-copy. JS writes ops, host reads. Atomic seq counter publishes per-frame batches. |
 | ✓ | Fixed 16-byte ops + separate string heap | `wire.dart` + `bridge.js` | Switch dispatch on a u8 + 3 i32 reads. No length-prefixed strings inline. |
 | ✓ | Typed prop categories (u32 / f32 / string distinct opcodes) | `wire.dart`, `packages/skal-js/src/bridge.js` | No polymorphic ValueKind tag per prop. Opcode encodes the type. |
 | ✓ | Hot / cold prop split | `OP_SET_OPACITY` etc. | A 60 fps opacity tween bypasses the cold-prop machinery entirely. |
@@ -158,12 +177,25 @@ host-side animation are for (same doctrine as ANIMATION.md).
   shows > 500 ms.
 
 ### 1b. Decouple RPC reply latency from the frame Ticker
-- **Status:** ◇ pending — identified by [Bench 4](BENCHMARKS.md).
+- **Status:** ✓ LANDED 2026-07-25 — the off-frame doorbell. Kept here
+  for the reasoning; the design and measurements live in
+  [`TODO_OPTIMIZATIONS.md`](TODO_OPTIMIZATIONS.md) §2b.
 - **Problem:** `root.dart` drains the op ring once per frame. A JS
   method call written just after a pump waits a full vsync, so every
   one-shot RPC round-trip costs p50 **16.67 ms** and ten chained
   `await`s cost 163 ms. The transport itself is 0.084 ms amortized —
   the latency is 99.5% scheduling.
+- **Confirmed live 2026-07-25** (macOS + iPhone 17 Pro, debug): ten
+  chained `await`s of a zero-OS-work Dart method measured **166.4 ms**,
+  per-hop `[16.7, 16.4, 16.6, 16.6, 16.7, 16.7, 16.7, 16.6, 16.7,
+  16.7]`; the same ten via `Promise.all` cost **16.7 ms**. Host pump
+  was 0.268 ms, so ~16.3 ms of every hop is vsync wait.
+  **Model correction:** pure-Dart hops cost exactly one frame, but real
+  *plugin-channel* hops cost two to four — the documented geolocator
+  flow spends **99.6 ms cold** before the GPS is asked for anything,
+  not the ~50 ms a one-frame-per-hop model predicts. Full numbers and
+  the API-shape mitigation:
+  [`TODO_OPTIMIZATIONS.md`](TODO_OPTIMIZATIONS.md) §2.
 - **Impact:** High for Roadmap A (native services). Batching via
   `Promise.all` is the current mitigation and it works, but it is a
   workaround the API shouldn't need.

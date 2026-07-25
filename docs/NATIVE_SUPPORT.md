@@ -24,7 +24,9 @@ This doc is the status ledger and the design work still outstanding.
   hand-written Dart at all. Proven on macOS with clipboard + haptics.
 - **Performance is the design constraint, not an afterthought.** The
   five benchmarks are **done** (macOS, 60 Hz) and they changed the plan:
-  a one-shot RPC costs **one frame (16.67 ms)** regardless of payload,
+  a one-shot RPC used to cost **one frame (16.67 ms)** regardless of
+  payload; since the off-frame doorbell (2026-07-25) it is **~0.03 ms**
+  p50 with a tail bounded by frame-production time,
   JSON is free below ~64 KB, and streams run 5,700× faster than
   sequential awaits. See [performance contract](#performance-contract).
 - **The type mapper's gaps are closed.** Lists of value classes (B5),
@@ -295,7 +297,7 @@ debug build, 60 Hz.
 
 | # | Question | Answer |
 |---|---|---|
-| 1 | RPC round-trip latency | **p50 16.67 ms — exactly one frame**, any payload. Batched: 0.084 ms amortized. 10 chained awaits: **163 ms** |
+| 1 | RPC round-trip latency | **p50 0.03 ms** since the doorbell landed (was 16.67 ms — exactly one frame — before it). Tail bounded by the current frame's remaining UI work. See [PERFORMANCE.md](PERFORMANCE.md) § Bridge RPC |
 | 2 | JSON encode/decode cost | Invisible below ~64 KB. First visible at a 241 KB round-trip, and it costs one extra frame |
 | 3 | Stream throughput | 477k/s bare int · 131k/s at 256 B JSON · 14k/s at 4 KB JSON |
 | 4 | Reply heap | 256 KiB exactly; oversize replies **truncate silently**. Wraparound cheap (no spin-wait observed) |
@@ -316,7 +318,7 @@ count on the one-shot path**.
 |---|---|---|
 | One-shot RPC | human-paced | JSON fine. **Batch anything issued together** — each `await` is a frame |
 | Low-rate stream | ≤ ~10 Hz (GPS, battery, connectivity) | JSON per event, with margin to spare |
-| Frame-rate | ≥ 60 Hz (sensors, per-frame callbacks) | A *stream* is fine. A per-frame `await` cannot beat one frame per call, by construction |
+| Frame-rate | ≥ 60 Hz (sensors, per-frame callbacks) | A *stream* is still the right shape — one drain and one wake for the burst, rather than a doorbell per call |
 
 So the generator's job is not "refuse to wrap fast things." It is:
 **never emit an API whose natural use is a chain of awaits.** A service
@@ -346,7 +348,7 @@ doctrine as ANIMATION.md).
 
 ### The finding worth acting on separately
 
-16.67 ms of the 16.67 ms round-trip is scheduling, not work — the op
+16.67 ms of the old 16.67 ms round-trip was scheduling, not work — which is exactly why the doorbell recovered essentially all of it. The op
 ring drains once per frame from `root.dart`'s Ticker, so a call written
 just after a pump waits a full vsync. Filed as
 [PERFORMANCE.md § Pending 1b](PERFORMANCE.md). It needs a design (the

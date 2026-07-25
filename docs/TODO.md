@@ -4,6 +4,8 @@ Things deferred or in-flight, in roughly priority order. Real items
 only — only what we've actually hit and chosen to defer or schedule.
 
 For perf-specific decisions see [`PERFORMANCE.md`](PERFORMANCE.md).
+For measured-but-undesigned optimization candidates see
+[`TODO_OPTIMIZATIONS.md`](TODO_OPTIMIZATIONS.md).
 For platform-specific work see [`TODO_PLATFORMS.md`](TODO_PLATFORMS.md).
 
 ---

@@ -707,6 +707,15 @@ documented in [FastStorage.md § What we built](FastStorage.md).
 
 ## Bench 4 — Bridge RPC (the numbers `docs/NATIVE_SUPPORT.md` required)
 
+> **PRE-DOORBELL — historical.** Everything in this section was measured
+> when the host drained the op ring only once per frame, so every
+> round-trip below carries a full vsync of scheduling. The off-frame
+> doorbell landed 2026-07-25 and took a one-shot RPC from **16.67 ms to
+> 0.03 ms p50**. These numbers are kept because they are what the
+> pre-doorbell transport actually cost, and because the win is only
+> legible against them — but do NOT quote them as current latency. See
+> [`TODO_OPTIMIZATIONS.md`](TODO_OPTIMIZATIONS.md) §2b.
+
 The five measurements that had to exist before `skal_codegen` starts
 emitting service methods on top of the RPC path. Unlike Benches 1–3,
 **the harness is still in the tree** — `examples/virt-bench` — so this

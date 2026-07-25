@@ -411,6 +411,23 @@ class Skal {
   /// optimization doesn't apply (no store on disk; in-memory backend).
   void prewarmStore(String dir) {}
 
+  /// Web has no off-frame doorbell: JS and Dart share the main thread,
+  /// so there is no other thread to be woken from. The per-frame drain
+  /// (plus the existing `__skal_drainOpsSync` overflow path) covers it.
+  bool get supportsHostNotify => false;
+
+  /// Web has one page-lifetime runtime and no hot restart in this
+  /// sense, so a create is always fresh.
+  bool get wasReused => false;
+
+  /// Web never reuses a runtime, so this is always a plain evaluate.
+  EvalResult evaluateApp(String source, {String url = 'skal-app.js'}) =>
+      evaluate(source, url: url);
+
+  void enableHostNotify(void Function() callback) {}
+
+  void disableHostNotify() {}
+
   /// No-op on web. dart2js GCs the buffer when nothing references it;
   /// we just drop the `__skal_acquireBridge` reference for cleanliness.
   void dispose() {

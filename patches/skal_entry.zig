@@ -8,7 +8,7 @@
 //!   │             │ ◄───────  ResetEvent ────── │  tickPossiblyForever│
 //!   └─────────────┘                             └─────────────────────┘
 //!
-//! Plus: an ultra-low-latency UI bridge built on a single 2 MiB shared
+//! Plus: an ultra-low-latency UI bridge built on a single 6 MiB shared
 //! memory region. JS sees it as a `Uint8Array` (no copy via JSC's
 //! `JSObjectMakeArrayBufferWithBytesNoCopy`); the host sees it via a
 //! raw pointer + length returned by `skal_acquire_bridge`. Both sides
@@ -16,7 +16,12 @@
 //!
 //! Layout (see PROPS_PLAN.md § 2 for the full spec):
 //!
-//!   [ Header 64B ][ Op ring 1 MiB ][ String heap 512 KiB ][ Event ring 64 KiB ]
+//!   [ Header 64B ][ Op ring 4 MiB ][ JS string heap 768 KiB ]
+//!   [ Reply heap 256 KiB ][ Event ring ~1 MiB ]
+//!
+//! Sizes are the BRIDGE_SIZE / *_OFFSET constants below; JS mirrors
+//! them in packages/skal-js/src/bridge.js and Dart in
+//! packages/skal_flutter/lib/skal/wire.dart. All three must agree.
 //!
 //! Sync is a single atomic seq counter per direction. JS bumps op_seq
 //! after writing a frame's worth of ops; the host bumps event_seq after
@@ -179,6 +184,19 @@ const Runtime = struct {
     /// eval; `__skal_store_open` then picks up the result. Null when the
     /// host didn't prewarm (other platforms / fallback).
     prewarm: ?*StorePrewarm = null,
+    /// Host doorbell — the mirror of `skal_wake_js`. Dart registers a
+    /// native port via `skal_set_host_port`; JS rings it as
+    /// `globalThis.__skal_notifyHost()` after committing a batch that
+    /// contains a logic RPC, so the host drains off-frame instead of
+    /// waiting for the next vsync.
+    ///
+    /// 0 until Dart registers, and an unregistered doorbell is simply a
+    /// no-op — the host's own drain schedule still picks everything up,
+    /// so an old host + new libskal degrades to previous behaviour
+    /// rather than breaking. Atomic because the JS worker thread reads
+    /// it while the host thread writes it.
+    host_port: std.atomic.Value(i64) = .{ .raw = 0 },
+
     /// Host-provided base data directory (<appSupport>/skal-store).
     /// Installed as `globalThis.__skal_data_dir` so the JS store reads
     /// it synchronously instead of an async getDataDir() RPC. Empty
@@ -363,10 +381,12 @@ fn installBridgeGlobals(vm: *jsc.VirtualMachine) void {
     const global_obj = JSContextGetGlobalObject(ctx);
 
     // __skal_acquireBridge() -> ArrayBuffer (no-copy view of bridge buffer)
-    const name = JSStringCreateWithUTF8CString("__skal_acquireBridge");
-    defer JSStringRelease(name);
-    const fn_obj = JSObjectMakeFunctionWithCallback(ctx, name, acquireBridgeBuffer_jsCallback);
-    JSObjectSetProperty(ctx, global_obj, name, @ptrCast(fn_obj), 0, null);
+    installHostFn(ctx, global_obj, "__skal_acquireBridge", acquireBridgeBuffer_jsCallback);
+
+    // __skal_notifyHost() — the doorbell. Mirror of skal_wake_js in the
+    // other direction: lets JS ask the host to drain NOW rather than at
+    // the next vsync. No-op until Dart registers a port.
+    installHostFn(ctx, global_obj, "__skal_notifyHost", notifyHost_jsCallback);
 
     // __skal_store_* — the native log-structured store engine.
     installStoreGlobals(ctx, global_obj);
@@ -520,10 +540,53 @@ fn skalAllocator() std.mem.Allocator {
 // can call into the runtime. See packages/skal_native/include/skal.h for the contract.
 // ───────────────────────────────────────────────────────────────────────
 
+/// The process's one and only Runtime. A JSC VM is not a thing you can
+/// have two of here: `VirtualMachine.init` is called with
+/// `.is_main_thread = true` and mutates process-global JSC state, so a
+/// SECOND init invalidates the FIRST VM's heap invariants. The first VM
+/// does not die quietly — it dies the next time it allocates.
+///
+/// That is not theoretical. Flutter HOT RESTART destroys the Dart
+/// isolate and re-runs `main()`, which called `skal_create_runtime`
+/// again; meanwhile `skal_dispose_runtime` is an intentional no-op and
+/// `workerMain` loops forever, so the old VM was still very much alive
+/// with pending async work. Any of it completing after the second init
+/// trapped in `JSC::LocalAllocator::allocateSlowCase`. Symbolicated
+/// repro: kitchen-sink auto-runs `crypto.subtle.digest()` on mount, its
+/// promise resolved post-restart via `fulfillPromiseWithArrayBuffer` →
+/// `JSArrayBuffer::create` → trap, every single time.
+///
+/// So: one runtime per process, reused. A second create returns the
+/// same handle and the same bridge buffer.
+var the_runtime: ?*Runtime = null;
+var the_runtime_lock: std.Thread.Mutex = .{};
+
+/// Set when `skal_create_runtime` handed back an EXISTING runtime
+/// rather than building one. The host reads it via
+/// `skal_runtime_was_reused` to learn "this is a hot restart, the JS
+/// side is still the previous generation" and reset accordingly,
+/// instead of evaluating a second copy of the bundle on top.
+var runtime_reused: std.atomic.Value(bool) = .{ .raw = false };
+
 fn skal_create_runtime(dir_ptr: ?[*]const u8, dir_len: usize) callconv(.c) i64 {
+    the_runtime_lock.lock();
+    defer the_runtime_lock.unlock();
+
+    if (the_runtime) |rt| {
+        runtime_reused.store(true, .release);
+        return @intCast(@intFromPtr(rt));
+    }
+
     const data_dir: []const u8 = if (dir_ptr) |p| p[0..dir_len] else "";
     const rt = Runtime.init(skalAllocator(), data_dir) catch return 0;
+    the_runtime = rt;
+    runtime_reused.store(false, .release);
     return @intCast(@intFromPtr(rt));
+}
+
+/// 1 when the last `skal_create_runtime` reused an existing runtime.
+fn skal_runtime_was_reused() callconv(.c) i32 {
+    return if (runtime_reused.load(.acquire)) 1 else 0;
 }
 
 fn skal_dispose_runtime(handle: i64) callconv(.c) void {
@@ -623,6 +686,102 @@ fn skal_wake_js(handle: i64) callconv(.c) void {
     task.any = bun.jsc.AnyTask.New(EventDrainTask, EventDrainTask.run).init(task);
     task.concurrent = .{ .task = task.any.task(), .next = .none };
     rt.vm.eventLoop().enqueueTaskConcurrent(&task.concurrent);
+}
+
+// ── Host doorbell — Dart native ports ──────────────────────────────
+//
+// The doorbell posts an integer to a Dart `RawReceivePort` rather than
+// invoking a `NativeCallable.listener` trampoline. Both land on the same
+// receive port with identical delivery semantics, but the port is the
+// only one that is SAFE here:
+//
+//   • Per call from a foreign thread, `Dart_PostInteger` is `Smi::New`
+//     plus a post. `NativeCallable.listener` enters the target isolate
+//     group — `HandleAsyncFfiCallback` → `EnterTemporaryIsolate` —
+//     creating and destroying a temporary isolate every time, and
+//     participating in GC safepoints, which can stall the JS thread.
+//
+//   • On a DEAD port it returns false. A trampoline pointer into a
+//     destroyed isolate is undefined behaviour, and its slot may be
+//     recycled so the call silently lands on an unrelated callback.
+//     That is not hypothetical: `skal_dispose_runtime` is an
+//     intentional no-op and `workerMain` loops forever, so a Flutter
+//     HOT RESTART leaves the old Runtime — and its still-running JS
+//     timers — alive with a pointer to a dead isolate. With a port,
+//     those rings are simply refused.
+//
+// We resolve `Dart_PostInteger` ourselves from the DartApi table the
+// host hands us (dart:ffi's `NativeApi.initializeApiDLData`), which is
+// what `dart_api_dl.c` would otherwise do — done here so libskal needs
+// no Dart SDK sources in its build.
+
+/// Mirrors `DartApiEntry` in dart_api_dl.h.
+const DartApiEntry = extern struct {
+    name: ?[*:0]const u8,
+    function: ?*const fn () callconv(.c) void,
+};
+
+/// Mirrors `DartApi` in dart_api_dl.h.
+const DartApi = extern struct {
+    major: c_int,
+    minor: c_int,
+    functions: [*]const DartApiEntry,
+};
+
+const DartPostIntegerFn = *const fn (port: i64, message: i64) callconv(.c) bool;
+
+/// Resolved once from the host's API table. Process-global: there is
+/// only ever one Dart VM in the process.
+var dart_post_integer: std.atomic.Value(usize) = .{ .raw = 0 };
+
+/// Give libskal dart:ffi's `NativeApi.initializeApiDLData`. Returns 1
+/// when `Dart_PostInteger` was found, 0 otherwise (in which case the
+/// doorbell stays disabled and the host keeps its own drain schedule).
+fn skal_init_dart_api(data: ?*anyopaque) callconv(.c) i32 {
+    const api: *const DartApi = @ptrCast(@alignCast(data orelse return 0));
+    var i: usize = 0;
+    while (api.functions[i].name) |name| : (i += 1) {
+        if (std.mem.orderZ(u8, name, "Dart_PostInteger") == .eq) {
+            const f = api.functions[i].function orelse return 0;
+            dart_post_integer.store(@intFromPtr(f), .release);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/// Register the port JS rings. Pass 0 to clear. Safe to call again with
+/// a new port — the previous one is simply forgotten, and any ring that
+/// raced onto the old port is refused by the VM rather than crashing.
+fn skal_set_host_port(handle: i64, port: i64) callconv(.c) void {
+    if (handle == 0) return;
+    const rt: *Runtime = @ptrFromInt(@as(usize, @intCast(handle)));
+    rt.host_port.store(port, .release);
+}
+
+/// JSC host function — `globalThis.__skal_notifyHost()`. A pure "there
+/// is something to drain" signal; the payload is already in the shared
+/// ring, so the posted integer is a constant.
+fn notifyHost_jsCallback(
+    ctx: JSContextRef,
+    _: JSObjectRef,
+    _: JSObjectRef,
+    _: usize,
+    _: [*]const JSValueRef,
+    _: ?*?JSValueRef,
+) callconv(.c) ?JSValueRef {
+    if (active_runtime) |rt| {
+        const port = rt.host_port.load(.acquire);
+        const raw = dart_post_integer.load(.acquire);
+        if (port != 0 and raw != 0) {
+            const post: DartPostIntegerFn = @ptrFromInt(raw);
+            // Return value ignored on purpose: `false` means the port is
+            // gone (isolate torn down by a hot restart), which is a
+            // no-op for us, not an error.
+            _ = post(port, 1);
+        }
+    }
+    return JSValueMakeUndefined(ctx);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1184,7 +1343,12 @@ fn store_stats_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize
     return @ptrCast(ab);
 }
 
-fn installStoreFn(ctx: JSContextRef, global_obj: JSObjectRef, name_z: [*:0]const u8, cb: JSObjectCallAsFunctionCallback) void {
+/// Install one `globalThis.<name> = <native fn>`. Named for what it
+/// does, not for its first caller — it registers ALL of libskal's host
+/// functions (bridge acquisition and the doorbell as well as the store),
+/// and having the JSString lifetime dance in exactly one place is the
+/// point.
+fn installHostFn(ctx: JSContextRef, global_obj: JSObjectRef, name_z: [*:0]const u8, cb: JSObjectCallAsFunctionCallback) void {
     const name = JSStringCreateWithUTF8CString(name_z);
     defer JSStringRelease(name);
     const fn_obj = JSObjectMakeFunctionWithCallback(ctx, name, cb);
@@ -1192,13 +1356,13 @@ fn installStoreFn(ctx: JSContextRef, global_obj: JSObjectRef, name_z: [*:0]const
 }
 
 fn installStoreGlobals(ctx: JSContextRef, global_obj: JSObjectRef) void {
-    installStoreFn(ctx, global_obj, "__skal_store_open", store_open_cb);
-    installStoreFn(ctx, global_obj, "__skal_store_put", store_put_cb);
-    installStoreFn(ctx, global_obj, "__skal_store_get", store_get_cb);
-    installStoreFn(ctx, global_obj, "__skal_store_del", store_del_cb);
-    installStoreFn(ctx, global_obj, "__skal_store_del_prefix", store_del_prefix_cb);
-    installStoreFn(ctx, global_obj, "__skal_store_compact", store_compact_cb);
-    installStoreFn(ctx, global_obj, "__skal_store_stats", store_stats_cb);
+    installHostFn(ctx, global_obj, "__skal_store_open", store_open_cb);
+    installHostFn(ctx, global_obj, "__skal_store_put", store_put_cb);
+    installHostFn(ctx, global_obj, "__skal_store_get", store_get_cb);
+    installHostFn(ctx, global_obj, "__skal_store_del", store_del_cb);
+    installHostFn(ctx, global_obj, "__skal_store_del_prefix", store_del_prefix_cb);
+    installHostFn(ctx, global_obj, "__skal_store_compact", store_compact_cb);
+    installHostFn(ctx, global_obj, "__skal_store_stats", store_stats_cb);
 }
 
 comptime {
@@ -1210,4 +1374,7 @@ comptime {
     @export(&skal_acquire_bridge, .{ .name = "skal_acquire_bridge", .linkage = .strong });
     @export(&skal_wake_js, .{ .name = "skal_wake_js", .linkage = .strong });
     @export(&skal_prewarm_store, .{ .name = "skal_prewarm_store", .linkage = .strong });
+    @export(&skal_runtime_was_reused, .{ .name = "skal_runtime_was_reused", .linkage = .strong });
+    @export(&skal_init_dart_api, .{ .name = "skal_init_dart_api", .linkage = .strong });
+    @export(&skal_set_host_port, .{ .name = "skal_set_host_port", .linkage = .strong });
 }

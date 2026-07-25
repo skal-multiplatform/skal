@@ -194,8 +194,22 @@ class SkalBridge {
   bool _treeHasRichText = false;
 
   // ── Perf instrumentation (read by PerfHud) ───────────────────────
+  //
+  // `pumpAvgNs` / `pumpPeakNs` are FRAME-drain costs only — what the
+  // drain adds to the frame budget. Off-frame drains are tracked
+  // separately below so they can't dilute a number the HUD and the
+  // perf docs present as per-frame.
   int pumpAvgNs = 0;
   int pumpPeakNs = 0;
+
+  /// Off-frame (doorbell) drains — count and EMA, in nanoseconds.
+  /// Deliberately NOT folded into [pumpAvgNs]; see `_pumpOpsBody`.
+  int offFrameDrains = 0;
+  int offFrameAvgNs = 0;
+
+  /// True for the duration of a doorbell-triggered drain. Set by
+  /// [pumpOffFrame], read only by the instrumentation tail.
+  bool _offFrameDrain = false;
   int propWritesLastDrain = 0;
   int coldPropsTouchedLastDrain = 0;
 
@@ -248,7 +262,58 @@ class SkalBridge {
 
   SkalBridge(this.skal)
       : _data = ByteData.sublistView(skal.bridge),
-        _bytes = skal.bridge;
+        _bytes = skal.bridge {
+    // Armed HERE, not from a widget. The doorbell is a property of the
+    // runtime + this bridge, not of anything's build lifecycle: it must
+    // be live for `main()`'s own pre-runApp pumpOps, it must not depend
+    // on a SkalRoot happening to mount, and a widget has no business
+    // owning an FFI registration it cannot correctly release.
+    enableOffFrameDrain();
+  }
+
+  // ── Off-frame drain — docs/TODO_OPTIMIZATIONS.md §2b ────────────────
+  //
+  // The Ticker drain at handleBeginFrame is kept exactly as-is: it runs
+  // before the build phase, so UI ops mark their nodes dirty in time to
+  // rebuild in the SAME frame. That is a genuinely good property and
+  // this does not replace it.
+  //
+  // What it adds is a second, event-driven trigger. JS rings
+  // `__skal_notifyHost()` after committing a batch containing a
+  // ROOT-targeted (logic) invoke; libskal calls this listener from the
+  // JS worker thread; Dart delivers it to this isolate's event loop and
+  // we drain immediately instead of waiting up to a full vsync.
+  //
+  // Delivery is a port message, so it can never land mid-build — the
+  // isolate is run-to-completion and Flutter's whole frame is one task.
+  //
+  // The NativeCallable itself lives in skal_ffi_io.dart, not here:
+  // this file also compiles for web, where dart:ffi does not exist.
+
+  /// Arm the off-frame drain. Called from the constructor; safe to call
+  /// again (re-arming replaces the port). A no-op on web and on any
+  /// libskal without the doorbell exports.
+  ///
+  /// `pumpOps()` already guards reentrancy (`_pumping`), so a doorbell
+  /// landing while the frame drain is running is harmlessly skipped —
+  /// that frame's drain picks the ops up anyway.
+  void enableOffFrameDrain() => skal.enableHostNotify(pumpOffFrame);
+
+  /// Disarm and release the doorbell. Call from a host that is tearing
+  /// a bridge down deliberately; not required for process exit.
+  void disableOffFrameDrain() => skal.disableHostNotify();
+
+  /// A drain triggered by the doorbell rather than by the frame. Split
+  /// out solely so the instrumentation can keep the two populations
+  /// apart — see [offFrameDrains].
+  void pumpOffFrame() {
+    _offFrameDrain = true;
+    try {
+      pumpOps();
+    } finally {
+      _offFrameDrain = false;
+    }
+  }
 
   /// Idempotent — ensures the root node (id 1) exists so SkalRoot can
   /// always mount even if the JS app forgot to create it. wtBox so
@@ -299,7 +364,7 @@ class SkalBridge {
   /// Evaluate `src` as a hot reload: prepend the outgoing generation's teardown
   /// (`__skalHot.beginReload()`) so the new bundle re-mounts in place (hot.js).
   EvalResult _evalReload(String src) => skal.evaluate(
-        'globalThis.__skalHot && globalThis.__skalHot.beginReload();\n$src',
+        '$kSkalBeginReload\n$src',
         url: 'skal-app.js',
       );
 
@@ -358,9 +423,26 @@ class SkalBridge {
     // writing it.
     _setU64(_data, hLastDrainedSeq, seq);
 
+    final dt = (_pumpClock.elapsedMicroseconds - t0) * 1000; // µs→ns
+
+    // `pumpAvgNs` / `pumpPeakNs` mean ONE THING: what the per-frame
+    // drain costs inside the frame budget. That's how the HUD labels
+    // them and how PERFORMANCE.md quotes them. Off-frame drains (the
+    // §2b doorbell) are a different population — many, tiny, and NOT
+    // charged to the frame — so folding them in would drag the average
+    // down by an order of magnitude while the actual frame-time
+    // contribution was unchanged, and the next person reading a jank
+    // profile would trust a number that no longer means what it says.
+    // Counted separately instead.
+    if (_offFrameDrain) {
+      offFrameDrains++;
+      offFrameAvgNs =
+          offFrameAvgNs == 0 ? dt : (offFrameAvgNs * 7 + dt) ~/ 8;
+      return;
+    }
+
     // EMA with α=1/8 — smooths jitter while staying responsive to
     // sudden bumps (e.g. a +1000-batch frame visibly nudges the avg).
-    final dt = (_pumpClock.elapsedMicroseconds - t0) * 1000; // µs→ns
     pumpAvgNs = pumpAvgNs == 0 ? dt : (pumpAvgNs * 7 + dt) ~/ 8;
 
     // Rolling peak: write to next slot, max across live entries.
@@ -380,8 +462,12 @@ class SkalBridge {
   void _drain() {
     final data = _data;
     final ns = nodes;
+    // NOT cleared here. An off-frame (doorbell) drain applies ops and
+    // defers notification, so its touched ids must survive until a
+    // FRAME drain flushes them — that is what preserves one-notify-per-
+    // node-per-frame now that drains can happen more than once a frame.
+    // Cleared at the end of the frame drain instead; see the flush loop.
     final touched = _touched;
-    touched.clear();
 
     // Clamp defensively — a corrupted writePos (e.g. wild pointer write
     // from a misbehaving JS host) must not let the decoder read past the
@@ -1102,6 +1188,35 @@ class SkalBridge {
       }
     }
 
+    // ── The control lane, without a second ring ────────────────────
+    //
+    // An off-frame (doorbell) drain APPLIES its ops but does not notify.
+    // The touched set and the per-node dirty flags carry forward, and
+    // the next frame drain flushes them — so N off-frame drains plus a
+    // frame drain still produce exactly ONE notify per node, which is
+    // the coalescing property the per-frame drain was giving us for
+    // free before the doorbell existed.
+    //
+    // This is why `_drain` no longer clears `touched` on entry: the set
+    // is cleared after a FRAME drain flushes it, not at the start of
+    // every drain.
+    //
+    // Deferring costs nothing visually. Nothing paints before vsync, so
+    // a notify issued off-frame would only mark elements dirty for the
+    // same frame that is about to run anyway. What it buys is that a
+    // node written during a logic batch is not rebuilt twice.
+    //
+    // Note the RPC reply is NOT deferred — it goes out during dispatch
+    // via the event ring, which is the whole point of the doorbell.
+    // Only widget notification waits.
+    if (_offFrameDrain) {
+      propWritesLastDrain = propWrites;
+      // Checkpoint still advances — the ops WERE consumed, and JS spins
+      // on this to know when it may rewind its write cursor.
+      _lastDrainedWritePos = writePos;
+      return;
+    }
+
     int coldCount = 0;
     for (final id in touched) {
       final node = ns[id];
@@ -1116,6 +1231,7 @@ class SkalBridge {
         node.hot.notify();
       }
     }
+    touched.clear();
 
     propWritesLastDrain = propWrites;
     coldPropsTouchedLastDrain = coldCount;

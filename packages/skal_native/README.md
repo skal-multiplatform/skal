@@ -22,17 +22,20 @@ packages/skal_native/
 └── README.md
 ```
 
-## The seven functions
+## The ten functions
 
 | Function | What it does |
 |---|---|
-| `skal_create_runtime()` | Spin up bun's worker + JSC; returns an opaque handle |
+| `skal_create_runtime()` | Spin up bun's worker + JSC; returns an opaque handle. ONE per process — a second call reuses the first |
 | `skal_dispose_runtime(h)` | Tear it down |
 | `skal_evaluate(h, source, url, …)` | Run a JS Program synchronously |
 | `skal_acquire_bridge(h, &ptr, &len)` | Hand out the 2 MiB shared op buffer |
 | `skal_wake_js(h)` | Wake the JS worker for host-emitted events |
 | `skal_free_string(s)` | Release a buffer that `skal_evaluate` returned |
 | `skal_prewarm_store(h, dir, len)` | Background-open the native KV store |
+| `skal_runtime_was_reused()` | 1 if the last create reused the process's existing runtime (hot restart) |
+| `skal_init_dart_api(data)` | Resolve `Dart_PostInteger` from dart:ffi's API table (doorbell setup) |
+| `skal_set_host_port(h, port)` | Register the native port JS rings to request an immediate drain |
 
 The Dart-side mirror is [`packages/skal_flutter/lib/skal_ffi.dart`](../skal_flutter/lib/skal_ffi.dart);
 it must stay in lock-step with `include/skal.h`. Drift is silent —

@@ -1,4 +1,4 @@
-// Skal bridge — wraps the shared 2 MiB ArrayBuffer that the JS worker
+// Skal bridge — wraps the shared 6 MiB ArrayBuffer that the JS worker
 // thread shares with the native host. This module is the lowest level: raw op
 // writers, atomic seq counters, event dispatch.
 //
@@ -834,6 +834,43 @@ if (HAS_NATIVE_BRIDGE && typeof window === 'undefined') {
 
 let scheduled = false;
 
+// ── Host doorbell — docs/TODO_OPTIMIZATIONS.md §2b ────────────────────
+//
+// The host drains the op ring once per frame from a Ticker, which is
+// free for UI ops (nothing paints before vsync) but costs a full frame
+// of dead latency for LOGIC calls, which never touch the widget tree.
+// `__skal_notifyHost()` lets us say "drain now" after committing a
+// batch that contains one.
+//
+// Rung only for ROOT-targeted invokes. That is the whole hoisting rule
+// and it is exact, not a heuristic: `createSkalService(x).y()` routes
+// through ROOT_NODE_ID, while `ref.y()` on a host widget targets a real
+// node id whose CREATE_NODE may still be sitting undrained ahead of it.
+// Node 1 is created at boot and never removed, so a root-targeted call
+// can never outrun its own node.
+//
+// Absent on web and on any libskal predating the export, in which case
+// this is a no-op and the per-frame drain still picks everything up.
+const _notifyHost = typeof globalThis.__skal_notifyHost === 'function'
+  ? globalThis.__skal_notifyHost
+  : null;
+let _logicPending = false;
+
+// Op-seq at which we last rang. Rings are COALESCED against it: if the
+// host hasn't drained up to our previous ring yet, it is already
+// scheduled to run and will see these ops too, so a second ring buys
+// nothing and just queues another message. One outstanding doorbell,
+// ever — which matters because the delivery queue is unbounded, and
+// because the host's event loop is paused for the duration of frame
+// production, so a burst landing inside a heavy frame would otherwise
+// pile up one message per microtask batch.
+let _lastRungSeq = 0n;
+
+/** Mark the current batch as containing a logic RPC. */
+function markLogicOp(nodeId) {
+  if (nodeId === ROOT_NODE_ID) _logicPending = true;
+}
+
 function commit() {
   scheduled = false;
   // Publish any un-published progress and let the host catch up over
@@ -847,6 +884,16 @@ function commit() {
   // lastDrainedSeq. opWritePos32 grows monotonically until then.
   if (opWritePos32 !== lastCommittedPos32) {
     publishProgress();
+  }
+  // Ring AFTER publishing — the host must be able to see the ops the
+  // moment it wakes. One doorbell per batch, never per op: a hundred
+  // service calls issued together wake the host once.
+  if (_logicPending) {
+    _logicPending = false;
+    if (_notifyHost && Atomics.load(seqArr, B_LAST_DRAINED_SEQ) >= _lastRungSeq) {
+      _lastRungSeq = opSeq;
+      _notifyHost();
+    }
   }
 }
 
@@ -1244,10 +1291,12 @@ export function setPropStr(nodeId, key, value) {
   diffCacheStr[slot] = value;
   writeString(value == null ? '' : String(value));
   // Wire format: b = (key << 24) | (offset & 0xFFFFFF); c = length.
-  // 24-bit offset = 16 MiB addressable, far above the 512 KiB heap.
+  // 24-bit offset = 16 MiB addressable, far above the 768 KiB string
+  // heap (STRING_HEAP_SIZE above — the bound this argument rests on, so
+  // it moves if the region does).
   // 8-bit key = 256 distinct prop keys, more than the namespace defines.
   // 32-bit length supports any string up to 4 GiB, though in practice
-  // an entry can never exceed the 512 KiB heap.
+  // an entry can never exceed that same 768 KiB heap.
   const packedB = ((key & 0xFF) << 24) | (_strOffset & 0xFFFFFF);
   writeOp(OP_SET_PROP_STR, nodeId, packedB, _strLength);
   propWritesCounter++;
@@ -1665,6 +1714,7 @@ export function invokeMethod(nodeId, methodName, args) {
   // keyed by callId, picks them up when OP_INVOKE_METHOD arrives.
   _writeMethodArgs(callId, args);
   writeOp(OP_INVOKE_METHOD, nodeId, h, callId);
+  markLogicOp(nodeId);
   scheduleCommit();
   return new Promise((resolve, reject) => {
     pendingCalls.set(callId, { resolve, reject });
@@ -1696,6 +1746,7 @@ export function subscribeStream(nodeId, methodName, args, onValue, opts) {
   // Same arg-pack pattern as invokeMethod.
   _writeMethodArgs(callId, args);
   writeOp(OP_SUBSCRIBE_STREAM, nodeId, h, callId);
+  markLogicOp(nodeId);
   scheduleCommit();
   streamHandlers.set(callId, {
     nodeId,

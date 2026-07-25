@@ -119,6 +119,9 @@ _skal_evaluate
 _skal_free_string
 _skal_acquire_bridge
 _skal_wake_js
+_skal_runtime_was_reused
+_skal_init_dart_api
+_skal_set_host_port
 ___clear_cache
 EOF
 
@@ -146,6 +149,9 @@ LDFLAGS=(
   -Wl,-u,_skal_free_string
   -Wl,-u,_skal_acquire_bridge
   -Wl,-u,_skal_wake_js
+  -Wl,-u,_skal_runtime_was_reused
+  -Wl,-u,_skal_init_dart_api
+  -Wl,-u,_skal_set_host_port
   # __clear_cache: per-symbol flat-namespace lookup so dyld at runtime
   # resolves to our shim instead of looking in libSystem.B (which on
   # iOS Simulator doesn't have it). Re-export is handled by the

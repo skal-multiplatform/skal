@@ -1,10 +1,11 @@
 // dart:ffi bindings for libskal's C ABI.
 //
 // libskal bundles an entire bun + JavaScriptCore runtime (~87 MB on
-// arm64). The seven exported entry points (`skal_create_runtime`,
+// arm64). The ten exported entry points (`skal_create_runtime`,
 // `skal_dispose_runtime`, `skal_evaluate`, `skal_free_string`,
-// `skal_acquire_bridge`, `skal_wake_js`, `skal_prewarm_store`) are
-// what dart:ffi binds to; the contract is in
+// `skal_acquire_bridge`, `skal_wake_js`, `skal_prewarm_store`,
+// `skal_runtime_was_reused`, `skal_init_dart_api`,
+// `skal_set_host_port`) are what dart:ffi binds to; the contract is in
 // packages/skal_native/include/skal.h.
 //
 // Two things matter for performance:
@@ -24,9 +25,12 @@
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io' show Platform;
+import 'dart:isolate' show RawReceivePort;
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart' show kReleaseMode;
+
+import 'skal/wire.dart' show kSkalBeginReload;
 
 /// Lazy-loaded handle to libskal — `.so` on Android, `.dylib` on
 /// macOS/iOS. We never close it; bun's VM tear-down is process-exit
@@ -118,6 +122,52 @@ typedef _PrewarmStore = void Function(int, Pointer<Uint8>, int);
 final _PrewarmStore _prewarmStore = _lib
     .lookupFunction<_NPrewarmStore, _PrewarmStore>('skal_prewarm_store');
 
+// The host doorbell (docs/TODO_OPTIMIZATIONS.md §2b). Looked up lazily
+// and tolerantly: a libskal built before these exports exists is a
+// perfectly good runtime, it just can't wake us off-frame. Resolving to
+// null there keeps old-binary/new-Dart combinations working instead of
+// throwing at startup.
+// Each lookup below is written out rather than routed through a generic
+// helper: `lookupFunction` needs a concrete dart:ffi native type, and a
+// type variable is rejected (`must_be_a_native_function_type`).
+//
+// 1 when the last create() handed back an EXISTING runtime — i.e. a
+// Flutter hot restart, where the Dart isolate was destroyed but the JS
+// VM and its whole generation survived. Tolerant lookup like the
+// doorbell's: an older libskal simply always reports "fresh".
+typedef _NRuntimeWasReused = Int32 Function();
+typedef _RuntimeWasReused = int Function();
+final _RuntimeWasReused? _runtimeWasReused = () {
+  try {
+    return _lib.lookupFunction<_NRuntimeWasReused, _RuntimeWasReused>(
+        'skal_runtime_was_reused');
+  } catch (_) {
+    return null;
+  }
+}();
+
+typedef _NInitDartApi = Int32 Function(Pointer<Void>);
+typedef _InitDartApi = int Function(Pointer<Void>);
+final _InitDartApi? _initDartApi = () {
+  try {
+    return _lib.lookupFunction<_NInitDartApi, _InitDartApi>(
+        'skal_init_dart_api');
+  } catch (_) {
+    return null;
+  }
+}();
+
+typedef _NSetHostPort = Void Function(Int64, Int64);
+typedef _SetHostPort = void Function(int, int);
+final _SetHostPort? _setHostPort = () {
+  try {
+    return _lib.lookupFunction<_NSetHostPort, _SetHostPort>(
+        'skal_set_host_port');
+  } catch (_) {
+    return null;
+  }
+}();
+
 // ──────────────────────────────────────────────────────────────────────
 // Dart-side ergonomics.
 // ──────────────────────────────────────────────────────────────────────
@@ -135,6 +185,17 @@ class EvalResult {
 /// A handle to a live bun runtime + its shared bridge buffer.
 class Skal {
   final int handle;
+
+  /// True when [create] handed back an EXISTING runtime instead of
+  /// building one — a Flutter hot restart. The Dart isolate was
+  /// destroyed and `main()` re-ran, but the JS VM, its worker thread
+  /// and its whole previous generation are still live.
+  ///
+  /// A host MUST branch on this: evaluating the bundle again on a
+  /// reused runtime stacks a second app on top of the first. Use
+  /// [SkalBridge.hotReload] instead, which tears the outgoing
+  /// generation down first.
+  final bool wasReused;
   final Pointer<Uint8> bridgePtr;
   final int bridgeLen;
 
@@ -143,7 +204,8 @@ class Skal {
   /// constraints as the JS-side `Uint8Array` view.
   final Uint8List bridge;
 
-  Skal._(this.handle, this.bridgePtr, this.bridgeLen) : bridge = bridgePtr.asTypedList(bridgeLen);
+  Skal._(this.handle, this.bridgePtr, this.bridgeLen, this.wasReused)
+      : bridge = bridgePtr.asTypedList(bridgeLen);
 
   /// [dataDir] is the host's base data directory. libskal installs it
   /// as `globalThis.__skal_data_dir` so the JS store reads it
@@ -173,7 +235,8 @@ class Skal {
         _disposeRuntime(h);
         return null;
       }
-      final skal = Skal._(h, p.cast<Uint8>(), n);
+      final skal = Skal._(h, p.cast<Uint8>(), n,
+          (_runtimeWasReused?.call() ?? 0) == 1);
       // Release: tell the JS bundle to skip the dev hot-reload coordinator
       // (the __skalHot coordinator + drain trampoline + createHotState/
       // createRouter stash) for zero overhead. Set here, once per runtime,
@@ -263,6 +326,21 @@ class Skal {
   /// See `skal_ffi_web.dart::markReplyHeapReset`.
   void markReplyHeapReset() {}
 
+  /// Evaluate the app bundle, doing the right thing for a REUSED
+  /// runtime (Flutter hot restart).
+  ///
+  /// On a fresh runtime this is a plain [evaluate]. On a reused one it
+  /// first runs `__skalHot.beginReload()`, which disposes the outgoing
+  /// generation's reactive root and resets the host tree. Without that
+  /// the hot coordinator refuses to mount at all — `mount()` bails when
+  /// `_mounted` is already true, deliberately, so a raw re-eval doesn't
+  /// double the tree — and the app comes back blank.
+  ///
+  /// Harmless in release: `__skalHot` is undefined there, so the guard
+  /// short-circuits.
+  EvalResult evaluateApp(String source, {String url = 'skal-app.js'}) =>
+      evaluate(wasReused ? '$kSkalBeginReload\n$source' : source, url: url);
+
   /// Begin opening the native store on a background thread so its
   /// segment scan overlaps JS runtime init + bundle evaluation. Call
   /// once, right after create(), with the directory the JS side will
@@ -279,5 +357,62 @@ class Skal {
     }
   }
 
-  void dispose() => _disposeRuntime(handle);
+  /// True when this libskal exports the off-frame doorbell.
+  bool get supportsHostNotify =>
+      _initDartApi != null && _setHostPort != null;
+
+  RawReceivePort? _notifyPort;
+
+  /// Arm the off-frame doorbell: JS calls `globalThis.__skal_notifyHost()`
+  /// from its worker thread, libskal posts an integer to the port
+  /// registered here, and [callback] runs on THIS isolate's event loop.
+  ///
+  /// A native port rather than a `NativeCallable.listener` on purpose.
+  /// Both deliver to the same receive port, but the callable enters the
+  /// isolate group per call — creating and destroying a temporary
+  /// isolate, and taking part in GC safepoints, which can stall the JS
+  /// thread. More importantly it is unsafe across a HOT RESTART: the
+  /// runtime is never disposed (`skal_dispose_runtime` is a no-op) and
+  /// the JS worker loops forever, so the old generation's timers can
+  /// still ring after the isolate that owned the trampoline is gone.
+  /// Posting to a dead port is refused; calling a freed trampoline is
+  /// undefined behaviour, and its slot may be recycled so the call
+  /// silently lands on an unrelated callback.
+  ///
+  /// Re-arming replaces the previous port. Safe by construction — a ring
+  /// that races the swap either lands on the old port (refused if it has
+  /// been closed) or the new one.
+  ///
+  /// A no-op when libskal predates the exports, or when the Dart API
+  /// table can't be resolved.
+  void enableHostNotify(void Function() callback) {
+    final init = _initDartApi;
+    final setPort = _setHostPort;
+    if (init == null || setPort == null) return;
+    if (init(NativeApi.initializeApiDLData) == 0) return;
+
+    final previous = _notifyPort;
+    final port = RawReceivePort((_) => callback(), 'skal.doorbell');
+    _notifyPort = port;
+    setPort(handle, port.sendPort.nativePort);
+    // Close the old one only AFTER the native side points at the new
+    // port, so there is never a window with no live target.
+    previous?.close();
+  }
+
+  /// Disarm and release. Clears the native port FIRST so JS stops
+  /// ringing it, then closes. A ring that races this is refused by the
+  /// VM rather than crashing — the whole reason for using a port.
+  void disableHostNotify() {
+    final port = _notifyPort;
+    if (port == null) return;
+    _setHostPort?.call(handle, 0);
+    _notifyPort = null;
+    port.close();
+  }
+
+  void dispose() {
+    disableHostNotify();
+    _disposeRuntime(handle);
+  }
 }

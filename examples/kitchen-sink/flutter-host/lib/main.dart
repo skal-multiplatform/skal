@@ -174,10 +174,10 @@ void main() async {
     final loader =
         "(async()=>{await import(${_jsStringLiteral('file://$cjsPath')});"
         "return 'skal-app loaded';})();";
-    result = skal.evaluate(loader, url: 'skal:loader');
+    result = skal.evaluateApp(loader, url: 'skal:loader');
   } else {
     final source = await rootBundle.loadString('assets/skal-app.js');
-    result = skal.evaluate(source, url: 'skal-app.js');
+    result = skal.evaluateApp(source, url: 'skal-app.js');
   }
   final tEval1 = bootClock.elapsedMicroseconds;
 

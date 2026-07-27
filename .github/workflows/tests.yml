@@ -1,8 +1,9 @@
 # Dart unit-test fast lane.
 #
-# Runs the wire-format snapshot tests, node-state behaviour tests, and
-# the codegen suite on every PR that touches them. Pure Dart — no
-# vendor/bun rebuild, no native toolchain — so it completes in ~2 min
+# Runs the wire-format snapshot tests, the op-drain behaviour tests, the
+# JS-side bridge tests and the codegen suite on every PR that touches
+# them. No vendor/bun rebuild, no native toolchain — bun is installed
+# from the registry purely to run the JS suite — so it completes in ~2 min
 # and gives quick feedback when someone changes a constant in wire.dart
 # and forgets to update the matching one in packages/skal-js/src/bridge.js.
 #
@@ -73,6 +74,20 @@ jobs:
       - name: flutter test
         working-directory: packages/skal_flutter
         run: flutter test
+
+      # The JS half of the bridge. Until 2026-07-27 packages/skal-js had
+      # no suite at all, so the encoder, the diff cache and the doorbell
+      # ringing rule were only ever exercised end-to-end — and a wrong
+      # doorbell is silent in both directions (ring too eagerly and you
+      # race a node's CREATE_NODE; ring too rarely and every service call
+      # quietly costs a frame again).
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: bun test (skal-js)
+        working-directory: packages/skal-js
+        run: bun test
 
       - name: dart test (skal_codegen)
         working-directory: packages/skal_codegen

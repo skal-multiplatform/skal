@@ -48,6 +48,12 @@ import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 
 import 'skal/wire.dart';
+import 'skal/runtime.dart';
+
+// One definition of both, shared with the other target and with
+// any test fake. Re-exported so `import 'skal_ffi.dart'` still
+// resolves `EvalResult` for hosts, exactly as before.
+export 'skal/runtime.dart' show EvalResult, SkalRuntime;
 
 /// External binding for JS's `Uint8Array`. Dart's built-in
 /// `JSUint8Array` exposes `.toDart` (for materializing bytes back into
@@ -71,22 +77,11 @@ extension type _Uint8Array._(JSUint8Array _) implements JSUint8Array {
   external _Uint8Array subarray(int begin, int end);
 }
 
-/// Result of `Skal.evaluate` — kept on the web side purely for
-/// source-compat with the native API (evaluate is a no-op here).
-class EvalResult {
-  final String value;
-  final bool isError;
-  EvalResult(this.value, this.isError);
-
-  @override
-  String toString() => isError ? 'EvalError($value)' : 'Eval($value)';
-}
-
 /// Web-target stand-in for the FFI `Skal` class. Same public surface
 /// (`bridge`, `evaluate`, `wakeJs`, `prewarmStore`, `dispose`,
 /// `syncFromJs`, `syncToJs`) so the framework's `SkalBridge` works
 /// without target-aware branches.
-class Skal {
+class Skal implements SkalRuntime {
   /// Dart-side mirror of the bridge buffer. The JS side has its own
   /// `Uint8Array` over a separately-allocated buffer; the two are kept
   /// in sync at pump + wake boundaries via [syncFromJs] / [syncToJs].
@@ -97,6 +92,7 @@ class Skal {
   /// at construction; the reference must stay stable for the lifetime
   /// of the bridge. We mirror INTO this buffer rather than replacing
   /// it.
+  @override
   final Uint8List bridge;
 
   /// JS-side canonical buffer. Lives in the JS heap so the Solid/Skal
@@ -177,6 +173,7 @@ class Skal {
   /// browser script (see `flutter-host/lib/main_web.dart`'s
   /// `_injectSkalJsBundle`), not eval'd here. Returns success so the
   /// host's boot-sequence error-handling reads the same as native.
+  @override
   EvalResult evaluate(String source, {String url = 'skal:eval'}) {
     return EvalResult('', false);
   }
@@ -216,6 +213,7 @@ class Skal {
   /// batch's `[0, _syncedWp)` prefix. (The reply heap is the symmetric
   /// Dart-produced case; because its producer is in-process it uses the
   /// [markReplyHeapReset] signal instead of a header epoch.)
+  @override
   void syncFromJs() {
     // (1) Header — small (64 B), always synced. Carries every region's
     // write watermark plus hJsResetEpoch, read below.
@@ -301,6 +299,7 @@ class Skal {
   ///     `[_syncedEventWp, kEventRingSize)` (tail of the prior chunk)
   ///     and `[0, eventWp)` (the wrapped prefix). Both must be
   ///     copied for JS to see all events.
+  @override
   void syncToJs() {
     // (1) Header — push ONLY the Dart-owned words, never the JS-owned
     // ones (see doc above). Each range runs from a Dart-owned word up to
@@ -369,6 +368,7 @@ class Skal {
   /// invoke the drain inline, syncing Dart→JS first so JS sees the
   /// events, then JS→Dart after so Dart picks up any ops the handlers
   /// triggered.
+  @override
   void wakeJs() {
     syncToJs();
     final drain = globalContext['__skal_drainEvents'];
@@ -392,6 +392,7 @@ class Skal {
   /// `[0, syncedWp)` of the new reply, which JS would read as the stale
   /// tail of the old one. Resetting the watermark to 0 closes that gap
   /// without a wire-format change.
+  @override
   void markReplyHeapReset() {
     _syncedReplyWp = 0;
   }
@@ -401,6 +402,7 @@ class Skal {
   /// calls this each drain and rewinds its `_lastDrainedWritePos` to 0 on
   /// `true`, so a JS-side ring rewind can't strand the post-reset chunk.
   /// One-shot: returns the flag and clears it.
+  @override
   bool takeOpRingReset() {
     final r = _opRingReset;
     _opRingReset = false;
@@ -424,8 +426,10 @@ class Skal {
   EvalResult evaluateApp(String source, {String url = 'skal-app.js'}) =>
       evaluate(source, url: url);
 
+  @override
   void enableHostNotify(void Function() callback) {}
 
+  @override
   void disableHostNotify() {}
 
   /// No-op on web. dart2js GCs the buffer when nothing references it;

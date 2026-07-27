@@ -2,7 +2,7 @@ name: skal_flutter
 description: >-
   Skal — Dart/Flutter half of the framework. Bridge, registry, root,
   dialogs, FFI bindings. Pair this with the JS-side `skal` package.
-version: 0.1.0
+version: 0.2.0
 repository: https://github.com/skal-multiplatform/skal
 homepage: https://github.com/skal-multiplatform/skal
 issue_tracker: https://github.com/skal-multiplatform/skal/issues

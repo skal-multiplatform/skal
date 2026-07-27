@@ -31,6 +31,12 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart' show kReleaseMode;
 
 import 'skal/wire.dart' show kSkalBeginReload;
+import 'skal/runtime.dart';
+
+// One definition of both, shared with the other target and with
+// any test fake. Re-exported so `import 'skal_ffi.dart'` still
+// resolves `EvalResult` for hosts, exactly as before.
+export 'skal/runtime.dart' show EvalResult, SkalRuntime;
 
 /// Lazy-loaded handle to libskal — `.so` on Android, `.dylib` on
 /// macOS/iOS. We never close it; bun's VM tear-down is process-exit
@@ -38,7 +44,7 @@ import 'skal/wire.dart' show kSkalBeginReload;
 ///
 /// Per-platform lookup:
 ///
-///   - Android: jniLibs/<abi>/libskal.so is auto-extracted by the
+///   - Android: `jniLibs/<abi>/libskal.so` is auto-extracted by the
 ///     loader; `DynamicLibrary.open('libskal.so')` finds it.
 ///
 ///   - macOS: Xcode's "Embed Frameworks" build phase copies
@@ -172,18 +178,8 @@ final _SetHostPort? _setHostPort = () {
 // Dart-side ergonomics.
 // ──────────────────────────────────────────────────────────────────────
 
-/// Result of `Skal.evaluate`.
-class EvalResult {
-  final String value;
-  final bool isError;
-  EvalResult(this.value, this.isError);
-
-  @override
-  String toString() => isError ? 'EvalError($value)' : 'Eval($value)';
-}
-
 /// A handle to a live bun runtime + its shared bridge buffer.
-class Skal {
+class Skal implements SkalRuntime {
   final int handle;
 
   /// True when [create] handed back an EXISTING runtime instead of
@@ -202,6 +198,7 @@ class Skal {
   /// Zero-copy Dart view of the bridge memory. Reads and writes here
   /// are visible to JS (and vice versa) within the same memory model
   /// constraints as the JS-side `Uint8Array` view.
+  @override
   final Uint8List bridge;
 
   Skal._(this.handle, this.bridgePtr, this.bridgeLen, this.wasReused)
@@ -253,6 +250,7 @@ class Skal {
     }
   }
 
+  @override
   EvalResult evaluate(String source, {String url = 'skal:eval'}) {
     // PROPER UTF-8 encoding. Earlier impl used `source.codeUnits`
     // which returns UTF-16 code units — for any non-ASCII codepoint
@@ -303,6 +301,7 @@ class Skal {
     }
   }
 
+  @override
   void wakeJs() => _wakeJs(handle);
 
   /// No-ops on native — the bridge buffer is shared between bun
@@ -310,13 +309,16 @@ class Skal {
   /// needed. These exist purely so SkalBridge can call them on both
   /// targets without `kIsWeb` branching. The web implementation in
   /// skal_ffi_web.dart does the real work for dart2wasm.
+  @override
   void syncFromJs() {}
+  @override
   void syncToJs() {}
 
   /// No-op on native — there is no mirror, so the op ring is never reset
   /// out-of-band. `SkalBridge._drain`'s writePos-regression check detects
   /// the genuine (near-ring-full) rewind directly. The web implementation
   /// in skal_ffi_web.dart returns the epoch-driven reset signal instead.
+  @override
   bool takeOpRingReset() => false;
 
   /// No-op on native — bridge.dart calls this from `_writeReplyString`
@@ -324,6 +326,7 @@ class Skal {
   /// On web the slice-sync uses it to force a `[0, replyWp)` push so
   /// post-reset writes can't be miscategorized as monotonic growth.
   /// See `skal_ffi_web.dart::markReplyHeapReset`.
+  @override
   void markReplyHeapReset() {}
 
   /// Evaluate the app bundle, doing the right thing for a REUSED
@@ -385,6 +388,7 @@ class Skal {
   ///
   /// A no-op when libskal predates the exports, or when the Dart API
   /// table can't be resolved.
+  @override
   void enableHostNotify(void Function() callback) {
     final init = _initDartApi;
     final setPort = _setHostPort;
@@ -403,6 +407,7 @@ class Skal {
   /// Disarm and release. Clears the native port FIRST so JS stops
   /// ringing it, then closes. A ring that races this is refused by the
   /// VM rather than crashing — the whole reason for using a port.
+  @override
   void disableHostNotify() {
     final port = _notifyPort;
     if (port == null) return;

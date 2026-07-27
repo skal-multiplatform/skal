@@ -35,16 +35,21 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
-import '../skal_ffi.dart';
 import 'handles.dart';
 import 'node_state.dart';
 import 'registry.dart';
+import 'runtime.dart';
 import 'wire.dart';
 
 class SkalBridge {
-  /// FFI handle to the bun runtime — used to dispatch events back to
-  /// JS, and exposed so callers can run extra eval probes from outside.
-  final Skal skal;
+  /// The JS runtime — used to dispatch events back to JS, and exposed
+  /// so callers can run extra eval probes from outside.
+  ///
+  /// Typed to the [SkalRuntime] interface, not the concrete `Skal`, so
+  /// the drain path can be exercised in `flutter test` against a plain
+  /// `Uint8List` instead of a 60 MB dlopen. A host still passes its real
+  /// `Skal`, which implements this. See `runtime.dart` for why.
+  final SkalRuntime skal;
 
   /// ByteData view of the shared bridge memory. Same memory bun sees
   /// from JS via JSObjectMakeArrayBufferWithBytesNoCopy. ByteData
@@ -81,13 +86,13 @@ class SkalBridge {
   ///
   /// Records are stored as 5 consecutive ints — [eventKind, argType,
   /// handlerId, argValueI32, argHeapOffset, …repeat…] — mirroring the
-  /// in-ring event layout. A single Queue<int> avoids per-record
+  /// in-ring event layout. A single `Queue<int>` avoids per-record
   /// object allocation under stress. The argHeapOffset slot is 0 for
   /// non-string events (kept uniform so the flush loop has one shape).
   final Queue<int> _eventOverflow = Queue<int>();
 
   /// One state per JS-created node, keyed by JS node id (dense small
-  /// ints). Plain Map<int,NodeState> — primitive int keys avoid
+  /// ints). Plain `Map<int, NodeState>` — primitive int keys avoid
   /// boxing in Dart AOT.
   final Map<int, NodeState> nodes = <int, NodeState>{};
 
@@ -144,10 +149,16 @@ class SkalBridge {
   /// the imperative dialog API (`dialogs.dart`) both branch on this so a
   /// dialog never disagrees with the surrounding controls.
   ///
-  /// Read as an init-time flag: the renderer caches the branch per node
-  /// (`MemoizingListenableBuilder`) and nothing depends on it reactively,
-  /// so switching Material ↔ Cupertino mid-app will not refresh
-  /// already-built nodes. Set the mode once at startup.
+  /// Read as a BUILD-TIME branch: the renderer caches each node's
+  /// subtree (`MemoizingListenableBuilder`) and nothing registers a
+  /// reactive dependency on this. Switching mid-app still works —
+  /// `opSetDesign` dirties every node when the mode changes, so the
+  /// caches are invalidated directly instead. That is a full rebuild,
+  /// but it happens once per explicit toggle; the alternative is every
+  /// node re-registering a dependency on every build for a value that
+  /// almost never changes.
+  ///
+  /// Pinned by `test/design_mode_test.dart`.
   bool get isCupertino {
     switch (designMode) {
       case 1:
@@ -409,22 +420,57 @@ class SkalBridge {
     // the ring before reading opSeq keeps the round-trip latency low.
     if (_eventOverflow.isNotEmpty) _flushEventOverflow();
 
+    // ── The invariant, in exactly one place ─────────────────────────
+    //
+    // A FRAME pump must never return leaving notifications owed. An
+    // off-frame (doorbell) drain applies ops and defers notification to
+    // "the next frame drain" — so if a frame pump can reach `return`
+    // without flushing, the update is stranded and nothing is coming
+    // back for it.
+    //
+    // That is not hypothetical. It shipped: this used to bail out on
+    // `seq == _lastOpSeq` before flushing, and because the doorbell
+    // drains the WHOLE ring, any UI op batched alongside a root-targeted
+    // invoke — `setLoading(true); api.fetch()` in one handler — went
+    // off-frame with it and then sat there while further doorbell
+    // batches kept the ring empty at every vsync. Measured 366 ms to
+    // first paint, p95 978 ms, frequently no paint at all. See
+    // docs/TODO_OPTIMIZATIONS.md §2c.
+    //
+    // So the flush is NOT attached to a particular return path. `_drain`
+    // is pure apply; the settle happens here, unconditionally, on the
+    // one exit a frame pump has. A new early return added above this
+    // point would reintroduce the bug — below it, it cannot.
+    // Pinned by `test/bridge_drain_test.dart`.
     final seq = _getU64(_data, hOpSeq);
-    if (seq == _lastOpSeq) return;
+    final hasNewOps = seq != _lastOpSeq;
+    final isFramePump = !_offFrameDrain;
+
+    // Idle fast path: nothing to apply and nothing owed. One u64 load
+    // and two tests — this runs every vsync in a quiet app, so it stays
+    // ahead of the clock read below.
+    if (!hasNewOps && !(isFramePump && _touched.isNotEmpty)) return;
 
     final t0 = _pumpClock.elapsedMicroseconds;
-    _drain();
-    _lastOpSeq = seq;
 
-    // Publish drained seq back to the JS side. JS spin-waits on this
-    // value inside flushAndWaitForDrain to know we've caught up. The
-    // companion hLastDrainedWritePos slot is reserved in the wire
-    // format but currently unread on the JS side, so we don't bother
-    // writing it.
-    _setU64(_data, hLastDrainedSeq, seq);
+    if (hasNewOps) {
+      _drain();
+      _lastOpSeq = seq;
+      // Publish drained seq back to the JS side. JS spin-waits on this
+      // value inside flushAndWaitForDrain to know we've caught up. The
+      // companion hLastDrainedWritePos slot is reserved in the wire
+      // format but currently unread on the JS side, so we don't bother
+      // writing it.
+      _setU64(_data, hLastDrainedSeq, seq);
+    }
 
-    final dt = (_pumpClock.elapsedMicroseconds - t0) * 1000; // µs→ns
+    if (isFramePump) _flushTouched();
 
+    _recordPump((_pumpClock.elapsedMicroseconds - t0) * 1000); // µs→ns
+  }
+
+  /// Fold one drain's cost into the instrumentation.
+  void _recordPump(int dt) {
     // `pumpAvgNs` / `pumpPeakNs` mean ONE THING: what the per-frame
     // drain costs inside the frame budget. That's how the HUD labels
     // them and how PERFORMANCE.md quotes them. Off-frame drains (the
@@ -1132,9 +1178,28 @@ class SkalBridge {
 
         case opSetDesign:
           // Global, not node-scoped — a = mode, b = brightness.
+          final modeChanged = designMode != a;
           designMode = a;
           designBrightness = b;
           designChanged.notify();
+          // Material ↔ Cupertino is a build-time branch in every control
+          // builder, and `MemoizingListenableBuilder` returns each node's
+          // CACHED subtree until that node's own `cold` fires. So a mode
+          // flip on its own reaches only the nodes that happened to
+          // change for some other reason, and the tree renders half in
+          // each design — which is what the demo's design switcher did.
+          //
+          // Dirty everything instead. It is a full rebuild, but it
+          // happens once, on an explicit user action, and the
+          // alternative is a documented-unsupported flag that the
+          // shipped demo offers a button for. Brightness alone still
+          // goes through `_SkalBrightness` and rebuilds only `<text>`.
+          if (modeChanged) {
+            for (final entry in ns.entries) {
+              entry.value.coldDirty = true;
+              touched.add(entry.key);
+            }
+          }
           break;
 
         case opLog:
@@ -1155,37 +1220,6 @@ class SkalBridge {
       }
 
       p += 16;
-    }
-
-    // ── Coalesced notifies — one fan-out per touched node per channel ─
-    // Hot and cold are independent: a frame can hit one, the other, or
-    // both. Tree-shape ops fall into cold (the parent's cached widget
-    // tree needs to invalidate to re-emit children).
-    // Pass 0 — `<richText>` reactivity. A richText absorbs each child
-    // `<text>` into a TextSpan; the child is never its own widget, so
-    // a dirty child must rebuild the parent. Promote each such parent
-    // into the `touched` set + mark it cold-dirty so the coalescing
-    // loop below notifies it EXACTLY ONCE — no per-child or
-    // parent+child double rebuild. `richTextParents` is lazily
-    // allocated, so a richText-using app with no dirty spans this
-    // drain still pays nothing; `_treeHasRichText` skips the scan
-    // outright for an app that never uses richText.
-    if (_treeHasRichText) {
-      List<int>? richTextParents;
-      for (final id in touched) {
-        final node = ns[id];
-        if (node == null || !node.coldDirty) continue;
-        final parent = ns[node.parent];
-        if (parent != null && parent.type == wtRichText) {
-          (richTextParents ??= <int>[]).add(node.parent);
-        }
-      }
-      if (richTextParents != null) {
-        for (final pid in richTextParents) {
-          ns[pid]?.coldDirty = true;
-        }
-        touched.addAll(richTextParents);
-      }
     }
 
     // ── The control lane, without a second ring ────────────────────
@@ -1209,12 +1243,62 @@ class SkalBridge {
     // Note the RPC reply is NOT deferred — it goes out during dispatch
     // via the event ring, which is the whole point of the doorbell.
     // Only widget notification waits.
-    if (_offFrameDrain) {
-      propWritesLastDrain = propWrites;
-      // Checkpoint still advances — the ops WERE consumed, and JS spins
-      // on this to know when it may rewind its write cursor.
-      _lastDrainedWritePos = writePos;
-      return;
+    propWritesLastDrain = propWrites;
+
+    // Advance the drain checkpoint. JS reads this back to know when
+    // it's safe to reset writePos to 0 (we've consumed everything) or
+    // how far it must spin-wait for at near-overflow.
+    //
+    // Advances on an off-frame drain too. Deferring NOTIFICATION must
+    // never look like deferring CONSUMPTION — the ops really are gone
+    // from the ring, and JS spin-waits on this before rewinding its
+    // write cursor over them.
+    _lastDrainedWritePos = writePos;
+  }
+
+  /// Notify every node the applied ops touched, then clear the set.
+  ///
+  /// Deliberately NOT called from [_drain]: deferring notification is
+  /// only safe if something is guaranteed to come back for it, so the
+  /// call site is the single exit of a frame pump in [_pumpOpsBody] —
+  /// including the case where the ring was empty and `_drain` never
+  /// ran. Cheap on an empty set.
+  void _flushTouched() {
+    final ns = nodes;
+    final touched = _touched;
+
+    // Pass 0 — `<richText>` reactivity. A richText absorbs each child
+    // `<text>` into a TextSpan; the child is never its own widget, so
+    // a dirty child must rebuild the parent. Promote each such parent
+    // into the `touched` set + mark it cold-dirty so the coalescing
+    // loop below notifies it EXACTLY ONCE — no per-child or
+    // parent+child double rebuild. `richTextParents` is lazily
+    // allocated, so a richText-using app with no dirty spans this
+    // drain still pays nothing; `_treeHasRichText` skips the scan
+    // outright for an app that never uses richText.
+    //
+    // Runs HERE, once per frame, and not in `_drain`. `touched` now
+    // accumulates across off-frame drains and `coldDirty` is only
+    // cleared below, so deriving this per drain re-walked a growing set
+    // to reach the same answer — N doorbell batches did the promotion N
+    // times. Idempotent, so it was never wrong, just repeated work on
+    // the drain hot path in exactly the burst shape §2c measured.
+    if (_treeHasRichText) {
+      List<int>? richTextParents;
+      for (final id in touched) {
+        final node = ns[id];
+        if (node == null || !node.coldDirty) continue;
+        final parent = ns[node.parent];
+        if (parent != null && parent.type == wtRichText) {
+          (richTextParents ??= <int>[]).add(node.parent);
+        }
+      }
+      if (richTextParents != null) {
+        for (final pid in richTextParents) {
+          ns[pid]?.coldDirty = true;
+        }
+        touched.addAll(richTextParents);
+      }
     }
 
     int coldCount = 0;
@@ -1232,14 +1316,7 @@ class SkalBridge {
       }
     }
     touched.clear();
-
-    propWritesLastDrain = propWrites;
     coldPropsTouchedLastDrain = coldCount;
-
-    // Advance the drain checkpoint. JS reads this back to know when
-    // it's safe to reset writePos to 0 (we've consumed everything) or
-    // how far it must spin-wait for at near-overflow.
-    _lastDrainedWritePos = writePos;
   }
 
   /// IEEE-754 bit pattern → double via aliased ByteData. Same trick

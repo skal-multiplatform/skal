@@ -155,10 +155,12 @@ class _SkalRootState extends State<SkalRoot>
     // changes then — and the <text> nodes that depend on it rebuild to
     // re-pick their brightness-derived default color.
     //
-    // Material vs Cupertino mode is deliberately NOT carried here: it is
-    // an init-time flag, not a reactive input. The control builders read
-    // it via bridge.isCupertino as a cached build-time branch. Switching
-    // mode mid-app is unsupported by design — set it once at startup.
+    // Material vs Cupertino mode is deliberately NOT carried here — but
+    // it IS reactive as of 2026-07-27. The control builders read it via
+    // bridge.isCupertino as a build-time branch, and `opSetDesign`
+    // dirties every node when the mode changes, so the cached subtrees
+    // rebuild. Brightness stays an InheritedWidget because it changes
+    // far more often and only `<text>` depends on it.
     return _SkalBrightness(
       brightness: widget.bridge.designBrightness,
       child: SkalNode(
@@ -225,8 +227,9 @@ Widget _buildForType(NodeState node, SkalBridge bridge, BuildContext context) {
   // the same one `Theme` uses. Every other builder either ignores
   // brightness or gets it for free via the real `Theme`/`CupertinoTheme`.
   //
-  // Material vs Cupertino mode is NOT a dependency: it is an init flag,
-  // resolved via bridge.isCupertino as a cached build-time branch.
+  // Material vs Cupertino mode is NOT a dependency: it is a build-time
+  // branch on bridge.isCupertino, and a mode change invalidates every
+  // node's cache directly (see `opSetDesign`) rather than propagating.
   if (node.type == wtText) {
     context.dependOnInheritedWidgetOfExactType<_SkalBrightness>();
   }
@@ -350,11 +353,14 @@ bool _isDark(SkalBridge bridge) => bridge.designBrightness == 1;
 /// `dependOnInheritedWidgetOfExactType`, so a brightness toggle rebuilds
 /// exactly them — the same way `Theme` propagates.
 ///
-/// Only brightness lives here. Material ↔ Cupertino mode is an init-time
-/// flag: the control builders read it via `bridge.isCupertino` as a
-/// build-time branch cached by `MemoizingListenableBuilder`. Switching
-/// mode mid-app is unsupported by design — no widget ever moves between
-/// Material and Cupertino at runtime, so that reactivity is pure waste.
+/// Only brightness lives here — it changes often and only `<text>`
+/// depends on it, so an InheritedWidget is exactly right.
+///
+/// Material ↔ Cupertino mode does NOT: it is a build-time branch on
+/// `bridge.isCupertino` cached by `MemoizingListenableBuilder`, and a
+/// mode change invalidates every node's cache directly in `opSetDesign`.
+/// One explicit user action, one full rebuild — cheaper than a
+/// dependency every node re-registers on every build.
 class _SkalBrightness extends InheritedWidget {
   const _SkalBrightness({
     required this.brightness,
@@ -3407,7 +3413,20 @@ Widget _screenChrome(
                 ),
               ),
       ),
-      child: SafeArea(child: content),
+      // `CupertinoPageScaffold` hosts NO Material, and a Skal tree is not
+      // all-Cupertino: plenty of widgets the builders emit are Material
+      // ones that need an ink host (anything with an InkWell, ListTile,
+      // Slider…). Without this, a `<screen title>` under Cupertino design
+      // throws "No Material widget found" the moment such a child paints
+      // — a crash in a fully supported configuration, no design switching
+      // involved.
+      //
+      // `MaterialType.transparency` is the standard fix: it paints
+      // nothing, clips nothing and sets no text style — it exists purely
+      // to provide the ink host. The iOS chrome above it is untouched.
+      child: SafeArea(
+        child: Material(type: MaterialType.transparency, child: content),
+      ),
     );
     if (drawer == null) return cupertinoScaffold;
     return Scaffold(drawer: drawer, body: cupertinoScaffold);

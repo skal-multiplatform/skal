@@ -193,7 +193,9 @@ void main() {
       for (final n in sizes) {
         // ─── append N ────────────────────────────────────────────────
         runWorkload('Append', n, (c) {
-          for (int i = 0; i < n; i++) c.append(i + 1);
+          for (int i = 0; i < n; i++) {
+            c.append(i + 1);
+          }
         });
 
         // ─── indexOf N ids in a pre-built N-item list ────────────────
@@ -204,10 +206,14 @@ void main() {
         runReadWorkload(
           'IndexOf×N',
           n,
-          (c) { for (int i = 0; i < n; i++) c.append(i + 1); },
+          (c) { for (int i = 0; i < n; i++) {
+            c.append(i + 1);
+          } },
           (c) {
             int acc = 0;
-            for (final id in ids) acc += c.indexOf(id);
+            for (final id in ids) {
+              acc += c.indexOf(id);
+            }
             if (acc < 0) throw StateError('unreachable');
           },
         );
@@ -225,7 +231,9 @@ void main() {
         // ─── removeAt random positions ───────────────────────────────
         final removePositions = _gen(n, math.Random(0xabc2));
         runWorkload('RandomRemove', n, (c) {
-          for (int i = 0; i < n; i++) c.append(i + 1);
+          for (int i = 0; i < n; i++) {
+            c.append(i + 1);
+          }
           for (int i = 0; i < n; i++) {
             final pos = removePositions[i] % c.length;
             c.removeAt(pos);
@@ -237,7 +245,9 @@ void main() {
         //    reorder traffic.
         final movePositions = _gen(n, math.Random(0xabc3));
         runWorkload('SortLike', n, (c) {
-          for (int i = 0; i < n; i++) c.append(i + 1);
+          for (int i = 0; i < n; i++) {
+            c.append(i + 1);
+          }
           for (int i = 0; i < n; i++) {
             final from = movePositions[i] % c.length;
             final id = c.idAt(from);
@@ -310,9 +320,9 @@ class _RowFormatter {
       _max(headers[4].length, 14),
     ];
   }
-  String header() => '  ' + _zip(headers).join(' │ ');
-  String separator() => '  ' + widths.map((w) => '─' * w).join('─┼─');
-  String row(List<String> cells) => '  ' + _zip(cells).join(' │ ');
+  String header() => '  ${_zip(headers).join(' │ ')}';
+  String separator() => '  ${widths.map((w) => '─' * w).join('─┼─')}';
+  String row(List<String> cells) => '  ${_zip(cells).join(' │ ')}';
 
   Iterable<String> _zip(List<String> cells) sync* {
     for (int i = 0; i < cells.length; i++) {

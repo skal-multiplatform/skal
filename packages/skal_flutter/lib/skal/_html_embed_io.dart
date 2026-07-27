@@ -10,11 +10,21 @@
 
 import 'package:flutter/widgets.dart';
 
+/// Placeholder red. Was written as `Color(0xFFD33)` — CSS `#D33` with
+/// an `FF` alpha in front, which is not how an ARGB literal parses:
+/// Dart read it as `0x000FFD33`, i.e. **alpha 0x00**. Both the border
+/// and the label below were fully transparent, so the "visible
+/// placeholder" this file exists to draw rendered as an empty pink box.
+/// Caught by `use_full_hex_values_for_flutter_colors`, which is exactly
+/// the mistake that lint is for.
+const Color _placeholderRed = Color(0xFFDD3333);
+
 Widget buildHtmlEmbed(String viewType) {
   return Container(
     decoration: BoxDecoration(
       color: const Color(0xFFFFF5F5),
-      border: Border.all(color: const Color(0xFFD33), width: 1, style: BorderStyle.solid),
+      border: Border.all(
+          color: _placeholderRed, width: 1, style: BorderStyle.solid),
     ),
     padding: const EdgeInsets.all(8),
     alignment: Alignment.center,
@@ -22,7 +32,7 @@ Widget buildHtmlEmbed(String viewType) {
       '<HtmlEmbed viewType="$viewType">\n(web-only intrinsic)',
       textAlign: TextAlign.center,
       style: const TextStyle(
-        color: Color(0xFFD33),
+        color: _placeholderRed,
         fontSize: 11,
         fontFamily: 'monospace',
       ),

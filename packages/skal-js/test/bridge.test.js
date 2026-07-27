@@ -46,15 +46,38 @@ let B;              // the bridge module
 let buf, u32, u8, seq64;
 let doorbells;      // times __skal_notifyHost was called
 
+// bridge.js binds BOTH of its host hooks once per process, at
+// module-eval time — the buffer via `__skal_acquireBridge()` and the
+// doorbell into a `const _notifyHost`. bun shares the module registry
+// across test files, so the first file to import it wins both, and any
+// other file that installs its own gets views over memory bridge.js
+// never touches and a doorbell that is never called.
+//
+// So: reuse the installed buffer, and install a DISPATCHER for the
+// doorbell that forwards to a mutable hook. Whichever file is running
+// sets the hook; the function bridge.js captured stays valid.
+function acquireSharedBridge(size) {
+  if (typeof globalThis.__skal_acquireBridge !== 'function') {
+    const owned = new ArrayBuffer(size);
+    globalThis.__skal_acquireBridge = () => owned;
+  }
+  if (typeof globalThis.__skal_notifyHost !== 'function') {
+    globalThis.__skal_notifyHost = () => { globalThis.__skal_onNotify?.(); };
+  }
+  return globalThis.__skal_acquireBridge();
+}
+
 beforeAll(async () => {
-  buf = new ArrayBuffer(BRIDGE_SIZE);
+  buf = acquireSharedBridge(BRIDGE_SIZE);
   u32 = new Uint32Array(buf);
   u8 = new Uint8Array(buf);
   seq64 = new BigInt64Array(buf);
   doorbells = 0;
 
-  globalThis.__skal_acquireBridge = () => buf;
-  globalThis.__skal_notifyHost = () => { doorbells++; };
+  // Claim the doorbell hook. Setting `__skal_notifyHost` directly would
+  // be too late if another file imported bridge.js first — it captured
+  // whatever was there. The dispatcher forwards here.
+  globalThis.__skal_onNotify = () => { doorbells++; };
 
   B = await import('../src/bridge.js');
 });
@@ -251,5 +274,179 @@ describe('the §2b doorbell', () => {
     await flush();
 
     expect(doorbells).toBe(1);
+  });
+});
+
+describe('oversize custom prop strings', () => {
+  // The wire packs a custom prop's value as (24-bit heap offset << 8 |
+  // 8-bit length). The length used to be written as `_strLength & 0xFF`,
+  // so a 300-byte value advertised 300 & 0xFF = 44 and the host read a
+  // 44-byte prefix of it — a silently wrong value, and a torn one when
+  // the cut landed inside a multi-byte sequence.
+  const STR_HEAP_OFFSET = HEADER_SIZE + 4 * 1024 * 1024;
+  const OP_SET_CUSTOM_PROP_STR = 0x1A;   // wire.dart opSetCustomPropStr
+
+  // setCustomPropStr may emit an intern op for a first-seen name, so
+  // the prop op is not necessarily the first one written. Bound the
+  // scan by the PUBLISHED cursor, which is why each case commits — an
+  // earlier draft scanned a fixed window from an un-advancing
+  // `opWritePos()` and every case silently re-read the first one's op.
+  async function customStrOpSince(from) {
+    B.scheduleCommit();
+    await flush();
+    for (let at = from; at < opWritePos(); at += 16) {
+      const op = opAt(at);
+      if (op.opcode === OP_SET_CUSTOM_PROP_STR) return op;
+    }
+    throw new Error('no OP_SET_CUSTOM_PROP_STR written');
+  }
+
+  const decode = (off, len) =>
+    new TextDecoder('utf-8', { fatal: true })
+      .decode(u8.subarray(STR_HEAP_OFFSET + off, STR_HEAP_OFFSET + off + len));
+
+  test('a value at the 255-byte limit is sent whole', async () => {
+    const at = opWritePos();
+    const value = 'a'.repeat(255);
+    B.setCustomPropStr(9001, 'exact', value);
+
+    const op = await customStrOpSince(at);
+    expect(op.c & 0xFF).toBe(255);
+    expect(decode(op.c >>> 8, op.c & 0xFF)).toBe(value);
+  });
+
+  test('an over-length ASCII value is truncated to 255, not masked', async () => {
+    const at = opWritePos();
+    B.setCustomPropStr(9002, 'long', 'b'.repeat(300));
+
+    const op = await customStrOpSince(at);
+    const len = op.c & 0xFF;
+    expect(len).not.toBe(300 & 0xFF);   // 44 — the old, wrong answer
+    expect(len).toBe(255);
+    expect(decode(op.c >>> 8, len)).toBe('b'.repeat(255));
+  });
+
+  test('truncation lands on a codepoint boundary', async () => {
+    // '€' is 3 UTF-8 bytes and 255 is not a multiple of 3, so a blind
+    // cut at 255 splits the 85th character.
+    const at = opWritePos();
+    B.setCustomPropStr(9003, 'euro', '€'.repeat(120)); // 360 bytes
+
+    const op = await customStrOpSince(at);
+    const len = op.c & 0xFF;
+    expect(len).toBe(255);              // 255 IS divisible by 3 — 85 chars
+    // `fatal: true` makes this throw on a split sequence.
+    expect(decode(op.c >>> 8, len)).toBe('€'.repeat(85));
+  });
+
+  test('a split sequence is backed off rather than sent torn', async () => {
+    // 'é' is 2 bytes; 127 of them is 254, the 128th straddles 255.
+    const at = opWritePos();
+    B.setCustomPropStr(9004, 'accent', 'é'.repeat(200)); // 400 bytes
+
+    const op = await customStrOpSince(at);
+    const len = op.c & 0xFF;
+    expect(len).toBe(254);              // backed off from 255
+    expect(decode(op.c >>> 8, len)).toBe('é'.repeat(127));
+  });
+});
+
+describe('clearing a built-in cold prop', () => {
+  // Setting a cold prop to null used to emit nothing at all — the
+  // renderer called it "leave as previous". That made a removal
+  // unrepresentable on the wire, so `bg={active ? RED : null}` painted
+  // red forever once it had been red once.
+  const OP_CLEAR_PROP = 0x2D;
+
+  function opsSince(from) {
+    const out = [];
+    for (let at = from; at < opWritePos(); at += 16) out.push(opAt(at));
+    return out;
+  }
+  const publish = async () => { B.scheduleCommit(); await flush(); };
+
+  test('a null after a value emits OP_CLEAR_PROP', async () => {
+    B.setPropU32(7101, B.PROP_BG_COLOR, 0xFFFF0000);
+    await publish();
+
+    const at = opWritePos();
+    B.clearProp(7101, B.PROP_BG_COLOR);
+    await publish();
+
+    const cleared = opsSince(at).filter((o) => o.opcode === OP_CLEAR_PROP);
+    expect(cleared.length).toBe(1);
+    expect(cleared[0].a).toBe(7101);
+    expect(cleared[0].b).toBe(B.PROP_BG_COLOR);
+  });
+
+  test('clearing a prop that was never set emits nothing', async () => {
+    const at = opWritePos();
+    B.clearProp(7102, B.PROP_CORNER_RADIUS);
+    await publish();
+    expect(opsSince(at).filter((o) => o.opcode === OP_CLEAR_PROP)).toEqual([]);
+  });
+
+  test('re-setting the SAME value after a clear is not deduped away', async () => {
+    // The diff cache mirrors what the host holds. If a clear left the
+    // old value cached, this second set would be skipped as a no-op and
+    // the host would stay cleared — the prop could be turned off, but
+    // then never back on.
+    B.setPropU32(7103, B.PROP_WIDTH, 300);
+    await publish();
+    B.clearProp(7103, B.PROP_WIDTH);
+    await publish();
+
+    const at = opWritePos();
+    B.setPropU32(7103, B.PROP_WIDTH, 300);   // same value as before
+    await publish();
+
+    const sets = opsSince(at).filter((o) => o.opcode === B.OP_SET_PROP_U32);
+    expect(sets.length).toBe(1);
+    expect(sets[0].c).toBe(300);
+  });
+});
+
+describe('clearProp never-set probe', () => {
+  const OP_CLEAR_PROP = 0x2D;
+  const publish = async () => { B.scheduleCommit(); await flush(); };
+  const clearOpsSince = (from) => {
+    const out = [];
+    for (let at = from; at < opWritePos(); at += 16) {
+      const op = opAt(at);
+      if (op.opcode === OP_CLEAR_PROP) out.push(op);
+    }
+    return out;
+  };
+
+  test('a slot holding a legitimately-stored NaN still clears', async () => {
+    // NaN is a real f32 prop value (parseFloat of bad input, 0/0). The
+    // probe used to read it as the "unset" sentinel and skip the wire
+    // op, so the host kept the NaN and the widget never fell back.
+    B.setPropF32(9201, B.PROP_HEIGHT, NaN);
+    await publish();
+
+    const at = opWritePos();
+    B.clearProp(9201, B.PROP_HEIGHT);
+    await publish();
+
+    expect(clearOpsSince(at).length).toBe(1);
+  });
+
+  test('a slot holding a stored string still clears', async () => {
+    B.setPropStr(9202, B.PROP_WIDTH, 'fill');
+    await publish();
+
+    const at = opWritePos();
+    B.clearProp(9202, B.PROP_WIDTH);
+    await publish();
+
+    expect(clearOpsSince(at).length).toBe(1);
+  });
+
+  test('a genuinely untouched slot still emits nothing', async () => {
+    const at = opWritePos();
+    B.clearProp(9203, B.PROP_GAP);
+    await publish();
+    expect(clearOpsSince(at)).toEqual([]);
   });
 });

@@ -280,6 +280,23 @@ const HOT_PROP_SETTERS = {
   rotation:     B.setRotationZ,
 };
 
+// The value each hot prop takes when it is REMOVED.
+//
+// Cold props are cleared with a wire op that drops the key, so the host
+// falls back to the widget default. Hot props need no such op: they are
+// all transform/opacity components, and "absent" for those is exactly
+// their identity value. Writing the identity through the normal setter
+// costs one op on the existing hot lane instead of a new opcode, a new
+// drain case, and a clear path through `diffHotF32`.
+const HOT_PROP_IDENTITY = {
+  opacity:      1,
+  translationX: 0,
+  translationY: 0,
+  scaleX:       1,
+  scaleY:       1,
+  rotation:     0,
+};
+
 // Function-valued handler props → bridge event kinds. Gesture
 // handlers (onClick / onTap / onLongPress / onDoubleTap) wrap the node
 // in a GestureDetector on the host; onChange is the value-change
@@ -1046,6 +1063,12 @@ const _renderer = createRenderer({
       if (typeof value === 'number') {
         hotSetter(node.id, value);
         B.scheduleCommit();
+      } else if (value == null) {
+        // Same defect the cold branch below had: a null used to fall
+        // through and emit nothing, so `opacity={fading() ? 0.3 : null}`
+        // stuck at 0.3 forever. Reset to identity instead.
+        hotSetter(node.id, HOT_PROP_IDENTITY[name]);
+        B.scheduleCommit();
       }
       return;
     }
@@ -1054,7 +1077,16 @@ const _renderer = createRenderer({
     const coldDesc = COLD_PROPS[name];
     if (coldDesc !== undefined) {
       const [propKey, kind] = coldDesc;
-      if (value == null) return; // setting to null/undefined = "leave as previous"
+      if (value == null) {
+        // null/undefined REMOVES the prop, so the host falls back to
+        // the widget's default. This used to return without emitting
+        // anything ("leave as previous"), which made
+        // `color={active ? Colors.red : null}` stay red once set —
+        // a conditional prop could be turned on but never off.
+        B.clearProp(node.id, propKey);
+        B.scheduleCommit();
+        return;
+      }
       switch (kind) {
         case 'u32':
           if (typeof value === 'number') {

@@ -33,12 +33,23 @@ const TAG_TO_HTML = {
   column:               'div',
   scrollView:           'div',
   // Web has no virtualization story for arbitrary DOM children — a
-  // <listView> / <reorderableListView> just degrades to a regular
-  // scrollable div with all children eagerly mounted. The virtualization
-  // is a host-side optimization (Flutter ListView.builder); on web the
-  // browser's own scroll virtualization handles render culling at the
-  // GPU layer. Reorder UX is also not wired up on web; the tag is
-  // accepted for renderer parity so the SAME JSX runs both targets.
+  // <listView> / <reorderableListView> degrades to a regular scrollable
+  // div with all children eagerly mounted. Virtualization is a host-side
+  // optimization (Flutter ListView.builder) and has no web equivalent
+  // here.
+  //
+  // The browser does NOT make up the difference. It culls offscreen
+  // PAINT, which is the cheap part; it still builds every element,
+  // lays it out, keeps it in memory, and runs whatever observers and
+  // Solid roots hang off it. Calling that "the browser's own scroll
+  // virtualization" (as this comment used to) reads as parity and is
+  // not: a 10k-row list costs 10k elements on web and a screenful on
+  // native. Real windowing — measured extents plus spacer elements —
+  // is the fix; until it lands, treat web as a COMPATIBILITY target
+  // for lists, not a parity one.
+  //
+  // Reorder UX is also not wired up on web; the tag is accepted for
+  // renderer parity so the SAME JSX runs both targets.
   listView:             'div',
   reorderableListView:  'div',
   row:                  'div',
@@ -774,6 +785,20 @@ function ensureHotState(node) {
 function updateTransform(node) {
   const h = node._skalHot;
   if (!h) return;
+  // Back at rest on every component — drop the transform AND the
+  // compositor promotion instead of writing an identity transform.
+  //
+  // `will-change: transform` costs a layer for as long as it is set, so
+  // an element that animated once and was then cleared would pin one
+  // for the rest of the session. Writing `translate(0px, 0px) scale(1,
+  // 1) rotate(0deg)` is visually identical to writing nothing, and the
+  // difference is exactly that layer.
+  if (h.tx === 0 && h.ty === 0 && h.sx === 1 && h.sy === 1 && h.rz === 0) {
+    node.style.transform = '';
+    node.style.willChange = '';
+    node._skalHot = null;   // re-promoted by ensureHotState on next use
+    return;
+  }
   node.style.transform =
     `translate(${h.tx}px, ${h.ty}px) ` +
     `scale(${h.sx}, ${h.sy}) ` +
@@ -949,6 +974,146 @@ const SPRING_MODES = { gentle: 1, bouncy: 2, stiff: 3, wobbly: 2 };
 // Each prop name maps to one or a few CSS property writes. Unknown
 // props are silently dropped — same contract as the native renderer.
 // ──────────────────────────────────────────────────────────────────────
+
+// ── Turning a prop back OFF ────────────────────────────────────────
+//
+// `bg={active ? RED : null}` has to be able to go back. The null branch
+// used to `return` without touching anything, so the element kept the
+// last non-null value forever — the same defect the native renderer
+// had, where the fix is a wire op (`opClearProp`).
+//
+// The first attempt at this LEARNED each prop's declarations by diffing
+// the element's declaration list across the prop's first write. It was
+// wrong three ways, all of which this table fixes:
+//
+//   1. It learned once, from whatever the first value happened to be.
+//      Half the cases below are value-dependent — `maxLines` sets
+//      nothing for 0, `textOverflow` sets `text-overflow` for 1 and
+//      `overflow` for 2, `width` sets nothing when parseDim fails — so
+//      the learned set was whatever the first render asked for.
+//   2. It only ever saw `node.style`. Eleven cases below assign DOM
+//      properties (`checked`, `disabled`, `tabIndex`, …), which the
+//      diff cannot see, so those props were unclearable on web while
+//      being clearable on native.
+//   3. It attributed SHARED declarations to whichever prop set them
+//      first. Clearing `top` removed `position: absolute` out from
+//      under a still-set `left`.
+//
+// It was also slower: a Map per element plus two O(declarations) scans
+// per (element, prop). This costs nothing on the set path and one
+// property lookup on the clear path.
+//
+// The obvious objection to a table is drift. That is what
+// `test/renderer-web-clear.test.js` is for: it parses this file, pulls
+// every `case '…'` out of `applyProp`, and fails if one has no entry
+// here. Adding a case without a clear is a red test, not a silent gap.
+
+/// Clear one or more style declarations. Assignment to '' rather than
+/// removeProperty() so camelCase names work uniformly (removeProperty
+/// wants '-webkit-line-clamp', not 'webkitLineClamp').
+const _rm = (...styleProps) => (node, s) => {
+  for (let i = 0; i < styleProps.length; i++) s[styleProps[i]] = '';
+};
+
+/// Reset a hot prop to its identity and recompute the transform —
+/// "absent" for a transform component IS its identity. Mirrors
+/// HOT_PROP_IDENTITY in renderer.js.
+const _rmHot = (field, identity) => (node) => {
+  ensureHotState(node)[field] = identity;
+  updateTransform(node);
+};
+
+const CLEAR_PROP = {
+  // Layout
+  padding:       _rm('padding'),
+  paddingTop:    _rm('paddingTop'),
+  paddingRight:  _rm('paddingRight'),
+  paddingBottom: _rm('paddingBottom'),
+  paddingLeft:   _rm('paddingLeft'),
+  width:         _rm('width'),
+  height:        _rm('height'),
+  weight:        _rm('flexGrow'),
+  gap:           _rm('gap'),
+  alignment:     _rm('justifyContent'),
+  // Both branches of the value test, so the clear does not depend on
+  // which one ran.
+  axis:           _rm('flexDirection', 'overflowX', 'overflowY'),
+  crossAxisCount: _rm('gridTemplateColumns'),
+  aspectRatio:    () => {},          // applyProp is a no-op on web
+
+  // Stack-child positioning. `position: absolute` is shared by all four
+  // sides, so it may only go when the last one does — dropping it while
+  // a sibling offset is still set would take the element out of the
+  // stack entirely and move it somewhere unrelated.
+  top:    (node, s) => { s.top = ''; _dropPositionIfUnanchored(s); },
+  right:  (node, s) => { s.right = ''; _dropPositionIfUnanchored(s); },
+  bottom: (node, s) => { s.bottom = ''; _dropPositionIfUnanchored(s); },
+  left:   (node, s) => { s.left = ''; _dropPositionIfUnanchored(s); },
+
+  // Visual
+  background:   _rm('background'),
+  color:        _rm('color'),
+  cornerRadius: _rm('borderRadius'),
+  // `border-style: solid` is what makes borderColor visible, so it
+  // survives until the colour goes too.
+  borderWidth: (node, s) => {
+    s.borderWidth = '';
+    if (!s.borderColor) s.borderStyle = '';
+  },
+  borderColor: (node, s) => {
+    s.borderColor = '';
+    if (!s.borderWidth) s.borderStyle = '';
+  },
+  shadow: _rm('boxShadow'),
+
+  // Text
+  fontSize:   _rm('fontSize'),
+  fontWeight: _rm('fontWeight'),
+  fontFamily: _rm('fontFamily'),
+  textAlign:  _rm('textAlign'),
+  lineHeight: _rm('lineHeight'),
+  maxLines:   _rm('display', 'webkitLineClamp', 'webkitBoxOrient', 'overflow'),
+  // Covers value 1 (text-overflow) and value 2 (overflow) both.
+  textOverflow: _rm('textOverflow', 'overflow'),
+
+  // Image
+  src:          (node) => { if (node._skalTag === 'image') node.removeAttribute('src'); },
+  contentScale: _rm('objectFit'),
+
+  // Controls
+  checked:  (node) => { node.checked = false; },
+  min:      (node) => { node.removeAttribute('min'); },
+  max:      (node) => { node.removeAttribute('max'); },
+  progress: (node) => { node.removeAttribute('value'); },
+
+  // Input
+  placeholder: (node) => { if (node._skalTag !== 'button') node.placeholder = ''; },
+  value:       (node) => { if (node._skalTag !== 'button') node.value = ''; },
+  secureEntry: (node) => { if (node._skalTag === 'textInput') node.type = 'text'; },
+  keyboardType: (node) => { node.inputMode = 'text'; },
+
+  // Behaviour
+  enabled:   (node) => { node.disabled = false; },
+  focusable: (node) => { node.removeAttribute('tabindex'); },
+  visible:   _rm('display'),
+
+  // Hot lane
+  opacity:      _rm('opacity'),
+  translationX: _rmHot('tx', 0),
+  translationY: _rmHot('ty', 0),
+  scaleX:       _rmHot('sx', 1),
+  scaleY:       _rmHot('sy', 1),
+  rotation:     _rmHot('rz', 0),
+};
+
+function _dropPositionIfUnanchored(s) {
+  if (!s.top && !s.right && !s.bottom && !s.left) s.position = '';
+}
+
+function clearAppliedProp(node, name) {
+  const fn = CLEAR_PROP[name];
+  if (fn !== undefined) fn(node, node.style);
+}
 
 function applyProp(node, name, value) {
   const s = node.style;
@@ -1386,7 +1551,7 @@ const _renderer = createRenderer({
       return;
     }
 
-    if (value == null) return;
+    if (value == null) { clearAppliedProp(node, name); return; }
     applyProp(node, name, value);
   },
 

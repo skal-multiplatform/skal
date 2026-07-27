@@ -85,6 +85,7 @@ export const OP_SET_CUSTOM_PROP_U32 = 0x18;
 export const OP_SET_CUSTOM_PROP_F32 = 0x19;
 export const OP_SET_CUSTOM_PROP_STR = 0x1A;
 export const OP_CLEAR_CUSTOM_PROP  = 0x2C;
+export const OP_CLEAR_PROP         = 0x2D;
 export const OP_BIND_CUSTOM_HANDLER = 0x1B;
 // JS → Dart RPC. JSX side calls `await ref.takePicture()`. The macro
 // resolves the method name to a hash (same FNV-1a as custom-prop
@@ -1058,16 +1059,23 @@ let diffCacheU32 = new Int32Array(activeNodeCapacity * SLOTS_PER_NODE);
 let diffCacheF32 = new Float32Array(activeNodeCapacity * SLOTS_PER_NODE);
 let diffCacheStr = new Array(activeNodeCapacity * SLOTS_PER_NODE);
 
-// Parallel "has value been set" flag, one byte per slot. Needed
-// because EVERY 32-bit pattern is a legitimate u32 prop value (colors,
-// dp counts, enums) — there is no sentinel int we can safely reserve.
-// Using `Uint8Array` keeps the check to a single load per setProp call,
-// and `0/1` lets us reset whole rows with `.fill(0)`.
+// Parallel "has a value been sent for this slot" bitmask, one byte per
+// slot, one bit per lane. Needed because EVERY 32-bit pattern is a
+// legitimate u32 prop value (colors, dp counts, enums) — there is no
+// sentinel int we can safely reserve. `Uint8Array` keeps the check to a
+// single load per setProp call, and `.fill(0)` resets whole rows.
 //
-// (For F32 we rely on NaN's `NaN !== NaN` semantics — that one sentinel
-// works because no animation value is ever NaN. Strings use `undefined`
-// as their unset sentinel — distinct from any user-supplied string.)
-let hasValueU32 = new Uint8Array(activeNodeCapacity * SLOTS_PER_NODE);
+// The F32 and Str lanes get bits too, rather than reusing their
+// in-band sentinels. Those sentinels are fine for DEDUP (`NaN !== NaN`
+// makes a NaN write never dedup, which is correct) but not for
+// "was anything ever sent" — `clearProp` asked that question, read a
+// legitimately-stored NaN height as "never set", and skipped the wire
+// op, so the host kept the NaN forever. A sentinel that a setter can
+// legitimately store cannot answer both questions.
+const HAS_U32 = 1;
+const HAS_F32 = 2;
+const HAS_STR = 4;
+let slotHasValue = new Uint8Array(activeNodeCapacity * SLOTS_PER_NODE);
 
 // Hot-prop cache — separate space from cold-prop cache. Each active
 // node has 6 slots (one per hot prop: opacity, transX, transY, scaleX,
@@ -1099,8 +1107,8 @@ function growCache() {
   diffCacheU32 = newU32;
 
   const newHas = new Uint8Array(newRows);
-  newHas.set(hasValueU32);
-  hasValueU32 = newHas;
+  newHas.set(slotHasValue);
+  slotHasValue = newHas;
 
   // F32 unset sentinel is NaN. Copy old data first, then NaN-fill only
   // the new tail — fill(NaN, oldRows) is roughly half the work of
@@ -1132,11 +1140,10 @@ function rowFor(nodeId) {
     if (row >= activeNodeCapacity) growCache();
     nodeIdToRow.set(nodeId, row);
     const base = row * SLOTS_PER_NODE;
-    hasValueU32.fill(0, base, base + SLOTS_PER_NODE);
-    // U32 cache cells are filled lazily on first write — we only care
-    // about hasValueU32 for correctness, so the U32 cell can hold any
-    // garbage until first set. (We still zero the F32/Str sentinels
-    // because their first-write contract relies on the sentinel value.)
+    slotHasValue.fill(0, base, base + SLOTS_PER_NODE);
+    // Cache cells are filled lazily on first write — `slotHasValue` is
+    // what carries correctness, so a cell can hold garbage until then.
+    // The F32/Str sentinels are still reset because DEDUP reads them.
     diffCacheF32.fill(NaN, base, base + SLOTS_PER_NODE);
     for (let i = base; i < base + SLOTS_PER_NODE; i++) diffCacheStr[i] = undefined;
   }
@@ -1246,11 +1253,41 @@ export function setPropU32(nodeId, key, value) {
   const slot = row * SLOTS_PER_NODE + slotIdx;
   // Two-step check: only consult the value cell if we've previously
   // stored something there. Every 32-bit pattern is a legitimate u32
-  // prop value, so we can't reserve a sentinel — see hasValueU32.
-  if (hasValueU32[slot] !== 0 && diffCacheU32[slot] === v) { propSkipsCounter++; return; }
+  // prop value, so we can't reserve a sentinel — see slotHasValue.
+  if ((slotHasValue[slot] & HAS_U32) !== 0 && diffCacheU32[slot] === v) {
+    propSkipsCounter++; return;
+  }
   diffCacheU32[slot] = v;
-  hasValueU32[slot] = 1;
+  slotHasValue[slot] |= HAS_U32;
   writeOp(OP_SET_PROP_U32, nodeId, key, v);
+  propWritesCounter++;
+}
+
+// Remove a built-in cold prop, so the host falls back to the widget's
+// default. The enum-keyed counterpart of clearCustomProp.
+//
+// The renderer calls this when a prop goes null/undefined. That used to
+// be a no-op documented as "leave as previous", which made a removal
+// unrepresentable: `color={active ? Colors.red : null}` stayed red once
+// it had been red.
+//
+// Clearing the diff-cache slot is not optional. The caches mirror what
+// the host holds; leaving the old value cached would make the NEXT set
+// of that same value dedupe against a value the host no longer has.
+export function clearProp(nodeId, key) {
+  const slotIdx = KEY_TO_SLOT[key];
+  if (slotIdx >= 0) {
+    const row = rowFor(nodeId);
+    const slot = row * SLOTS_PER_NODE + slotIdx;
+    // Nothing was ever sent for this key — skip the op rather than
+    // emit one per null-valued prop on every mount. One load, no
+    // sentinel guessing.
+    if (slotHasValue[slot] === 0) { propSkipsCounter++; return; }
+    slotHasValue[slot] = 0;
+    diffCacheF32[slot] = NaN;
+    diffCacheStr[slot] = undefined;
+  }
+  writeOp(OP_CLEAR_PROP, nodeId, key, 0);
   propWritesCounter++;
 }
 
@@ -1267,6 +1304,7 @@ export function setPropF32(nodeId, key, value) {
   const slot = row * SLOTS_PER_NODE + slotIdx;
   if (diffCacheF32[slot] === value) { propSkipsCounter++; return; }
   diffCacheF32[slot] = value;
+  slotHasValue[slot] |= HAS_F32;
   // Encode the f32 bit pattern into u32 — the host's drain calls
   // Float.fromBits to recover it. The single-element Float32Array trick
   // is the fastest way to get IEEE 754 bits in JS without a DataView.
@@ -1289,6 +1327,7 @@ export function setPropStr(nodeId, key, value) {
   const slot = row * SLOTS_PER_NODE + slotIdx;
   if (diffCacheStr[slot] === value) { propSkipsCounter++; return; }
   diffCacheStr[slot] = value;
+  slotHasValue[slot] |= HAS_STR;
   writeString(value == null ? '' : String(value));
   // Wire format: b = (key << 24) | (offset & 0xFFFFFF); c = length.
   // 24-bit offset = 16 MiB addressable, far above the 768 KiB string
@@ -1529,21 +1568,71 @@ export function setCustomPropF32(nodeId, name, value) {
   propWritesCounter++;
 }
 
-// String values cap at 255 chars (8-bit length, packed alongside the
-// 24-bit heap offset in arg c). Beyond that, fall back to enum-keyed
-// setPropStr or split the value. Per wire.dart's opSetCustomPropStr
-// comment.
+// String values cap at 255 UTF-8 BYTES — not characters (an 8-bit
+// length, packed alongside the 24-bit heap offset in arg c). Beyond
+// that, fall back to enum-keyed setPropStr or split the value. Per
+// wire.dart's opSetCustomPropStr comment.
+//
+// Over-length used to be masked (`_strLength & 0xFF`) and shipped. A
+// 300-byte value became a length of 44, so the host read 44 bytes of a
+// 300-byte string — a silently wrong value, and a torn one if the cut
+// landed inside a multi-byte sequence. It now truncates on a codepoint
+// boundary and says so, once per prop name.
+const CUSTOM_PROP_STR_MAX = 255;
+const _warnedLongCustomProp = new Set();
+
 export function setCustomPropStr(nodeId, name, value) {
   const h = _internName(name);
   const s = value == null ? '' : String(value);
   const row = _customRow(_customCacheStr, nodeId);
   if (row.get(h) === s) { propSkipsCounter++; return; }
+  // Cache the value as GIVEN, not as sent. Truncation is deterministic,
+  // so a repeat of the same over-length string would produce the same
+  // bytes the host already holds — deduping it is correct and saves the
+  // re-write.
   row.set(h, s);
+
   writeString(s);
-  const offset = _strOffset & 0xFFFFFF;
-  const len = _strLength & 0xFF;
-  const packed = (offset << 8) | len;
-  writeOp(OP_SET_CUSTOM_PROP_STR, nodeId, h, packed);
+  // Snapshot the heap cursor IMMEDIATELY. `_strOffset` / `_strLength`
+  // are module-level scratch that EVERY writeString overwrites — and
+  // one is hiding inside `console.warn` below, which this module
+  // replaces with a proxy that ships each line through OP_LOG. Reading
+  // them after the warn pointed the prop op at the warning text.
+  const offset = _strOffset;
+  let len = _strLength;
+
+  if (len > CUSTOM_PROP_STR_MAX) {
+    // Back off any trailing continuation bytes so the host decodes a
+    // shorter string rather than a malformed one. Do this BEFORE the
+    // warn: it reads the heap bytes, and a log can advance (or, on a
+    // near-full heap, reset) the write cursor. `offset` is relative to
+    // the string heap, so indexing `u8` needs the base added.
+    len = CUSTOM_PROP_STR_MAX;
+    while (len > 0 &&
+           (u8[STRING_HEAP_OFFSET + offset + len] & 0xC0) === 0x80) {
+      len--;
+    }
+    // Emit the op BEFORE warning. `console` here is this module's own
+    // proxy: it routes each line through writeString + OP_LOG, and
+    // writeString on a near-full heap calls flushAndWaitForDrain, which
+    // publishes the batch and rewinds BOTH the string-heap and op-ring
+    // cursors. Emitting afterwards put this op in a fresh batch holding
+    // a pre-rewind `offset` — pointing at bytes the next writeString
+    // was free to overwrite. Snapshotting offset/len was necessary but
+    // not sufficient; the write itself has to be on this side too.
+    writeOp(OP_SET_CUSTOM_PROP_STR, nodeId, h, ((offset & 0xFFFFFF) << 8) | len);
+    propWritesCounter++;
+    if (!_warnedLongCustomProp.has(name)) {
+      _warnedLongCustomProp.add(name);
+      console.warn(
+        `Skal: custom prop "${name}" is ${_strLength} UTF-8 bytes; the wire ` +
+        `format carries at most ${CUSTOM_PROP_STR_MAX}. Truncated to ${len}. ` +
+        `Use an enum-keyed prop, or split the value across several props.`);
+    }
+    return;
+  }
+
+  writeOp(OP_SET_CUSTOM_PROP_STR, nodeId, h, ((offset & 0xFFFFFF) << 8) | len);
   propWritesCounter++;
 }
 

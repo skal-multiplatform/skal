@@ -84,12 +84,51 @@ class SkalBridge {
   /// event, append to this queue and flush on the next Ticker tick
   /// (after JS has had a chance to drain). Bounded only by Dart heap.
   ///
-  /// Records are stored as 5 consecutive ints — [eventKind, argType,
-  /// handlerId, argValueI32, argHeapOffset, …repeat…] — mirroring the
-  /// in-ring event layout. A single `Queue<int>` avoids per-record
-  /// object allocation under stress. The argHeapOffset slot is 0 for
-  /// non-string events (kept uniform so the flush loop has one shape).
+  /// Records are stored as 6 consecutive ints — [eventKind, argType,
+  /// handlerId, argValueI32, argHeapOffset, hasPayload, …repeat…] —
+  /// mirroring the in-ring event layout plus one flag. A single
+  /// `Queue<int>` avoids per-record object allocation under stress. The
+  /// argHeapOffset slot is 0 for non-string events (kept uniform so the
+  /// flush loop has one shape).
+  ///
+  /// `hasPayload` is 1 when the record's string had not been placed in
+  /// the reply heap yet — see [_replyOverflow].
   final Queue<int> _eventOverflow = Queue<int>();
+
+  /// Reply strings belonging to spilled events whose payload could not
+  /// be written to the reply heap yet (JS still holds undrained
+  /// references to the bytes we would have to clobber).
+  ///
+  /// Parallel to the `hasPayload == 1` records in [_eventOverflow], in
+  /// the same order — both are FIFO and pushed/popped in lockstep, so
+  /// the head of this queue always belongs to the first payload-bearing
+  /// record in that one.
+  final Queue<String> _replyOverflow = Queue<String>();
+
+  /// Total UTF-16 code units held in [_replyOverflow]. Tracked
+  /// incrementally — summing the queue would make spilling quadratic
+  /// under exactly the burst that fills it.
+  int _replyOverflowChars = 0;
+
+  /// Ceiling on retained payloads, ~8 MiB of UTF-16.
+  ///
+  /// The queue only grows when JS is not draining, and correctness says
+  /// hold rather than clobber — but "hold" without a bound trades a
+  /// corrupted string for an OOM. Past this, the oldest payloads are
+  /// dropped: they are the ones whose consumer has been unreachable
+  /// longest, and a wedged JS worker is already a dead app.
+  static const int _kReplyOverflowMaxChars = 4 * 1024 * 1024;
+
+  /// Whether the drop diagnostic has been emitted — once per run, not
+  /// once per drop.
+  bool _warnedReplyOverflow = false;
+
+  /// UTF-16 code units of payload currently retained by the overflow
+  /// queue. A seam, because the ceiling is otherwise unobservable: a
+  /// test could only watch what got *delivered*, which is the same
+  /// whether the queue is bounded or growing until the process dies.
+  @visibleForTesting
+  int get queuedReplyChars => _replyOverflowChars;
 
   /// One state per JS-created node, keyed by JS node id (dense small
   /// ints). Plain `Map<int, NodeState>` — primitive int keys avoid
@@ -617,6 +656,15 @@ class SkalBridge {
           // to the swept generation — drop them so they don't leak across the
           // reload (the leaving NodeStates are already gone with ns.clear()).
           _pendingMethodArgs.clear();
+          // Queued events belong to the swept generation too: their
+          // handler ids and callIds index a JS registry that no longer
+          // exists, so flushing them after the reload dispatches into
+          // nothing. Left alone they also pinned every deferred payload
+          // string for the life of the process — a hot-reload loop
+          // during a stream grew the Dart heap monotonically.
+          _eventOverflow.clear();
+          _replyOverflow.clear();
+          _replyOverflowChars = 0;
           if (resetRoot != null) {
             resetRoot.clearChildren();
             resetRoot.leavingChildren?.clear();
@@ -631,10 +679,11 @@ class SkalBridge {
           _treeHasRichText = false;
           // The reply heap is logically empty now (subscribers gone, RPCs
           // rejected); rewind its cursors so they don't accumulate across
-          // reloads (which would inject periodic ~50ms wraparound stalls) — but
-          // ONLY when JS has consumed everything (its read cursor caught up to
-          // the write cursor), so we never clobber a reply string that an
-          // undrained event still points at. Otherwise leave it for this round.
+          // reloads (which would otherwise force a wraparound-deferral every
+          // few reloads) — but ONLY when JS has consumed everything (its read
+          // cursor caught up to the write cursor), so we never clobber a reply
+          // string that an undrained event still points at. Otherwise leave it
+          // for this round.
           if (_data.getInt32(hReplyHeapReadPos, Endian.little) >=
               _replyHeapWritePos) {
             _replyHeapWritePos = 0;
@@ -694,6 +743,41 @@ class SkalBridge {
             clearNode.clearCustomProp(clearName);
             clearNode.coldDirty = true;
             touched.add(a);
+          }
+          break;
+
+        case opClearProp:
+          // a = nodeId, b = propKey. Remove from every typed map, for
+          // the same reason opClearCustomProp does: the three maps are
+          // insert-only and independently lived, so leaving a stale
+          // numeric slot behind would shadow the default a reader gets
+          // from `getPropU32(key, fallback)`.
+          //
+          // Removing a key has the SAME downstream consequences as
+          // writing one, so this mirrors opSetPropU32's two follow-ups.
+          // Not a comment you have to trust: `bridge_drain_test.dart`
+          // runs the set and clear paths through the same assertions, so
+          // a follow-up added to one and not the other fails there.
+          final clearPropNode = ns[a];
+          if (clearPropNode != null) {
+            clearPropNode.props.remove(b);
+            clearPropNode.propsF.remove(b);
+            clearPropNode.propsStr.remove(b);
+            clearPropNode.coldDirty = true;
+            touched.add(a);
+            // Clearing itemCount drops the count to its default — every
+            // cached row extent is now out of range.
+            if (b == propItemCount) clearPropNode.rowExtents?.clear();
+            // Stack-positioning props are consumed by the PARENT's
+            // builder; without this the `<stack>` never rebuilds and the
+            // child stays pinned at the offset that was just removed.
+            if (b >= propTop && b <= propLeft) {
+              final clearParent = ns[clearPropNode.parent];
+              if (clearParent != null) {
+                clearParent.coldDirty = true;
+                touched.add(clearPropNode.parent);
+              }
+            }
           }
           break;
 
@@ -1411,33 +1495,49 @@ class SkalBridge {
   /// Write an event record into the event ring and wake the JS worker.
   /// Called from a button's onPressed.
   ///
-  /// If the ring is full (next write would wrap onto an undrained
-  /// event) the event is queued in `_eventOverflow` and will be flushed
-  /// on the next pumpOps tick — by then JS has had time to drain. The
-  /// UI thread never blocks on the JS side.
+  /// Back-pressure has two sources and one answer. If the ring is full
+  /// (next write would wrap onto an undrained event), or [payload] does
+  /// not fit in the reply heap without clobbering bytes JS has not read,
+  /// the event is queued in `_eventOverflow` and flushed on the next
+  /// pumpOps tick — by then JS has had time to drain. **The UI thread
+  /// never blocks on the JS side.**
+  ///
+  /// Pass [payload] rather than pre-writing the string and passing an
+  /// offset: placement has to happen at the moment the event is actually
+  /// admitted to the ring, and only this method knows when that is.
   void dispatchEvent(
     int handlerId, {
     int eventKind = evClick,
     int argType = eventArgVoid,
     int argValueI32 = 0,
     int argHeapOffset = 0,
+    String? payload,
   }) {
     if (handlerId == 0) return;
 
-    // If we've spilled to overflow, keep spilling so events stay in
-    // dispatch order. A drain will eventually clear both. Overflow
-    // queue layout is 5 ints per event: kind, argType, handlerId,
-    // argValue, argHeapOffset. The heap-offset slot is unused for
-    // non-string events (just stored as 0) — kept uniform so the
-    // flush loop has one shape to handle.
+    // Ordering first: once anything has spilled, everything spills, or a
+    // later event overtakes an earlier one. Both back-pressure sources
+    // share this one queue precisely so that ordering is a single rule
+    // rather than two interacting ones.
     if (_eventOverflow.isNotEmpty) {
-      _eventOverflow.add(eventKind);
-      _eventOverflow.add(argType);
-      _eventOverflow.add(handlerId);
-      _eventOverflow.add(argValueI32);
-      _eventOverflow.add(argHeapOffset);
+      _spill(eventKind, argType, handlerId, argValueI32, argHeapOffset, payload);
       skal.wakeJs();
       return;
+    }
+
+    if (payload != null) {
+      final slot = _tryWriteReplyString(payload);
+      if (slot == null) {
+        // Reply heap still holds bytes JS has not read. Queue the event
+        // with its string in Dart and place it once JS catches up — a
+        // frame of latency instead of a stalled UI thread.
+        _spill(eventKind, argType, handlerId, argValueI32, argHeapOffset,
+            payload);
+        skal.wakeJs();
+        return;
+      }
+      argHeapOffset = slot.$1;
+      argValueI32 = slot.$2;
     }
 
     final pos = _data.getInt32(hEventWritePos, Endian.little);
@@ -1447,12 +1547,9 @@ class SkalBridge {
       // Ring full — JS hasn't drained recent events yet (likely a
       // wedged worker or 18+ minutes of unprocessed input). Spill to
       // the heap-side queue so the producer (this thread) doesn't lose
-      // the event or block.
-      _eventOverflow.add(eventKind);
-      _eventOverflow.add(argType);
-      _eventOverflow.add(handlerId);
-      _eventOverflow.add(argValueI32);
-      _eventOverflow.add(argHeapOffset);
+      // the event or block. The payload (if any) is already placed, so
+      // it rides as a plain offset from here.
+      _spill(eventKind, argType, handlerId, argValueI32, argHeapOffset, null);
       skal.wakeJs();
       return;
     }
@@ -1469,58 +1566,132 @@ class SkalBridge {
     skal.wakeJs();
   }
 
-  /// Reply-heap cursor — bumped on each [_writeReplyString] call.
-  /// Resets to 0 when an allocation would exceed capacity AND JS's
-  /// read pointer (`hReplyHeapReadPos`) has caught up — see the
-  /// wraparound branch below. Until then, we spin-wait (the same
-  /// pattern the op ring + JS string heap use on overflow).
+  /// Append one record to [_eventOverflow] (and its string, if the
+  /// payload has not been placed in the reply heap yet, to
+  /// [_replyOverflow]).
+  void _spill(int eventKind, int argType, int handlerId, int argValueI32,
+      int argHeapOffset, String? payload) {
+    if (payload != null &&
+        _replyOverflowChars + payload.length > _kReplyOverflowMaxChars) {
+      // Over the ceiling. Refuse the INCOMING record rather than evicting
+      // the head: the two queues advance in lockstep, and dropping from
+      // the front would mean finding and removing the matching event
+      // record — a scan, on the exact path that is already under
+      // pressure. Refusing here is O(1) and cannot desync them. The
+      // consumer sees a gap either way; this way it is a gap and not a
+      // reorder.
+      if (!_warnedReplyOverflow) {
+        _warnedReplyOverflow = true;
+        assert(() {
+          debugPrint('Skal: the JS side has not drained the reply heap and '
+              'over ${_kReplyOverflowMaxChars ~/ (1024 * 1024)} MiB of '
+              'payloads are queued — dropping further ones. The JS worker '
+              'is probably wedged or the app was backgrounded mid-stream.');
+          return true;
+        }());
+      }
+      return;
+    }
+    _eventOverflow.add(eventKind);
+    _eventOverflow.add(argType);
+    _eventOverflow.add(handlerId);
+    _eventOverflow.add(argValueI32);
+    _eventOverflow.add(argHeapOffset);
+    _eventOverflow.add(payload == null ? 0 : 1);
+    if (payload != null) {
+      _replyOverflow.add(payload);
+      _replyOverflowChars += payload.length;
+    }
+  }
+
+  /// Reply-heap cursor — bumped on each [_tryWriteReplyString] call.
+  /// Rewinds to 0 when an allocation would exceed capacity AND JS's
+  /// read pointer (`hReplyHeapReadPos`) has caught up.
   int _replyHeapWritePos = 0;
 
-  /// Write [s] into the reply heap (Dart-write, JS-read) as UTF-8.
-  /// Returns the byte offset (into the reply heap) + the byte length.
-  /// Caller packs these into the event record's argValueI32 (length)
-  /// and argHeapOffset (offset) slots.
+  /// Try to write [s] into the reply heap (Dart-write, JS-read) as
+  /// UTF-8. Returns the byte offset + byte length, or **null** when the
+  /// write would clobber bytes JS has not read yet.
   ///
-  /// Wraparound: when the write cursor reaches capacity we reset to 0,
-  /// but only AFTER JS has read past all in-flight references. JS
-  /// bumps `hReplyHeapReadPos` in the event drain whenever it consumes
-  /// a Str/Json event; this method spin-waits (rare path) until JS has
-  /// caught up before clobbering older bytes.
-  (int offset, int length) _writeReplyString(String s) {
+  /// Null means "not now", never "not ever": [dispatchEvent] queues the
+  /// event and retries on the next pump, by which time JS has drained.
+  ///
+  /// This used to spin instead — up to 50 ms of `DateTime.now()` on the
+  /// UI thread, then reset and clobber anyway if the deadline passed, so
+  /// it bought a frozen app and *not* correctness. On Flutter Web it
+  /// could not even work in principle: `_data` there is a Dart-side
+  /// mirror refreshed only by `syncFromJs` at pump boundaries, and JS is
+  /// on the same thread, so the loop re-read one stale word until the
+  /// deadline expired. The comment claimed "a ms or two".
+  ///
+  /// The wrap rule is deliberately the conservative one — rewind only
+  /// when JS has consumed *everything* (`readPos >= writePos`), not when
+  /// the low region alone happens to be free. Exact circular accounting
+  /// would recover more space, but `readPos` is written by another
+  /// thread on native with no barrier, and `readPos == writePos` is the
+  /// single state a stale read cannot get wrong (it only ever advances,
+  /// so a stale value is behind the truth, never ahead of it).
+  (int offset, int length)? _tryWriteReplyString(String s) {
     final bytes = utf8.encode(s);
     final len = bytes.length;
     if (len > kReplyHeapSize) {
-      // String alone exceeds the heap — rare; truncate. Writes at
-      // offset 0 (effectively a reset), so signal the web-side
-      // slice-sync to push the full [0, kReplyHeapSize) — without
-      // this, the monotonic-growth branch would miss [0, _syncedReplyWp).
-      final truncated = bytes.sublist(0, kReplyHeapSize);
+      // KNOWN LIMIT, not a wraparound case: one value larger than the
+      // whole heap cannot be delivered WHOLE by this protocol, because
+      // an event record carries a single (offset, length) into a fixed
+      // region. Carrying it properly needs chunked payload ownership (a
+      // multi-part arg type on the wire, all three languages).
+      //
+      // It still has to obey the same invariant as every other write,
+      // though: this lands at offset 0 and spans the entire heap, so it
+      // clobbers EVERY live reference. Report "not now" until JS has
+      // drained, exactly as the wraparound branch below does. (This
+      // branch used to write unconditionally — the one place the
+      // rewrite left the old clobber-anyway behaviour in place.)
+      final readPos = _data.getInt32(hReplyHeapReadPos, Endian.little);
+      if (readPos < _replyHeapWritePos) return null;
+
+      // Truncate LOUDLY, and on a codepoint boundary — cutting
+      // mid-sequence would hand JS a string that fails to decode rather
+      // than one that is merely short.
+      var end = kReplyHeapSize;
+      while (end > 0 && (bytes[end] & 0xC0) == 0x80) {
+        end--; // back off continuation bytes to the lead byte
+      }
+      assert(() {
+        debugPrint('Skal: reply payload is $len bytes, over the '
+            '$kReplyHeapSize-byte reply heap — TRUNCATED to $end. The '
+            'receiver will see a short value. Split the payload, or '
+            'stream it in chunks.');
+        return true;
+      }());
       _data.buffer
           .asUint8List(kReplyHeapOff, kReplyHeapSize)
-          .setRange(0, kReplyHeapSize, truncated);
-      _replyHeapWritePos = kReplyHeapSize;
+          .setRange(0, end, bytes);
+      _replyHeapWritePos = end;
       _data.setInt32(hReplyHeapWritePos, _replyHeapWritePos, Endian.little);
+      // Rewind the read cursor with the write cursor. Without this a
+      // stale readPos ≥ `end` survives, and the NEXT wraparound sees
+      // `readPos >= _replyHeapWritePos`, concludes JS has caught up, and
+      // rewinds over this payload before JS has read a byte of it.
+      _data.setInt32(hReplyHeapReadPos, 0, Endian.little);
+      // Wrote at offset 0 (effectively a reset), so signal the web-side
+      // slice-sync to push the full range — without this, the
+      // monotonic-growth branch would miss [0, _syncedReplyWp).
       skal.markReplyHeapReset();
-      return (0, kReplyHeapSize);
+      return (0, end);
     }
     if (_replyHeapWritePos + len > kReplyHeapSize) {
       // Wraparound. JS may still be sitting on undrained events that
-      // reference strings at offsets ∈ [readPos, writePos). Spin-wait
-      // until JS catches up (readPos == writePos) before clobbering.
-      // In practice this never fires in the demo workload — replies
-      // get drained the same frame they're produced. Under heavy
-      // stream emissions or burst RPC, the spin protects correctness
-      // at the cost of a ms or two.
-      final deadline = DateTime.now().millisecondsSinceEpoch + 50;
-      while (DateTime.now().millisecondsSinceEpoch < deadline) {
-        final readPos = _data.getInt32(hReplyHeapReadPos, Endian.little);
-        if (readPos >= _replyHeapWritePos) break;
-      }
+      // reference strings at offsets ∈ [readPos, writePos); rewinding
+      // now would clobber them. Report "no room" and let the caller
+      // queue — never block, never clobber.
+      final readPos = _data.getInt32(hReplyHeapReadPos, Endian.little);
+      if (readPos < _replyHeapWritePos) return null;
       _replyHeapWritePos = 0;
       // Reset our own view of the read cursor. JS never *reads*
       // hReplyHeapReadPos (it only writes it as it drains, via
       // _advanceReplyReadCursor) — so this is purely for Dart's next
-      // wraparound spin above, which compares the (JS-written, sync-
+      // wraparound check above, which compares the (JS-written, sync-
       // pulled) readPos against _replyHeapWritePos. On web syncToJs no
       // longer pushes this word (it's JS-owned), which is fine: the next
       // syncFromJs pulls JS's authoritative value back in.
@@ -1574,12 +1745,8 @@ class SkalBridge {
   /// there) and packs (length, offset) into the event record.
   void dispatchEventStr(int handlerId, String value,
       {int eventKind = evChange}) {
-    final (offset, length) = _writeReplyString(value);
     dispatchEvent(handlerId,
-        eventKind: eventKind,
-        argType: eventArgStr,
-        argValueI32: length,
-        argHeapOffset: offset);
+        eventKind: eventKind, argType: eventArgStr, payload: value);
   }
 
   /// Dispatch a two-float gesture callback — `fn(x, y)` on the JS side.
@@ -1618,12 +1785,8 @@ class SkalBridge {
       dispatchEvent(handlerId, eventKind: eventKind);
       return;
     }
-    final (offset, length) = _writeReplyString(encoded);
     dispatchEvent(handlerId,
-        eventKind: eventKind,
-        argType: eventArgTuple,
-        argValueI32: length,
-        argHeapOffset: offset);
+        eventKind: eventKind, argType: eventArgTuple, payload: encoded);
   }
 
   /// Bit-cast a double down to an f32 and return the bit pattern as
@@ -1651,7 +1814,7 @@ class SkalBridge {
   void _writeMethodReply(int callId, Object? result) {
     int argType;
     int argValueI32 = 0;
-    int argHeapOffset = 0;
+    String? payload;
     if (result == null) {
       argType = eventArgVoid;
     } else if (result is bool) {
@@ -1664,21 +1827,16 @@ class SkalBridge {
       argType = eventArgF32;
       argValueI32 = _f32ToBits(result);
     } else if (result is String) {
-      final (offset, length) = _writeReplyString(result);
       argType = eventArgStr;
-      argValueI32 = length;
-      argHeapOffset = offset;
+      payload = result;
     } else {
       // Try JSON. Anything Dart's jsonEncode can handle (Map, List,
       // any class with toJson(), nested combinations) works — JS
       // auto-parses on receipt. For non-jsonable objects (closures,
       // streams), jsonEncode throws; we catch and fall back to void.
       try {
-        final encoded = jsonEncode(result);
-        final (offset, length) = _writeReplyString(encoded);
+        payload = jsonEncode(result);
         argType = eventArgJson;
-        argValueI32 = length;
-        argHeapOffset = offset;
       } catch (_) {
         argType = eventArgVoid;
       }
@@ -1687,18 +1845,14 @@ class SkalBridge {
         eventKind: evMethodReply,
         argType: argType,
         argValueI32: argValueI32,
-        argHeapOffset: argHeapOffset);
+        payload: payload);
   }
 
   /// Write a method-invocation error reply with a descriptive message.
   /// JS rejects the matching Promise with `new Error(message)`.
   void _writeMethodError(int callId, String message) {
-    final (offset, length) = _writeReplyString(message);
     dispatchEvent(callId,
-        eventKind: evMethodError,
-        argType: eventArgStr,
-        argValueI32: length,
-        argHeapOffset: offset);
+        eventKind: evMethodError, argType: eventArgStr, payload: message);
   }
 
   /// Write one stream element. Same payload-encoding shape as
@@ -1708,7 +1862,7 @@ class SkalBridge {
   void _writeStreamValue(int callId, Object? value) {
     int argType;
     int argValueI32 = 0;
-    int argHeapOffset = 0;
+    String? payload;
     if (value == null) {
       argType = eventArgVoid;
     } else if (value is bool) {
@@ -1721,17 +1875,12 @@ class SkalBridge {
       argType = eventArgF32;
       argValueI32 = _f32ToBits(value);
     } else if (value is String) {
-      final (offset, length) = _writeReplyString(value);
       argType = eventArgStr;
-      argValueI32 = length;
-      argHeapOffset = offset;
+      payload = value;
     } else {
       try {
-        final encoded = jsonEncode(value);
-        final (offset, length) = _writeReplyString(encoded);
+        payload = jsonEncode(value);
         argType = eventArgJson;
-        argValueI32 = length;
-        argHeapOffset = offset;
       } catch (_) {
         argType = eventArgVoid;
       }
@@ -1740,7 +1889,7 @@ class SkalBridge {
         eventKind: evStreamValue,
         argType: argType,
         argValueI32: argValueI32,
-        argHeapOffset: argHeapOffset);
+        payload: payload);
   }
 
   /// Write the stream's terminal "done" event. No payload; JS deletes
@@ -1753,21 +1902,17 @@ class SkalBridge {
   /// message. JS routes this to the optional onError callback
   /// (defaults to console.warn) and removes the subscription.
   void _writeStreamError(int callId, String message) {
-    final (offset, length) = _writeReplyString(message);
     dispatchEvent(callId,
-        eventKind: evStreamError,
-        argType: eventArgStr,
-        argValueI32: length,
-        argHeapOffset: offset);
+        eventKind: evStreamError, argType: eventArgStr, payload: message);
   }
 
   /// Drain queued overflow events into the bridge ring. Called from
   /// pumpOps before the op-ring drain; the read side (JS) is woken on
   /// each successful write, so events propagate immediately.
   ///
-  /// Overflow queue layout matches the event-record layout: each event
-  /// is 5 consecutive ints — kind, argType, handlerId, argValueI32,
-  /// argHeapOffset.
+  /// Overflow queue layout matches the event-record layout plus a flag:
+  /// each event is 6 consecutive ints — kind, argType, handlerId,
+  /// argValueI32, argHeapOffset, hasPayload.
   void _flushEventOverflow() {
     while (_eventOverflow.isNotEmpty) {
       final pos = _data.getInt32(hEventWritePos, Endian.little);
@@ -1775,11 +1920,25 @@ class SkalBridge {
       final readPos = _data.getInt32(hEventReadPos, Endian.little);
       if (nextPos == readPos) break; // ring still full; try again next tick
 
+      // Place a still-unplaced payload BEFORE consuming the record —
+      // if the reply heap has no room yet, the record has to stay
+      // queued, so nothing may be removed. Peek, then commit.
+      var argValueI32 = _eventOverflow.elementAt(3);
+      var argHeapOffset = _eventOverflow.elementAt(4);
+      if (_eventOverflow.elementAt(5) == 1) {
+        final slot = _tryWriteReplyString(_replyOverflow.first);
+        if (slot == null) break; // JS still hasn't drained; next tick
+        _replyOverflowChars -= _replyOverflow.removeFirst().length;
+        argHeapOffset = slot.$1;
+        argValueI32 = slot.$2;
+      }
+
       final eventKind = _eventOverflow.removeFirst();
       final argType = _eventOverflow.removeFirst();
       final handlerId = _eventOverflow.removeFirst();
-      final argValueI32 = _eventOverflow.removeFirst();
-      final argHeapOffset = _eventOverflow.removeFirst();
+      _eventOverflow.removeFirst(); // argValueI32 — resolved above
+      _eventOverflow.removeFirst(); // argHeapOffset — resolved above
+      _eventOverflow.removeFirst(); // hasPayload
       final base = kEventRingOffset + pos;
       _data.setUint8(base + 0, eventKind);
       _data.setUint8(base + 1, argType);

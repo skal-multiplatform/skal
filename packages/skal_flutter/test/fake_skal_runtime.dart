@@ -26,6 +26,31 @@ import 'dart:typed_data';
 import 'package:skal_flutter/skal/runtime.dart';
 import 'package:skal_flutter/skal/wire.dart';
 
+/// One event record as the JS side would decode it.
+class FakeEvent {
+  final int kind;
+  final int argType;
+  final int id;
+  final int argValueI32;
+  final int argHeapOffset;
+
+  /// Decoded reply-heap string, for the arg types that carry one.
+  final String? payload;
+
+  FakeEvent({
+    required this.kind,
+    required this.argType,
+    required this.id,
+    required this.argValueI32,
+    required this.argHeapOffset,
+    required this.payload,
+  });
+
+  @override
+  String toString() => 'FakeEvent(kind: $kind, id: $id, payload: '
+      '${payload == null ? null : '${payload!.length} bytes'})';
+}
+
 class FakeSkalRuntime implements SkalRuntime {
   @override
   final Uint8List bridge = Uint8List(kBridgeSize);
@@ -117,6 +142,10 @@ class FakeSkalRuntime implements SkalRuntime {
   /// as a no-op drain.
   void ringDoorbell() => _doorbell?.call();
 
+  /// Remove a built-in cold prop — `a = nodeId`, `b = propKey`. What
+  /// the renderer emits when a cold prop goes null/undefined.
+  void clearProp(int id, int key) => writeOp(opClearProp, id, key, 0);
+
   /// A string prop. Wire format: `b = (key << 24) | offset`, `c = byte
   /// length`, with the bytes living in the JS string heap. The host
   /// reads them at the op's own offset and never consults
@@ -181,6 +210,57 @@ class FakeSkalRuntime implements SkalRuntime {
   int get publishedSeq =>
       _d.getUint32(hOpSeq, Endian.little) +
       _d.getUint32(hOpSeq + 4, Endian.little) * 0x100000000;
+
+  // ── the JS event drain ─────────────────────────────────────────────
+
+  /// Model JS having read every reply-heap byte the host has written —
+  /// what actually happens once its event loop catches up. This is the
+  /// only thing that frees space for the host's next wraparound.
+  void consumeReplyHeap() {
+    _d.setInt32(hReplyHeapReadPos,
+        _d.getInt32(hReplyHeapWritePos, Endian.little), Endian.little);
+  }
+
+  /// Drain the event ring exactly as `bridge.js` does, including the
+  /// part that matters for back-pressure: advancing `hReplyHeapReadPos`
+  /// past each payload it consumes. That cursor is the ONLY thing that
+  /// frees reply-heap space, so a test that skips it is testing a
+  /// permanently-full heap.
+  ///
+  /// Pass `advanceReplyCursor: false` to model a JS side that has taken
+  /// the events but is still holding their strings.
+  List<FakeEvent> drainEvents({bool advanceReplyCursor = true}) {
+    final out = <FakeEvent>[];
+    var read = _d.getInt32(hEventReadPos, Endian.little);
+    final write = _d.getInt32(hEventWritePos, Endian.little);
+    while (read != write) {
+      final base = kEventRingOffset + read;
+      final argType = _d.getUint8(base + 1);
+      final argValue = _d.getInt32(base + 8, Endian.little);
+      final argOffset = _d.getInt32(base + 12, Endian.little);
+      String? payload;
+      if (argType == eventArgStr ||
+          argType == eventArgJson ||
+          argType == eventArgTuple) {
+        payload = utf8.decode(bridge.sublist(
+            kReplyHeapOff + argOffset, kReplyHeapOff + argOffset + argValue));
+        if (advanceReplyCursor) {
+          _d.setInt32(hReplyHeapReadPos, argOffset + argValue, Endian.little);
+        }
+      }
+      out.add(FakeEvent(
+        kind: _d.getUint8(base),
+        argType: argType,
+        id: _d.getInt32(base + 4, Endian.little),
+        argValueI32: argValue,
+        argHeapOffset: argOffset,
+        payload: payload,
+      ));
+      read = (read + 16) % kEventRingSize;
+    }
+    _d.setInt32(hEventReadPos, read, Endian.little);
+    return out;
+  }
 
   // ── SkalRuntime ────────────────────────────────────────────────────
 

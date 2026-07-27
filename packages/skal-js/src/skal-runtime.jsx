@@ -14,6 +14,7 @@
 
 import { createSignal, createMemo, createEffect, onCleanup, For } from 'solid-js';
 import * as B from './bridge.js';
+import { createChunkScheduler } from './chunk-scheduler.js';
 import { Navigator, Screen } from 'skal';
 
 /**
@@ -405,6 +406,21 @@ function _callWebService(impl, qualified, name, method, isStream, args) {
  *
  * Returns: whatever <For> returns. Use exactly like <For>.
  */
+// Hand the platform back its main thread between chunks.
+//
+// This used to be `queueMicrotask`, which does not do that on either
+// target. Browsers drain the ENTIRE microtask queue before they paint,
+// so chaining steps through it mounted every row in one uninterrupted
+// stretch — the streaming was invisible, and the adaptive chunk sizing
+// below was measuring an interval nothing else could run in. On the
+// native JS worker microtasks likewise run ahead of timers and host
+// callbacks, so a long mount starved them.
+//
+// (Native still *looked* fine, which is why this survived: the Flutter
+// host drains the op ring from its own frame ticker, reading shared
+// memory, so rows appeared progressively even while JS never yielded.
+// The rows arrived; the timers and input handlers behind them did not.)
+//
 export function ChunkedFor(props) {
   const [visible, setVisible] = createSignal(0);
 
@@ -432,27 +448,26 @@ export function ChunkedFor(props) {
     //     wherever we already were, not from `initial`.
     //   - First-time mount: visible is 0, clamp up to `initial`.
     let chunkSize = initial;
-    let cancelled = false;
 
     const startFrom = Math.min(Math.max(visible(), initial), total);
     if (startFrom !== visible()) setVisible(startFrom);
 
     function step() {
-      if (cancelled) return;
+      if (sched.stopped) return;
       const current = visible();
-      if (current >= total) return;
+      if (current >= total) { sched.stop(); return; }
 
       const t0 = performance.now();
       const next = Math.min(current + chunkSize, total);
       try {
         setVisible(next);
       } catch (e) {
-        // Microtasks aren't covered by the caller's try/catch; an
-        // uncaught throw here would reach bun's error printer (which
+        // A scheduled turn is not covered by the caller's try/catch;
+        // an uncaught throw here would reach bun's error printer (which
         // has its own bugs at scale). Swallow + log so streaming
         // degrades gracefully instead of crashing the runtime.
         console.error('Skal: ChunkedFor step failed:', e?.message ?? e);
-        cancelled = true;
+        sched.stop();
         return;
       }
       const elapsed = performance.now() - t0;
@@ -468,11 +483,16 @@ export function ChunkedFor(props) {
 
       props.onProgress?.(next, total);
 
-      if (next < total) queueMicrotask(step);
+      if (next < total) sched.schedule();
+      else sched.stop();
     }
 
-    if (initial < total) queueMicrotask(step);
-    onCleanup(() => { cancelled = true; });
+    // `step` is declared above via hoisting, so the scheduler can close
+    // over it here.
+    const sched = createChunkScheduler(step);
+
+    if (initial < total) sched.start();
+    onCleanup(() => sched.stop());
   });
 
   // Slice memo — only the prefix the streamer has revealed so far

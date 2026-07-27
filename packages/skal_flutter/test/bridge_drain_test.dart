@@ -469,4 +469,114 @@ void main() {
               'after the request it was announcing');
     });
   });
+
+  group('clearing a built-in cold prop', _clearPropTests);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Clearing a built-in cold prop.
+//
+// `opClearProp` exists because setting a cold prop to null used to emit
+// nothing — the renderer treated it as "leave the previous value", so a
+// conditional prop could be turned on and never off. These pin that the
+// host actually forgets the key, and that a reader falls back to its
+// default rather than to a stale slot in one of the other typed maps.
+// ─────────────────────────────────────────────────────────────────────
+
+void _clearPropTests() {
+  late FakeSkalRuntime js;
+  late SkalBridge bridge;
+
+  setUp(() {
+    js = FakeSkalRuntime();
+    bridge = SkalBridge(js);
+    js.createNode(2, wtBox);
+    js.appendChild(kRootNodeId, 2);
+    js.commit();
+    bridge.pumpOps();
+  });
+
+  test('removes the key so the reader falls back to its default', () {
+    js.setPropU32(2, propBgColor, 0x00FF0000);
+    js.commit();
+    bridge.pumpOps();
+    expect(bridge.nodes[2]!.getPropU32(propBgColor, 0x11223344), 0x00FF0000);
+
+    js.clearProp(2, propBgColor);
+    js.commit();
+    bridge.pumpOps();
+    expect(bridge.nodes[2]!.getPropU32(propBgColor, 0x11223344), 0x11223344,
+        reason: 'the fallback must win once the key is gone');
+    expect(bridge.nodes[2]!.props.containsKey(propBgColor), isFalse);
+  });
+
+  test('clears every typed map, not just the one that was written', () {
+    // The three maps are insert-only and independently lived, so a
+    // clear that only touched `props` would leave a string or float
+    // slot shadowing the default for readers that probe those first.
+    js.setPropU32(2, propWidth, 300);
+    js.setPropStr(2, propWidth, 'fill');
+    js.commit();
+    bridge.pumpOps();
+
+    js.clearProp(2, propWidth);
+    js.commit();
+    bridge.pumpOps();
+
+    final n = bridge.nodes[2]!;
+    expect(n.props.containsKey(propWidth), isFalse);
+    expect(n.propsF.containsKey(propWidth), isFalse);
+    expect(n.propsStr.containsKey(propWidth), isFalse);
+  });
+
+  test('marks the node dirty so the subtree rebuilds', () {
+    js.setPropU32(2, propBgColor, 0x00FF0000);
+    js.commit();
+    bridge.pumpOps();
+
+    var notified = 0;
+    bridge.nodes[2]!.cold.addListener(() => notified++);
+
+    js.clearProp(2, propBgColor);
+    js.commit();
+    bridge.pumpOps();
+
+    expect(notified, 1, reason: 'a cleared prop must repaint the node');
+  });
+
+  // The drift guard the comment on `opClearProp` promises. Removing a
+  // key has the same downstream consequences as writing one, so the set
+  // and clear paths run through the SAME assertions — a follow-up added
+  // to one and not the other fails right here.
+  for (final (label, clear) in [('set', false), ('clear', true)]) {
+    test('a stack-positioning prop re-dirties the PARENT on $label', () {
+      js.createNode(3, wtBox);
+      js.appendChild(2, 3);
+      js.setPropU32(3, propTop, 10);
+      js.commit();
+      bridge.pumpOps();
+
+      var parentNotified = 0;
+      bridge.nodes[2]!.cold.addListener(() => parentNotified++);
+
+      if (clear) {
+        js.clearProp(3, propTop);
+      } else {
+        js.setPropU32(3, propTop, 20);
+      }
+      js.commit();
+      bridge.pumpOps();
+
+      expect(parentNotified, 1,
+          reason: 'the <stack> consumes top/right/bottom/left from its '
+              'CHILD; without a parent re-dirty it never rebuilds the '
+              'Positioned and the child stays where it was');
+    });
+  }
+
+  test('a clear for an unknown node is ignored, not fatal', () {
+    js.clearProp(9999, propBgColor);
+    js.commit();
+    expect(() => bridge.pumpOps(), returnsNormally);
+  });
 }

@@ -173,6 +173,21 @@ const int opListClearRow = 0x2B;
 // harmlessly — records are fixed-size, so nothing desyncs.
 const int opClearCustomProp = 0x2C;
 
+// Clear one BUILT-IN cold prop from all three typed maps —
+// (nodeId, propKey, 0). The counterpart of opClearCustomProp for the
+// enum-keyed namespace.
+//
+// Setting a cold prop to null used to mean "leave the previous value",
+// so `color={active ? Colors.red : null}` painted red forever once it
+// had been red once — the removal was unrepresentable on the wire, and
+// the renderer documented the gap as if it were the design. Now null
+// removes the key, and `getPropU32(key, fallback)` naturally restores
+// the widget's default.
+//
+// Old hosts skip unknown 16-byte ops harmlessly — records are
+// fixed-size, so nothing desyncs.
+const int opClearProp = 0x2D;
+
 // ── Widget types (NodeState.type) ─────────────────────────────────────
 //
 // Naming mirrors Flutter's widget vocabulary so the layer underneath

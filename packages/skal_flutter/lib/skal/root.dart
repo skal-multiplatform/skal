@@ -104,15 +104,52 @@ class _SkalRootState extends State<SkalRoot>
     // BEFORE Flutter walks the dirty element list — touched nodes are
     // already marked dirty by the time the build phase starts, so
     // they get rebuilt in the same frame instead of the next.
-    _ticker = createTicker(_onTick)..start();
+    //
+    // It used to run forever. An active Ticker asks the engine for a
+    // frame every vsync, so a completely static screen woke it 120
+    // times a second to discover there was nothing to do — the largest
+    // battery cost in the framework, paid by every idle app.
+    //
+    // It now stops when a frame pump finds nothing applied, nothing
+    // owed and nothing queued, and JS's doorbell restarts it. That is
+    // only safe where the doorbell actually armed: on web there is no
+    // JS->Dart wake primitive at all, and an old libskal lacks the
+    // exports. Both report false and keep the old always-on behaviour,
+    // because a missed wake is a frozen app and a wasted frame is not.
+    widget.bridge.onWake = _wake;
+    _demandDriven = widget.bridge.doorbellArmed;
+    _ticker = createTicker(_onTick);
+    _ticker.start();
     // Automatic JS hot reload (native dev): connect to the dev server and
     // re-evaluate pushed bundles in place. No-op unless launched with
     // `--dart-define=SKAL_HOT=1` (the dev:hot scripts), and on web.
     startHotReloadClient(widget.bridge);
   }
 
+  /// Whether the ticker is allowed to stop. False keeps the pre-existing
+  /// every-vsync behaviour — see initState.
+  bool _demandDriven = false;
+
+  /// Restart the ticker after an idle stop. Called from the bridge when
+  /// JS rings, and from anywhere the host itself creates work.
+  ///
+  /// Cheap and idempotent: a `Ticker.start()` on an already-active
+  /// ticker would assert, so the guard is required, not defensive.
+  void _wake() {
+    if (!mounted) return;
+    if (!_ticker.isActive) _ticker.start();
+  }
+
   void _onTick(Duration _) {
     widget.bridge.pumpOps();
+    // Stop only on a settled frame. `pumpOps` has just applied
+    // everything published and flushed every deferred notification, so
+    // an idle report here means the next frame would have nothing to
+    // do — and if JS publishes a microsecond later, the doorbell starts
+    // us again before that frame would have run anyway.
+    if (_demandDriven && _ticker.isActive && widget.bridge.isIdle) {
+      _ticker.stop();
+    }
   }
 
   @override
@@ -136,6 +173,9 @@ class _SkalRootState extends State<SkalRoot>
     rootBundle.evict('assets/skal-app.js');
     rootBundle.loadString('assets/skal-app.js', cache: false).then((src) {
       widget.bridge.hotReload(src);
+      // A reload republishes the whole tree; make sure something is
+      // running to drain it if the ticker had stopped.
+      _wake();
     }).catchError((Object e) {
       debugPrint('[skal] JS hot reload: could not read skal-app.js: $e');
     });
@@ -2439,16 +2479,28 @@ Widget _buildRow(NodeState n, SkalBridge bridge) {
   final children = _childWidgets(n, bridge);
   final spaced = _intersperse(children, SizedBox(width: gap.toDouble()));
 
-  // Horizontally scrollable by default so wide rows don't clip when
-  // the row exceeds the viewport width (e.g. a wide button bar).
-  Widget inner = SingleChildScrollView(
-    scrollDirection: Axis.horizontal,
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      mainAxisAlignment: _mainAxisFor(alignment),
-      mainAxisSize: MainAxisSize.min,
-      children: spaced,
-    ),
+  // A `<row>` is a Row. It used to be a horizontally-scrollable Row —
+  // wrapped in a SingleChildScrollView "so wide rows don't clip" — and
+  // that default was expensive on the single most common container in
+  // the framework: a Scrollable, a viewport, a ScrollPosition and a
+  // gesture recognizer per row, whether or not anything ever scrolled.
+  //
+  // Measured on 400 rows of 6 children (test/row_scroll_bench_test.dart):
+  // 4156 elements and 62.6 ms per build wrapped, against 1895 and
+  // 11.6 ms plain. **5.4x the build time** for a behaviour almost no row
+  // used.
+  //
+  // It also cost correctness twice over: nested horizontal scrollables
+  // fight the parent for pan gestures, and a row that overflowed
+  // silently became scrollable instead of reporting the layout bug.
+  //
+  // Want a scrolling row? That primitive already exists and produces
+  // this exact shape — `<scrollView axis={1}>`.
+  Widget inner = Row(
+    crossAxisAlignment: CrossAxisAlignment.center,
+    mainAxisAlignment: _mainAxisFor(alignment),
+    mainAxisSize: MainAxisSize.min,
+    children: spaced,
   );
 
   inner = _applyColdVisual(n, inner);

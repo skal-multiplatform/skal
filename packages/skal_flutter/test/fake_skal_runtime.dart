@@ -120,9 +120,24 @@ class FakeSkalRuntime implements SkalRuntime {
     writeOp(opSetOpacity, id, 0, scratch.getInt32(0, Endian.little));
   }
 
-  /// Publish the batch — `publishProgress()` in bridge.js. Bumping
-  /// `hOpSeq` is what makes `_pumpOpsBody` stop short-circuiting.
+  /// Publish the batch and ring — `publishProgress()` in bridge.js,
+  /// which rings on the way out. Bumping `hOpSeq` is what makes
+  /// `_pumpOpsBody` stop short-circuiting.
+  ///
+  /// The ring is not decoration. bridge.js rings on EVERY publish now,
+  /// because the host's frame ticker stops when idle and this is what
+  /// restarts it. A fake that published without ringing would model a
+  /// JS side that cannot exist, and would let a host bug through.
   void commit() {
+    if (_pendingOps == 0) return;
+    publishOnly();
+    ringDoorbell();
+  }
+
+  /// Publish WITHOUT ringing. Models nothing bridge.js does on its own —
+  /// use it to assert what the frame drain does with ops it was never
+  /// woken for.
+  void publishOnly() {
     if (_pendingOps == 0) return;
     _pendingOps = 0;
     _d.setUint32(hOpWritePos, _writePos, Endian.little);
@@ -131,12 +146,9 @@ class FakeSkalRuntime implements SkalRuntime {
     _d.setUint32(hOpSeq + 4, _seq ~/ 0x100000000, Endian.little);
   }
 
-  /// Publish, then ring the doorbell — the shape bridge.js produces for
-  /// a batch containing a ROOT-targeted invoke.
-  void commitAndRing() {
-    commit();
-    ringDoorbell();
-  }
+  /// Was the separate "publish, then ring" helper, from when ringing was
+  /// reserved for ROOT-targeted invokes. Now identical to [commit].
+  void commitAndRing() => commit();
 
   /// Ring without publishing anything new. The host should treat this
   /// as a no-op drain.
@@ -286,10 +298,17 @@ class FakeSkalRuntime implements SkalRuntime {
   @override
   void markReplyHeapReset() => replyHeapResets++;
 
+  /// Set false to model web, or a libskal predating the doorbell
+  /// exports. The host must then keep ticking every vsync — see
+  /// SkalRoot's `_demandDriven`.
+  bool doorbellAvailable = true;
+
   @override
-  void enableHostNotify(void Function() callback) {
+  bool enableHostNotify(void Function() callback) {
+    if (!doorbellAvailable) return false;
     hostNotifyArmed = true;
     _doorbell = callback;
+    return true;
   }
 
   @override

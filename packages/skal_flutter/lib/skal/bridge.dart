@@ -347,7 +347,41 @@ class SkalBridge {
   /// `pumpOps()` already guards reentrancy (`_pumping`), so a doorbell
   /// landing while the frame drain is running is harmlessly skipped —
   /// that frame's drain picks the ops up anyway.
-  void enableOffFrameDrain() => skal.enableHostNotify(pumpOffFrame);
+  bool enableOffFrameDrain() => _doorbellArmed = skal.enableHostNotify(_onDoorbell);
+
+  /// Whether the doorbell actually armed. False on web and on any
+  /// libskal predating the exports — in which case the host MUST keep
+  /// ticking every vsync, because nothing else will tell it that ops
+  /// arrived. See [isIdle].
+  bool get doorbellArmed => _doorbellArmed;
+  bool _doorbellArmed = false;
+
+  /// Called when JS rings. Set by the host so it can restart a stopped
+  /// frame ticker; the off-frame drain happens regardless.
+  void Function()? onWake;
+
+  void _onDoorbell() {
+    // Wake the host FIRST. `pumpOffFrame` applies ops but defers every
+    // notification to the next frame pump — so if the ticker is stopped
+    // and we drained without asking for a frame, those notifications
+    // would sit there with nothing coming to deliver them. That is the
+    // stranded-update bug with a different cause, and the ordering here
+    // is what prevents it.
+    onWake?.call();
+    pumpOffFrame();
+  }
+
+  /// Nothing applied, nothing owed, nothing queued.
+  ///
+  /// The host asks this right after a frame pump to decide whether to
+  /// stop ticking. It is deliberately conservative: any doubt reports
+  /// busy, because the cost of a false "busy" is one wasted frame and
+  /// the cost of a false "idle" is an app that stops updating.
+  bool get isIdle =>
+      _touched.isEmpty &&
+      _eventOverflow.isEmpty &&
+      _replyOverflow.isEmpty &&
+      _getU64(_data, hOpSeq) == _lastOpSeq;
 
   /// Disarm and release the doorbell. Call from a host that is tearing
   /// a bridge down deliberately; not required for process exit.
@@ -1514,6 +1548,12 @@ class SkalBridge {
     String? payload,
   }) {
     if (handlerId == 0) return;
+
+    // Anything we send JS produces ops coming back, and a spilled event
+    // needs pumps to drain — either way the ticker has to be running.
+    // Three field reads on the gesture path; the alternative is a tap
+    // that lands on a stopped ticker and never repaints.
+    onWake?.call();
 
     // Ordering first: once anything has spilled, everything spills, or a
     // later event overtakes an earlier one. Both back-pressure sources

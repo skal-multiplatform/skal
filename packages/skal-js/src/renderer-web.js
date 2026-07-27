@@ -442,15 +442,15 @@ function applyDefaults(el, tag) {
       s.display = 'flex';
       s.flexDirection = 'row';
       s.boxSizing = 'border-box';
-      // Native default has horizontalScroll — emulate it, but hide
-      // the scrollbar to match the native invisible-scrollbar behavior.
-      // (native horizontal-scroll exposes the gesture but doesn't
-      // paint a track; Firefox / WebKit need separate rules.)
-      s.overflowX = 'auto';
-      s.scrollbarWidth = 'none';            // Firefox
-      s.msOverflowStyle = 'none';           // legacy Edge
-      // ::-webkit-scrollbar { display: none } can't be set inline — see
-      // the global stylesheet rule we inject below in index.html.
+      // No `overflow-x: auto` here. This used to mirror the native
+      // default, where every <row> was wrapped in a horizontally
+      // scrollable view — a default that cost 5.4x the build time on
+      // native (see _buildRow in root.dart) and made every row a scroll
+      // container here, with the containing-block and gesture side
+      // effects that carries.
+      //
+      // Both targets dropped it together, so `<row>` is a plain flex row
+      // on each. `<scrollView axis={1}>` is the scrolling one.
       break;
     case 'listTile':
       // Structured Material row — leading / text / trailing in a flex

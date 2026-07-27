@@ -389,11 +389,14 @@ class Skal implements SkalRuntime {
   /// A no-op when libskal predates the exports, or when the Dart API
   /// table can't be resolved.
   @override
-  void enableHostNotify(void Function() callback) {
+  bool enableHostNotify(void Function() callback) {
     final init = _initDartApi;
     final setPort = _setHostPort;
-    if (init == null || setPort == null) return;
-    if (init(NativeApi.initializeApiDLData) == 0) return;
+    // An older libskal without the exports. Report it: the host keeps
+    // ticking every vsync rather than waiting for a bell that will
+    // never ring.
+    if (init == null || setPort == null) return false;
+    if (init(NativeApi.initializeApiDLData) == 0) return false;
 
     final previous = _notifyPort;
     final port = RawReceivePort((_) => callback(), 'skal.doorbell');
@@ -402,6 +405,7 @@ class Skal implements SkalRuntime {
     // Close the old one only AFTER the native side points at the new
     // port, so there is never a window with no live target.
     previous?.close();
+    return true;
   }
 
   /// Disarm and release. Clears the native port FIRST so JS stops

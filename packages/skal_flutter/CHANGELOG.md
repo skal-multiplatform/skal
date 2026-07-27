@@ -65,6 +65,30 @@
   sweep, and retained payloads are now capped (~4 M chars) with one
   diagnostic rather than growing until the app dies.
 
+### Performance
+
+- **An idle app no longer renders.** `SkalRoot`'s Ticker ran forever, so
+  a static screen asked the engine for a frame every vsync — 60-120
+  wakeups a second doing nothing. It now stops when a frame reports
+  nothing applied, nothing owed and nothing queued, and JS's doorbell
+  restarts it. Only where the doorbell actually armed: `enableHostNotify`
+  reports back, and web (which has no JS->Dart wake at all) plus any
+  libskal predating the exports keep ticking, because a missed wake is a
+  frozen app and a wasted frame is not.
+- The doorbell rings on every publish rather than only for root-targeted
+  invokes, and the ring moved inside `publishProgress` so all three
+  publish paths get it — including `flushAndWaitForDrain`, which
+  otherwise spins five seconds against a sleeping host.
+- **`<row>` is no longer a scroll container.** Every Row was wrapped in a
+  horizontal `SingleChildScrollView`, costing a Scrollable, viewport,
+  ScrollPosition and gesture recognizer per row: 4156 elements and
+  62.6 ms per build across 400 rows, against 1895 and 11.6 ms plain —
+  **5.4x the build time**. Nested horizontal scrollables also fought
+  their parent for pan gestures, and an overflowing row silently became
+  scrollable instead of reporting the layout bug.
+  **Breaking:** use `<scrollView axis={1}>`, which produces the old
+  widget shape exactly.
+
 ### Added
 
 - `SkalRuntime` + a test seam for it. See `docs/TESTING.md` § Testing

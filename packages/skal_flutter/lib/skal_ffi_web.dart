@@ -427,7 +427,10 @@ class Skal implements SkalRuntime {
       evaluate(source, url: url);
 
   @override
-  void enableHostNotify(void Function() callback) {}
+  /// Always false — the browser build has no JS->Dart wake primitive at
+  /// all, so the host's frame ticker is the ONLY thing that moves ops
+  /// across. It stays on unconditionally here.
+  bool enableHostNotify(void Function() callback) => false;
 
   @override
   void disableHostNotify() {}

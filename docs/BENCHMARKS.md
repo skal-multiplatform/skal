@@ -1725,6 +1725,79 @@ learner alongside it; the slot one is a standalone A/B over a
 `Uint8Array` + `Int32Array` pair.
 
 
+## Bench 7 — Idle frames, Row chrome, and one non-finding
+
+Three items from a performance review. Two were real and large; one was
+not, which is why they were measured before being "fixed".
+
+### The idle ticker — a frame every vsync, forever
+
+`SkalRoot` started a Ticker in `initState` and never stopped it. An
+active Ticker asks the engine for a frame every vsync, so a completely
+static screen woke it 60-120 times a second to discover there was
+nothing to do. Every idle app paid this.
+
+It now stops on a frame that positively reports idle (nothing applied,
+nothing owed, nothing queued) and JS's doorbell restarts it. Idle frame
+requests go from **every vsync to zero**.
+
+Two things had to change with it:
+
+- The doorbell used to ring only for ROOT-targeted invokes. It now rings
+  on every publish, because the host needs waking for ANY work. The old
+  restriction rested on a race that does not exist — the host drains the
+  ring in order, so a ring can only apply a CREATE_NODE *before* the
+  invoke that follows it.
+- The ring moved inside `publishProgress`, not its call sites. There are
+  three publish paths, and the third is `flushAndWaitForDrain`, which
+  publishes and then SPINS up to 5 seconds waiting for a drain. Against
+  a host allowed to sleep, a ring-overflow without a ring there is a
+  five-second freeze.
+
+Safety is one-sided by construction: `enableHostNotify` now reports
+whether it armed, and the ticker only stops when it did. Web has no
+JS->Dart wake primitive at all and an old libskal lacks the exports —
+both keep the old always-on behaviour, because a wasted frame is cheap
+and a missed wake is a frozen app.
+
+### Every `<row>` was a scroll container
+
+`_buildRow` wrapped every Row in a horizontal `SingleChildScrollView`
+"so wide rows don't clip". That is a Scrollable, a viewport, a
+ScrollPosition and a gesture recognizer on the most common container in
+the framework, whether or not anything ever scrolled.
+
+400 rows of 6 children:
+
+| | elements | per build |
+|---|---|---|
+| wrapped | 4156 | 62.6 ms |
+| plain   | 1895 | 11.6 ms |
+| delta   | +119% | **+437%** |
+
+It cost correctness too: nested horizontal scrollables fight the parent
+for pan gestures, and a row that overflowed silently became scrollable
+instead of reporting the layout bug. `<scrollView axis={1}>` produces
+the old shape exactly, and always did.
+
+### `ChunkedFor`'s prefix re-slice — NOT worth fixing
+
+The review flagged `slice(0, visible())` per chunk as O(N^2). The shape
+is right and the constant makes it irrelevant: chunk size grows 1.5x per
+step, so a 5000-item mount takes **9 chunks**, not ~100.
+
+| | |
+|---|---|
+| chunks per mount | 9 |
+| element copies per mount | 15 240 |
+| total slice cost per mount | **0.010 ms** |
+
+Ten microseconds against a mount that takes hundreds of milliseconds.
+Left alone. Worth recording precisely because it looked like the obvious
+win and measured as noise — the asymptotic argument was correct and
+still did not matter.
+
+
 ## How to re-run
 
 To resurrect the bench:

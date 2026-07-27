@@ -77,13 +77,19 @@ abstract interface class SkalRuntime {
   /// stops treating stale offsets as live.
   void markReplyHeapReset();
 
-  /// Arm the off-frame drain doorbell — `callback` runs when JS rings
+  /// Arm the doorbell — `callback` runs when JS rings
   /// `__skal_notifyHost()`. See docs/TODO_OPTIMIZATIONS.md §2b.
   ///
-  /// A no-op where the mechanism does not exist (web, and any libskal
-  /// predating the export); the per-frame drain still picks everything
-  /// up, just a frame later.
-  void enableHostNotify(void Function() callback);
+  /// **Returns whether it actually armed.** A no-op returning false
+  /// where the mechanism does not exist (web, and any libskal predating
+  /// the exports).
+  ///
+  /// The return value is load-bearing, not diagnostic. The host stops
+  /// its frame ticker when idle and relies on this callback to wake it,
+  /// so a silent failure to arm would be a permanently frozen UI. When
+  /// this returns false the host keeps ticking every vsync — slower, and
+  /// the only safe direction to be wrong in.
+  bool enableHostNotify(void Function() callback);
 
   /// Disarm and release the doorbell.
   void disableHostNotify();

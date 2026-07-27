@@ -155,9 +155,13 @@ void main() {
     });
 
     test('a doorbell with nothing published is harmless', () {
+      // Baselined, because setUp's commit() rings now — bridge.js rings
+      // on every publish so the host's idle ticker gets restarted.
+      final before = bridge.offFrameDrains;
       js.ringDoorbell();
       expect(cold[nodeA], 0);
-      expect(bridge.offFrameDrains, 0);
+      expect(bridge.offFrameDrains, before,
+          reason: 'a ring against an unchanged ring must cost nothing');
     });
   });
 
@@ -180,13 +184,14 @@ void main() {
 
     test('N off-frame drains plus one frame drain produce exactly one '
         'notify per node', () {
+      final before = bridge.offFrameDrains;
       for (var i = 0; i < 5; i++) {
         js
           ..setPropU32(nodeA, propWidth, i)
           ..setPropU32(nodeB, propHeight, i)
           ..commitAndRing();
       }
-      expect(bridge.offFrameDrains, 5);
+      expect(bridge.offFrameDrains, before + 5);
       expect(cold[nodeA], 0);
 
       bridge.pumpOps();

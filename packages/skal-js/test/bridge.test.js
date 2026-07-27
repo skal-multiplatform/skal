@@ -208,13 +208,31 @@ describe('the §2b doorbell', () => {
     doorbells = 0;
   });
 
-  test('does NOT ring for plain UI ops', async () => {
+  // These two used to assert the OPPOSITE — that plain UI ops and
+  // non-root invokes must not ring. That rule was narrower than it
+  // needed to be on a stated rationale that does not hold (see the
+  // comment above `_notifyHost`: the host drains IN ORDER, so a ring
+  // cannot dispatch against an unbuilt node), and the host now depends
+  // on being woken for ANY work, because its frame ticker is allowed to
+  // stop when idle. A publish that does not ring is a frozen app.
+  test('rings for plain UI ops', async () => {
     B.setPropU32(910, 0x05, 1);
     B.setText(910, 'hello');
     B.scheduleCommit();
     await flush();
 
-    expect(doorbells).toBe(0);
+    expect(doorbells).toBe(1);
+  });
+
+  test('does NOT ring when nothing was published', async () => {
+    // The genuine no-op: a commit with an empty batch. Waking the host
+    // to look at an unchanged ring is pure overhead.
+    hostDrainedEverything();
+    const before = doorbells;
+    B.scheduleCommit();
+    await flush();
+
+    expect(doorbells).toBe(before);
   });
 
   test('rings for a ROOT-targeted invoke', async () => {
@@ -224,14 +242,18 @@ describe('the §2b doorbell', () => {
     expect(doorbells).toBe(1);
   });
 
-  test('does NOT ring for an invoke on a non-root node', async () => {
-    // `ref.method()` — the node's CREATE_NODE may still be undrained
-    // ahead of the invoke, so waking the host now would dispatch
-    // against a node it has not built.
+  test('rings for an invoke on a non-root node too', async () => {
+    // `ref.method()`. The old rule refused this, reasoning that the
+    // node's CREATE_NODE might still be undrained ahead of the invoke.
+    // It can be — and that is fine: the ring makes the host drain the
+    // ring IN ORDER, so the CREATE_NODE is applied first, by
+    // construction. There was never a race here to avoid.
+    hostDrainedEverything();
+    const before = doorbells;
     B.invokeMethod(912, 'doThing', []);
     await flush();
 
-    expect(doorbells).toBe(0);
+    expect(doorbells).toBe(before + 1);
   });
 
   test('one ring per batch, not per call', async () => {

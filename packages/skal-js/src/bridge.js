@@ -570,6 +570,29 @@ function publishProgress() {
   opSeq += 1n;
   Atomics.store(seqArr, B_OP_SEQ, opSeq);
   lastCommittedPos32 = opWritePos32;
+  ringDoorbell();
+}
+
+/// Tell the host there is work, unless it is already on its way.
+///
+/// This lives in `publishProgress` rather than at its call sites because
+/// EVERY publish now needs it and there are three: the end-of-batch
+/// commit, the mid-batch auto-commit, and `flushAndWaitForDrain`. The
+/// third is the one that makes this non-optional — it publishes and then
+/// SPINS up to 5 seconds waiting for the host to drain. Against a host
+/// whose ticker is allowed to stop, a ring-overflow without a ring here
+/// is a five-second freeze, then a warning, then overwritten ops.
+///
+/// Coalesced: if the host has not yet drained up to our last ring, it is
+/// already scheduled and will see these ops too. One outstanding
+/// doorbell, ever — the delivery queue is unbounded and the host's event
+/// loop is paused while a frame is in production, so an uncoalesced
+/// burst would pile up a message per microtask batch.
+function ringDoorbell() {
+  if (!_notifyHost) return;
+  if (Atomics.load(seqArr, B_LAST_DRAINED_SEQ) < _lastRungSeq) return;
+  _lastRungSeq = opSeq;
+  _notifyHost();
 }
 
 // Overflow path — JS would write past the end of the ring. Publish what
@@ -840,18 +863,31 @@ let scheduled = false;
 // The host drains the op ring once per frame from a Ticker, which is
 // free for UI ops (nothing paints before vsync) but costs a full frame
 // of dead latency for LOGIC calls, which never touch the widget tree.
-// `__skal_notifyHost()` lets us say "drain now" after committing a
-// batch that contains one.
+// `__skal_notifyHost()` lets us say "there is work" after publishing.
 //
-// Rung only for ROOT-targeted invokes. That is the whole hoisting rule
-// and it is exact, not a heuristic: `createSkalService(x).y()` routes
-// through ROOT_NODE_ID, while `ref.y()` on a host widget targets a real
-// node id whose CREATE_NODE may still be sitting undrained ahead of it.
-// Node 1 is created at boot and never removed, so a root-targeted call
-// can never outrun its own node.
+// Rung for ANY published batch. This used to be restricted to
+// ROOT-targeted invokes, on the stated grounds that `ref.y()` on a host
+// widget "targets a real node id whose CREATE_NODE may still be sitting
+// undrained ahead of it". That rationale does not survive inspection:
+// the host drains the ring IN ORDER, so a ring can only ever cause the
+// CREATE_NODE to be applied before the invoke that follows it. There
+// was no race to avoid. The real reason to stay narrow was cost — a
+// port message per commit — which docs/TODO_OPTIMIZATIONS.md §2c
+// measured and rejected on the grounds that it bought no latency.
 //
-// Absent on web and on any libskal predating the export, in which case
-// this is a no-op and the per-frame drain still picks everything up.
+// It buys something else. The host's frame ticker used to run every
+// vsync forever, so a static screen woke the engine 120x/second for
+// nothing. It can now stop when idle — but only if something wakes it
+// when work arrives, and that something is this. The doorbell went from
+// a latency optimization to a liveness signal, which is a different
+// trade: Bench 5 already showed broadening it costs no measurable
+// latency, and the coalescing gate below means at most ONE outstanding
+// message regardless of commit rate.
+//
+// Absent on web and on any libskal predating the export. The host asks
+// whether it armed (`enableHostNotify` reports back) and keeps ticking
+// unconditionally when it did not — a missed wake would be a frozen UI,
+// so the fallback has to be the safe one.
 const _notifyHost = typeof globalThis.__skal_notifyHost === 'function'
   ? globalThis.__skal_notifyHost
   : null;
@@ -884,18 +920,14 @@ function commit() {
   // has confirmed it drained everything via Atomics.store on
   // lastDrainedSeq. opWritePos32 grows monotonically until then.
   if (opWritePos32 !== lastCommittedPos32) {
+    // publishProgress rings on our behalf — see ringDoorbell.
     publishProgress();
+  } else if (_logicPending) {
+    // Nothing new to publish but a root-targeted invoke went out in an
+    // already-published chunk. Still wake the host for it.
+    ringDoorbell();
   }
-  // Ring AFTER publishing — the host must be able to see the ops the
-  // moment it wakes. One doorbell per batch, never per op: a hundred
-  // service calls issued together wake the host once.
-  if (_logicPending) {
-    _logicPending = false;
-    if (_notifyHost && Atomics.load(seqArr, B_LAST_DRAINED_SEQ) >= _lastRungSeq) {
-      _lastRungSeq = opSeq;
-      _notifyHost();
-    }
-  }
+  _logicPending = false;
 }
 
 /**

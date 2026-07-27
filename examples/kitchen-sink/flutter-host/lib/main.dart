@@ -25,6 +25,8 @@ import 'dart:ui' show FramePhase;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, kReleaseMode;
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -312,7 +314,7 @@ class PerfHud extends StatefulWidget {
   State<PerfHud> createState() => _PerfHudState();
 }
 
-class _PerfHudState extends State<PerfHud> with SingleTickerProviderStateMixin {
+class _PerfHudState extends State<PerfHud> {
   // Two numbers, two meanings:
   //
   //   _fps     = inter-frame rate (1 / (Δ between consecutive
@@ -334,20 +336,29 @@ class _PerfHudState extends State<PerfHud> with SingleTickerProviderStateMixin {
   double _fps = 0;
   double _frameMs = 0;
   int? _prevVsyncUs;
-  late final Ticker _refreshTicker;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     SchedulerBinding.instance.addTimingsCallback(_onTimings);
-    // A refresh ticker keeps the HUD numbers updating even when nothing
-    // else in the tree is dirty (otherwise the HUD's text would stop
-    // updating during JS-idle steady state). Also ensures Flutter keeps
-    // requesting frames, so `_onTimings` keeps firing and we have data
-    // to compute inter-frame FPS from.
-    _refreshTicker = createTicker((_) {
+    // Refresh the HUD numbers on a slow timer, NOT a Ticker.
+    //
+    // This used to be `createTicker(...)..start()`, explicitly so that
+    // "Flutter keeps requesting frames". That defeated the framework's
+    // largest performance fix in the one app anybody looks at: SkalRoot
+    // now stops its own ticker when idle so the engine can sleep, and a
+    // HUD demanding a frame every vsync kept it awake anyway — an idle
+    // demo still rendering at 120 fps, with the overlay measuring the
+    // frames it was itself causing.
+    //
+    // A Timer does not request frames; the setState inside it asks for
+    // exactly one. 2 Hz instead of 120, and the readings are honest:
+    // when the app is genuinely idle the HUD now shows that, instead of
+    // showing the cost of being watched.
+    _refreshTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
       if (mounted) setState(() {});
-    })..start();
+    });
   }
 
   void _onTimings(List<FrameTiming> timings) {
@@ -377,7 +388,7 @@ class _PerfHudState extends State<PerfHud> with SingleTickerProviderStateMixin {
   @override
   void dispose() {
     SchedulerBinding.instance.removeTimingsCallback(_onTimings);
-    _refreshTicker.dispose();
+    _refreshTimer?.cancel();
     super.dispose();
   }
 

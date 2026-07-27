@@ -78,7 +78,7 @@ class Greeting extends StatelessWidget {
 ///
 /// Generated adapter wires:
 ///   • initial → JSX int prop, read via getCustomPropU32
-///   • onChanged → ValueChanged<int>, emits dispatchEventInt(handlerId, n)
+///   • onChanged → `ValueChanged<int>`, emits dispatchEventInt(handlerId, n)
 ///   • onReset   → VoidCallback,     emits dispatchEvent(handlerId)
 ///
 /// Two buttons inside the widget bump or reset the count, calling

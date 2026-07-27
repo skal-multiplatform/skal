@@ -41,12 +41,71 @@ fi
 
 did_anything=0
 
+# ── Staleness guard ──────────────────────────────────────────────────
+#
+# Every installed binary is checked against the C ABI header, symbol by
+# symbol. The expected set is PARSED from packages/skal_native/include/
+# skal.h rather than hardcoded, so adding an entry point to the header
+# automatically tightens this check instead of quietly bypassing it.
+#
+# This exists because a missing export is SILENT. The Dart side looks
+# each symbol up with a nullable lookup and degrades: `enableHostNotify`
+# simply returns when `skal_set_host_port` is absent, so an app linked
+# against a pre-doorbell libskal runs perfectly and every logic RPC just
+# costs a frame again. On 2026-07-26 an eight-day-stale copy in
+# examples/virt-bench cost two full benchmark runs before anyone thought
+# to check `nm`. The binaries are gitignored, so each app carries its
+# own and they rot independently.
+#
+# Warns rather than fails: a partial or in-progress bun rebuild should
+# not block linking the platforms that ARE current.
+SKAL_ABI_HEADER="${REPO_ROOT}/packages/skal_native/include/skal.h"
+
+verify_skal_exports() {
+  local lib="$1" label="$2"
+  [[ -f "${lib}" ]] || return 0
+  [[ -f "${SKAL_ABI_HEADER}" ]] || return 0
+
+  # Declarations look like `int64_t skal_create_runtime(const char*, ...)`
+  # or `void skal_wake_js(int64_t handle);` — take the identifier that is
+  # immediately followed by `(`. Commentary mentioning a symbol without a
+  # call-shape (e.g. prose about `skal_evaluate`) is not matched.
+  local expected
+  expected="$(grep -oE '\bskal_[a-z0-9_]+[[:space:]]*\(' "${SKAL_ABI_HEADER}" \
+    | grep -oE 'skal_[a-z0-9_]+' | sort -u)"
+  [[ -n "${expected}" ]] || return 0
+
+  # Mach-O keeps a leading underscore on C symbols; ELF does not. Strip
+  # it so one comparison covers .dylib and .so.
+  local actual
+  if [[ "${lib}" == *.so ]]; then
+    actual="$( { nm -D --defined-only "${lib}" 2>/dev/null \
+                 || nm -g "${lib}" 2>/dev/null; } \
+      | grep -oE 'skal_[a-z0-9_]+' | sort -u)"
+  else
+    actual="$(nm -gU "${lib}" 2>/dev/null | grep -oE 'skal_[a-z0-9_]+' | sort -u)"
+  fi
+
+  local missing
+  missing="$(comm -23 <(echo "${expected}") <(echo "${actual}"))"
+  if [[ -n "${missing}" ]]; then
+    echo "  ! STALE libskal for ${label}: ${lib}" >&2
+    echo "    missing exports:" >&2
+    echo "${missing}" | sed 's/^/      /' >&2
+    echo "    The Dart side degrades SILENTLY on a missing symbol." >&2
+    echo "    Rebuild: bun run build:libskal (or :android), then re-run this." >&2
+    return 0
+  fi
+  echo "  ✓ ${label}: all $(echo "${expected}" | wc -l | tr -d ' ') ABI exports present"
+}
+
 # ── macOS Desktop ────────────────────────────────────────────────────
 if [[ "${PLATFORM}" == "all" || "${PLATFORM}" == "macos" ]]; then
   if [[ -d "${APP_ROOT}/macos" ]]; then
     echo "→ linking libskal.dylib for macOS into ${APP_ROOT}/macos/Frameworks/"
     SKAL_FLUTTER_FRAMEWORKS="${APP_ROOT}/macos/Frameworks" \
       "${SCRIPT_DIR}/link-libskal-flutter-mac.sh"
+    verify_skal_exports "${APP_ROOT}/macos/Frameworks/libskal.dylib" "macOS"
     # `flutter create` projects don't embed libskal into the .app — without
     # this the runtime dlopen fails and the app black-screens. Inject the copy
     # build phase into the Xcode project (idempotent).
@@ -80,6 +139,7 @@ if [[ "${PLATFORM}" == "all" || "${PLATFORM}" == "android" ]]; then
     mkdir -p "${JNI_DIR}"
     SKAL_FLUTTER_NATIVE_LIBS="${JNI_DIR}" \
       "${SCRIPT_DIR}/link-libskal-flutter.sh"
+    verify_skal_exports "${JNI_DIR}/libskal.so" "Android arm64"
     did_anything=1
   elif [[ "${PLATFORM}" == "android" ]]; then
     echo "error: ${APP_ROOT}/android missing — run 'flutter create --platforms android .' first" >&2
@@ -124,12 +184,14 @@ if [[ "${PLATFORM}" == "all" || "${PLATFORM}" == "ios" ]]; then
       echo "→ copying libskal.dylib (iOS device) into ${APP_ROOT}/ios/Frameworks/iphoneos/"
       mkdir -p "${APP_ROOT}/ios/Frameworks/iphoneos"
       cp "${DEV_LIB}" "${APP_ROOT}/ios/Frameworks/iphoneos/libskal.dylib"
+      verify_skal_exports "${APP_ROOT}/ios/Frameworks/iphoneos/libskal.dylib" "iOS device"
       did_anything=1
     fi
     if [[ -f "${SIM_LIB}" ]]; then
       echo "→ copying libskal.dylib (iOS Simulator) into ${APP_ROOT}/ios/Frameworks/iphonesimulator/"
       mkdir -p "${APP_ROOT}/ios/Frameworks/iphonesimulator"
       cp "${SIM_LIB}" "${APP_ROOT}/ios/Frameworks/iphonesimulator/libskal.dylib"
+      verify_skal_exports "${APP_ROOT}/ios/Frameworks/iphonesimulator/libskal.dylib" "iOS Simulator"
       did_anything=1
     fi
 

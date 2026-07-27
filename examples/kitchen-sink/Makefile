@@ -36,7 +36,7 @@ JS_BUNDLE  := $(ASSETS)/skal-app.js
 JS_CJS     := $(ASSETS)/skal-app.cjs
 JS_JSC     := $(ASSETS)/skal-app.cjs.jsc
 
-.PHONY: help all bundle release debug profile macos ios-sim test clean
+.PHONY: help all bundle release debug profile macos ios-sim sync-ios test clean
 
 help:
 	@echo "kitchen-sink make targets:"
@@ -49,6 +49,7 @@ help:
 	@echo "  Other targets:"
 	@echo "    macos      — bundle + flutter build macos --release"
 	@echo "    ios-sim    — bundle + flutter build ios --simulator --debug"
+	@echo "    sync-ios   — refresh ios/Frameworks/ dylibs from build/skal-ios*/"
 	@echo "    test       — flutter test (Dart unit tests; no bundle needed)"
 	@echo "    bundle     — rebuild skal-app.{js,cjs,cjs.jsc} into flutter-host/assets/"
 	@echo "    clean      — drop Flutter build artifacts"
@@ -97,7 +98,37 @@ macos: bundle
 	cd $(FLUTTER) && flutter build macos --release
 	@echo "✓ $(FLUTTER)/build/macos/Build/Products/Release/kitchen_sink.app"
 
-ios-sim: bundle
+# ── iOS libskal freshness ────────────────────────────────────────────
+#
+# `flutter-host/ios/Frameworks/{iphoneos,iphonesimulator}/libskal.dylib`
+# are CHECKED-IN copies of what the link scripts produce under
+# `build/skal-ios*/`. Rebuild bun for iOS without re-copying and the
+# Flutter build silently ships the previous dylib — the app runs, it is
+# just not the code you built. (The macOS/Android equivalents are copied
+# by `scripts/skal-link.sh` on every run, so only iOS carries this.)
+#
+# Same mtime trick as the bundle above: declare the copies as targets of
+# their sources and Make refuses to leave them stale. Each variant is
+# included only if its source exists — the iOS *device* dylib needs a
+# from-source WebKit JSC build most checkouts do not have, and a missing
+# prerequisite would otherwise be a hard error rather than a skip.
+IOS_SIM_SRC := $(REPO)/build/skal-iossim/libskal.dylib
+IOS_DEV_SRC := $(REPO)/build/skal-ios-device/libskal.dylib
+IOS_SIM_DST := $(FLUTTER)/ios/Frameworks/iphonesimulator/libskal.dylib
+IOS_DEV_DST := $(FLUTTER)/ios/Frameworks/iphoneos/libskal.dylib
+
+IOS_LIBS := $(strip $(if $(wildcard $(IOS_SIM_SRC)),$(IOS_SIM_DST)) \
+                    $(if $(wildcard $(IOS_DEV_SRC)),$(IOS_DEV_DST)))
+
+$(IOS_SIM_DST): $(IOS_SIM_SRC)
+	@mkdir -p $(dir $@) && cp $< $@ && echo "→ refreshed iOS Simulator libskal"
+
+$(IOS_DEV_DST): $(IOS_DEV_SRC)
+	@mkdir -p $(dir $@) && cp $< $@ && echo "→ refreshed iOS device libskal"
+
+sync-ios: $(IOS_LIBS)
+
+ios-sim: bundle sync-ios
 	cd $(FLUTTER) && flutter build ios --simulator --debug
 	@echo "✓ $(FLUTTER)/build/ios/iphonesimulator/Runner.app"
 

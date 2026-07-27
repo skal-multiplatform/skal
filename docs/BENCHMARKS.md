@@ -826,6 +826,853 @@ frames where a batched call spends one.
 
 ---
 
+## Bench 5 — Component off-frame drain (the §2c question)
+
+§2b shipped an off-frame drain for **logic** calls: JS rings
+`__skal_notifyHost()` after a batch containing a ROOT-targeted invoke,
+and the host drains immediately instead of at the next vsync. RPC
+round-trip went 16.67 ms → 0.03 ms.
+
+The obvious follow-up — *do the same for component ops* — is what this
+bench answers. Harness: `examples/virt-bench`, run with
+`--dart-define=SKAL_UIBENCH=true`
+(`src/ui-bench.js` + `flutter-host/lib/ui_bench.dart`).
+
+### Setup
+
+macOS, Apple Silicon, 60 Hz, `virt_bench.app` launched from the
+terminal and foregrounded. Three arms, all in one process so the clock
+calibration and machine state are shared, run twice interleaved:
+
+| arm | doorbell rings for | off-frame drain notifies |
+|---|---|---|
+| 0 | ROOT-targeted invokes only (shipping) | no — deferred to the frame drain |
+| 1 | every committed batch | no |
+| 2 | every committed batch | yes |
+
+Three workloads: **w1** one prop on one node every 10 ms; **w2** 100
+text labels rewritten together every 8 ms; **w3** a prop write issued in
+the *same tick* as a service call, every 10 ms — the
+`setLoading(true); api.fetch()` shape, which goes off-frame **in arm 0
+too** because the doorbell drains the whole ring.
+
+Two numbers are reported separately, and conflating them is how this
+question gets answered wrong:
+
+- **apply** — JS commit → host finished decoding. What the doorbell
+  actually shortens.
+- **paint** — JS commit → those pixels finished rasterizing. What a
+  user experiences.
+
+JS `performance.now()` and the Dart isolate's `Stopwatch` are tied
+together by an NTP-style min-RTT sandwich around a synchronous
+`skal.evaluate`; residual bracket was 21–25 µs.
+
+### Results — p50 ms, median of two rounds
+
+| | | debug apply | debug paint | release apply | release paint |
+|---|---|---|---|---|---|
+| **w1** one prop | arm 0 | 8.53 | **11.07** | 8.36 | **9.80** |
+| | arm 1 | 0.16 | 11.63 | 0.12 | 9.88 |
+| | arm 2 | 0.18 | 11.81 | 0.13 | 9.71 |
+| **w2** 100 labels | arm 0 | 8.49 | **15.60** | 8.64 | **15.34** |
+| | arm 1 | 0.15 | 15.47 | 0.14 | 14.54 |
+| | arm 2 | 0.17 | 13.70 | 0.15 | 11.51 |
+| **w3** prop + RPC | arm 0 | 0.24 | **12.08** | 0.15 | **9.65** |
+| | arm 1 | 0.20 | 11.41 | 0.13 | 9.29 |
+| | arm 2 | 0.22 | 11.07 | 0.16 | 9.47 |
+
+Zero janky frames (span > 25 ms) in every cell, both modes.
+
+### Reading it
+
+**The mechanism works and buys nothing.** Decode latency collapses by
+~55× exactly as it did for RPC — and time to pixels does not move,
+because paint is vsync-locked. Arm 2 draining at t+0.15 ms and arm 0
+draining at the start of the next frame both land in the same frame:
+the drain runs from a Ticker in `handleBeginFrame`, *before* Flutter
+walks the dirty element list.
+
+**Frame build time is identical in every arm** — 3.65 / 3.93 / 4.01 ms
+for w2 in release. The decode being moved is ~0.05 ms per frame against
+a ~4 ms build. That is the true size of the prize: about 1%.
+
+The one non-noise delta is w2/arm 2, 2–4 ms of p50, inconsistent between
+rounds and absent from p95 in one of them. The plausible cause is
+`AUTO_COMMIT_OPS`: a 100-op batch can publish mid-batch, so arm 0
+occasionally splits one update across two frames where the doorbell
+drains it whole. Buying that means building the widget tree from a
+possibly half-applied ring — a correctness hazard, not a perf tradeoff.
+
+### What this bench found by accident
+
+w3 on **arm 0 — shipping config, no experimental flag** — measured, in
+debug, before the fix: paint p50 **366 ms**, p95 **978 ms**, and in one
+of the two rounds not one of the 150 samples painted inside the window
+at all. The same run's w1/arm 0 — the identical prop write, just not
+batched with a service call — was **11.5 ms**.
+
+(Those two figures are from the pre-fix run, so they will not be found
+in the table above, which is the post-fix run. Post-fix, w3/arm 0 is
+12.08 ms in debug — one frame, same as w1.)
+
+`_pumpOpsBody` returned on `seq == _lastOpSeq` before flushing the
+`touched` set an off-frame drain had deliberately deferred. With a
+steady stream of doorbell batches the frame drain never saw new ops, so
+it never flushed, and the update was stranded until unrelated traffic
+happened to wake it.
+
+§2b's design note asserted this could not happen — "logic dispatch never
+touches `NodeState`, so the touched set stays empty". True of the
+dispatch; false of the drain, which consumes the *whole ring* including
+any UI op batched alongside. Fixed by `_flushTouched()`, and pinned by
+`packages/skal_flutter/test/bridge_drain_test.dart`.
+
+> **Instrument trap, if you re-run this.** The first post-fix run
+> reported w3/arm 0 at 756 ms — *worse* than before — and the fix looked
+> like it had done nothing. It had: the harness logged only pumps that
+> advanced `hLastDrainedSeq`, and the whole point of the fix is a frame
+> pump that flushes **without** consuming ops, so the drain that
+> delivered the notification was invisible to the log and the
+> correlation matched a much later one. The published `ui_bench.dart`
+> has this corrected — `DrainRec` carries `consumed` and `notified`
+> separately. The tell that it was instrumentation and not the fix:
+> `frame build` p50 went 0.10 ms → 0.89 ms, i.e. widgets had started
+> rebuilding again.
+
+### How to re-run
+
+**Not in the tree.** The harness needs two default-off switches in
+shipping code, and a flag no product code sets is a liability — so it
+lives here instead, the same way benches 1-3 do. Five steps:
+
+**1. `packages/skal-js/src/bridge.js`** — next to `let _logicPending = false;`:
+
+```js
+// EXPERIMENT - docs/TODO_OPTIMIZATIONS.md 2c. Ring for UI ops too, not
+// just logic. A module-local, not a `globalThis` read, so arm 0 pays
+// exactly what it pays today.
+let _uiDoorbell = 0;
+globalThis.__skal_setUiDoorbell = (on) => { _uiDoorbell = on ? 1 : 0; };
+```
+
+and in `commit()`, hoist the publish test so the ring can see it:
+
+```js
+  const hadOps = opWritePos32 !== lastCommittedPos32;
+  if (hadOps) {
+    publishProgress();
+  }
+  if (_logicPending || (_uiDoorbell && hadOps)) {
+```
+
+**2. `packages/skal_flutter/lib/skal/bridge.dart`** — a field beside
+`_offFrameDrain`:
+
+```dart
+  /// When true, an off-frame drain also runs the notify pass instead of
+  /// deferring it to the next frame drain.
+  bool offFrameNotify = false;
+```
+
+and widen the deferral test in `_drain`'s tail from
+`if (_offFrameDrain)` to `if (_offFrameDrain && !offFrameNotify)`.
+
+**3.** Drop the two files below back at
+`examples/virt-bench/flutter-host/lib/ui_bench.dart` and
+`examples/virt-bench/src/ui-bench.js`.
+
+**4. Wire them up.** In `examples/virt-bench/flutter-host/lib/main.dart`:
+`import 'ui_bench.dart';` plus
+`const bool kUiBench = bool.fromEnvironment('SKAL_UIBENCH');`; seed the
+flag *before* the bundle evaluates with
+`if (kUiBench) skal.evaluate('globalThis.__SKAL_UIBENCH = 1;');`; swap
+`SkalBridge(skal)` for `BenchBridge(skal)`; and add
+`if (kUiBench) registerUiBenchService(bridge, skal);` next to
+`registerBenchService()`.
+
+In `examples/virt-bench/src/App.jsx`, read
+`const UIBENCH = !!globalThis.__SKAL_UIBENCH;` at module scope and
+`return <UiBenchApp />` from `App()` when set — the 100k-row ListView
+and the RPC suite would otherwise load the frame pipeline this bench is
+measuring. `UiBenchApp` holds a `width` signal plus 100 label signals
+laid out **10x10** (a 100-tall Column overflows, and an overflowing
+RenderFlex paints the debug stripe every frame — unrelated per-frame
+cost that lands on whichever arm is running), and after a 1.2 s settle
+calls:
+
+```jsx
+runUiBench({
+  setWidth: (i) => setW(60 + (i % 120)),
+  setLabels: (i) => { for (let k = 0; k < 100; k++) labels[k][1](`r${k}.${i}`); },
+  // the ordinary event handler: UI + service call in one tick, so they
+  // share a commit batch
+  setWidthAndCall: (i) => { setW(60 + (i % 120)); skalBench.nop(); },
+});
+```
+
+**5. Run.** `bun run build`, then
+`flutter build macos --debug --dart-define=SKAL_UIBENCH=true`, then
+launch the binary directly (not `open` — you want stdout) and
+foreground it; an unforegrounded macOS window stalls the whole app.
+The report lands at `$HOME/uibench-report.txt`, which inside the sandbox
+is `~/Library/Containers/com.example.virtBench/Data/`.
+
+> Check the embedded libskal before trusting a number:
+> `nm -gU examples/virt-bench/flutter-host/macos/Frameworks/libskal.dylib | wc -l`
+> must be **10**. The dylib is gitignored, so each example carries its
+> own copy and they rot independently — virt-bench's was eight days
+> stale on the first run of this bench, missing `skal_set_host_port`
+> entirely, and `enableHostNotify` fails silently when the symbol is
+> absent. Every arm measured identically until that was spotted.
+
+### The bench code — Dart half (`ui_bench.dart`)
+
+```dart
+// ui-bench — the Dart half of the "should the doorbell fire for UI ops
+// too?" experiment. See docs/TODO_OPTIMIZATIONS.md §2b (shipped, logic
+// only) and §2c (this question).
+//
+// §2b gave logic RPC an off-frame drain: JS rings `__skal_notifyHost()`
+// after committing a batch containing a ROOT-targeted invoke, and the
+// host drains immediately instead of waiting for the next vsync. That
+// took RPC round-trip from 16.67 ms to 0.03 ms.
+//
+// The obvious follow-up is "do the same for component ops". This file
+// measures whether that is worth anything. The claim under test:
+//
+//   Draining UI ops early cannot make them appear earlier, because
+//   paint is vsync-locked. It can only move the DECODE work out of the
+//   frame budget — and it buys that by adding a port message per commit
+//   and by letting the widget tree be built from a half-applied ring.
+//
+// The instrument, therefore, has to separate three things that a naive
+// benchmark conflates:
+//
+//   applyLatency — JS commit → host finished decoding the ops.
+//                  This is what the doorbell actually shortens.
+//   paintLatency — JS commit → those pixels finished rasterizing.
+//                  This is what a user experiences.
+//   drainCpu     — total decode time, split in-frame vs off-frame.
+//                  This is what the doorbell MOVES rather than saves.
+//
+// Everything is timed on ONE clock. The JS side reports commit times
+// from `performance.now()`; `_calibrate` measures the offset between
+// that and this isolate's Stopwatch with an NTP-style min-RTT sandwich,
+// so the two series can be subtracted.
+//
+// No production code is instrumented for this: the drain log comes from
+// overriding the two public pump entry points on a SkalBridge subclass,
+// and the frame log from SchedulerBinding's public timings callback.
+// The only framework changes the experiment needs are the two arm
+// switches (`__skal_setUiDoorbell` in bridge.js, `offFrameNotify` in
+// bridge.dart), both default-off.
+
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' show FramePhase, FrameTiming;
+
+import 'package:flutter/scheduler.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
+
+import 'package:skal_flutter/skal/bridge.dart';
+import 'package:skal_flutter/skal/services.dart';
+import 'package:skal_flutter/skal/wire.dart' show hLastDrainedSeq;
+import 'package:skal_flutter/skal_ffi.dart';
+
+/// One drain, frame-triggered or doorbell-triggered.
+class DrainRec {
+  DrainRec(this.tStart, this.tEnd, this.offFrame, this.consumed, this.notified);
+
+  /// Milliseconds on [_UiBench._clock]. `tStart` is what decides whether
+  /// a drain could have SEEN a commit at t0 (it must have started after
+  /// it); `tEnd` is when the ops were applied.
+  final double tStart;
+  final double tEnd;
+  final bool offFrame;
+
+  /// Whether this pump actually took ops out of the ring.
+  final bool consumed;
+
+  /// Whether this pump ran the notify pass. EVERY frame pump does —
+  /// including one that found an empty ring, which is precisely the
+  /// case that flushes an earlier off-frame drain's deferred notify.
+  /// An off-frame pump notifies only in arm 2 (`offFrameNotify`).
+  final bool notified;
+
+  double get durMs => tEnd - tStart;
+}
+
+class _Frame {
+  _Frame(this.buildStart, this.buildFinish, this.rasterFinish, this.totalSpan);
+  final double buildStart;
+  final double buildFinish;
+  final double rasterFinish;
+  final double totalSpan;
+}
+
+/// SkalBridge with a drain log. Overriding the pumps rather than adding
+/// a hook to the framework keeps the shipping hot path byte-identical
+/// between the arms — the only thing that differs is the flag.
+class BenchBridge extends SkalBridge {
+  BenchBridge(super.skal) : _hdr = ByteData.sublistView(skal.bridge);
+
+  final ByteData _hdr;
+  final List<DrainRec> drains = <DrainRec>[];
+  bool logging = false;
+
+  /// EVERY pump entry, drained or not. `drains` only records pumps that
+  /// actually consumed ops, so it cannot distinguish "the Ticker stopped
+  /// firing" from "the Ticker fired and found an empty ring" — and those
+  /// two have opposite meanings for this experiment.
+  int pumpCalls = 0;
+  int offFramePumps = 0;
+
+  /// Set for the duration of a doorbell drain so the [pumpOps] override
+  /// (which `pumpOffFrame` calls through) attributes it correctly and
+  /// logs it exactly once.
+  bool _inOffFrame = false;
+
+  final Stopwatch clock = Stopwatch()..start();
+  double get nowMs => clock.elapsedMicroseconds / 1000.0;
+
+  int _drainedSeq() {
+    final lo = _hdr.getUint32(hLastDrainedSeq, Endian.little);
+    final hi = _hdr.getUint32(hLastDrainedSeq + 4, Endian.little);
+    return lo + hi * 0x100000000;
+  }
+
+  @override
+  void pumpOffFrame() {
+    _inOffFrame = true;
+    try {
+      super.pumpOffFrame();
+    } finally {
+      _inOffFrame = false;
+    }
+  }
+
+  @override
+  void pumpOps() {
+    pumpCalls++;
+    if (_inOffFrame) offFramePumps++;
+    if (!logging) {
+      super.pumpOps();
+      return;
+    }
+    // hLastDrainedSeq only advances when a pump really consumed ops.
+    // That is NOT the same as "this pump did something": a frame pump
+    // that finds an empty ring still flushes any notification an
+    // off-frame drain deferred to it. Logging only the ops-consuming
+    // pumps hides exactly those flushes and makes the paint latency of
+    // arms 1/2 look like hundreds of milliseconds.
+    final before = _drainedSeq();
+    final t0 = nowMs;
+    super.pumpOps();
+    final t1 = nowMs;
+    final consumed = _drainedSeq() != before;
+    // An off-frame pump that consumed nothing did nothing at all.
+    if (_inOffFrame && !consumed) return;
+    drains.add(DrainRec(t0, t1, _inOffFrame, consumed,
+        !_inOffFrame || offFrameNotify));
+  }
+}
+
+class _UiBench {
+  _UiBench(this.bridge, this.skal);
+
+  final BenchBridge bridge;
+  final Skal skal;
+
+  final List<_Frame> frames = <_Frame>[];
+
+  /// jsClockMs - dartClockMs. Added to a Dart timestamp to express it in
+  /// the JS `performance.now()` domain, subtracted to go the other way.
+  double offsetMs = 0;
+
+  // Bridge counters snapshotted at startLog, so a window reports deltas
+  // rather than since-boot totals.
+  int _snapOffFrameDrains = 0;
+
+  bool _timingsHooked = false;
+
+  /// Frames the SCHEDULER actually ran, counted independently of the
+  /// timings callback. If this advances while `frames` stays empty the
+  /// engine is producing frames that never reach raster; if neither
+  /// advances the vsync stream itself has stopped.
+  int _rawFrames = 0;
+  int _snapRawFrames = 0;
+  int _snapPumpCalls = 0;
+  int _snapOffFramePumps = 0;
+
+  double get _now => bridge.nowMs;
+
+  /// NTP-style min-RTT clock sync. `skal.evaluate` runs synchronously on
+  /// the JS thread, so sandwiching it between two Dart reads brackets the
+  /// JS timestamp; the sample with the smallest bracket has the least
+  /// uncertainty, and its midpoint is the best offset estimate. Typical
+  /// residual on macOS is a few microseconds — three orders below the
+  /// millisecond effects being measured.
+  void calibrate({int samples = 60}) {
+    var bestSpan = double.infinity;
+    var best = 0.0;
+    for (var i = 0; i < samples; i++) {
+      final d0 = _now;
+      final r = skal.evaluate('String(performance.now())', url: 'skal:clock');
+      final d1 = _now;
+      if (r.isError) continue;
+      final js = double.tryParse(r.value.trim());
+      if (js == null) continue;
+      final span = d1 - d0;
+      if (span < bestSpan) {
+        bestSpan = span;
+        best = js - (d0 + d1) / 2;
+      }
+    }
+    offsetMs = best;
+    debugPrint('[uibench] clock offset=${best.toStringAsFixed(3)}ms '
+        'bracket=${bestSpan.toStringAsFixed(4)}ms');
+  }
+
+  void _hookTimings() {
+    if (_timingsHooked) return;
+    _timingsHooked = true;
+    SchedulerBinding.instance.addPersistentFrameCallback((_) => _rawFrames++);
+    SchedulerBinding.instance.addTimingsCallback((List<FrameTiming> batch) {
+      if (!bridge.logging || batch.isEmpty) return;
+      // FrameTiming timestamps are on the engine's clock, not this
+      // isolate's Stopwatch. They ARE mutually consistent, so anchor the
+      // batch's last rasterFinish to "now" (the callback fires right
+      // after it) and carry every other phase across by its delta. Any
+      // residual is a constant dispatch delay, identical in every arm,
+      // so it cancels in the arm-to-arm comparison this bench exists for.
+      final now = _now;
+      final anchor =
+          batch.last.timestampInMicroseconds(FramePhase.rasterFinish);
+      for (final t in batch) {
+        double at(FramePhase p) =>
+            now + (t.timestampInMicroseconds(p) - anchor) / 1000.0;
+        frames.add(_Frame(
+          at(FramePhase.buildStart),
+          at(FramePhase.buildFinish),
+          at(FramePhase.rasterFinish),
+          t.totalSpan.inMicroseconds / 1000.0,
+        ));
+      }
+    });
+  }
+
+  void startLog() {
+    _hookTimings();
+    bridge.drains.clear();
+    frames.clear();
+    _snapOffFrameDrains = bridge.offFrameDrains;
+    _snapRawFrames = _rawFrames;
+    _snapPumpCalls = bridge.pumpCalls;
+    _snapOffFramePumps = bridge.offFramePumps;
+    bridge.pumpAvgNs = 0;
+    bridge.pumpPeakNs = 0;
+    bridge.offFrameAvgNs = 0;
+    bridge.logging = true;
+  }
+
+  Map<String, Object?> report(List<double> t0sJs) {
+    bridge.logging = false;
+
+    final drains = bridge.drains;
+    final apply = <double>[];
+    final paint = <double>[];
+    var unresolved = 0;
+
+    for (final t0js in t0sJs) {
+      final t0 = t0js - offsetMs; // → Dart clock
+
+      // A drain can only have seen this commit if it STARTED after it.
+      DrainRec? applied;
+      DrainRec? notifying;
+      for (final d in drains) {
+        if (d.tStart < t0) continue;
+        // Nothing can be notified before it has been applied, so ignore
+        // any pump that ran between the commit and the drain that
+        // consumed it.
+        if (applied == null && !d.consumed) continue;
+        applied ??= d;
+        if (d.notified) {
+          notifying = d;
+          break;
+        }
+      }
+      if (applied == null || notifying == null) {
+        unresolved++;
+        continue;
+      }
+      apply.add(applied.tEnd - t0);
+
+      // Which frame shows it. Two cases, and getting this wrong is how a
+      // benchmark "proves" an off-frame notify paints in 0 ms:
+      //
+      //   • The notify happened INSIDE a frame's build window. Only a
+      //     frame drain can do that, and the Ticker runs before Flutter
+      //     walks the dirty list, so THAT frame shows it.
+      //   • The notify happened between frames (arm 2's doorbell). The
+      //     next frame to START building shows it — a frame already
+      //     mid-build has passed the elements it would have rebuilt.
+      final tN = notifying.tEnd;
+      _Frame? shown;
+      for (final f in frames) {
+        if (f.buildStart <= tN && tN <= f.buildFinish) {
+          shown = f;
+          break;
+        }
+        if (f.buildStart > tN) {
+          shown = f;
+          break;
+        }
+      }
+      if (shown == null) {
+        unresolved++;
+        continue;
+      }
+      paint.add(shown.rasterFinish - t0);
+    }
+
+    var inFrameCpu = 0.0, offFrameCpu = 0.0;
+    var inFrameN = 0, offFrameN = 0;
+    for (final d in drains) {
+      if (d.offFrame) {
+        offFrameCpu += d.durMs;
+        offFrameN++;
+      } else {
+        inFrameCpu += d.durMs;
+        inFrameN++;
+      }
+    }
+
+    final builds = frames.map((f) => f.buildFinish - f.buildStart).toList();
+    final spans = frames.map((f) => f.totalSpan).toList();
+    // 60 Hz is 16.67 ms; anything past 1.5 vsyncs missed its slot.
+    final janky = spans.where((s) => s > 25.0).length;
+
+    return {
+      'samples': t0sJs.length,
+      'unresolved': unresolved,
+      'applyLatencyMs': _stats(apply),
+      'paintLatencyMs': _stats(paint),
+      'drains': {
+        'inFrame': inFrameN,
+        'offFrame': offFrameN,
+        'offFrameCounter': bridge.offFrameDrains - _snapOffFrameDrains,
+        'inFrameCpuMs': _r(inFrameCpu),
+        'offFrameCpuMs': _r(offFrameCpu),
+        'totalCpuMs': _r(inFrameCpu + offFrameCpu),
+        'pumpAvgNs': bridge.pumpAvgNs,
+        'pumpPeakNs': bridge.pumpPeakNs,
+        'offFrameAvgNs': bridge.offFrameAvgNs,
+      },
+      'sched': {
+        'rawFrames': _rawFrames - _snapRawFrames,
+        'pumpCalls': bridge.pumpCalls - _snapPumpCalls,
+        'framePumps': (bridge.pumpCalls - _snapPumpCalls) -
+            (bridge.offFramePumps - _snapOffFramePumps),
+        'framesEnabled': SchedulerBinding.instance.framesEnabled,
+        'lifecycle': '${SchedulerBinding.instance.lifecycleState}',
+      },
+      'frames': {
+        'count': frames.length,
+        'buildMs': _stats(builds),
+        'totalSpanMs': _stats(spans),
+        'janky': janky,
+      },
+    };
+  }
+
+  String writeReport(String text) {
+    final dir = Directory('${Platform.environment['HOME']}');
+    // App Support inside the sandbox container — the app is sandboxed on
+    // macOS, so /tmp is not writable.
+    final out = File('${dir.path}/uibench-report.txt');
+    try {
+      out.writeAsStringSync(text);
+      return out.path;
+    } catch (e) {
+      return 'ERR $e';
+    }
+  }
+}
+
+double _r(double v) => (v * 1000).roundToDouble() / 1000;
+
+Map<String, Object?> _stats(List<double> xs) {
+  if (xs.isEmpty) return {'n': 0};
+  final s = List<double>.from(xs)..sort();
+  double q(double p) => s[(p * (s.length - 1)).round()];
+  return {
+    'n': s.length,
+    'min': _r(s.first),
+    'p50': _r(q(0.5)),
+    'p95': _r(q(0.95)),
+    'max': _r(s.last),
+    'mean': _r(s.reduce((a, b) => a + b) / s.length),
+  };
+}
+
+/// Register the `uibench` service. Must be handed the [BenchBridge] the
+/// host mounted, so the drain log and the tree under test are the same
+/// bridge.
+void registerUiBenchService(BenchBridge bridge, Skal skal) {
+  final bench = _UiBench(bridge, skal);
+
+  registerService('uibench', (String method, List<Object?> args) {
+    switch (method) {
+      case 'calibrate':
+        bench.calibrate();
+        return bench.offsetMs;
+
+      // arm 0 = shipping (logic-only doorbell)
+      // arm 1 = doorbell on every committed batch, notify still deferred
+      // arm 2 = arm 1 + the off-frame drain notifies immediately
+      case 'arm':
+        final arm = args.isEmpty ? 0 : (args[0] as num).toInt();
+        bridge.offFrameNotify = arm >= 2;
+        return arm;
+
+      case 'startLog':
+        bench.startLog();
+        return 1;
+
+      case 'report':
+        final raw = args.isEmpty ? const <Object?>[] : args[0] as List<Object?>;
+        return bench.report(
+            raw.map((e) => (e as num).toDouble()).toList(growable: false));
+
+      case 'writeReport':
+        return bench.writeReport(args.isEmpty ? '' : '${args[0]}');
+
+      case 'emit':
+        // Long reports exceed a single log op comfortably; the JS side
+        // chunks and this just forwards, so the transcript survives even
+        // if the file write is blocked.
+        debugPrint('[uibench] ${args.isEmpty ? '' : args[0]}');
+        return 1;
+    }
+    throw 'uibench: unknown method "$method"';
+  });
+}
+
+/// Pretty-print helper used by the runner script when reading the file
+/// back; kept here so the JSON shape has exactly one definition.
+String encodeReport(Object? o) => const JsonEncoder.withIndent('  ').convert(o);
+```
+
+### The bench code — JS half (`ui-bench.js`)
+
+```js
+// ui-bench — is the §2b doorbell worth extending from logic RPC to
+// component ops? See examples/virt-bench/flutter-host/lib/ui_bench.dart
+// for the methodology and the Dart-side instrument.
+//
+// Three arms, all in one process so the clock calibration and the
+// machine state are shared:
+//
+//   arm 0  shipping. The doorbell rings only for ROOT-targeted invokes.
+//   arm 1  the doorbell rings for EVERY committed batch. The off-frame
+//          drain still defers widget notification to the next frame
+//          drain, so this arm moves decode work only.
+//   arm 2  arm 1, plus the off-frame drain notifies immediately —
+//          the "don't wait for a frame" version people actually mean.
+//
+// Two workloads:
+//
+//   w1  one prop on one node, 10 ms apart. The cheapest possible UI
+//       update, and the one where a per-frame drain looks worst. Pacing
+//       is deliberately NOT a multiple of 16.67 ms so the samples land
+//       uniformly across the vsync interval instead of piling up at one
+//       phase.
+//   w2  100 text labels rewritten together, 8 ms apart. Real churn —
+//       this is where moving decode out of the frame budget could
+//       plausibly pay for itself.
+//   w3  a UI update issued in the SAME tick as a service call —
+//       `setLoading(true); api.fetch()`, the most ordinary event
+//       handler there is. This one is not an experiment: the doorbell
+//       drains the whole ring, so w3 goes off-frame even in arm 0.
+//       It is here because it is the shipping path, and running it
+//       against arm 0 says whether shipping is correct.
+//
+// Arms run twice, interleaved (0,1,2,0,1,2), so thermal drift and
+// JSC tier-up show up as a round-to-round difference rather than being
+// silently attributed to whichever arm ran first.
+
+import { createSkalService } from 'skal/runtime';
+
+const uib = createSkalService('uibench');
+const bench = createSkalService('bench');
+
+const now = () =>
+  (typeof performance !== 'undefined' && performance.now
+    ? performance.now()
+    : Date.now());
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const log = (...a) => console.log('[uibench]', ...a);
+
+const ARMS = [
+  [0, 'shipping (logic-only doorbell)'],
+  [1, 'UI doorbell, deferred notify'],
+  [2, 'UI doorbell, immediate notify'],
+];
+
+async function setArm(arm) {
+  await uib.arm(arm);
+  // The JS half. Guarded: an older libskal/bridge without the switch
+  // leaves every arm equal to arm 0, which the report would show as
+  // three identical rows rather than as a silent no-op.
+  if (typeof globalThis.__skal_setUiDoorbell === 'function') {
+    globalThis.__skal_setUiDoorbell(arm >= 1);
+  } else {
+    log('!! __skal_setUiDoorbell missing — arms 1/2 are not actually armed');
+  }
+  await sleep(300); // let the tree settle before logging
+}
+
+/**
+ * @param mutate  (i) => void — writes ops synchronously. Must NOT make
+ *                an RPC: a root-targeted invoke rings the doorbell in
+ *                EVERY arm and would erase the difference under test.
+ */
+async function runWorkload(mutate, n, paceMs) {
+  for (let i = 0; i < 20; i++) {
+    mutate(i);
+    await sleep(paceMs);
+  }
+
+  await uib.startLog();
+
+  const t0s = new Array(n);
+  for (let i = 0; i < n; i++) {
+    // Ops are written synchronously inside mutate(); commit() runs on
+    // the microtask that the await below yields to. So t0 is the commit
+    // time to within a microtask.
+    const t0 = now();
+    mutate(i);
+    t0s[i] = t0;
+    await sleep(paceMs);
+  }
+
+  // Let the last update's frame rasterize and reach the timings callback
+  // before asking for the report.
+  await sleep(300);
+  return uib.report(t0s);
+}
+
+// ── formatting ───────────────────────────────────────────────────────
+const ms = (v) => (v === undefined ? '  —  ' : `${v.toFixed(2)}`);
+const pad = (s, w) => String(s).padStart(w);
+
+function statRow(label, st) {
+  if (!st || !st.n) return `${label.padEnd(22)} (no samples)`;
+  return `${label.padEnd(22)} n=${pad(st.n, 4)} `
+    + `p50=${pad(ms(st.p50), 7)} p95=${pad(ms(st.p95), 7)} `
+    + `max=${pad(ms(st.max), 7)} mean=${pad(ms(st.mean), 7)}`;
+}
+
+function describe(name, arm, r, out) {
+  out.push(`── ${name} · arm ${arm} ─────────────────────────────`);
+  out.push(statRow('  apply latency (ms)', r.applyLatencyMs));
+  out.push(statRow('  PAINT latency (ms)', r.paintLatencyMs));
+  const d = r.drains;
+  out.push(`  drains                 inFrame=${pad(d.inFrame, 4)} `
+    + `offFrame=${pad(d.offFrame, 4)}   `
+    + `cpu inFrame=${ms(d.inFrameCpuMs)}ms offFrame=${ms(d.offFrameCpuMs)}ms `
+    + `total=${ms(d.totalCpuMs)}ms`);
+  out.push(`  bridge counters        pumpAvg=${(d.pumpAvgNs / 1e6).toFixed(3)}ms `
+    + `pumpPeak=${(d.pumpPeakNs / 1e6).toFixed(3)}ms `
+    + `offFrameAvg=${(d.offFrameAvgNs / 1e6).toFixed(3)}ms`);
+  const s = r.sched;
+  out.push(`  scheduler              rawFrames=${pad(s.rawFrames, 4)} `
+    + `framePumps=${pad(s.framePumps, 4)} pumpCalls=${pad(s.pumpCalls, 4)} `
+    + `framesEnabled=${s.framesEnabled} ${s.lifecycle}`);
+  const f = r.frames;
+  out.push(statRow('  frame build (ms)', f.buildMs));
+  out.push(statRow('  frame span (ms)', f.totalSpanMs));
+  out.push(`  frames=${f.count} janky(>25ms)=${f.janky} `
+    + `unresolved samples=${r.unresolved}`);
+}
+
+function summary(all, out) {
+  out.push('');
+  out.push('══ SUMMARY — p50, median of the two rounds ══════════════');
+  out.push('workload  arm  applyP50  PAINTp50  inFrameCPU  offFrameCPU  janky');
+  for (const wl of ['w1', 'w2', 'w3']) {
+    for (const [arm, name] of ARMS) {
+      const rs = [0, 1].map((r) => all[`${wl}/${arm}/${r}`]).filter(Boolean);
+      if (!rs.length) continue;
+      const med = (f) => {
+        const v = rs.map(f).sort((a, b) => a - b);
+        return v.length === 2 ? (v[0] + v[1]) / 2 : v[0];
+      };
+      out.push(
+        `${wl.padEnd(9)} ${arm}    `
+        + `${pad(ms(med((r) => r.applyLatencyMs.p50 ?? 0)), 8)}  `
+        + `${pad(ms(med((r) => r.paintLatencyMs.p50 ?? 0)), 8)}  `
+        + `${pad(ms(med((r) => r.drains.inFrameCpuMs)), 10)}  `
+        + `${pad(ms(med((r) => r.drains.offFrameCpuMs)), 11)}  `
+        + `${pad(Math.round(med((r) => r.frames.janky)), 5)}   ${name}`);
+    }
+  }
+}
+
+/**
+ * @param hooks.setWidth  (i) => void  — w1 mutation
+ * @param hooks.setLabels (i) => void  — w2 mutation (100 nodes)
+ */
+export async function runUiBench(hooks) {
+  log('start — 3 arms x 2 workloads x 2 rounds');
+  const offset = await uib.calibrate();
+  log(`clock offset js-dart = ${offset.toFixed(3)}ms`);
+
+  const all = {};
+  const out = [];
+  const t0 = now();
+
+  for (let round = 0; round < 2; round++) {
+    for (const [arm] of ARMS) {
+      await setArm(arm);
+      all[`w1/${arm}/${round}`] =
+        await runWorkload(hooks.setWidth, 200, 10);
+      all[`w2/${arm}/${round}`] =
+        await runWorkload(hooks.setLabels, 150, 8);
+      all[`w3/${arm}/${round}`] =
+        await runWorkload(hooks.setWidthAndCall, 150, 10);
+      log(`round ${round} arm ${arm} done`);
+    }
+  }
+
+  // Back to shipping behaviour before anything else runs.
+  await setArm(0);
+
+  for (let round = 0; round < 2; round++) {
+    out.push('');
+    out.push(`########## ROUND ${round} ##########`);
+    for (const [arm, name] of ARMS) {
+      describe(`w1 single prop  · ${name}`, arm, all[`w1/${arm}/${round}`], out);
+      describe(`w2 100 labels   · ${name}`, arm, all[`w2/${arm}/${round}`], out);
+      describe(`w3 prop+RPC     · ${name}`, arm, all[`w3/${arm}/${round}`], out);
+    }
+  }
+  summary(all, out);
+  out.push('');
+  out.push(`total ${((now() - t0) / 1000).toFixed(1)}s`);
+
+  for (const line of out) log(line);
+  const path = await uib.writeReport(out.join('\n'));
+  log(`report written to ${path}`);
+  return all;
+}
+```
+
+---
+
 ## How to re-run
 
 To resurrect the bench:

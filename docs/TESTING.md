@@ -12,7 +12,8 @@ narrowest to slowest / broadest:
 
 ```bash
 bun run test                              # codegen (dart test) + host (flutter test)
-cd examples/kitchen-sink && bun test      # the JS unit tests (bun:test)
+cd packages/skal-js && bun test           # the JS framework: encoder, diff cache, doorbell
+cd examples/kitchen-sink && bun test      # an app's own JS unit tests (bun:test)
 bun --filter kitchen-sink test:e2e        # E2E (Maestro) — needs the maestro CLI + a device
 ```
 
@@ -127,8 +128,68 @@ see `scripts/android-emulator.sh`.)
 ## Where the framework itself is tested
 
 `flutter test` (in `packages/skal_flutter`) covers the Dart half — the wire
-format (`wire_test.dart`, incl. the prop/opcode table), the op decoder, node
-state, the registry. The **JS framework** (`packages/skal-js`) currently has no
+format (`wire_test.dart`, incl. the prop/opcode table), the op drain
+(`bridge_drain_test.dart`), node state, the registry, and the generated
+service-dispatch contract (`service_dispatch_contract_test.dart`).
+
+### Testing anything that needs a bridge
+
+`SkalBridge` takes a `SkalRuntime` (`lib/skal/runtime.dart`), not the
+concrete `Skal` — precisely so tests don't need a 60 MB dlopen. Hand it
+`FakeSkalRuntime` from `test/fake_skal_runtime.dart`:
+
+```dart
+late FakeSkalRuntime js;
+late SkalBridge bridge;
+
+setUp(() {
+  js = FakeSkalRuntime();
+  bridge = SkalBridge(js)..ensureRoot();
+});
+
+// The constructor ARMS the doorbell, so disarm it. Harmless against the
+// fake, but the native `enableHostNotify` allocates a RawReceivePort
+// that only this releases — leak one per test and each stays a live
+// target for a ring from a JS worker outliving the test.
+tearDown(() => bridge.disableOffFrameDrain());
+
+test('...', () {
+  js..createNode(2, wtBox)..setPropU32(2, propWidth, 100)..commit();
+  bridge.pumpOps();                     // a frame drain
+
+  js..setPropU32(2, propWidth, 200)..commitAndRing();   // + the doorbell
+});
+```
+
+The fake is a producer, not a stub: it writes real 16-byte ops at real
+`wire.dart` offsets into a real 6 MiB `Uint8List`. `commit()` mirrors
+bridge.js's `publishProgress`; `commitAndRing()` mirrors a batch
+carrying a ROOT-targeted invoke, which publishes and then rings
+`__skal_notifyHost()`. If the wire format drifts, these tests break.
+
+This seam exists because it was missing: the drain path had no coverage
+at all, and a stranded-update bug shipped past a 13-finding review and
+was only found by a 45-second benchmark on a real macOS build. See
+`docs/TODO_OPTIMIZATIONS.md` §2c. **If you touch `pumpOps` / `_drain` /
+`_flushTouched`, add a case there** — and check your test actually fails
+against the unfixed code before you trust it.
+
+### The JS side
+
+`bun test` in `packages/skal-js` covers the bridge's encoder, diff cache
+and the §2b doorbell — the ringing rule (ROOT-targeted invokes only) and
+the coalescing gate. `test/bridge.test.js` installs
+`globalThis.__skal_acquireBridge` + `__skal_notifyHost` over a plain
+6 MiB `ArrayBuffer` **before** dynamically importing `bridge.js`, which
+grabs its buffer at module-eval time.
+
+Everything asserts through the published wire contract — header cursors,
+raw op bytes — never module internals, so the tests break if the format
+moves. Both halves are mutation-checked: making the doorbell ring for
+every node id, or dropping the coalescing gate, each fails exactly one
+test.
+
+The rest of the **JS framework** (renderer, `hot.js`, store) has no
 `bun test` suite of its own; it's exercised end-to-end by the kitchen-sink plus
 the render bench (`docs/BENCHMARKS.md`). New pure-JS logic is a good candidate
 for a `bun test` suite (mock `globalThis.__skal_acquireBridge` to render the

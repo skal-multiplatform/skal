@@ -380,6 +380,14 @@ mathematically unaffected. This — not the "mutating outside
 `handleBeginFrame`" concern in [`PERFORMANCE.md`](PERFORMANCE.md) §1b —
 is the real constraint.
 
+> **Corrected 2026-07-26.** "The touched set stays empty" is true of
+> logic *dispatch* and false of the *drain*: the doorbell consumes the
+> whole ring, so a batch carrying both a UI op and a root-targeted
+> invoke — `setLoading(true); api.fetch()` — applies the UI op
+> off-frame too. That premise had produced a real stranded-update bug;
+> see §2c. §2c also measures the "drain everything" arm directly and
+> rejects it: paint latency does not move.
+
 ### Design
 
 Only the **JS→Dart** direction is frame-gated. `_writeMethodReply` →
@@ -555,6 +563,102 @@ Pump on a short timer (continuous CPU, plus the mid-frame notify
 hazard). Spin-wait in JS after ringing — it blocks the JS thread *and*
 does not make Dart drain sooner, since the UI isolate schedules the work
 when it schedules it.
+
+---
+
+## 2c. ✗ Extending the doorbell to component ops — MEASURED, REJECTED
+
+Built, measured in debug and release, and not worth shipping. Full
+numbers and the whole harness are in [BENCHMARKS.md](BENCHMARKS.md)
+§ Bench 5.
+
+Three arms — shipping, doorbell-on-every-batch with deferred notify, and
+the same with immediate notify — behind two default-off switches. Both
+switches, and the harness that drove them, were **removed after
+measuring**: a flag no product code sets is a liability, and the whole
+answer here is "don't build this". § Bench 5 carries the source and the
+five-step restore if the question ever comes back.
+
+**The result, in one line:** decode latency drops ~55× (8.5 ms → 0.15 ms,
+same factor as RPC) and **time to pixels does not move at all**.
+
+| workload | arm 0 paint p50 | arm 2 paint p50 | (release) |
+|---|---|---|---|
+| one prop | 9.80 ms | 9.71 ms | |
+| 100 labels | 15.34 ms | 11.51 ms | see caveat |
+| prop + RPC | 9.65 ms | 9.47 ms | |
+
+Paint is vsync-locked, and the frame drain runs from a Ticker in
+`handleBeginFrame` — *before* Flutter walks the dirty element list. So a
+drain at t+0.15 ms and a drain at the start of the next frame land in
+the same frame. There is no earlier frame to win.
+
+Frame build time was identical in every arm (3.65 / 3.93 / 4.01 ms for
+the 100-label workload). The decode being relocated is ~0.05 ms against
+a ~4 ms build — ~1% of the frame — and zero frames were janky in any
+arm. The 100-label delta is 2–4 ms of p50, inconsistent between rounds,
+absent from p95 in one of them, and probably `AUTO_COMMIT_OPS` splitting
+a batch across two frames; buying it means building the tree from a
+half-applied ring, which is a correctness hazard rather than a tradeoff.
+
+This is the empirical confirmation of §2b's *Why not simply drain
+everything on the doorbell*, and it is the whole reason §2b hoists logic
+ops only.
+
+### Correction to §2b's premise
+
+§2b argued the touched set "stays empty" under the doorbell because
+logic dispatch never touches `NodeState`. True of the *dispatch*, false
+of the *drain* — the doorbell drains the **whole ring**, so any UI op
+batched alongside a root-targeted invoke is applied off-frame with its
+notification deferred. `setLoading(true); api.fetch()` in one handler is
+exactly that shape.
+
+That premise had produced a real bug: `_pumpOpsBody` returned on
+`seq == _lastOpSeq` before flushing the deferred `touched` set, so with a
+steady stream of doorbell batches the frame drain never saw new ops,
+never flushed, and the UI update was stranded until unrelated traffic
+happened to wake a drain. Measured in **debug**, pre-fix: **366 ms to
+first paint, p95 978 ms**, and in one round no paint at all — against
+11.5 ms for the same prop written on its own. Post-fix, same mode:
+12.08 ms. (Both debug; the release table above is a different column,
+not a regression.)
+
+Fixed by `_flushTouched()`, called from the single exit of a frame pump
+rather than from a particular return path — a frame pump must never
+return leaving notifications owed, and attaching that to one `return`
+would leave the next early return free to reintroduce it.
+
+### Covered by tests as of 2026-07-27
+
+The bug shipped because the drain path had **no unit coverage at all** —
+`Skal` has a private constructor behind a 60 MB dlopen, so no test could
+build a `SkalBridge`, and a 45-second benchmark on a real macOS build was
+the only thing that could see the defect.
+
+Fixed structurally. `skal/runtime.dart` declares `SkalRuntime` — the nine
+members the bridge actually calls, no more — which `Skal` implements on
+both targets, and `SkalBridge.skal` is typed to it. `EvalResult` moved
+there too (it was defined identically in both target files) and is
+re-exported from each, so imports of `skal_ffi.dart` are unaffected.
+
+Narrowing the field is source-breaking for anything reaching *through*
+the bridge to a runtime member outside the nine — `bridge.skal.dispose()`
+and friends. Nothing in-repo does, so `flutter analyze` stays silent;
+it's in the 0.2.0 changelog for the record. Hold the `Skal` you
+constructed and call those on it.
+
+`test/fake_skal_runtime.dart` is a producer, not a stub: it writes real
+16-byte ops at the real `wire.dart` offsets into a real 6 MiB
+`Uint8List`, and publishes them exactly as `bridge.js` does — `commit()`
+for `publishProgress`, `commitAndRing()` for a batch carrying a
+root-targeted invoke. Wire drift breaks the tests, which is the point.
+
+`test/bridge_drain_test.dart` pins the three-way contract §2b
+introduced: a frame drain applies **and** notifies; an off-frame drain
+applies and **defers**; something always comes back for the deferred
+work. Verified as a real guard — reverting `_flushTouched` fails 4 of
+the 10 and leaves the other 6 green.
 
 ---
 

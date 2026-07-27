@@ -27,13 +27,21 @@ on mismatch.
 
 See `docs/bytecode-cache.md` § "JSC version coupling".
 
-### iOS Frameworks/ dylib regeneration on bun rebuild
-`examples/kitchen-sink/flutter-host/ios/Frameworks/{iphonesimulator,iphoneos}/libskal.dylib`
-are checked-in copies of `build/skal-iossim/libskal.dylib` /
-`build/skal-ios-device/libskal.dylib`. If you rebuild bun for iOS
-without re-copying, the Flutter iOS build ships a stale dylib. Add
-this to `examples/kitchen-sink/Makefile`'s `bundle` target (or a new `sync-ios`
-target).
+### ~~iOS Frameworks/ dylib regeneration on bun rebuild~~ — done (2026-07-27)
+`examples/kitchen-sink/Makefile` now has a `sync-ios` target: the
+checked-in `ios/Frameworks/{iphonesimulator,iphoneos}/libskal.dylib`
+are declared as Make targets of `build/skal-ios*/libskal.dylib`, so a
+newer source is copied automatically and `ios-sim` depends on it. Each
+variant is included only if its source exists — the device dylib needs
+a from-source WebKit JSC build most checkouts lack.
+
+Complementary guard: `scripts/skal-link.sh` now verifies every binary
+it installs against the C ABI header, symbol by symbol (the expected
+set is parsed from `packages/skal_native/include/skal.h`, so adding an
+entry point tightens the check automatically). A missing export is
+otherwise SILENT — the Dart lookups are nullable and degrade, so an
+app on a pre-doorbell libskal runs fine and merely loses the
+optimization. That cost two benchmark runs on 2026-07-26.
 
 ### Background-isolate asset extraction
 `main.dart`'s `_extractBytecodeAssets` runs synchronously on the
@@ -107,6 +115,35 @@ wholesale writes.
 
 ## Smaller things
 
+### ~~Material ↔ Cupertino design switching~~ — fixed (2026-07-27)
+Two independent defects, both surfaced by the demo's Animations screen:
+
+- **A crash in a supported configuration.** `_screenChrome`'s Cupertino
+  branch returned a bare `CupertinoPageScaffold`, which hosts no
+  `Material`. A Skal tree is not all-Cupertino — the builders emit
+  Material widgets needing an ink host — so a `<screen title>` under
+  Cupertino design threw "No Material widget found" as soon as one
+  painted. No switching involved. Fixed with a
+  `Material(type: MaterialType.transparency)` around the content: it
+  paints nothing, clips nothing, sets no text style.
+- **Switching the mode did nothing.** `MemoizingListenableBuilder`
+  serves each node's cached subtree until that node's own `cold` fires,
+  so a flip reached almost nothing and the tree rendered half in each
+  design — while three comments called the mode init-time-only and the
+  demo shipped a button for it. `opSetDesign` now dirties every node
+  when (and only when) the mode actually changes; brightness alone still
+  goes through `_SkalBrightness` and rebuilds only `<text>`. The three
+  stale comments are corrected.
+
+A third suspect — `CupertinoPage` ↔ `MaterialPage` colliding under one
+`ValueKey<int>` — turned out to be wrong: `Page.canUpdate` compares
+`runtimeType`, so the navigator replaces the route by itself. The
+design-discriminating page key written for it was deleted after mutating
+it back changed no test.
+
+Covered by `test/design_mode_test.dart` (7 widget tests over a real
+`SkalRoot` + `Navigator`, which the `SkalRuntime` seam made possible).
+
 ### `<lazyColumn>` alignment support
 Today `_buildLazyColumn` ignores `PROP_ALIGNMENT`. `ListView.builder`
 positions children by extent, not by main-axis arrangement; getting
@@ -114,24 +151,43 @@ alignment to work needs a `SliverList` + leading/trailing widgets.
 Add when an app shows up that needs it.
 
 ### Tests
-- Bridge round-trip test: write a known op stream into the shared
-  region, call `pumpOps`, assert the resulting NodeState graph.
-  Catches future wire-format regressions.
-- Cross-language wire-constant test: parse `wire.dart` + `bridge.js`
-  side by side and assert all `OP_*` / `PROP_*` / `WT_*` literals
-  agree. Catches the "added a constant on one side, forgot the
-  other" footgun.
+- ~~Bridge round-trip test~~ — **done** (2026-07-27).
+  `test/bridge_drain_test.dart` + `test/fake_skal_runtime.dart` write a
+  real op stream into a real 6 MiB region at the real `wire.dart`
+  offsets, pump, and assert the resulting NodeState graph and its
+  notifications. Needed a seam first (`skal/runtime.dart`) because
+  `Skal`'s constructor is private behind a `dlopen`.
+- ~~Cross-language wire-constant test~~ — **done**,
+  `test/wire_cross_lang_test.dart`.
+- ~~`packages/skal-js` has no suite~~ — **started** (2026-07-27).
+  `packages/skal-js/test/bridge.test.js` (`bun test`, wired into
+  `.github/workflows/tests.yml`) covers the encoder, the diff cache and
+  the doorbell ringing rule + coalescing gate. Still uncovered on the JS
+  side: the renderer, `hot.js`, and the store.
 
-### `flutter analyze` warning
-`bridge.dart:59:23` — "Angle brackets will be interpreted as HTML".
-A `Set<int>` in a doc comment. Wrap in backticks.
+### ~~`flutter analyze` warning~~ — done (2026-07-27)
+`packages/skal_flutter` and both example hosts now analyze with **zero**
+issues (was 13 infos + 1). Worth keeping at zero: the next real warning
+should not have to be spotted inside a standing list.
 
-### Dispose semantics on hot reload
-`NodeState.dispose()` releases the ChangeNotifier listeners. On
-Flutter hot reload the entire SkalRoot tree gets recreated but the
-bridge's `nodes` map persists — listeners from the old tree are
-leaked. Not critical for production builds (no hot reload there)
-but worth a clean shutdown path.
+### ~~Dispose semantics on hot reload~~ — investigated, not a leak (2026-07-27)
+Two paths, both already correct:
+
+- **Node removal** (`opRemoveNode`, `<animatedList>` exit, builder-row
+  eviction) goes through `_removeSubtree`, which *does* call
+  `NodeState.dispose()` on every node in the DFS.
+- **The hot-reload sweep** (`opResetRootSubtree`) deliberately does
+  NOT dispose the generation it drops, and says so in a comment: the
+  outgoing SkalNode widgets and any host `AnimationController`s are
+  still mounted until the rebuild, and disposing a notifier they hold
+  would risk "used after dispose" if one ticks in between. Dropping
+  from `nodes` is enough — each swept NodeState is unreferenced once
+  its widget unmounts and removes its own listener.
+
+Now pinned by `group('hot-reload tree sweep')` in
+`test/bridge_drain_test.dart`, including the root-instance identity
+(SkalRoot is bound to it; replacing it strands the mounted root on a
+dead notifier) and id reuse by the incoming generation.
 
 ---
 

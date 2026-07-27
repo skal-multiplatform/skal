@@ -398,8 +398,11 @@ template for it.
 
 - **Control lane.** A small ring plus its **own arg arena**, carved from
   the 4 MiB op ring. Header bytes 52–63 are free — exactly three spare
-  u32 slots (write pos, read pos, arena pos). Opcodes are u8 with 33
-  used (highest `0x2C`). `skal_entry.zig` pins only `BRIDGE_SIZE`; the
+  u32 slots (write pos, read pos, arena pos). Opcodes are u8 with 34
+  used (highest `0x2D` — `opClearProp`); allocate new ones from `0x2E`
+  and update this line, `bridge.js` and `wire.dart` together, or the
+  collision only shows up as mis-dispatched ops at runtime.
+  `skal_entry.zig` pins only `BRIDGE_SIZE`; the
   sub-regions are a JS↔Dart contract, so the total stays 6 MiB and the
   Zig layout does not move.
 - **Why a dedicated arena, not the shared string heap.** `resetFrame()`

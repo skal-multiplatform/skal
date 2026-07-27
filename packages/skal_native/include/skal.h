@@ -50,8 +50,17 @@ extern "C" {
  * arguments at all.) */
 int64_t skal_create_runtime(const char* dir, size_t dir_len);
 
-/* Stops the runtime and releases its resources. The handle is invalid
- * after this call. Pass 0 to no-op. */
+/* Retires the handle. Pass 0 to no-op.
+ *
+ * Do NOT use the handle after this call — but be aware of what the
+ * implementation actually does, because the two differ: bun's VM has no
+ * teardown short of process exit, so this is currently a no-op and the
+ * runtime is leaked deliberately (patches/skal_entry.zig). Nothing is
+ * freed and nothing is invalidated.
+ *
+ * The contract is still "the handle is dead", so that a future release
+ * CAN free it without breaking callers. This comment previously stated
+ * the release as fact. */
 void skal_dispose_runtime(int64_t handle);
 
 /* Evaluate `source` as a Program with the given URL (used for stack

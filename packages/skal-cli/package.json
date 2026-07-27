@@ -13,8 +13,9 @@
     "README.md",
     "LICENSE"
   ],
+  "_engines_note": "Tracks vite 8's own floor (^20.19.0 || >=22.12.0) — the generated project's build/dev scripts invoke vite directly, so a Node the CLI accepts but vite rejects fails at `skal build`, not at install. This said >=18, and every generated build failed under Node 18.",
   "engines": {
-    "node": ">=18"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "repository": {
     "type": "git",

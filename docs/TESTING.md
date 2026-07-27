@@ -129,8 +129,9 @@ see `scripts/android-emulator.sh`.)
 
 `flutter test` (in `packages/skal_flutter`) covers the Dart half — the wire
 format (`wire_test.dart`, incl. the prop/opcode table), the op drain
-(`bridge_drain_test.dart`), node state, the registry, and the generated
-service-dispatch contract (`service_dispatch_contract_test.dart`).
+(`bridge_drain_test.dart`), node state, the registry, the generated
+service-dispatch contract (`service_dispatch_contract_test.dart`), and
+reply-heap back-pressure (`reply_backpressure_test.dart`).
 
 ### Testing anything that needs a bridge
 
@@ -189,7 +190,26 @@ moves. Both halves are mutation-checked: making the doorbell ring for
 every node id, or dropping the coalescing gate, each fails exactly one
 test.
 
-The rest of the **JS framework** (renderer, `hot.js`, store) has no
+`test/store.test.js` covers `LogStore` recovery and the segment
+lifecycle over **both** pure-JS backends — `MemoryBackend` and
+`FsBackend` differ in how a reopen sees prior state, and the recovery
+paths are exactly where that matters. It exists because the store had no
+tests at all and a data-corruption bug lived in `open()` behind a comment
+asserting the opposite: a hint naming a stale tail was read back as the
+active segment, so the next seal advanced onto an id that already existed
+and wrote frames at offsets that aliased the ones there. Reads of
+untouched keys started returning other keys' bytes. The store is the only
+subsystem in Skal that can return silently WRONG data — everything else
+fails as a crash, a missing frame, or a dropped paint — so treat a change
+there as needing a test that fails against the unfixed engine.
+
+`test/renderer-web-clear.test.js` covers turning a DOM prop back off,
+including two tests that pin the *limits* of the learned-declaration
+approach. Those are deliberate: if someone makes the clear exact, the
+failure there is the reminder to update the comment that promises only
+so much.
+
+The rest of the **JS framework** (renderer, `hot.js`) has no
 `bun test` suite of its own; it's exercised end-to-end by the kitchen-sink plus
 the render bench (`docs/BENCHMARKS.md`). New pure-JS logic is a good candidate
 for a `bun test` suite (mock `globalThis.__skal_acquireBridge` to render the

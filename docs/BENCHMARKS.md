@@ -1673,6 +1673,58 @@ export async function runUiBench(hooks) {
 
 ---
 
+## Bench 6 — Prop-clear rework (correctness change, measured for cost)
+
+Turning a prop back off (`color={active ? RED : null}`) needed a real
+removal path on both targets. Two of those changes touch hot code, so
+both were measured rather than assumed.
+
+**Web set path — 2x faster.** The first attempt LEARNED each prop's
+declarations by diffing the element's style across the prop's first
+write. It was wrong three ways (value-dependent, blind to the eleven
+DOM-property cases, mis-attributed shared declarations) and it was not
+free: a `Map` per element plus two `O(declarations)` scans per
+(element, prop). Replacing it with an explicit table removed all of that
+from the set path.
+
+| path | per prop write |
+|---|---|
+| learn by diffing styles (removed) | 12 496 ns |
+| explicit clear table (shipped)    |  6 076 ns |
+
+40 000 prop writes over 4 000 elements under happy-dom. The learner was
+**106% overhead on top of the actual work** — so the correctness fix is
+also the faster one.
+
+**Bridge dedup check — no measurable change.** `clearProp` could not ask
+"was anything ever sent for this slot" without a sentinel, and the F32
+lane's sentinel is NaN — a value `setPropF32` can legitimately store, so
+a NaN height read as "never set" and was never cleared. The fix gives
+each lane a bit in the byte that already existed, turning the u32 dedup
+check from `has[slot] !== 0` / `= 1` into `& 1` / `|= 1`.
+
+| variant | median | ns/op |
+|---|---|---|
+| `= 1` / `!== 0` (old) | 17.9 ms | 0.893 |
+| `|= 1` / `& 1` (new)  | 17.9 ms | 0.896 |
+
+7 interleaved A/B rounds of 20 M iterations, medians. Delta 0.4%, inside
+a per-round spread of 0.8-1.0 ms.
+
+**Do not read that 0.4% as a result.** The first attempt at this bench
+ran A-then-B once and reported +99.5%, then -6.7%, then +0.1% on
+successive runs, because whichever side ran second inherited the warm
+JIT and cache. Interleaving and taking medians is what made it stable.
+At ~0.9 ns/op the honest statement is that one extra ALU op on a byte
+already in L1 is below what this harness resolves — no allocation, no
+new array, no extra memory traffic.
+
+Both harnesses were throwaway; neither is in the tree. The web one
+imports `renderer-web.js` under happy-dom and re-implements the removed
+learner alongside it; the slot one is a standalone A/B over a
+`Uint8Array` + `Int32Array` pair.
+
+
 ## How to re-run
 
 To resurrect the bench:

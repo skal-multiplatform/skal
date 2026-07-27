@@ -36,11 +36,41 @@
   design. Node subtrees are cached until the node's own notifier fires,
   so the flip reached almost nothing; `opSetDesign` now invalidates every
   node when the mode changes (a brightness-only change still does not).
+- Setting a cold prop to `null` did nothing, so a conditional prop could
+  be turned on but never off — `color={active ? Colors.red : null}`
+  stayed red once it had been red. `null` now removes the key and the
+  widget's default applies. New op `opClearProp` (0x2D); older hosts skip
+  unknown fixed-size ops harmlessly.
+- The reply heap's wraparound spin-waited on the UI thread for up to
+  50 ms and then rewound regardless of whether JS had read the bytes it
+  was about to clobber — a freeze that did not even buy correctness. On
+  Flutter Web it could not work at all: the loop re-read a mirror word
+  that only refreshes at pump boundaries, on a thread JS shares. Events
+  whose payload does not fit are now queued behind the same overflow
+  queue a full event ring uses and delivered on a later pump, in order.
+- Payloads larger than the whole 256 KiB reply heap were truncated
+  mid-UTF-8, handing the receiver a string that fails to decode.
+  Truncation now lands on a codepoint boundary and logs in debug. A
+  value that large still cannot be delivered whole — that needs chunked
+  payload ownership on the wire. Such a payload also spans the entire
+  heap, so it now waits for JS to drain like any other write instead of
+  clobbering every live reference.
+- Clearing a stack-positioning prop (`top`/`right`/`bottom`/`left`) did
+  not re-dirty the parent `<stack>`, so the child stayed pinned at the
+  offset that had just been removed. `opClearProp` now mirrors
+  `opSetPropU32`'s follow-ups, and the two paths share their test.
+- Queued events survived a hot reload, dispatching into a JS registry
+  that no longer existed and pinning every deferred payload string for
+  the life of the process. Both overflow queues are cleared by the tree
+  sweep, and retained payloads are now capped (~4 M chars) with one
+  diagnostic rather than growing until the app dies.
 
 ### Added
 
 - `SkalRuntime` + a test seam for it. See `docs/TESTING.md` § Testing
   anything that needs a bridge.
+- `opClearProp` (0x2D) — remove a built-in cold prop from all three
+  typed maps, the enum-keyed counterpart of `opClearCustomProp`.
 
 ## 0.1.0
 

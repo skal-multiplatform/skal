@@ -339,6 +339,7 @@ export class LogStore {
     this._seq = 0;
     this._active = null;        // { id, buf, len, persisted }
     this._lastHintMs = 0;       // throttle clock for _writeHint
+    this._maxSegId = -1;        // highest segment id known to exist
   }
 
   get backendKind() { return this._b.kind; }
@@ -349,9 +350,20 @@ export class LogStore {
   // no usable hint we fall back to a full segment scan — O(total-bytes).
   //
   // The hint is self-validating (every segment it references must still
-  // exist) and a stale one is still safe: the forward scan from the
+  // exist) and a stale one costs only latency: the forward scan from the
   // hint's tail reconciles any frames the hint didn't yet know about.
-  // So correctness never depends on the hint — only open() latency.
+  //
+  // What the scan does NOT reconcile is which segment takes appends.
+  // The hint records the tail as of the last (throttled, 1/s) write; a
+  // crash between a seal and the next hint leaves it naming an OLDER
+  // segment. This used to be read back as the active one — and the next
+  // `_seal()` then advanced to `id + 1`, an id that already existed, and
+  // began writing frames at offsets that aliased the ones already there.
+  // Reads of untouched keys started returning other keys' bytes. See
+  // the `stale hint` group in test/store.test.js.
+  //
+  // So: the hint controls WHERE THE SCAN RESUMES, and nothing else. The
+  // active segment is always the newest segment in existence.
   open() {
     const segs = this._b.listSegments();
     const hint = this._loadHint(segs);
@@ -363,6 +375,7 @@ export class LogStore {
 
     if (segs.length === 0) {
       const id = hint ? hint.tail.id : 0;
+      this._maxSegId = id;
       this._active = this._b.directActive
         ? { id, direct: true }
         : { id, buf: new Uint8Array(SEG_SIZE), len: 0, persisted: 0 };
@@ -370,8 +383,13 @@ export class LogStore {
     }
 
     const lastId = segs[segs.length - 1];
-    const activeId = hint ? hint.tail.id : lastId;
+    // Newest in existence — on disk, or the empty never-flushed segment
+    // a seal opened just before the hint was written (`_loadHint` admits
+    // a tail above `lastId` only when its length is 0). Never the hint's
+    // tail on its own: see the note above `open()`.
+    const activeId = hint ? Math.max(lastId, hint.tail.id) : lastId;
     const scanFrom = hint ? hint.tail.id : segs[0];
+    this._maxSegId = activeId;
     let activeBytes = null;
 
     for (const id of segs) {
@@ -530,13 +548,24 @@ export class LogStore {
     try { this._b.metaPut('hint', buf); } catch (_) {}
   }
 
+  // The id a seal opens next. `a.id + 1` alone is only safe while the
+  // active segment is the newest one — which `open()` now guarantees.
+  // This keeps the guarantee LOCAL: even if some future path made an
+  // older segment active, a seal still lands on unused ground rather
+  // than writing frames over an existing segment's bytes.
+  _nextSegId() {
+    const next = Math.max(this._active.id, this._maxSegId) + 1;
+    this._maxSegId = next;
+    return next;
+  }
+
   // Seal the active segment (flush its tail, cache it) and open a fresh one.
   _seal() {
     const a = this._active;
     if (a.direct) {
       // Every byte is already in the mapping — just advance to a fresh
       // segment; the mmap backend maps the new file on first write.
-      this._active = { id: a.id + 1, direct: true };
+      this._active = { id: this._nextSegId(), direct: true };
       return;
     }
     if (a.len > a.persisted) {
@@ -544,7 +573,7 @@ export class LogStore {
     }
     this._cacheSet(a.id, a.buf.slice(0, a.len));
     this._active = {
-      id: a.id + 1, buf: new Uint8Array(SEG_SIZE), len: 0, persisted: 0,
+      id: this._nextSegId(), buf: new Uint8Array(SEG_SIZE), len: 0, persisted: 0,
     };
   }
 

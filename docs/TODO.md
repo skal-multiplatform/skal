@@ -10,6 +10,127 @@ For platform-specific work see [`TODO_PLATFORMS.md`](TODO_PLATFORMS.md).
 
 ---
 
+## Open as of 2026-07-28 — after the review sweep
+
+A snapshot of what is left after the two code reviews and the
+performance report were worked through. Everything here is either
+verified-real or explicitly marked unmeasured; nothing is speculative.
+
+Items are ordered by what I would actually do next, not by size.
+
+### 1. Nothing on this branch has been through CI
+
+`fix/store-corruption-and-prop-clear` carries 15 commits and CI has
+never run on any of them. Local suites are green (123 JS · 14 Zig ·
+97 Flutter · 33 codegen) and it has been exercised on macOS and an
+iPhone 17 Pro simulator, but the android/desktop/ios-sim matrix has not
+seen a line of it — and android was red for a week earlier the same day.
+
+Everything below is lower priority than getting this pushed.
+
+### 2. libskal rebuild — one fix is inert without it
+
+`patches/skal_entry.zig` no longer CRC-verifies every frame twice at
+startup (`mapSegment` already checks everything below the cursor, so
+`replayInto` skips it). That is **source-only**: it does nothing until
+libskal is rebuilt and the binaries republished.
+
+Same applies to anything else landing in the Zig store.
+
+### 3. Web still allocates a 6 MiB bridge it never uses
+
+Importing `bridge.js` on a DOM target allocates a 6 MiB `ArrayBuffer`
+plus ~1 MB of diff-cache arrays, and `skal-runtime.jsx` imports it
+unconditionally — the store pulls it in merely to resolve a directory.
+The DOM renderer never reads or writes an encoded op, so all of it is
+inert.
+
+The fix is conditional exports / splitting the platform-neutral API away
+from the native bridge. Deliberately not attempted in the same unpushed
+batch as everything else — it reshapes module boundaries.
+
+### 4. Web list parity — the two halves still missing
+
+Builder-mode `<listView count renderItem>` is windowed as of
+2026-07-28 (O(viewport), no cap). Still eager:
+
+- **JSX-children lists.** The renderer is handed already-built nodes and
+  has nowhere to defer them to. Needs a different contract, not a
+  different loop.
+- **Horizontal builder lists** (`axis=1`) keep the 1500-row eager path.
+  Windowing them is the same work against `scrollLeft`/`clientWidth`;
+  they are rare, and the fallback is pinned by a test so it cannot rot
+  silently.
+
+See also *Web target — Flutter→DOM consistency* below, which tracks a
+different web gap (hand-maintained widget mapping), and
+[`WEB_SUPPORT_PLAN.md`](WEB_SUPPORT_PLAN.md).
+
+### 5. Reply payloads larger than the whole reply heap still truncate
+
+A single value over 256 KiB cannot be delivered whole: an event record
+carries one `(offset, length)` into a fixed region. It now truncates on
+a codepoint boundary and says so in debug, rather than mid-sequence and
+silently — but it is still truncation.
+
+Carrying it properly needs chunked payload ownership: a multi-part arg
+type on the wire, implemented in both JS and Dart.
+
+### 6. Store — two unmeasured candidates
+
+Flagged by review, **not measured**, and this session's record on
+unmeasured perf claims is poor (see `BENCHMARKS.md` Bench 6 and 9 — two
+"obvious" wins turned out to be noise, one turned out to be 2x). Measure
+before touching:
+
+- `dropMemo` is `memo-size x removed-prefixes`, so bulk deletion may be
+  quadratic.
+- Hydration performs many independent reactive writes where one batch
+  would do.
+
+### 7. Codegen rebuilds more than it needs to
+
+A fresh analyzer context per invocation, every Dart file in every
+selected package re-resolved, service discovery walking the package
+again, and `package_config.json` re-read and re-parsed. Real; none of it
+on a runtime hot path.
+
+### 8. Smaller, real, independent
+
+- `skal-plugin-geolocator` boots what is effectively a Flutter Web
+  runtime on web to reach `navigator.geolocation`. Call it directly.
+- The site prerenderer injects a script that clears the static tree
+  before the module remounts it, so "prerendered first paint" can be a
+  blank interval. Every docs content module is also bundled into one
+  client chunk (~102 KB of raw strings).
+
+### Known coverage gaps (deliberate, recorded so they are not surprises)
+
+- **Native store, tombstone accounting.** Removing replay's tombstone
+  branch fails no test. `get()` filters tombstones itself so reads are
+  unaffected, and superseded frames are already marked dead upstream, so
+  `dead` stays over the compaction threshold either way. Catching it
+  needs an exact-byte assertion brittle enough to break on any
+  frame-header change. See the note in `store_test.zig`.
+- **Perf budgets.** Only `indexed_child_list_test.dart` has one. The
+  benchmarks in `BENCHMARKS.md` are run by hand.
+
+### Open question
+
+- **Are the published Android artifacts stale?** The android CI job was
+  red from 2026-07-19 until the WebKit pin fix on 2026-07-27, so the
+  last genuinely-built Android libskal predates that window. Worth
+  checking what is actually published before anyone depends on it.
+
+### Migration note (pre-release, so cheap — but do not lose it)
+
+Store data on the **JS engine** moved from `<dataDir>/` to
+`<dataDir>/<name>/` (default name `store`) when `cfg.name` started being
+honoured on that path. Anything persisted on the old path reads as
+empty. Native was always namespaced and is unaffected.
+
+---
+
 ## Build pipeline
 
 ### Runtime bytecode version check

@@ -76,7 +76,7 @@ libskal is rebuilt and the binaries republished.
 
 Same applies to anything else landing in the Zig store.
 
-### 3. Web still allocates a 6 MiB bridge it never uses
+### 3. ~~Web still allocates a 6 MiB bridge it never uses~~ — done (2026-07-28)
 
 Importing `bridge.js` on a DOM target allocates a 6 MiB `ArrayBuffer`
 plus ~1 MB of diff-cache arrays, and `skal-runtime.jsx` imports it
@@ -84,9 +84,19 @@ unconditionally — the store pulls it in merely to resolve a directory.
 The DOM renderer never reads or writes an encoded op, so all of it is
 inert.
 
-The fix is conditional exports / splitting the platform-neutral API away
-from the native bridge. Deliberately not attempted in the same unpushed
-batch as everything else — it reshapes module boundaries.
+Fixed without reshaping module boundaries: with no host, bridge.js now
+allocates only the 64-byte header. That is safe only because the writers
+now REFUSE when there is no host — everything past the header lives at
+offsets outside the stub, and a typed-array write past the end is
+silently dropped in JS rather than throwing, so quietly scribbling into
+nowhere was the real risk.
+
+Chasing whether the fallback bytes were genuinely "inert" (the comment
+said so; they were not) turned up the 4.8-second DOM store boot, which
+was much larger than the allocation. See the commit for that.
+
+The diff caches (~1 MB) are still allocated eagerly on web. Smaller, and
+they would need the same audit.
 
 ### 4. Web list parity — the two halves still missing
 

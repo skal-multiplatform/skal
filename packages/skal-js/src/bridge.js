@@ -472,7 +472,39 @@ if (HAS_NATIVE_BRIDGE) {
     throw new Error(`Skal: bridge buffer not available (got ${buffer && buffer.byteLength})`);
   }
 } else {
-  buffer = new ArrayBuffer(BRIDGE_SIZE);
+  // No host: allocate a STUB, not the full 6 MiB.
+  //
+  // Importing this module on a DOM target used to allocate the whole
+  // region — 6 MiB plus the diff caches below — for bytes nothing reads.
+  // `skal-runtime.jsx` imports it unconditionally and the store used to
+  // pull it in just to ask for a data directory, so every web page paid
+  // for a bridge it has no host for.
+  //
+  // Only the 64-byte header is addressable here. Everything past it (op
+  // ring, string heap, reply heap, event ring) lives at offsets well
+  // outside this buffer — and a typed-array write past the end is
+  // SILENTLY DROPPED in JS, not an error. So the writers below refuse
+  // outright when there is no host rather than scribbling into nowhere;
+  // see `_noHost`.
+  buffer = new ArrayBuffer(HEADER_SIZE);
+}
+
+/// Refuse a bridge write when no host exists, loudly and once.
+///
+/// Every op writer funnels through here. On native `HAS_NATIVE_BRIDGE`
+/// is a module-eval constant `true`, so the branch folds away and costs
+/// nothing on the hot path.
+let _warnedNoHost = false;
+function _noHost(what) {
+  if (!_warnedNoHost) {
+    _warnedNoHost = true;
+    console.error(
+      `Skal: ${what} called with no native bridge. The DOM target speaks ` +
+      `DOM directly and has no host to drain the op ring; this write has ` +
+      `been dropped. If you are seeing this, something imported the ` +
+      `NATIVE renderer (skal/renderer) on web instead of skal/renderer-web.`);
+  }
+  return true;
 }
 
 const u8     = new Uint8Array(buffer);
@@ -664,6 +696,7 @@ function flushAndWaitForDrain() {
 }
 
 export function writeOp(opcode, a, b, c) {
+  if (!HAS_NATIVE_BRIDGE && _noHost('writeOp')) return;
   let w = opWritePos32;
   // Overflow guard — must run BEFORE the write so the safety margin in
   // RING_NEAR_END32 keeps publishProgress's own writes safe.
@@ -691,6 +724,7 @@ let _strOffset = 0;
 let _strLength = 0;
 
 function writeString(s) {
+  if (!HAS_NATIVE_BRIDGE && _noHost('writeString')) return;
   // Worst-case UTF-8 expansion is 3 bytes per code unit (BMP chars; the
   // 4-byte surrogate-pair case averages 2 bytes per code unit, so 3× is
   // conservative). If the next string might not fit, drain everything

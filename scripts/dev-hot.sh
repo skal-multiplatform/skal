@@ -21,7 +21,20 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-bun run build:js-only
+# Build only if there is no bundle yet.
+#
+# hot-reload-server.js immediately spawns `vite build --watch`, which
+# does its own initial build — so an unconditional build here meant
+# every `dev:ios` / `dev:macos` paid for two full vite builds before the
+# app even launched. The eager one still earns its place on a first-ever
+# run, where `flutter run` would otherwise race the watcher and launch
+# against a missing asset. After that the watcher's build is the one
+# that matters, and anything stale in between is exactly what the hot
+# reload is about to replace.
+if [[ ! -f "examples/${APP}/flutter-host/assets/skal-app.js" \
+   && ! -f "${APP}/flutter-host/assets/skal-app.js" ]]; then
+  bun run build:js-only
+fi
 bun "${SCRIPT_DIR}/hot-reload-server.js" "$APP" &
 SRV=$!
 trap "kill $SRV 2>/dev/null" EXIT

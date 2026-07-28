@@ -46,15 +46,39 @@ export class MemoryBackend {
     this._meta = new Map();
   }
   listSegments() { return [...this._segs.keys()].sort((a, b) => a - b); }
+
+  // Capacity-doubling, not copy-the-whole-thing-every-time.
+  //
+  // This used to allocate a new array of (old + delta) per append and
+  // copy the old contents in, which is quadratic in the number of
+  // appends. Filling one 256 KiB segment with 256-byte deltas took
+  // 1024 appends, ~134 MB of copying and 12 ms.
+  //
+  // Doubling makes it amortized O(1) with no cost on the read side —
+  // `getSegment` hands back a subarray of the live buffer rather than
+  // concatenating chunks, so reads stay exactly as cheap as before.
+  // (A chunk list would have fixed the append and taxed every read.)
   appendSegment(id, bytes) {
-    const cur = this._segs.get(id);
-    if (!cur) { this._segs.set(id, bytes.slice()); return; }
-    const next = new Uint8Array(cur.length + bytes.length);
-    next.set(cur);
-    next.set(bytes, cur.length);
-    this._segs.set(id, next);
+    let seg = this._segs.get(id);
+    if (!seg) {
+      seg = { buf: new Uint8Array(Math.max(1024, bytes.length * 2)), len: 0 };
+      this._segs.set(id, seg);
+    }
+    const need = seg.len + bytes.length;
+    if (need > seg.buf.length) {
+      let cap = seg.buf.length || 1024;
+      while (cap < need) cap *= 2;
+      const grown = new Uint8Array(cap);
+      grown.set(seg.buf.subarray(0, seg.len));
+      seg.buf = grown;
+    }
+    seg.buf.set(bytes, seg.len);
+    seg.len = need;
   }
-  getSegment(id) { return this._segs.get(id) || null; }
+  getSegment(id) {
+    const seg = this._segs.get(id);
+    return seg ? seg.buf.subarray(0, seg.len) : null;
+  }
   dropSegment(id) { this._segs.delete(id); }
   flush() {}
   metaGet(k) { return this._meta.get(k) || null; }

@@ -5,13 +5,14 @@ narrowest to slowest / broadest:
 
 | Layer | Runner | Language | What it covers |
 |---|---|---|---|
-| JS unit | `bun test` | JS | framework + plugin logic (`*.test.js`) |
+| JS unit | `bun test` | JS | framework, store, renderers (`*.test.js`) |
+| Native store | `zig test` | Zig | the on-device log store (`bun run test:native`) |
 | Codegen | `dart test` | Dart | the build_runner codegen pipeline |
 | Host | `flutter test` | Dart | the bridge decoder, wire format, widget builders |
 | **E2E** | **Maestro** | **YAML** | the whole stack on a real device |
 
 ```bash
-bun run test                              # codegen (dart test) + host (flutter test)
+bun run test                              # JS + native store + codegen + host
 cd packages/skal-js && bun test           # the JS framework: encoder, diff cache, doorbell
 cd examples/kitchen-sink && bun test      # an app's own JS unit tests (bun:test)
 bun --filter kitchen-sink test:e2e        # E2E (Maestro) — needs the maestro CLI + a device

@@ -18,6 +18,45 @@ verified-real or explicitly marked unmeasured; nothing is speculative.
 
 Items are ordered by what I would actually do next, not by size.
 
+### 0. The performance report is stale — check it against this table
+
+A performance report covering the ticker, node inflation, store hot
+path and web lists was worked through on 2026-07-28. It gets re-read,
+and re-reading it wastes time because most of it is done. Its own
+validation line dates it: "74 Flutter, 33 codegen, 50 JS/store" is a
+mid-sweep snapshot; the tree is now 97 / 33 / 123 plus 14 Zig.
+
+| Report item | Status |
+|---|---|
+| 1 · idle ticker at 60/120 fps | **done** — `7987927`, measured 0 BUILD phases while idle |
+| 2 · per-node memory | **partly** — NodeState lazy in `e763910`; the hot layer is still installed on every node, see § 6c |
+| 3 · ChunkedFor / web lists | **mostly** — scheduler `992674d`, builder windowing `50a65c1`. The prefix re-slice it flags measures 0.010 ms/mount — negligible. JSX-children and horizontal lists still eager, see § 4 |
+| 4 · store hot path | **partly** — staging `068f8c7`, index hints `a83f4fd`. Hydration batching open, see § 6 |
+| 5 · event-path stalls | **partly** — reply heap `e83e0ef`. Zig per-wake task and web sync round trip open, see § 6b |
+| `<Row>` → SingleChildScrollView | **done** — `7987927` |
+| codegen caching | open, see § 7 |
+| native store double scan | **done in source** — `e763910`; inert until a libskal rebuild, see § 2 |
+| geolocator on web | open, see § 8 |
+| site prerender / bundling | open, see § 8 |
+| dev-hot duplicate build | **done** — `1e8fdbb` |
+| overclaiming comments | **done** — `992674d` corrected three |
+| HUD forcing continuous frames | **done** — `eafdb1c` |
+| Zig store has no tests | **done** — `fa51592`, 14 tests |
+| `skal.h` dispose mismatch | **done** — `992674d` |
+| kitchen-sink "virtualized" feed | open — see § 9 |
+| 11,600 lines across five files | open, unaddressed |
+| mobile-perf benchmark is a scaffold | open, unaddressed |
+
+What the report does NOT contain, found while working through it — all
+fixed, listed so nobody re-derives them from a report that never
+mentioned them: the seeded-collection persistence bug (`e829952`), the
+JS store sharing one keyspace across stores (`dcb7c5c`), the stale-hint
+segment aliasing (`201de7d`), unremovable null props (`e83e0ef`), the
+console proxy clobbering the string-heap cursor and the oversize-reply
+branch clobbering unread bytes (both `e83e0ef`), a `will-change` layer
+pinned forever after clearing a hot prop (`50a65c1`), and two rows in
+the demo that genuinely overflow an iPhone (`ae5230b`, `e65a57f`).
+
 ### 1. Nothing on this branch has been through CI
 
 `fix/store-corruption-and-prop-clear` carries 15 commits and CI has
@@ -138,6 +177,22 @@ on a runtime hot path.
   before the module remounts it, so "prerendered first paint" can be a
   blank interval. Every docs content module is also bundled into one
   client chunk (~102 KB of raw strings).
+
+### 9. The kitchen-sink feed is not actually virtualized
+
+`examples/kitchen-sink/src/App.jsx` renders the tweet feed with a plain
+`<For each={tweetsToShow()}>` inside a `<ListView>` — JSX children, not
+builder mode — so every tweet is created eagerly. The report is right
+about this and it is still true.
+
+It matters more than a demo blemish: the builder path (`count` +
+`renderItem`) is the one that virtualizes on native and, as of
+`50a65c1`, windows on web. The showcase for virtualization is the one
+screen not using it, so neither implementation is exercised by the app
+people actually run.
+
+Converting it would demonstrate the feature and give both paths a real
+workload at the same time.
 
 ### Known coverage gaps (deliberate, recorded so they are not surprises)
 

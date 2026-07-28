@@ -186,7 +186,7 @@ void main() {
       for (var i = 0; i < 4; i++) {
         bridge.dispatchEventStr(600 + i, big);   // the 4th spills
       }
-      expect(bridge.queuedReplyChars, greaterThan(0),
+      expect(bridge.queuedReplyBytes, greaterThan(0),
           reason: 'the queue has to be non-empty for this to test anything');
 
       final huge = 'H' * (kReplyHeapSize * 2 + 91);
@@ -301,7 +301,7 @@ void _overflowCapTests() {
       bridge.dispatchEventStr(800 + i, 'q' * chunk);
     }
 
-    final retained = bridge.queuedReplyChars;
+    final retained = bridge.queuedReplyBytes;
     expect(retained, lessThanOrEqualTo(4 * 1024 * 1024),
         reason: 'retention must respect the ceiling');
     expect(retained, lessThan(sent * chunk ~/ 2),

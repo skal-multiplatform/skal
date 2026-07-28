@@ -41,12 +41,6 @@ import 'registry.dart';
 import 'runtime.dart';
 import 'wire.dart';
 
-/// Shared decoder for chunked payload slices. `utf8.decoder` allocates a
-/// fresh `Utf8Decoder` on every access; this one is const and its
-/// `convert(bytes, start, end)` takes a range, so slicing a payload
-/// needs no intermediate copy.
-const Utf8Decoder _utf8Decoder = Utf8Decoder();
-
 class SkalBridge {
   /// The JS runtime — used to dispatch events back to JS, and exposed
   /// so callers can run extra eval probes from outside.
@@ -109,12 +103,24 @@ class SkalBridge {
   /// the same order — both are FIFO and pushed/popped in lockstep, so
   /// the head of this queue always belongs to the first payload-bearing
   /// record in that one.
-  final Queue<String> _replyOverflow = Queue<String>();
+  /// Holds ENCODED bytes, not the String.
+  ///
+  /// The flush retries the head on every pump until the heap has room,
+  /// and it used to retry with the String — so the reply write
+  /// re-encoded the whole payload, threw it away, and returned "not
+  /// now", once per pump. The number of pumps a payload waits grows with
+  /// its size, so the total encode work was O(n^2) in the payload. On an
+  /// iPhone simulator that was 40 ms for 64 KB, 688 ms for 256 KB and
+  /// 10.8 s for 1 MiB — 4x the data for ~16x the time, measured.
+  ///
+  /// Encoding once at spill time and keeping the bytes makes the retry
+  /// free: it is a capacity check and a memcpy, with no re-encode.
+  final Queue<Uint8List> _replyOverflow = Queue<Uint8List>();
 
-  /// Total UTF-16 code units held in [_replyOverflow]. Tracked
+  /// Total payload BYTES held in [_replyOverflow]. Tracked
   /// incrementally — summing the queue would make spilling quadratic
   /// under exactly the burst that fills it.
-  int _replyOverflowChars = 0;
+  int _replyOverflowBytes = 0;
 
   /// Ceiling on retained payloads, ~8 MiB of UTF-16.
   ///
@@ -123,18 +129,18 @@ class SkalBridge {
   /// corrupted string for an OOM. Past this, the oldest payloads are
   /// dropped: they are the ones whose consumer has been unreachable
   /// longest, and a wedged JS worker is already a dead app.
-  static const int _kReplyOverflowMaxChars = 4 * 1024 * 1024;
+  static const int _kReplyOverflowMaxBytes = 4 * 1024 * 1024;
 
   /// Whether the drop diagnostic has been emitted — once per run, not
   /// once per drop.
   bool _warnedReplyOverflow = false;
 
-  /// UTF-16 code units of payload currently retained by the overflow
-  /// queue. A seam, because the ceiling is otherwise unobservable: a
-  /// test could only watch what got *delivered*, which is the same
-  /// whether the queue is bounded or growing until the process dies.
+  /// Payload bytes currently retained by the overflow queue. A seam,
+  /// because the ceiling is otherwise unobservable: a test could only
+  /// watch what got *delivered*, which is the same whether the queue is
+  /// bounded or growing until the process dies.
   @visibleForTesting
-  int get queuedReplyChars => _replyOverflowChars;
+  int get queuedReplyBytes => _replyOverflowBytes;
 
   /// One state per JS-created node, keyed by JS node id (dense small
   /// ints). Plain `Map<int, NodeState>` — primitive int keys avoid
@@ -704,7 +710,7 @@ class SkalBridge {
           // during a stream grew the Dart heap monotonically.
           _eventOverflow.clear();
           _replyOverflow.clear();
-          _replyOverflowChars = 0;
+          _replyOverflowBytes = 0;
           if (resetRoot != null) {
             resetRoot.clearChildren();
             resetRoot.leavingChildren?.clear();
@@ -1593,34 +1599,33 @@ class SkalBridge {
     // arriving during back-pressure spilled WHOLE and was handed to
     // [_flushEventOverflow] — whose [_tryWriteReplyString] truncates it.
     // The feature skipped itself in the one condition it exists for.
-    if (payload != null && _exceedsReplyHeap(payload)) {
-      _dispatchChunked(handlerId, eventKind, argType, payload);
-      return;
+    // ONE encode for the entire journey. The reply heap wants bytes, the
+    // overflow queue now HOLDS bytes, and _dispatchChunked slices bytes —
+    // so nothing downstream re-encodes, and a payload that waits in the
+    // queue is never re-encoded per pump (which is what made large
+    // replies quadratic; see [_replyOverflow]).
+    Uint8List? bytes;
+    if (payload != null) {
+      bytes = utf8.encode(payload);
+      // Oversize BEFORE the ordering gate inside [_placeEvent], not after
+      // it: a value larger than the whole heap has no single-record form,
+      // so it has to be split whether or not something is already queued.
+      // The parts then take the gate individually and line up behind
+      // whatever is there, so ordering still holds.
+      //
+      // This used to sit below the gate, which meant an oversize payload
+      // arriving during back-pressure spilled WHOLE and was handed to
+      // [_flushEventOverflow], which truncates it — the feature skipped
+      // itself in the one condition it exists for.
+      if (bytes.length > kReplyHeapSize) {
+        _dispatchChunked(handlerId, eventKind, argType, bytes);
+        return;
+      }
     }
 
     _placeEvent(
-        eventKind, argType, handlerId, argValueI32, argHeapOffset, payload);
+        eventKind, argType, handlerId, argValueI32, argHeapOffset, bytes);
     skal.wakeJs();
-  }
-
-  /// Does [s] encode to more UTF-8 bytes than the whole reply heap?
-  ///
-  /// Bounds first, encode only if they disagree. UTF-8 is never FEWER
-  /// bytes than the string has UTF-16 code units, and never more than
-  /// 3x (an astral pair is 2 units → 4 bytes, so 2/unit; the worst case
-  /// is a 3-byte BMP char at 1 unit). Both bounds settle it outright
-  /// except in a narrow band, so an ordinary dispatch — a keystroke, a
-  /// tuple callback — never allocates here at all.
-  ///
-  /// The check used to be `utf8.encode(payload).length > kReplyHeapSize`
-  /// inline, which encoded the whole payload, threw the result away, and
-  /// left [_tryWriteReplyString] to encode the identical string a second
-  /// time: two full encodes and two transient buffers on the hot path
-  /// for every event carrying a string.
-  bool _exceedsReplyHeap(String s) {
-    if (s.length > kReplyHeapSize) return true;      // bytes >= units
-    if (s.length * 3 <= kReplyHeapSize) return false; // bytes <= 3 * units
-    return utf8.encode(s).length > kReplyHeapSize;
   }
 
   /// Place one record — ring slot or overflow queue — WITHOUT waking JS.
@@ -1634,7 +1639,7 @@ class SkalBridge {
   /// ceiling. Callers that own a multi-record transfer have to know:
   /// a dropped part strands every part before it.
   bool _placeEvent(int eventKind, int argType, int handlerId, int argValueI32,
-      int argHeapOffset, String? payload) {
+      int argHeapOffset, Uint8List? payload) {
     // Ordering first: once anything has spilled, everything spills, or a
     // later event overtakes an earlier one. Both back-pressure sources
     // share this one queue precisely so that ordering is a single rule
@@ -1645,10 +1650,10 @@ class SkalBridge {
     }
 
     if (payload != null) {
-      final slot = _tryWriteReplyString(payload);
+      final slot = _tryWriteReplyBytes(payload);
       if (slot == null) {
         // Reply heap still holds bytes JS has not read. Queue the event
-        // with its string in Dart and place it once JS catches up — a
+        // with its bytes in Dart and place it once JS catches up — a
         // frame of latency instead of a stalled UI thread.
         return _spill(eventKind, argType, handlerId, argValueI32,
             argHeapOffset, payload);
@@ -1703,8 +1708,7 @@ class SkalBridge {
   /// `utf8.decode`, which throws where the browser's decoder substitutes.
   /// The backoff below is load-bearing, not belt-and-braces.
   void _dispatchChunked(
-      int handlerId, int eventKind, int argType, String payload) {
-    final bytes = utf8.encode(payload);
+      int handlerId, int eventKind, int argType, Uint8List bytes) {
     // Leave headroom so a chunk always fits even when the heap is
     // partly occupied — otherwise the first chunk defers, the queue
     // drains it, and the next still cannot fit.
@@ -1730,10 +1734,11 @@ class SkalBridge {
         handlerId,
         0,
         0,
-        // `convert(bytes, at, end)` rather than `decode(bytes.sublist())`
-        // — the sublist copies every slice for nothing, on a path that
-        // is already moving the payload more times than it should.
-        _utf8Decoder.convert(bytes, at, end),
+        // A VIEW of the already-encoded payload — no copy, no decode,
+        // no re-encode. This used to decode each slice back to a String
+        // only for the layer below to encode it again, which moved the
+        // payload four times to deliver it once.
+        Uint8List.sublistView(bytes, at, end),
       );
       if (!placed) {
         _abandonChunked(handlerId, eventKind, argType, at, bytes.length);
@@ -1758,13 +1763,13 @@ class SkalBridge {
   /// truncation this feature replaced, which at least delivered.
   ///
   /// So place the terminator with an EMPTY payload. It adds nothing to
-  /// the queue's char count, so the ceiling that just refused a 128 KiB
+  /// the queue's byte count, so the ceiling that just refused a 128 KiB
   /// slice cannot refuse it in turn. Straight to [_spill] rather than
   /// [_placeEvent]: the parts ahead of it are in the queue, and the ring
   /// path would jump them.
   void _abandonChunked(
       int handlerId, int eventKind, int argType, int sent, int total) {
-    _spill(eventKind, argType, handlerId, 0, 0, '');
+    _spill(eventKind, argType, handlerId, 0, 0, Uint8List(0));
     assert(() {
       debugPrint('Skal: dropped the tail of a $total-byte payload after '
           '$sent bytes — the overflow queue is over its ceiling. The '
@@ -1781,9 +1786,9 @@ class SkalBridge {
   /// Returns false when the ceiling refused the record — see
   /// [_abandonChunked] for why a multi-part transfer has to care.
   bool _spill(int eventKind, int argType, int handlerId, int argValueI32,
-      int argHeapOffset, String? payload) {
+      int argHeapOffset, Uint8List? payload) {
     if (payload != null &&
-        _replyOverflowChars + payload.length > _kReplyOverflowMaxChars) {
+        _replyOverflowBytes + payload.length > _kReplyOverflowMaxBytes) {
       // Over the ceiling. Refuse the INCOMING record rather than evicting
       // the head: the two queues advance in lockstep, and dropping from
       // the front would mean finding and removing the matching event
@@ -1795,7 +1800,7 @@ class SkalBridge {
         _warnedReplyOverflow = true;
         assert(() {
           debugPrint('Skal: the JS side has not drained the reply heap and '
-              'over ${_kReplyOverflowMaxChars ~/ (1024 * 1024)} MiB of '
+              'over ${_kReplyOverflowMaxBytes ~/ (1024 * 1024)} MiB of '
               'payloads are queued — dropping further ones. The JS worker '
               'is probably wedged or the app was backgrounded mid-stream.');
           return true;
@@ -1811,19 +1816,23 @@ class SkalBridge {
     _eventOverflow.add(payload == null ? 0 : 1);
     if (payload != null) {
       _replyOverflow.add(payload);
-      _replyOverflowChars += payload.length;
+      _replyOverflowBytes += payload.length;
     }
     return true;
   }
 
-  /// Reply-heap cursor — bumped on each [_tryWriteReplyString] call.
+  /// Reply-heap cursor — bumped on each [_tryWriteReplyBytes] call.
   /// Rewinds to 0 when an allocation would exceed capacity AND JS's
   /// read pointer (`hReplyHeapReadPos`) has caught up.
   int _replyHeapWritePos = 0;
 
-  /// Try to write [s] into the reply heap (Dart-write, JS-read) as
-  /// UTF-8. Returns the byte offset + byte length, or **null** when the
-  /// write would clobber bytes JS has not read yet.
+  /// Try to write already-encoded [bytes] into the reply heap
+  /// (Dart-write, JS-read). Returns the byte offset + byte length, or
+  /// **null** when the write would clobber bytes JS has not read yet.
+  ///
+  /// Takes BYTES, not a String: the flush retries the head of the
+  /// overflow queue on every pump, and encoding there made large
+  /// payloads quadratic. See [_replyOverflow].
   ///
   /// Null means "not now", never "not ever": [dispatchEvent] queues the
   /// event and retries on the next pump, by which time JS has drained.
@@ -1843,8 +1852,7 @@ class SkalBridge {
   /// thread on native with no barrier, and `readPos == writePos` is the
   /// single state a stale read cannot get wrong (it only ever advances,
   /// so a stale value is behind the truth, never ahead of it).
-  (int offset, int length)? _tryWriteReplyString(String s) {
-    final bytes = utf8.encode(s);
+  (int offset, int length)? _tryWriteReplyBytes(Uint8List bytes) {
     final len = bytes.length;
     if (len > kReplyHeapSize) {
       // KNOWN LIMIT, not a wraparound case: one value larger than the
@@ -2138,9 +2146,9 @@ class SkalBridge {
       var argValueI32 = _eventOverflow.elementAt(3);
       var argHeapOffset = _eventOverflow.elementAt(4);
       if (_eventOverflow.elementAt(5) == 1) {
-        final slot = _tryWriteReplyString(_replyOverflow.first);
+        final slot = _tryWriteReplyBytes(_replyOverflow.first);
         if (slot == null) break; // JS still hasn't drained; next tick
-        _replyOverflowChars -= _replyOverflow.removeFirst().length;
+        _replyOverflowBytes -= _replyOverflow.removeFirst().length;
         argHeapOffset = slot.$1;
         argValueI32 = slot.$2;
       }

@@ -27,7 +27,7 @@
 import { createSignal, untrack } from 'solid-js';
 import { createStore as createSolidStore, produce } from 'solid-js/store';
 import { LogStore, NativeLogStore, openBackend } from './engine.js';
-import { getAppDataDir, HAS_NATIVE_BRIDGE } from '../../bridge.js';
+import { getAppDataDir } from '../../bridge.js';
 
 const FLUSH_DEBOUNCE_MS = 60;
 // LRU cap on memoized proxy nodes (see makeNode). Deliberately moderate:
@@ -124,7 +124,13 @@ async function fetchDataDir() {
   //
   // Measured before this guard: `createSkalStore(...)` on a DOM target
   // reported ready after 4774 ms. After: ~0 ms.
-  if (!HAS_NATIVE_BRIDGE) return '';
+  // Checked at CALL time, not via bridge.js's module-eval
+  // HAS_NATIVE_BRIDGE constant. A host installs this global before the
+  // bundle runs in production, so the two agree there — but the
+  // constant is frozen at first import, which makes it untestable once
+  // any other module has already pulled bridge.js in, and would miss a
+  // host that appeared later.
+  if (typeof globalThis.__skal_acquireBridge !== 'function') return '';
 
   for (let attempt = 0; attempt < 5; attempt++) {
     try {

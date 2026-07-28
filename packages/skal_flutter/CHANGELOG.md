@@ -50,14 +50,21 @@
   queue a full event ring uses and delivered on a later pump, in order.
 - Payloads larger than the whole 256 KiB reply heap were truncated
   mid-UTF-8, handing the receiver a string that fails to decode.
-  Truncation now lands on a codepoint boundary and logs in debug. A
+  Truncation now lands on a codepoint boundary and logs in debug.
   Such a payload also spans the entire heap, so it waits for JS to drain
   like any other write instead of clobbering every live reference.
 - **A reply larger than the whole 256 KiB heap is now delivered whole**,
   where it used to be truncated. New arg type `eventArgStrChunk` (0x08):
   Dart splits the payload into parts plus a final record carrying the
   real type, JS reassembles by record id. Chunks are cut on codepoint
-  boundaries.
+  boundaries — JS decodes each part as it lands, so a seam inside a
+  multi-byte sequence would corrupt silently.
+  Splitting happens before the back-pressure queue is consulted, so an
+  oversize value that arrives while the queue is busy is still chunked
+  rather than falling through to the truncating path. A transfer whose
+  tail the 4 MiB queue ceiling refuses is closed with an empty
+  terminator: the receiver gets the prefix, instead of holding the
+  parts forever waiting for a record that never comes.
 - Clearing a stack-positioning prop (`top`/`right`/`bottom`/`left`) did
   not re-dirty the parent `<stack>`, so the child stayed pinned at the
   offset that had just been removed. `opClearProp` now mirrors

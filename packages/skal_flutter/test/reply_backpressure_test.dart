@@ -151,10 +151,11 @@ void main() {
     });
 
     test('a multi-byte payload splits on codepoint boundaries', () {
-      // JS reassembles before decoding, so a mid-sequence cut would
-      // still join correctly — but anything inspecting a part on its own
-      // would see mojibake, and the cost of not relying on that is a few
-      // bytes per chunk.
+      // Load-bearing, not tidiness. JS does NOT reassemble bytes:
+      // `readReplyString` runs a TextDecoder over each part as it lands
+      // and only then joins the strings, so a part that ended
+      // mid-sequence would decode to U+FFFD on both sides of the seam —
+      // silently, because that decoder is non-fatal.
       final huge = '€' * kReplyHeapSize;    // 3 bytes each
       bridge.dispatchEventStr(901, huge);
 
@@ -165,9 +166,48 @@ void main() {
       }
       parts.addAll(js.drainEvents());
 
-      // drainEvents utf8-decodes each part; a split sequence throws
-      // FormatException there. Reaching this line is half the assertion.
+      // drainEvents utf8-decodes each part INDIVIDUALLY, with
+      // allowMalformed off — a split sequence throws FormatException
+      // there, so reaching this line is half the assertion. (That is
+      // also the one way this fake is stricter than the browser, which
+      // substitutes instead of throwing.)
+      expect(parts.length, greaterThan(1), reason: 'must have been split');
       expect(parts.map((e) => e.payload!).join(), huge);
+    });
+
+    test('an oversize payload still chunks when the queue is NOT empty', () {
+      // The ordering gate used to come first, so a payload larger than
+      // the heap that arrived while anything was queued spilled WHOLE
+      // and reached _flushEventOverflow — which truncates it to 256 KiB.
+      // Chunking skipped itself in the exact condition it exists for:
+      // back-pressure. A stream emitting two big values back to back is
+      // all it takes.
+      final big = 'b' * (80 * 1024);
+      for (var i = 0; i < 4; i++) {
+        bridge.dispatchEventStr(600 + i, big);   // the 4th spills
+      }
+      expect(bridge.queuedReplyChars, greaterThan(0),
+          reason: 'the queue has to be non-empty for this to test anything');
+
+      final huge = 'H' * (kReplyHeapSize * 2 + 91);
+      bridge.dispatchEventStr(650, huge);
+
+      final parts = <FakeEvent>[];
+      for (var round = 0; round < 60; round++) {
+        parts.addAll(js.drainEvents());
+        bridge.pumpOps();
+      }
+      parts.addAll(js.drainEvents());
+
+      final mine = parts.where((e) => e.id == 650).toList();
+      expect(mine.length, greaterThan(1), reason: 'must have been split');
+      expect(mine.last.argType, eventArgStr);
+      expect(mine.map((e) => e.payload!).join(), huge);
+
+      // And the values queued ahead of it still came first.
+      final ids = parts.map((e) => e.id).toList();
+      expect(ids, equals([...ids]..sort()),
+          reason: 'chunks must queue behind what was already there');
     });
 
     test('a payload that FITS is not chunked', () {
@@ -267,6 +307,38 @@ void _overflowCapTests() {
     expect(retained, lessThan(sent * chunk ~/ 2),
         reason: 'retention must not track what was sent — $sent x $chunk '
             'chars went in and $retained is being held');
+  });
+
+  test('a transfer the ceiling cuts short is TERMINATED, not abandoned', () {
+    // The chunk protocol makes JS hold every part until a record with
+    // the real arg type releases them. So a transfer whose tail the
+    // ceiling refuses must still be closed out — otherwise the handler
+    // never fires, an awaiting caller never settles, and the parts stay
+    // pinned in the JS map for the life of the process. That is worse
+    // than the truncation chunking replaced, which at least delivered.
+    final huge = 'z' * (6 * 1024 * 1024);   // past the 4 MiB ceiling
+    bridge.dispatchEventStr(770, huge);
+
+    final parts = <FakeEvent>[];
+    for (var round = 0; round < 80; round++) {
+      parts.addAll(js.drainEvents());
+      bridge.pumpOps();
+    }
+    parts.addAll(js.drainEvents());
+
+    final mine = parts.where((e) => e.id == 770).toList();
+    expect(mine, isNotEmpty);
+    // The last record carries the REAL type — that is the terminator JS
+    // waits on. Without it every record is a part and nothing dispatches.
+    expect(mine.last.argType, eventArgStr,
+        reason: 'the transfer must be closed, not left open forever');
+    for (var i = 0; i < mine.length - 1; i++) {
+      expect(mine[i].argType, eventArgStrChunk);
+    }
+    // Truncated, as advertised — a prefix, and a prefix of the original.
+    final joined = mine.map((e) => e.payload!).join();
+    expect(joined.length, lessThan(huge.length));
+    expect(huge.startsWith(joined), isTrue);
   });
 
   test('what does survive is still in order — a gap, never a reorder', () {

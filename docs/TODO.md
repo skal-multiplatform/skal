@@ -116,15 +116,38 @@ different web gap (hand-maintained widget mapping), and
 
 ### 5. ~~Reply payloads larger than the whole reply heap truncate~~ — done (2026-07-28)
 
-A single value over 256 KiB cannot be delivered whole: an event record
-carries one `(offset, length)` into a fixed region. It now truncates on
-a codepoint boundary and says so in debug, rather than mid-sequence and
-silently — but it is still truncation.
+A single value over 256 KiB had no representation: an event record
+carries one `(offset, length)` into a fixed region, so anything bigger
+was truncated.
 
 Fixed with `eventArgStrChunk` (0x08): Dart splits an oversize payload
 into N-1 part records plus a final one carrying the real arg type, and
 JS accumulates by record id and prepends on completion. Ordering comes
-free from the overflow queue. Chunks are cut on codepoint boundaries.
+free from the overflow queue. Chunks are cut on codepoint boundaries,
+which is required rather than tidy — JS decodes each part as it lands
+and its decoder is non-fatal, so a seam inside a sequence would corrupt
+in silence.
+
+A follow-up review (2026-07-28) found the first cut shipped correct
+splitting on top of three receive-side holes, all of them downstream of
+the same gap: the JS reassembler had no tests at all, because the Dart
+tests joined the parts themselves. Closed together —
+
+- the oversize check sat BELOW the back-pressure gate, so a big payload
+  arriving while the queue was busy spilled whole and hit the truncating
+  path — chunking skipped itself in the one case it was written for;
+- a tail refused by the 4 MiB queue ceiling left the transfer open
+  forever: handler never fired, parts pinned for the process lifetime.
+  It now closes with an empty terminator and delivers the prefix;
+- accumulations were keyed by record id alone, but handler ids and call
+  ids are independent sequences that collide, so an orphaned transfer
+  could prepend itself to an unrelated event. Entries carry their event
+  kind and a mismatch discards. Hot-reload teardown clears the map.
+
+Hot-path cost went with it: the size check was encoding the whole
+payload and throwing the result away, leaving `_tryWriteReplyString` to
+encode it again. It now decides from the UTF-16 length in the common
+case and never allocates.
 
 ### 6. Store — measured; one was real, one was not
 

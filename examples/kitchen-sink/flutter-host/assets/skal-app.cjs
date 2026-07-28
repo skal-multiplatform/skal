@@ -17,7 +17,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
   function Po() {
     return { ...be.context, id: be.getNextContextId(), count: 0 };
   }
-  var Ao = (e, r) => e === r, Le = Symbol("solid-proxy"), Oo = typeof Proxy == "function", hr = Symbol("solid-track"), gr = { equals: Ao }, qn = null, Xn = ri, Ie = 1, Ht = 2, Kn = { owned: null, cleanups: null, context: null, owner: null }, ne = null, W = null, Vt = null, Et = null, ie = null, ge = null, me = null, pr = 0;
+  var Ao = (e, r) => e === r, Le = Symbol("solid-proxy"), Oo = typeof Proxy == "function", gr = Symbol("solid-track"), pr = { equals: Ao }, qn = null, Xn = ri, Ie = 1, Ht = 2, Kn = { owned: null, cleanups: null, context: null, owner: null }, ne = null, W = null, Vt = null, Et = null, ie = null, ge = null, me = null, _r = 0;
   function nt(e, r) {
     const n = ie, i = ne, a = e.length === 0, l = r === undefined ? i : r, c = a ? Kn : { owned: null, cleanups: null, context: l ? l.context : null, owner: l }, g = a ? e : () => e(() => ot(() => at(c)));
     ne = c, ie = null;
@@ -28,7 +28,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     }
   }
   function q(e, r) {
-    r = r ? Object.assign({}, gr, r) : gr;
+    r = r ? Object.assign({}, pr, r) : pr;
     const n = { value: e, observers: null, observerSlots: null, comparator: r.equals || undefined }, i = (a) => (typeof a == "function" && (W && W.running && W.sources.has(n) ? a = a(n.tValue) : a = a(n.value)), ei(n, a));
     return [Qn.bind(n), i];
   }
@@ -41,8 +41,8 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     const i = Ur(e, r, false, Ie), a = Vr && Co(Vr);
     a && (i.suspense = a), (!n || !n.render) && (i.user = true), me ? me.push(i) : Gt(i);
   }
-  function _r(e, r, n) {
-    n = n ? Object.assign({}, gr, n) : gr;
+  function br(e, r, n) {
+    n = n ? Object.assign({}, pr, n) : pr;
     const i = Ur(e, r, true, 0);
     return i.observers = null, i.observerSlots = null, i.comparator = n.equals || undefined, Vt && W && W.running ? (i.tState = Ie, ge.push(i)) : Gt(i), Qn.bind(i);
   }
@@ -95,7 +95,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         Gt(this);
       else {
         const r = ge;
-        ge = null, He(() => br(this), false), ge = r;
+        ge = null, He(() => vr(this), false), ge = r;
       }
     if (ie) {
       const r = this.observers;
@@ -129,7 +129,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     if (!e.fn)
       return;
     at(e);
-    const r = pr;
+    const r = _r;
     ti(e, W && W.running && W.sources.has(e) ? e.tValue : e.value, r), W && !W.running && W.sources.has(e) && queueMicrotask(() => {
       He(() => {
         W && (W.running = true), ie = ne = e, ti(e, e.tValue, r), ie = ne = null;
@@ -167,11 +167,11 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     if ((r ? e.tState : e.state) === 0)
       return;
     if ((r ? e.tState : e.state) === Ht)
-      return br(e);
+      return vr(e);
     if (e.suspense && ot(e.suspense.inFallback))
       return e.suspense.effects.push(e);
     const n = [e];
-    for (;(e = e.owner) && (!e.updatedAt || e.updatedAt < pr); ) {
+    for (;(e = e.owner) && (!e.updatedAt || e.updatedAt < _r); ) {
       if (r && W.disposed.has(e))
         return;
       (r ? e.tState : e.state) && n.push(e);
@@ -187,7 +187,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         Gt(e);
       else if ((r ? e.tState : e.state) === Ht) {
         const a = ge;
-        ge = null, He(() => br(e, n[0]), false), ge = a;
+        ge = null, He(() => vr(e, n[0]), false), ge = a;
       }
     }
   }
@@ -195,7 +195,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     if (ge)
       return e();
     let n = false;
-    r || (ge = []), me ? n = true : me = [], pr++;
+    r || (ge = []), me ? n = true : me = [], _r++;
     try {
       const i = e();
       return Io(n), i;
@@ -262,14 +262,14 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     for (be.effects && (be.done || !be.count) && (e = [...be.effects, ...e], n += be.effects.length, delete be.effects), r = 0;r < n; r++)
       jt(e[r]);
   }
-  function br(e, r) {
+  function vr(e, r) {
     const n = W && W.running;
     n ? e.tState = 0 : e.state = 0;
     for (let i = 0;i < e.sources.length; i += 1) {
       const a = e.sources[i];
       if (a.sources) {
         const l = n ? a.tState : a.state;
-        l === Ie ? a !== r && (!a.updatedAt || a.updatedAt < pr) && jt(a) : l === Ht && br(a, r);
+        l === Ie ? a !== r && (!a.updatedAt || a.updatedAt < _r) && jt(a) : l === Ht && vr(a, r);
       }
     }
   }
@@ -342,7 +342,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     let i = [], a = [], l = [], c = 0, g = r.length > 1 ? [] : null;
     return ht(() => ai(l)), () => {
       let f = e() || [], _ = f.length, w, y;
-      return f[hr], ot(() => {
+      return f[gr], ot(() => {
         let p, z, $, S, D, R, O, h, k;
         if (_ === 0)
           c !== 0 && (ai(l), l = [], i = [], a = [], c = 0, g && (g = [])), n.fallback && (i = [Mo], a[0] = nt((P) => (l[0] = P, n.fallback())), c = 1);
@@ -384,17 +384,17 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     }
     return ot(() => e(r || {}));
   }
-  function vr() {
+  function mr() {
     return true;
   }
   var Ho = { get(e, r, n) {
     return r === Le ? n : e.get(r);
   }, has(e, r) {
     return r === Le ? true : e.has(r);
-  }, set: vr, deleteProperty: vr, getOwnPropertyDescriptor(e, r) {
+  }, set: mr, deleteProperty: mr, getOwnPropertyDescriptor(e, r) {
     return { configurable: true, enumerable: true, get() {
       return e.get(r);
-    }, set: vr, deleteProperty: vr };
+    }, set: mr, deleteProperty: mr };
   }, ownKeys(e) {
     return e.keys();
   } };
@@ -412,7 +412,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     let r = false;
     for (let c = 0;c < e.length; c++) {
       const g = e[c];
-      r = r || !!g && Le in g, e[c] = typeof g == "function" ? (r = true, _r(g)) : g;
+      r = r || !!g && Le in g, e[c] = typeof g == "function" ? (r = true, br(g)) : g;
     }
     if (Oo && r)
       return new Proxy({ get(c) {
@@ -460,9 +460,9 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
   }
   function ue(e) {
     const r = "fallback" in e && { fallback: () => e.fallback };
-    return _r(No(() => e.each, e.children, r || undefined));
+    return br(No(() => e.each, e.children, r || undefined));
   }
-  var Uo = (e) => _r(() => e());
+  var Uo = (e) => br(() => e());
   function Go({ createElement: e, createTextNode: r, isTextNode: n, replaceText: i, insertNode: a, removeNode: l, setProperty: c, getParentNode: g, getFirstChild: f, getNextSibling: _ }) {
     function w(R, O, h, k) {
       if (h !== undefined && !k && (k = []), typeof O != "function")
@@ -568,9 +568,9 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
               for (;++Ne < P && Ne < I && !((Pe = ce.get(O[Ne])) == null || Pe !== le + pe); )
                 pe++;
               if (pe > le - U) {
-                const ar = O[M];
+                const sr = O[M];
                 for (;U < le; )
-                  a(R, h[U++], ar);
+                  a(R, h[U++], sr);
               } else
                 S(R, h[U++], O[M++]);
             } else
@@ -667,7 +667,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     };
     return n.__skalTrampoline = true, globalThis.__skal_drainEvents = n, globalThis.__skalHot = r, r;
   }
-  var qo = 6 * 1024 * 1024, Xo = 64, qt = 4194368, Ko = 768 * 1024, ci = 4980800, ui = 4980800, fi = 2, di = 3, Yo = 6, hi = 7, Jo = 10, gi = 12, pi = 0, Zo = 2, _i = 4, Xl = 1, Kl = 2, Yl = 3, Jl = 4, Zl = 16, Ql = 17, ec = 20, tc = 21, rc = 22, nc = 23, ic = 24, oc = 25, ac = 26, sc = 44, lc = 45, cc = 27, uc = 28, fc = 29, dc = 30, hc = 31, gc = 32, pc = 33, _c = 34, bc = 35, vc = 36, mc = 37, wc = 38, Sc = 39, yc = 40, xc = 41, kc = 42, Tc = 43, Ec = 0, Rc = 1, $c = 2, Pc = 3, Ac = 4, Oc = 5, Fc = 6, Cc = 7, Ic = 9, Dc = 10, zc = 11, Lc = 12, Mc = 13, Nc = 14, Bc = 15, Wc = 16, Hc = 17, Vc = 18, Uc = 19, Gc = 20, jc = 21, qc = 22, Xc = 23, Kc = 24, Yc = 25, Jc = 26, Zc = 27, Qc = 28, eu = 29, tu = 30, ru = 31, nu = 32, iu = 33, ou = 34, au = 35, su = 36, lu = 37, cu = 38, uu = 39, fu = 40, du = 41, hu = 42, gu = 43, pu = 44, _u = 45, bu = 46, vu = 47, mu = 48, wu = 49, Su = 1, yu = 2, xu = 3, ku = 4, Tu = 5, Eu = 6, Ru = 7, $u = 8, Pu = 9, Au = 10, Ou = 11, Fu = 12, Cu = 13, Iu = 14, Du = 15, zu = 16, Lu = 17, Mu = 18, Nu = 19, Bu = 20, Wu = 21, Hu = 22, Vu = 23, Uu = 24, Gu = 0, ju = 1, qu = 2, Xu = 3, Ku = 4, Yu = 5, Ju = 6, Zu = 7, Qu = 8, mr = new Map, ef = 0, tf = 1, rf = 2, nf = 3, of = 4, af = 5, sf = 6, lf = 7, cf = 8, uf = 9, ff = 10, df = 11, hf = 12, gf = 13, pf = 14, _f = 15, bf = 16, vf = 17, mf = 32, wf = 33, Sf = 34, yf = 35, xf = 36, kf = 37, Tf = 64, Ef = 65, Rf = 66, $f = 67, Pf = 68, Af = 69, Of = 70, Ff = 71, Cf = 72, If = 73, Df = 74, zf = 75, Lf = 76, Mf = 96, Nf = 97, Bf = 98, Wf = 99, Hf = 128, Vf = 129, Uf = 130, Gf = 131, jf = 132, qf = 133, Xf = 134, Kf = 135, Yf = 136, Jf = 137, Zf = 160, Qf = 161, ed = 162, td = 163, rd = 164, nd = 165, id = 166, od = 167, ad = 168, sd = 169, ld = 170, cd = 171, ud = 172, fd = 173, dd = 174, hd = 175, gd = 176, pd = 177, _d = 178, bd = 179, vd = 180, md = 181, wd = 182, Sd = 183, yd = -1, Qo = 2147483646, ea = 2147483645, $t = typeof globalThis.__skal_acquireBridge == "function", Je;
+  var qo = 6 * 1024 * 1024, Xo = 64, qt = 4194368, Ko = 768 * 1024, ci = 4980800, ui = 4980800, fi = 2, di = 3, Yo = 6, hi = 7, Jo = 10, gi = 12, pi = 0, Zo = 2, _i = 4, Xl = 1, Kl = 2, Yl = 3, Jl = 4, Zl = 16, Ql = 17, ec = 20, tc = 21, rc = 22, nc = 23, ic = 24, oc = 25, ac = 26, sc = 44, lc = 45, cc = 27, uc = 28, fc = 29, dc = 30, hc = 31, gc = 32, pc = 33, _c = 34, bc = 35, vc = 36, mc = 37, wc = 38, Sc = 39, yc = 40, xc = 41, kc = 42, Tc = 43, Ec = 0, Rc = 1, $c = 2, Pc = 3, Ac = 4, Oc = 5, Fc = 6, Cc = 7, Ic = 9, Dc = 10, zc = 11, Lc = 12, Mc = 13, Nc = 14, Bc = 15, Wc = 16, Hc = 17, Vc = 18, Uc = 19, Gc = 20, jc = 21, qc = 22, Xc = 23, Kc = 24, Yc = 25, Jc = 26, Zc = 27, Qc = 28, eu = 29, tu = 30, ru = 31, nu = 32, iu = 33, ou = 34, au = 35, su = 36, lu = 37, cu = 38, uu = 39, fu = 40, du = 41, hu = 42, gu = 43, pu = 44, _u = 45, bu = 46, vu = 47, mu = 48, wu = 49, Su = 1, yu = 2, xu = 3, ku = 4, Tu = 5, Eu = 6, Ru = 7, $u = 8, Pu = 9, Au = 10, Ou = 11, Fu = 12, Cu = 13, Iu = 14, Du = 15, zu = 16, Lu = 17, Mu = 18, Nu = 19, Bu = 20, Wu = 21, Hu = 22, Vu = 23, Uu = 24, Gu = 0, ju = 1, qu = 2, Xu = 3, Ku = 4, Yu = 5, Ju = 6, Zu = 7, Qu = 8, Xt = new Map, ef = 0, tf = 1, rf = 2, nf = 3, of = 4, af = 5, sf = 6, lf = 7, cf = 8, uf = 9, ff = 10, df = 11, hf = 12, gf = 13, pf = 14, _f = 15, bf = 16, vf = 17, mf = 32, wf = 33, Sf = 34, yf = 35, xf = 36, kf = 37, Tf = 64, Ef = 65, Rf = 66, $f = 67, Pf = 68, Af = 69, Of = 70, Ff = 71, Cf = 72, If = 73, Df = 74, zf = 75, Lf = 76, Mf = 96, Nf = 97, Bf = 98, Wf = 99, Hf = 128, Vf = 129, Uf = 130, Gf = 131, jf = 132, qf = 133, Xf = 134, Kf = 135, Yf = 136, Jf = 137, Zf = 160, Qf = 161, ed = 162, td = 163, rd = 164, nd = 165, id = 166, od = 167, ad = 168, sd = 169, ld = 170, cd = 171, ud = 172, fd = 173, dd = 174, hd = 175, gd = 176, pd = 177, _d = 178, bd = 179, vd = 180, md = 181, wd = 182, Sd = 183, yd = -1, Qo = 2147483646, ea = 2147483645, $t = typeof globalThis.__skal_acquireBridge == "function", Je;
   if ($t) {
     if (Je = globalThis.__skal_acquireBridge(), !Je || Je.byteLength !== qo)
       throw new Error(`Skal: bridge buffer not available (got ${Je && Je.byteLength})`);
@@ -677,21 +677,21 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
   function vi(e) {
     return bi || (bi = true, console.error(`Skal: ${e} called with no native bridge. The DOM target speaks DOM directly and has no host to drain the op ring; this write has been dropped. If you are seeing this, something imported the NATIVE renderer (skal/renderer) on web instead of skal/renderer-web.`)), true;
   }
-  var qr = new Uint8Array(Je), _e = new Uint32Array(Je), Xt = new BigInt64Array(Je), ta = new TextEncoder, Kt = 16, ra = 1048592, na = 16384, ia = ra - 4, mi = _e[fi], wi = _e[di], Yt = Atomics.load(Xt, pi), Ze = mi ? (mi >> 2) + Kt : Kt, Pt = wi ? wi + qt : qt, wr = Ze, Xr = false, Kr = false, Yr = false;
+  var qr = new Uint8Array(Je), _e = new Uint32Array(Je), Kt = new BigInt64Array(Je), ta = new TextEncoder, Yt = 16, ra = 1048592, na = 16384, ia = ra - 4, mi = _e[fi], wi = _e[di], Jt = Atomics.load(Kt, pi), Ze = mi ? (mi >> 2) + Yt : Yt, Pt = wi ? wi + qt : qt, wr = Ze, Xr = false, Kr = false, Yr = false;
   function Jr() {
-    Ze = Kt, Pt = qt, wr = Kt, Xr = true;
+    Ze = Yt, Pt = qt, wr = Yt, Xr = true;
   }
   function Zr() {
-    _e[fi] = Ze - Kt << 2, _e[di] = Pt - qt, Xr && (_e[gi] = _e[gi] + 1 >>> 0, Xr = false), Yt += 1n, Atomics.store(Xt, pi, Yt), wr = Ze, Si();
+    _e[fi] = Ze - Yt << 2, _e[di] = Pt - qt, Xr && (_e[gi] = _e[gi] + 1 >>> 0, Xr = false), Jt += 1n, Atomics.store(Kt, pi, Jt), wr = Ze, Si();
   }
   function Si() {
-    ki && (Atomics.load(Xt, _i) < Ti || (Ti = Yt, ki()));
+    ki && (Atomics.load(Kt, _i) < Ti || (Ti = Jt, ki()));
   }
   function yi() {
     Yr = true;
     try {
       Zr();
-      const e = Yt, r = globalThis.__skal_drainOpsSync;
+      const e = Jt, r = globalThis.__skal_drainOpsSync;
       if (typeof r == "function") {
         if (globalThis.__skal_opRingResets = (globalThis.__skal_opRingResets | 0) + 1, Kr)
           console.warn("Skal: op ring re-overflowed during inline drain \u2014 chunk large renders to avoid stale ops");
@@ -707,7 +707,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         return;
       }
       const n = performance.now() + 5000;
-      for (;!(Atomics.load(Xt, _i) >= e); )
+      for (;!(Atomics.load(Kt, _i) >= e); )
         if (performance.now() > n) {
           console.warn("Skal: drain spin timeout \u2014 UI thread slow; ring will overwrite");
           break;
@@ -808,7 +808,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
   }
   var Ue = 1024, V = new Int8Array(256);
   V.fill(-1), V[0] = 0, V[1] = 1, V[2] = 2, V[3] = 3, V[4] = 4, V[5] = 5, V[6] = 6, V[7] = 7, V[8] = 8, V[9] = 9, V[32] = 10, V[33] = 11, V[34] = 12, V[35] = 13, V[36] = 14, V[37] = 15, V[64] = 16, V[65] = 17, V[66] = 18, V[67] = 19, V[68] = 20, V[69] = 21, V[70] = 22, V[96] = 23, V[97] = 24, V[128] = 25, V[129] = 26, V[130] = 27, V[131] = 28, V[160] = 29, V[161] = 30, V[162] = 31, V[10] = 32, V[11] = 33, V[12] = 34, V[13] = 35, V[14] = 36, V[15] = 37, V[16] = 38, V[132] = 39, V[133] = 40, V[134] = 41, V[135] = 42, V[136] = 43, V[163] = 44, V[164] = 45, V[165] = 46, V[166] = 47, V[71] = 48, V[98] = 49, V[137] = 50, V[72] = 51, V[167] = 52, V[168] = 53, V[169] = 54, V[170] = 55, V[171] = 56, V[172] = 57, V[173] = 58, V[174] = 59, V[73] = 60, V[99] = 61, V[175] = 62, V[74] = 63;
-  var Ee = 64, yr = new Int32Array(Ue * Ee), At = new Float32Array(Ue * Ee), Jt = new Array(Ue * Ee), $i = 1, ca = 2, ua = 4, et = new Uint8Array(Ue * Ee), Ot = 6, Ft = new Float32Array(Ue * Ot);
+  var Ee = 64, yr = new Int32Array(Ue * Ee), At = new Float32Array(Ue * Ee), Zt = new Array(Ue * Ee), $i = 1, ca = 2, ua = 4, et = new Uint8Array(Ue * Ee), Ot = 6, Ft = new Float32Array(Ue * Ot);
   Ft.fill(NaN);
   var xr = new Map, Pi = [], fa = 0;
   function da() {
@@ -819,16 +819,16 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     const g = new Float32Array(n);
     g.set(At), g.fill(NaN, r), At = g;
     const f = new Float32Array(a);
-    f.set(Ft), f.fill(NaN, i), Ft = f, Jt.length = n, Ue = e;
+    f.set(Ft), f.fill(NaN, i), Ft = f, Zt.length = n, Ue = e;
   }
-  function Zt(e) {
+  function Qt(e) {
     let r = xr.get(e);
     if (r === undefined) {
       r = Pi.pop(), r === undefined && (r = fa++), r >= Ue && da(), xr.set(e, r);
       const n = r * Ee;
       et.fill(0, n, n + Ee), At.fill(NaN, n, n + Ee);
       for (let i = n;i < n + Ee; i++)
-        Jt[i] = undefined;
+        Zt[i] = undefined;
     }
     return r;
   }
@@ -846,14 +846,14 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     }
     rn.delete(e), nn.delete(e), on.delete(e), La(e);
   }
-  var Ae = 0, tt = 0, It = new Float32Array(1), Qt = new Uint32Array(It.buffer);
+  var Ae = 0, tt = 0, It = new Float32Array(1), er = new Uint32Array(It.buffer);
   function we(e, r, n) {
     const i = n | 0, a = V[r];
     if (a < 0) {
       ee(16, e, r, i), Ae++;
       return;
     }
-    const l = Zt(e) * Ee + a;
+    const l = Qt(e) * Ee + a;
     if ((et[l] & $i) !== 0 && yr[l] === i) {
       tt++;
       return;
@@ -863,27 +863,27 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
   function ga(e, r) {
     const n = V[r];
     if (n >= 0) {
-      const i = Zt(e) * Ee + n;
+      const i = Qt(e) * Ee + n;
       if (et[i] === 0) {
         tt++;
         return;
       }
-      et[i] = 0, At[i] = NaN, Jt[i] = undefined;
+      et[i] = 0, At[i] = NaN, Zt[i] = undefined;
     }
     ee(45, e, r, 0), Ae++;
   }
   function Ai(e, r, n) {
     const i = V[r];
     if (i < 0) {
-      It[0] = n, ee(17, e, r, Qt[0]), Ae++;
+      It[0] = n, ee(17, e, r, er[0]), Ae++;
       return;
     }
-    const a = Zt(e) * Ee + i;
+    const a = Qt(e) * Ee + i;
     if (At[a] === n) {
       tt++;
       return;
     }
-    At[a] = n, et[a] |= ca, It[0] = n, ee(17, e, r, Qt[0]), Ae++;
+    At[a] = n, et[a] |= ca, It[0] = n, ee(17, e, r, er[0]), Ae++;
   }
   function pa(e, r, n) {
     const i = V[r];
@@ -891,20 +891,20 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       st(n == null ? "" : String(n)), ee(22, e, (r & 255) << 24 | Qe & 16777215, Ve), Ae++;
       return;
     }
-    const a = Zt(e) * Ee + i;
-    if (Jt[a] === n) {
+    const a = Qt(e) * Ee + i;
+    if (Zt[a] === n) {
       tt++;
       return;
     }
-    Jt[a] = n, et[a] |= ua, st(n == null ? "" : String(n)), ee(22, e, (r & 255) << 24 | Qe & 16777215, Ve), Ae++;
+    Zt[a] = n, et[a] |= ua, st(n == null ? "" : String(n)), ee(22, e, (r & 255) << 24 | Qe & 16777215, Ve), Ae++;
   }
   function Dt(e, r, n, i) {
-    const a = Zt(e) * Ot + n;
+    const a = Qt(e) * Ot + n;
     if (Ft[a] === i) {
       tt++;
       return;
     }
-    Ft[a] = i, It[0] = i, ee(r, e, 0, Qt[0]), Ae++;
+    Ft[a] = i, It[0] = i, ee(r, e, 0, er[0]), Ae++;
   }
   function _a(e, r) {
     Dt(e, 32, 0, r);
@@ -987,7 +987,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       tt++;
       return;
     }
-    a.set(i, n), It[0] = n, ee(25, e, i, Qt[0]), Ae++;
+    a.set(i, n), It[0] = n, ee(25, e, i, er[0]), Ae++;
   }
   var ln = 255, zi = new Set;
   function Li(e, r, n) {
@@ -1031,7 +1031,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         if (Number.isInteger(i) && i >= -2147483648 && i <= 2147483647)
           ee(29, e, 1, i | 0);
         else if (!Number.isInteger(i) && Math.fround(i) === i)
-          It[0] = i, ee(29, e, 2, Qt[0]);
+          It[0] = i, ee(29, e, 2, er[0]);
         else if (Number.isFinite(i)) {
           st(String(i));
           const a = Qe >>> 0;
@@ -1097,15 +1097,15 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
   function Rr(e, r) {
     return r === 0 ? "" : Wa.decode(qr.subarray(ci + e, ci + e + r));
   }
-  function pn(e, r) {
-    const n = mr.get(e);
-    return n === undefined ? r : (mr.delete(e), n.push(r), n.join(""));
+  function pn(e, r, n) {
+    const i = Xt.get(e);
+    return i === undefined || (Xt.delete(e), i.kind !== r) ? n : (i.parts.push(n), i.parts.join(""));
   }
   function $r(e, r) {
     _e[Jo] = e + r;
   }
   function Hi() {
-    const e = Atomics.load(Xt, Zo);
+    const e = Atomics.load(Kt, Zo);
     if (e === fn)
       return;
     const r = dn + (_e[Yo] >> 2);
@@ -1124,12 +1124,12 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       else if (f === 8) {
         const $ = Rr(y, w);
         $r(y, w);
-        const S = mr.get(_);
-        S ? S.push($) : mr.set(_, [$]), z = true;
+        const S = Xt.get(_);
+        S && S.kind === g ? S.parts.push($) : Xt.set(_, { kind: g, parts: [$] }), z = true;
       } else if (f === 4)
-        A = pn(_, Rr(y, w)), p = true, $r(y, w);
+        A = pn(_, g, Rr(y, w)), p = true, $r(y, w);
       else if (f === 5) {
-        const $ = pn(_, Rr(y, w));
+        const $ = pn(_, g, Rr(y, w));
         try {
           A = JSON.parse($);
         } catch {
@@ -1137,7 +1137,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         }
         p = true, $r(y, w);
       } else if (f === 6) {
-        const $ = pn(_, Rr(y, w));
+        const $ = pn(_, g, Rr(y, w));
         try {
           A = JSON.parse($);
         } catch {
@@ -1220,11 +1220,11 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         try {
           r.reject(new Error("skal: hot reload"));
         } catch {}
-      pt.clear();
+      pt.clear(), Xt.clear();
     } });
   } else
     globalThis.__skal_drainEvents = Hi;
-  globalThis.skalStatus = () => JSON.stringify({ handlerCount: kr.size, opSeq: Number(Yt), lastEventSeq: Number(fn), lastHandlerError: rt, propWrites: Ae, propSkips: tt });
+  globalThis.skalStatus = () => JSON.stringify({ handlerCount: kr.size, opSeq: Number(Jt), lastEventSeq: Number(fn), lastHandlerError: rt, propWrites: Ae, propSkips: tt });
   var xd = 1, Ha = 2;
   function Vi() {
     return Ha++;
@@ -1967,7 +1967,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
   var Os = { onPanStart: "panStart", onPanUpdate: "panUpdate", onPanEnd: "panEnd", onScaleStart: "scaleStart", onScaleUpdate: "scaleUpdate", onScaleEnd: "scaleEnd" }, Fs = { free: 1, both: 1, horizontal: 2, x: 2, vertical: 3, y: 3 }, Cs = { none: 0, glide: 1, friction: 1, springback: 2, spring: 2 }, Is = { gentle: 1, bouncy: 2, stiff: 3, wobbly: 2 }, ae = (...e) => (r, n) => {
     for (let i = 0;i < e.length; i++)
       n[e[i]] = "";
-  }, er = (e, r) => (n) => {
+  }, tr = (e, r) => (n) => {
     ct(n)[e] = r, je(n);
   }, Ds = { padding: ae("padding"), paddingTop: ae("paddingTop"), paddingRight: ae("paddingRight"), paddingBottom: ae("paddingBottom"), paddingLeft: ae("paddingLeft"), width: ae("width"), height: ae("height"), weight: ae("flexGrow"), gap: ae("gap"), alignment: ae("justifyContent"), axis: (e, r) => {
     e._skalListAxis = 0, r.flexDirection = "", r.overflowX = "", r.overflowY = "";
@@ -2005,7 +2005,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     e.disabled = false;
   }, focusable: (e) => {
     e.removeAttribute("tabindex");
-  }, visible: ae("display"), opacity: ae("opacity"), translationX: er("tx", 0), translationY: er("ty", 0), scaleX: er("sx", 1), scaleY: er("sy", 1), rotation: er("rz", 0) };
+  }, visible: ae("display"), opacity: ae("opacity"), translationX: tr("tx", 0), translationY: tr("ty", 0), scaleX: tr("sx", 1), scaleY: tr("sy", 1), rotation: tr("rz", 0) };
   function Or(e) {
     !e.top && !e.right && !e.bottom && !e.left && (e.position = "");
   }
@@ -2421,7 +2421,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     };
   }
   var Fd = J("Box"), Cd = J("Container"), Id = J("Column"), Dd = J("Row"), zd = J("Text"), Ld = J("Button"), Md = J("ScrollView"), Nd = J("ListView"), Bd = J("ReorderableListView"), Wd = J("Image"), Hd = J("Stack"), Vd = J("Switch"), Ud = J("Slider"), Gd = J("Checkbox"), jd = J("ActivityIndicator"), qd = J("ProgressBar"), Xd = J("LazyGrid"), Kd = J("Wrap"), Yd = J("SafeArea"), Jd = J("RichText"), Zd = J("TextInput"), Qd = J("Navigator"), eh = J("Screen"), th = J("Tabs"), rh = J("Tab"), nh = J("AnimatedList"), ih = J("CrossFade"), oh = J("Hero"), ah = J("ListTile"), sh = J("PageView"), lh = J("Dismissible"), ch = J("CustomScrollView"), uh = J("SliverAppBar"), fh = J("SliverList"), dh = J("SliverGrid"), hh = J("Canvas"), gh = J("DragItem"), ph = J("DropZone"), _h = J("Radio"), bh = J("Chip"), vh = J("SegmentedButton"), mh = J("ExpansionTile"), wh = J("Dropdown"), Sh = J("Stepper"), yh = J("Step"), xh = J("Drawer"), kh = J("BottomSheet"), Th = J("BackdropFilter"), Eh = J("InteractiveViewer"), Rh = J("FlutterEmbed"), $h = J("HtmlEmbed"), io = new Map;
-  function tr(e, r) {
+  function rr(e, r) {
     if (typeof e != "string" || e.length === 0)
       throw new TypeError("registerHtmlView: viewType must be a non-empty string");
     if (typeof r != "function")
@@ -2584,7 +2584,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     let n = e[r];
     return n || Object.defineProperty(e, r, { value: n = Object.create(null) }), n;
   }
-  function rr(e, r, n) {
+  function nr(e, r, n) {
     if (e[r])
       return e[r];
     const [i, a] = q(n, { equals: false, internal: true });
@@ -2595,7 +2595,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     return !n || n.get || !n.configurable || r === Le || r === vt || (delete n.value, delete n.writable, n.get = () => e[Le][r]), n;
   }
   function lo(e) {
-    Hr() && rr(Ir(e, vt), ao)();
+    Hr() && nr(Ir(e, vt), ao)();
   }
   function nl(e) {
     return lo(e), Reflect.ownKeys(e);
@@ -2605,7 +2605,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       return e;
     if (r === Le)
       return n;
-    if (r === hr)
+    if (r === gr)
       return lo(e), n;
     const i = Ir(e, vt), a = i[r];
     let l = a ? a() : e[r];
@@ -2613,11 +2613,11 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       return l;
     if (!a) {
       const c = Object.getOwnPropertyDescriptor(e, r);
-      Hr() && (typeof l != "function" || e.hasOwnProperty(r)) && !(c && c.get) && (l = rr(i, r, l)());
+      Hr() && (typeof l != "function" || e.hasOwnProperty(r)) && !(c && c.get) && (l = nr(i, r, l)());
     }
     return Lt(l) ? so(l) : l;
   }, has(e, r) {
-    return r === Cr || r === Le || r === hr || r === vt || r === qe || r === "__proto__" ? true : (Hr() && rr(Ir(e, qe), r)(), (r in e));
+    return r === Cr || r === Le || r === gr || r === vt || r === qe || r === "__proto__" ? true : (Hr() && nr(Ir(e, qe), r)(), (r in e));
   }, set() {
     return true;
   }, deleteProperty() {
@@ -2629,10 +2629,10 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     const a = e[r], l = e.length;
     n === undefined ? (delete e[r], e[qe] && e[qe][r] && a !== undefined && e[qe][r].$()) : (e[r] = n, e[qe] && e[qe][r] && a === undefined && e[qe][r].$());
     let c = Ir(e, vt), g;
-    if ((g = rr(c, r, a)) && g.$(() => n), Array.isArray(e) && e.length !== l) {
+    if ((g = nr(c, r, a)) && g.$(() => n), Array.isArray(e) && e.length !== l) {
       for (let f = e.length;f < l; f++)
         (g = c[f]) && g.$();
-      (g = rr(c, "length", l)) && g.$(e.length);
+      (g = nr(c, "length", l)) && g.$(e.length);
     }
     (g = c[ao]) && g.$();
   }
@@ -2659,7 +2659,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     } else
       co(e, r);
   }
-  function nr(e, r, n = []) {
+  function ir(e, r, n = []) {
     let i, a = e;
     if (r.length > 1) {
       i = r.shift();
@@ -2668,19 +2668,19 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         return;
       if (Array.isArray(i)) {
         for (let f = 0;f < i.length; f++)
-          nr(e, [i[f]].concat(r), n);
+          ir(e, [i[f]].concat(r), n);
         return;
       } else if (g && c === "function") {
         for (let f = 0;f < e.length; f++)
-          i(e[f], f) && nr(e, [f].concat(r), n);
+          i(e[f], f) && ir(e, [f].concat(r), n);
         return;
       } else if (g && c === "object") {
         const { from: f = 0, to: _ = e.length - 1, by: w = 1 } = i;
         for (let y = f;y <= _; y += w)
-          nr(e, [y].concat(r), n);
+          ir(e, [y].concat(r), n);
         return;
       } else if (r.length > 1) {
-        nr(e[i], r, [i].concat(n));
+        ir(e[i], r, [i].concat(n));
         return;
       }
       a = e[i], n = [i].concat(n);
@@ -2692,7 +2692,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     const n = Mt(e || {}), i = Array.isArray(n), a = so(n);
     function l(...c) {
       Yn(() => {
-        i && c.length === 1 ? ol(n, c[0]) : nr(n, c);
+        i && c.length === 1 ? ol(n, c[0]) : ir(n, c);
       });
     }
     return [a, l];
@@ -2701,7 +2701,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     if (r === Cr)
       return e;
     const n = e[r];
-    if (r === Le || r === hr || r === vt || r === qe || r === "__proto__")
+    if (r === Le || r === gr || r === vt || r === qe || r === "__proto__")
       return n;
     let i;
     return Lt(n) ? Dr.get(n) || (Dr.set(n, i = new Proxy(n, fo)), i) : n;
@@ -2923,7 +2923,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       this._fs.writeFileSync(this._p.join(this.root, `meta-${e}`), r);
     }
   };
-  function ir(e, r) {
+  function or(e, r) {
     return e.diag = r, e;
   }
   async function _l(e) {
@@ -2931,9 +2931,9 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     try {
       const c = Promise.all([Fn("node:fs"), Fn("node:os"), Fn("node:path")]), g = new Promise((y, A) => setTimeout(() => A(new Error("module import timed out")), 2000)), [f, _, w] = await Promise.race([c, g]);
       if (r = Cn(f, "readFileSync"), n = Cn(_, "tmpdir"), i = Cn(w, "join"), typeof r.readFileSync != "function" || typeof r.writeFileSync != "function" || typeof n.tmpdir != "function" || typeof i.join != "function")
-        return ir(new In, "node:fs/os/path resolved but missing methods");
+        return or(new In, "node:fs/os/path resolved but missing methods");
     } catch (c) {
-      return ir(new In, "node: import failed \u2014 " + (c && c.message || c));
+      return or(new In, "node: import failed \u2014 " + (c && c.message || c));
     }
     const a = e && e.length ? e : i.join(n.tmpdir(), "skal-store");
     let l = "";
@@ -2945,7 +2945,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         r.writeFileSync(g, new Uint8Array(64));
         const f = Bun.mmap(g, { shared: true });
         if (f && f.length >= 64)
-          return ir(new pl((_, w) => Bun.mmap(_, w), r, i, c), "mmap @ " + c);
+          return or(new pl((_, w) => Bun.mmap(_, w), r, i, c), "mmap @ " + c);
         l += "Bun.mmap probe unusable; ";
       } else
         l += "Bun.mmap absent; ";
@@ -2955,13 +2955,13 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     try {
       if (typeof r.appendFileSync == "function") {
         const c = i.join(a, "fs");
-        return r.mkdirSync(c, { recursive: true }), r.writeFileSync(i.join(c, ".fs-probe"), new Uint8Array(1)), ir(new gl(r, i, c), l + "fs @ " + c);
+        return r.mkdirSync(c, { recursive: true }), r.writeFileSync(i.join(c, ".fs-probe"), new Uint8Array(1)), or(new gl(r, i, c), l + "fs @ " + c);
       }
       l += "fs.appendFileSync absent; ";
     } catch (c) {
       l += "fs \u2014 " + (c && c.message || c) + "; ";
     }
-    return ir(new In, l + "memory fallback");
+    return or(new In, l + "memory fallback");
   }
   var bl = class {
     constructor(e) {
@@ -3225,7 +3225,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
   function Me(e) {
     return JSON.parse(yl.decode(e));
   }
-  var Dn = Symbol.for("skal.store"), Oe = (e) => e !== null && typeof e == "object" && !Array.isArray(e), Xe = (e) => Array.isArray(e) && e.every(Oe), zn = (e) => typeof e == "string" && /^(0|[1-9]\d*)$/.test(e), ve = (e, r) => e ? e + "." + r : r, or = () => typeof performance < "u" && performance.now ? performance.now() : Date.now();
+  var Dn = Symbol.for("skal.store"), Oe = (e) => e !== null && typeof e == "object" && !Array.isArray(e), Xe = (e) => Array.isArray(e) && e.every(Oe), zn = (e) => typeof e == "string" && /^(0|[1-9]\d*)$/.test(e), ve = (e, r) => e ? e + "." + r : r, ar = () => typeof performance < "u" && performance.now ? performance.now() : Date.now();
   function Bt(e) {
     if (Array.isArray(e))
       return e.map(Bt);
@@ -3404,7 +3404,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       f(...E, ...b);
     }
     const Pe = new Map;
-    function ar(E) {
+    function sr(E) {
       let b = e;
       for (const C of E.split(".")) {
         if (b == null)
@@ -3413,12 +3413,12 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       }
       return Bt(b);
     }
-    function sr(E) {
+    function lr(E) {
       for (Pe.delete(E), Pe.set(E, true);Pe.size > n.residentMax; ) {
         const b = Pe.keys().next().value;
         if (b === E)
           break;
-        Pe.delete(b), pe(b.split("."), ar(b));
+        Pe.delete(b), pe(b.split("."), sr(b));
       }
     }
     function Mn(E, b) {
@@ -3429,7 +3429,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
           const C = $.get("k:" + b);
           C != null && pe(E, Me(C));
         }
-        sr(b);
+        lr(b);
       }
     }
     function Ke(E, b, C, F) {
@@ -3483,19 +3483,19 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       let u = true;
       if (i || a) {
         const d = c(b);
-        !C && d.lazy && sr(b), u = d.persist;
+        !C && d.lazy && lr(b), u = d.persist;
       }
       u && (!C && b && x !== null && typeof x == "object" && O.add(b), Ke(E, b, C, x), I());
     }
     const Te = new Map;
-    let lr = new Set, cr = false;
+    let cr = new Set, ur = false;
     function Wn() {
-      cr || (cr = true, queueMicrotask(ur));
+      ur || (ur = true, queueMicrotask(fr));
     }
-    function ur() {
-      cr = false;
-      const E = lr;
-      lr = new Set;
+    function fr() {
+      ur = false;
+      const E = cr;
+      cr = new Set;
       for (const b of E)
         if (!b._disposed) {
           b._dirty = false;
@@ -3512,20 +3512,20 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         C[F] = le(b[F]);
       E._fn(C);
     }
-    function fr(E) {
+    function dr(E) {
       for (const b of E)
-        b._dirty || (b._dirty = true, lr.add(b));
+        b._dirty || (b._dirty = true, cr.add(b));
     }
     function Be(E, b) {
       const C = Te.get(E);
-      if (C && fr(C), b)
+      if (C && dr(C), b)
         if (E === "")
           for (const [, F] of Te)
-            F !== C && fr(F);
+            F !== C && dr(F);
         else {
           const F = E + ".";
           for (const [x, o] of Te)
-            x.startsWith(F) && fr(o);
+            x.startsWith(F) && dr(o);
         }
       (C || b) && Wn();
     }
@@ -3763,7 +3763,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
           return { enumerable: true, configurable: true };
       } });
     }
-    function dr(E, b, C) {
+    function hr(E, b, C) {
       if (Array.isArray(E)) {
         const x = $.get("k:" + b + "#x");
         if (x != null) {
@@ -3783,7 +3783,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       if (Oe(E)) {
         const x = {};
         for (const o of Object.keys(E))
-          x[o] = dr(E[o], ve(b, o), C);
+          x[o] = hr(E[o], ve(b, o), C);
         return x;
       }
       const F = $.get("k:" + b);
@@ -3854,11 +3854,11 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       Array.isArray(x) && x.length > 0 && Xe(x) && Ke(E, b, null, x);
     }
     async function Gn() {
-      const E = or();
+      const E = ar();
       let b = E, C = E, F = E;
       try {
         const d = await xl();
-        if (b = or(), typeof globalThis.__skal_store_open == "function" && d)
+        if (b = ar(), typeof globalThis.__skal_store_open == "function" && d)
           try {
             const K = new vl(d + "/" + n.name);
             K.open(), $ = K, A("native");
@@ -3869,7 +3869,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
           const K = await _l(d + "/" + n.name), j = new bl(K);
           j.open(), $ = j, A(K.kind);
         }
-        C = or();
+        C = ar();
         let v = null;
         const T = $.get("k:#meta");
         if (T != null)
@@ -3881,7 +3881,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         const B = v ? v.version | 0 : 0;
         let X = false;
         if (v && v.shape && n.migrate && B < n.version) {
-          const K = [], j = dr(v.shape, "", K);
+          const K = [], j = hr(v.shape, "", K);
           let Z = null;
           try {
             Z = n.migrate(j, B);
@@ -3894,9 +3894,9 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
             Nr(Z, ""), R.clear(), pe([], Z), Ke([], "", null, Z), X = true;
           }
         }
-        (!v || B !== n.version) && S.set("k:#meta", wt({ version: n.version, shape: Bt(e) })), F = or(), X || Tt(e, [], ""), I();
+        (!v || B !== n.version) && S.set("k:#meta", wt({ version: n.version, shape: Bt(e) })), F = ar(), X || Tt(e, [], ""), I();
       } catch {}
-      const x = or(), o = $ && $.stats ? $.stats() : null, u = (d) => Math.round(d * 10) / 10;
+      const x = ar(), o = $ && $.stats ? $.stats() : null, u = (d) => Math.round(d * 10) / 10;
       z({ total: u(x - E), dir: u(b - E), open: u(C - b), migrate: u(F - C), hydrate: u(x - F), records: o ? o.records : 0 }), w(true);
     }
     return Gn(), dt([], "", null, Array.isArray(e));
@@ -3921,7 +3921,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     });
   }
   var Re = "#FFF2F2F7", $e = "#FFFFFFFF", xe = "#FFE5E5EA", Q = "#FF1C1C1E", H = "#FF8E8E93", se = "#FF0A84FF", ke = "#FF34C759", De = "#FFFF9F0A", St = "#FFFF3B30", Fe = "#FF5E5CE6", Se = "#FFEFEFF4", Rl = "#FF334155", mo = typeof window < "u" && !$t;
-  tr("html-card", (e) => {
+  rr("html-card", (e) => {
     e.innerHTML = `
     <div style="font-family: ui-sans-serif, system-ui, sans-serif; padding: 14px; background: linear-gradient(135deg, #fff 0%, #f0f4ff 100%); border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); height: 100%; box-sizing: border-box; overflow: auto;">
       <h3 style="margin: 0 0 6px; font-size: 14px; color: #1a1a2e;">Real DOM card</h3>
@@ -3940,7 +3940,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
     e.querySelector("#html-card-btn").addEventListener("click", (n) => {
       r++, n.target.textContent = `Click me \u2014 ${r}`;
     });
-  }), tr("youtube-embed", (e) => {
+  }), rr("youtube-embed", (e) => {
     const r = document.createElement("iframe");
     r.src = "https://www.youtube.com/embed/dQw4w9WgXcQ", r.setAttribute("allow", "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"), r.setAttribute("allowfullscreen", ""), r.style.cssText = "width:100%;height:100%;border:0;border-radius:8px;display:block;", e.appendChild(r);
   });
@@ -3955,16 +3955,16 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       a == null || a === false || a === true || bt(i, typeof a == "object" && a.nodeType ? a : Ks(String(a)));
     return i;
   }
-  tr("skal-jsx-counter", (e) => {
+  rr("skal-jsx-counter", (e) => {
     no(() => Tl(), e);
-  }), tr("skal-counter", (e) => {
+  }), rr("skal-counter", (e) => {
     nt(() => {
       const [r, n] = q(0);
       no(() => yt("column", { gap: 8, padding: 12, background: "#FFF8FAFC", cornerRadius: 10 }, yt("text", { label: () => `Skal <column>+<text>+<button> rendered as DOM inside Flutter \u2014 n = ${r()}`, fontSize: 13, fontWeight: 600, color: "#FF1A1A2E" }), yt("row", { gap: 8 }, yt("button", { label: "+1", onClick: () => n((i) => i + 1) }), yt("button", { label: "-1", onClick: () => n((i) => i - 1) }), yt("button", { label: "reset", onClick: () => n(0) })), yt("text", { label: "These widgets reach Shape D via the same JSX `<Column>` / `<Button>` you write in App.jsx \u2014 just compiled against skal/renderer-web (Shape B DOM target) instead of the bridge. Pointer events, hover, focus, ARIA all stay live.", fontSize: 11, color: "#FF4A4A5E" })), e);
     });
-  }), tr("solid-counter", (e) => {
+  }), rr("solid-counter", (e) => {
     nt(() => {
-      const [r, n] = q(0), i = _r(() => r() % 2 === 0 ? "even" : "odd");
+      const [r, n] = q(0), i = br(() => r() % 2 === 0 ? "even" : "odd");
       e.innerHTML = `
       <div style="font-family:ui-sans-serif,system-ui,sans-serif;padding:14px;background:#f8fafc;border-radius:10px;height:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;">
         <h3 style="margin:0;font-size:14px;color:#1a1a2e;">Solid signals \u2192 DOM inside Flutter</h3>
@@ -4162,7 +4162,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
   function Fl() {
     const [e, r] = q("material"), [n, i] = q(false), [a, l] = q(true), [c, g] = q(false), [f, _] = q(40), [w, y] = q(""), [A, p] = q("none yet"), [z, $] = q(0), [S, D] = q(["Item one", "Item two", "Item three", "Item four"]);
     let R = 0;
-    const [O, h] = q([]), [k, P] = q([]), [I, M] = q("M"), [U, de] = q([]), [ce, le] = q(0), [Ne, pe] = q(false), [Pe, ar] = q(0), [sr, Mn] = q(0), [Ke, Nn] = q(false), [Bn, Te] = q("\u2014"), [lr, cr] = q("0, 0"), [Wn, ur] = q("\u2014"), [xt, fr] = q(1);
+    const [O, h] = q([]), [k, P] = q([]), [I, M] = q("M"), [U, de] = q([]), [ce, le] = q(0), [Ne, pe] = q(false), [Pe, sr] = q(0), [lr, Mn] = q(0), [Ke, Nn] = q(false), [Bn, Te] = q("\u2014"), [cr, ur] = q("0, 0"), [Wn, fr] = q("\u2014"), [xt, dr] = q(1);
     let Be = 1;
     const [Hn, kt] = q("\u2014 try a dialog button \u2014"), [We, dt] = q("\u2014 no date / time picked \u2014"), [Wt, Vn] = q(["First item", "Second item", "Third item", "Fourth item"]), Un = Pn({ list: { component: (E) => L($l, { get router() {
       return E.router;
@@ -4170,7 +4170,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
       return E.params.name;
     }, get router() {
       return E.router;
-    } }) }, "list"), [dr, Nr] = q(0), Tt = (E, b) => {
+    } }) }, "list"), [hr, Nr] = q(0), Tt = (E, b) => {
       r(E), i(b), ka(E, b ? 1 : 0);
     }, Br = Pn({ home: { component: (E) => Gn(E.router) }, animations: { component: () => L(Ol, {}), title: "Animations" } }, "home");
     function Gn(E) {
@@ -4407,7 +4407,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
             return m(o, u), m(o, d), m(o, v), t(o, "onChange", (T) => le(T)), t(u, "label", "Day"), t(u, "fontSize", 13), t(d, "label", "Week"), t(d, "fontSize", 13), t(v, "label", "Month"), t(v, "fontSize", 13), G((T) => t(o, "activeTab", ce(), T)), o;
           })(), (() => {
             var o = s("row"), u = s("text"), d = s("dropdown"), v = s("text"), T = s("text"), B = s("text");
-            return m(o, u), m(o, d), t(o, "gap", 8), t(u, "label", "Priority"), t(u, "fontSize", 13), t(u, "color", Q), m(d, v), m(d, T), m(d, B), t(d, "onChange", (X) => ar(X)), t(v, "label", "Low"), t(v, "fontSize", 13), t(T, "label", "Medium"), t(T, "fontSize", 13), t(B, "label", "High"), t(B, "fontSize", 13), G((X) => t(d, "activeTab", Pe(), X)), o;
+            return m(o, u), m(o, d), t(o, "gap", 8), t(u, "label", "Priority"), t(u, "fontSize", 13), t(u, "color", Q), m(d, v), m(d, T), m(d, B), t(d, "onChange", (X) => sr(X)), t(v, "label", "Low"), t(v, "fontSize", 13), t(T, "label", "Medium"), t(T, "fontSize", 13), t(B, "label", "High"), t(B, "fontSize", 13), G((X) => t(d, "activeTab", Pe(), X)), o;
           })(), (() => {
             var o = s("box"), u = s("expansionTile"), d = s("box"), v = s("text");
             return m(o, u), t(o, "background", $e), t(o, "cornerRadius", 8), t(o, "borderWidth", 1), t(o, "borderColor", xe), m(u, d), t(u, "title", "Details"), t(u, "onChange", (T) => pe(T)), m(d, v), t(d, "padding", 14), t(d, "background", Se), t(v, "label", "Body content revealed by the accordion \u2014 host-owned open state, host-side expand animation."), t(v, "fontSize", 12), t(v, "color", H), o;
@@ -4418,10 +4418,10 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         } }), x), N(b, L(Y, { title: "Stepper \u2014 multi-step flow", get children() {
           return [(() => {
             var o = s("stepper"), u = s("step"), d = s("text"), v = s("step"), T = s("text"), B = s("step"), X = s("text");
-            return m(o, u), m(o, v), m(o, B), t(o, "onChange", (K) => Mn(K)), m(u, d), t(u, "title", "Account"), t(d, "label", "Create your account \u2014 name, email, password."), t(d, "fontSize", 12), t(d, "color", H), m(v, T), t(v, "title", "Profile"), t(T, "label", "Add a photo and a short bio."), t(T, "fontSize", 12), t(T, "color", H), m(B, X), t(B, "title", "Done"), t(X, "label", "All set \u2014 review and finish."), t(X, "fontSize", 12), t(X, "color", H), G((K) => t(o, "activeTab", sr(), K)), o;
+            return m(o, u), m(o, v), m(o, B), t(o, "onChange", (K) => Mn(K)), m(u, d), t(u, "title", "Account"), t(d, "label", "Create your account \u2014 name, email, password."), t(d, "fontSize", 12), t(d, "color", H), m(v, T), t(v, "title", "Profile"), t(T, "label", "Add a photo and a short bio."), t(T, "fontSize", 12), t(T, "color", H), m(B, X), t(B, "title", "Done"), t(X, "label", "All set \u2014 review and finish."), t(X, "fontSize", 12), t(X, "color", H), G((K) => t(o, "activeTab", lr(), K)), o;
           })(), (() => {
             var o = s("text");
-            return t(o, "fontSize", 11), t(o, "color", H), G((u) => t(o, "label", `current step: ${sr() + 1} of 3`, u)), o;
+            return t(o, "fontSize", 11), t(o, "color", H), G((u) => t(o, "label", `current step: ${lr() + 1} of 3`, u)), o;
           })()];
         } }), x), N(b, L(Y, { title: "BottomSheet \u2014 draggable / expandable", get children() {
           var o = s("box"), u = s("stack"), d = s("box"), v = s("text"), T = s("bottomSheet"), B = s("box"), X = s("text");
@@ -4473,15 +4473,15 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
         } }), x), N(b, L(Y, { title: "Drag \u2014 draggable (zero per-frame bridge traffic)", get children() {
           return [(() => {
             var o = s("box"), u = s("box"), d = s("text");
-            return m(o, u), t(o, "height", 150), t(o, "background", Se), t(o, "cornerRadius", 12), m(u, d), t(u, "draggable", true), t(u, "width", 64), t(u, "height", 64), t(u, "background", se), t(u, "cornerRadius", 14), t(u, "onPanEnd", (v, T) => cr(`${v.toFixed(0)}, ${T.toFixed(0)}`)), t(d, "label", "drag"), t(d, "fontSize", 12), t(d, "color", "#FFFFFFFF"), o;
+            return m(o, u), t(o, "height", 150), t(o, "background", Se), t(o, "cornerRadius", 12), m(u, d), t(u, "draggable", true), t(u, "width", 64), t(u, "height", 64), t(u, "background", se), t(u, "cornerRadius", 14), t(u, "onPanEnd", (v, T) => ur(`${v.toFixed(0)}, ${T.toFixed(0)}`)), t(d, "label", "drag"), t(d, "fontSize", 12), t(d, "color", "#FFFFFFFF"), o;
           })(), (() => {
             var o = s("text");
-            return t(o, "fontSize", 11), t(o, "color", H), G((u) => t(o, "label", `Drag the blue box \u2014 the host moves it itself, no event per frame. Resting offset: ${lr()}`, u)), o;
+            return t(o, "fontSize", 11), t(o, "color", H), G((u) => t(o, "label", `Drag the blue box \u2014 the host moves it itself, no event per frame. Resting offset: ${cr()}`, u)), o;
           })()];
         } }), x), N(b, L(Y, { title: "Pan \u2014 onPanUpdate delta stream", get children() {
           return [(() => {
             var o = s("box"), u = s("text");
-            return m(o, u), t(o, "height", 70), t(o, "background", Se), t(o, "cornerRadius", 12), t(o, "padding", 16), t(o, "onPanStart", () => ur("drag started")), t(o, "onPanUpdate", (d, v) => ur(`dx ${d.toFixed(1)}  dy ${v.toFixed(1)}`)), t(o, "onPanEnd", (d, v) => ur(`fling v ${d.toFixed(0)}, ${v.toFixed(0)} dp/s`)), t(u, "label", "Drag anywhere on this strip"), t(u, "fontSize", 13), t(u, "color", Q), o;
+            return m(o, u), t(o, "height", 70), t(o, "background", Se), t(o, "cornerRadius", 12), t(o, "padding", 16), t(o, "onPanStart", () => fr("drag started")), t(o, "onPanUpdate", (d, v) => fr(`dx ${d.toFixed(1)}  dy ${v.toFixed(1)}`)), t(o, "onPanEnd", (d, v) => fr(`fling v ${d.toFixed(0)}, ${v.toFixed(0)} dp/s`)), t(u, "label", "Drag anywhere on this strip"), t(u, "fontSize", 13), t(u, "color", Q), o;
           })(), (() => {
             var o = s("text");
             return t(o, "fontSize", 11), t(o, "color", H), G((u) => t(o, "label", `onPanUpdate: ${Wn()}`, u)), o;
@@ -4491,7 +4491,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
             var o = s("box"), u = s("box"), d = s("text");
             return m(o, u), t(o, "height", 170), t(o, "background", Se), t(o, "cornerRadius", 12), m(u, d), t(u, "width", 96), t(u, "height", 96), t(u, "background", Fe), t(u, "cornerRadius", 16), t(u, "onScaleStart", () => {
               Be = xt();
-            }), t(u, "onScaleUpdate", (v) => fr(Math.max(0.3, Be * v))), t(d, "label", "pinch"), t(d, "fontSize", 13), t(d, "color", "#FFFFFFFF"), G((v) => {
+            }), t(u, "onScaleUpdate", (v) => dr(Math.max(0.3, Be * v))), t(d, "label", "pinch"), t(d, "fontSize", 13), t(d, "color", "#FFFFFFFF"), G((v) => {
               var T = xt(), B = xt();
               return T !== v.e && (v.e = t(u, "scaleX", T, v.e)), B !== v.t && (v.t = t(u, "scaleY", B, v.t)), v;
             }, { e: undefined, t: undefined }), o;
@@ -4545,7 +4545,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
           })(), (() => {
             var o = s("box"), u = s("tabs"), d = s("tab"), v = s("column"), T = s("text"), B = s("text"), X = s("tab"), K = s("column"), j = s("text"), Z = s("textInput"), oe = s("tab"), re = s("column"), ye = s("text"), Ce = s("text");
             return m(o, u), t(o, "height", 280), t(o, "borderWidth", 1), t(o, "borderColor", xe), t(o, "cornerRadius", 8), m(u, d), m(u, X), m(u, oe), t(u, "onChange", Nr), t(u, "height", "fill"), m(d, v), t(d, "title", "Home"), t(d, "icon", "home"), m(v, T), m(v, B), t(v, "background", Re), t(v, "padding", 16), t(v, "gap", 8), t(v, "height", "fill"), t(T, "label", "Home"), t(T, "fontSize", 20), t(T, "fontWeight", 800), t(T, "color", Q), t(B, "label", "Switch tabs and come back \u2014 this tab was never torn down."), t(B, "fontSize", 13), t(B, "color", H), m(X, K), t(X, "title", "Search"), t(X, "icon", "search"), m(K, j), m(K, Z), t(K, "background", Re), t(K, "padding", 16), t(K, "gap", 8), t(K, "height", "fill"), t(j, "label", "Search"), t(j, "fontSize", 20), t(j, "fontWeight", 800), t(j, "color", Q), t(Z, "placeholder", "Type to search\u2026"), m(oe, re), t(oe, "title", "Profile"), t(oe, "icon", "person"), m(re, ye), m(re, Ce), t(re, "background", Re), t(re, "padding", 16), t(re, "gap", 8), t(re, "height", "fill"), t(ye, "label", "Profile"), t(ye, "fontSize", 20), t(ye, "fontWeight", 800), t(ye, "color", Q), t(Ce, "fontSize", 13), t(Ce, "color", H), G((Ye) => {
-              var Ro = dr(), $o = `active tab index: ${dr()}`;
+              var Ro = hr(), $o = `active tab index: ${hr()}`;
               return Ro !== Ye.e && (Ye.e = t(u, "activeTab", Ro, Ye.e)), $o !== Ye.t && (Ye.t = t(Ce, "label", $o, Ye.t)), Ye;
             }, { e: undefined, t: undefined }), o;
           })()];

@@ -305,10 +305,17 @@ export const EVENT_ARG_VEC2  = 0x07;
 // the REAL arg type. See `_replyChunks`.
 export const EVENT_ARG_STR_CHUNK = 0x08;
 
-// Accumulated chunks, keyed by the record's id (handlerId or callId).
+// Accumulated chunks, keyed by the record's id (handlerId or callId),
+// each entry `{ kind, parts }` — the kind is what makes the id
+// unambiguous, since handler ids and call ids are separate sequences
+// that collide freely. See `_joinChunks`.
+//
 // Cleared as soon as the final record lands, so a completed reply keeps
-// nothing. An abandoned transfer — a host that died mid-payload — leaks
-// one entry; that is a dead app, not a leak worth a reaper.
+// nothing. Abandonment is bounded from BOTH ends rather than left to a
+// reaper: Dart closes a transfer it cannot finish with an empty
+// terminator (`_abandonChunked`), and a hot-reload teardown clears the
+// map outright, so parts do not survive into a generation that reuses
+// their id.
 const _replyChunks = new Map();
 
 // ───────────────────────────────────────────────────────────────────────
@@ -2032,24 +2039,37 @@ function readReplyString(offset, length) {
   );
 }
 
+/// Complete a chunked payload: prepend anything accumulated for `id`,
+/// then forget it. A payload that was never chunked passes straight
+/// through, which is the overwhelmingly common case and costs one Map
+/// miss.
+///
+/// `kind` is checked, not just `id`. The id slot means different things
+/// per event kind — handlerId for a regular event, callId for a method
+/// reply, subscription id for a stream — and `nextCallId` and
+/// `nextHandlerId` are INDEPENDENT counters that both start at 1. So
+/// parts orphaned under callId 5 would otherwise be prepended to the
+/// next unrelated event bound to handlerId 5, silently corrupting a
+/// string that has nothing to do with the abandoned transfer. Orphans
+/// should be reachable only via a host that dies mid-payload, but
+/// "should" is doing a lot of work there, and a mismatch that fails
+/// loudly-and-bounded beats one that fails silently: drop the
+/// accumulation and deliver `tail` untouched.
+function _joinChunks(id, kind, tail) {
+  const acc = _replyChunks.get(id);
+  if (acc === undefined) return tail;
+  _replyChunks.delete(id);
+  if (acc.kind !== kind) return tail;  // not ours — discard, don't poison
+  acc.parts.push(tail);
+  return acc.parts.join('');
+}
+
 /// Advance the JS-side reply-heap read cursor past a just-consumed
 /// (offset, length) span. Dart's _writeReplyString reads this header
 /// slot when it's about to wraparound (writePos + len > heapSize) to
 /// confirm no in-flight string event references bytes about to be
 /// clobbered. If Dart wraps, it resets BOTH cursors to 0 — our next
 /// bump starts fresh.
-/// Complete a chunked payload: prepend anything accumulated for `id`,
-/// then forget it. A payload that was never chunked passes straight
-/// through, which is the overwhelmingly common case and costs one Map
-/// miss.
-function _joinChunks(id, tail) {
-  const acc = _replyChunks.get(id);
-  if (acc === undefined) return tail;
-  _replyChunks.delete(id);
-  acc.push(tail);
-  return acc.join('');
-}
-
 function _advanceReplyReadCursor(offset, length) {
   u32[H_REPLY_HEAP_READ_POS] = offset + length;
 }
@@ -2104,21 +2124,28 @@ function _drainEvents() {
       const part = readReplyString(argOffset, argRaw);
       _advanceReplyReadCursor(argOffset, argRaw);
       const acc = _replyChunks.get(idSlot);
-      if (acc) acc.push(part); else _replyChunks.set(idSlot, [part]);
+      // Tag the accumulation with its event kind so the completing
+      // record has to match — see _joinChunks. A kind change on a live
+      // id means the earlier parts were orphaned; start over rather
+      // than splice two unrelated transfers together.
+      if (acc && acc.kind === eventKind) acc.parts.push(part);
+      else _replyChunks.set(idSlot, { kind: eventKind, parts: [part] });
       isChunkPart = true;
     } else if (argType === EVENT_ARG_STR) {
       // argRaw is the byte length; argOffset is the reply-heap offset.
-      arg = _joinChunks(idSlot, readReplyString(argOffset, argRaw));
+      arg = _joinChunks(idSlot, eventKind, readReplyString(argOffset, argRaw));
       hasArg = true;
       _advanceReplyReadCursor(argOffset, argRaw);
     } else if (argType === EVENT_ARG_JSON) {
-      const raw = _joinChunks(idSlot, readReplyString(argOffset, argRaw));
+      const raw = _joinChunks(idSlot, eventKind,
+                              readReplyString(argOffset, argRaw));
       try { arg = JSON.parse(raw); }
       catch (_) { arg = raw; /* fall through to raw string */ }
       hasArg = true;
       _advanceReplyReadCursor(argOffset, argRaw);
     } else if (argType === EVENT_ARG_TUPLE) {
-      const raw = _joinChunks(idSlot, readReplyString(argOffset, argRaw));
+      const raw = _joinChunks(idSlot, eventKind,
+                              readReplyString(argOffset, argRaw));
       try { arg = JSON.parse(raw); }
       catch (_) { arg = []; }
       hasArg = true;
@@ -2269,6 +2296,13 @@ if (HAS_NATIVE_BRIDGE && typeof window === 'undefined' && !globalThis.__skalRele
         try { pending.reject(new Error('skal: hot reload')); } catch (_) { /* ignore */ }
       }
       pendingCalls.clear();
+      // Partially-accumulated chunked payloads die with this generation
+      // too. Leaving them meant the next generation — which reuses ids
+      // from the high-water marks above — could complete a transfer with
+      // only its post-reload parts, handing the caller a payload missing
+      // its leading megabytes. A short JSON that still parses is the bad
+      // case; it fails nowhere near the bridge.
+      _replyChunks.clear();
     },
   });
 } else {

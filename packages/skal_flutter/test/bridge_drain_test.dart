@@ -106,9 +106,9 @@ void main() {
 
       bridge.pumpOps();
 
-      expect(bridge.nodes[nodeA]!.props[propWidth], 100);
-      expect(bridge.nodes[nodeA]!.props[propHeight], 40);
-      expect(bridge.nodes[nodeB]!.props[propWidth], 7);
+      expect(bridge.nodes[nodeA]!.rawPropU32(propWidth), 100);
+      expect(bridge.nodes[nodeA]!.rawPropU32(propHeight), 40);
+      expect(bridge.nodes[nodeB]!.rawPropU32(propWidth), 7);
       // THE coalescing property: two writes to nodeA, one rebuild. A
       // 200-tweet batch with 1200 prop writes must not fire 1200
       // notifications.
@@ -136,7 +136,7 @@ void main() {
         ..setPropU32(nodeA, propWidth, 321)
         ..commitAndRing();
 
-      expect(bridge.nodes[nodeA]!.props[propWidth], 321,
+      expect(bridge.nodes[nodeA]!.rawPropU32(propWidth), 321,
           reason: 'the ops ARE consumed — that is the whole point of §2b');
       expect(cold[nodeA], 0,
           reason: 'notification is deferred so the widget tree is never '
@@ -200,7 +200,7 @@ void main() {
       // often must not mean rebuilding more often.
       expect(cold[nodeA], 1);
       expect(cold[nodeB], 1);
-      expect(bridge.nodes[nodeA]!.props[propWidth], 4,
+      expect(bridge.nodes[nodeA]!.rawPropU32(propWidth), 4,
           reason: 'last write wins, and every batch was applied');
     });
 
@@ -279,7 +279,7 @@ void main() {
         ..setPropU32(nodeB, propWidth, 1)
         ..commit();
       bridge.pumpOps();
-      expect(bridge.nodes[nodeA]!.props[propWidth], 1);
+      expect(bridge.nodes[nodeA]!.rawPropU32(propWidth), 1);
 
       // JS rewinds to the base of the ring and bumps the epoch. The new
       // batch is SHORTER than what was drained, so it lands entirely
@@ -290,7 +290,7 @@ void main() {
         ..commit();
       bridge.pumpOps();
 
-      expect(bridge.nodes[nodeA]!.props[propWidth], 99,
+      expect(bridge.nodes[nodeA]!.rawPropU32(propWidth), 99,
           reason: 'without the epoch signal the host keeps its old drain '
               'checkpoint and skips the whole post-reset batch');
       expect(cold[nodeA], 2);
@@ -322,10 +322,10 @@ void main() {
       js.commit();
       bridge.pumpOps();
 
-      expect(bridge.nodes[nodeB]!.props[propWidth], 42,
+      expect(bridge.nodes[nodeB]!.rawPropU32(propWidth), 42,
           reason: 'the head of the post-reset batch lands below the old '
               'drain checkpoint; only the epoch bump says so');
-      expect(bridge.nodes[nodeA]!.props[propHeight], 5);
+      expect(bridge.nodes[nodeA]!.rawPropU32(propHeight), 5);
     });
   });
 
@@ -444,7 +444,7 @@ void main() {
         ..commit();
       bridge.pumpOps();
 
-      expect(bridge.nodes[nodeA]!.props[propWidth], 77);
+      expect(bridge.nodes[nodeA]!.rawPropU32(propWidth), 77);
     });
   });
 
@@ -512,7 +512,7 @@ void _clearPropTests() {
     bridge.pumpOps();
     expect(bridge.nodes[2]!.getPropU32(propBgColor, 0x11223344), 0x11223344,
         reason: 'the fallback must win once the key is gone');
-    expect(bridge.nodes[2]!.props.containsKey(propBgColor), isFalse);
+    expect(bridge.nodes[2]!.hasPropU32(propBgColor), isFalse);
   });
 
   test('clears every typed map, not just the one that was written', () {
@@ -529,9 +529,9 @@ void _clearPropTests() {
     bridge.pumpOps();
 
     final n = bridge.nodes[2]!;
-    expect(n.props.containsKey(propWidth), isFalse);
-    expect(n.propsF.containsKey(propWidth), isFalse);
-    expect(n.propsStr.containsKey(propWidth), isFalse);
+    expect(n.hasPropU32(propWidth), isFalse);
+    expect(n.hasPropF32(propWidth), isFalse);
+    expect(n.hasPropStr(propWidth), isFalse);
   });
 
   test('marks the node dirty so the subtree rebuilds', () {

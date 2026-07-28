@@ -951,7 +951,13 @@ const SkalStore = struct {
         const limit = self.segments.items[idx].cursor;
         var off: usize = 0;
         while (off < limit) {
-            const f = storeDecodeFrame(mapped, off, true) orelse break;
+            // verify=false: `mapSegment` just walked this exact range
+            // with verify=TRUE to derive `cursor`, stopping at the first
+            // frame that failed to decode. Everything below `limit` has
+            // therefore already had its CRC checked, moments ago, on a
+            // mapping nothing else can touch during open(). Re-checking
+            // it made startup CRC every stored byte twice.
+            const f = storeDecodeFrame(mapped, off, false) orelse break;
             // Remove any prior entry first — its frame is now dead, and
             // dropping it also discards the stale key slice so the
             // keydir key always points into the newest frame's segment.

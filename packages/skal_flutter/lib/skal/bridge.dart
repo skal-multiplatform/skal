@@ -794,9 +794,7 @@ class SkalBridge {
           // a follow-up added to one and not the other fails there.
           final clearPropNode = ns[a];
           if (clearPropNode != null) {
-            clearPropNode.props.remove(b);
-            clearPropNode.propsF.remove(b);
-            clearPropNode.propsStr.remove(b);
+            clearPropNode.removeProp(b);
             clearPropNode.coldDirty = true;
             touched.add(a);
             // Clearing itemCount drops the count to its default — every
@@ -884,7 +882,7 @@ class SkalBridge {
         case opSetPropU32:
           final node = ns[a];
           if (node != null) {
-            node.props[b] = c;
+            node.setPropU32(b, c);
             node.coldDirty = true;
             touched.add(a);
             propWrites++;
@@ -913,7 +911,7 @@ class SkalBridge {
         case opSetPropF32:
           final node = ns[a];
           if (node != null) {
-            node.propsF[b] = _bitsToF32(c);
+            node.setPropF32(b, _bitsToF32(c));
             node.coldDirty = true;
             touched.add(a);
             propWrites++;
@@ -927,7 +925,7 @@ class SkalBridge {
             final key = (b >> 24) & 0xFF;
             final offset = b & 0xFFFFFF;
             final length = c;
-            node.propsStr[key] = _readString(kStringHeapOff + offset, length);
+            node.setPropStr(key, _readString(kStringHeapOff + offset, length));
             node.coldDirty = true;
             touched.add(a);
             propWrites++;
@@ -1426,11 +1424,11 @@ class SkalBridge {
       if (node.coldDirty) {
         node.coldDirty = false;
         coldCount++;
-        node.cold.notify();
+        node.notifyCold();
       }
       if (node.hotDirty) {
         node.hotDirty = false;
-        node.hot.notify();
+        node.notifyHot();
       }
     }
     touched.clear();

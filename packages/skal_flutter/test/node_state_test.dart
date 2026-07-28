@@ -38,8 +38,8 @@ void main() {
       var coldCount = 0;
       n.cold.addListener(() => coldCount++);
 
-      n.props[propBgColor] = 0xFFFF0000;
-      n.props[propPadding] = 16;
+      n.setPropU32(propBgColor, 0xFFFF0000);
+      n.setPropU32(propPadding, 16);
       expect(coldCount, 0, reason: 'plain map writes must not fan out');
     });
 
@@ -47,7 +47,7 @@ void main() {
       final n = NodeState(wtBox);
       expect(n.getPropU32(propBgColor), 0);
       expect(n.getPropU32(propBgColor, 0xFFAABBCC), 0xFFAABBCC);
-      n.props[propBgColor] = 0xFFFF0000;
+      n.setPropU32(propBgColor, 0xFFFF0000);
       expect(n.getPropU32(propBgColor, 0xFFAABBCC), 0xFFFF0000);
     });
 

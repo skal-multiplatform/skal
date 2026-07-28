@@ -2018,7 +2018,7 @@ Widget _buildListView(NodeState n, SkalBridge bridge) {
   // Builder mode (`count` + `renderItem` on the JSX side): rows are
   // pulled on demand through evRowRequest and live in the sparse
   // `builderRows` map — `childCount` stays 0. Children mode otherwise.
-  final builderCount = n.props[propItemCount];
+  final builderCount = n.rawPropU32(propItemCount);
   final isBuilder = builderCount != null && n.onRowRequestHandlerId != 0;
   final count = isBuilder ? builderCount : n.childCount;
 

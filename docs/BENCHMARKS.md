@@ -1798,6 +1798,60 @@ win and measured as noise — the asymptotic argument was correct and
 still did not matter.
 
 
+## Bench 8 — NodeState allocation, and a Zig store audit
+
+### Lazy NodeState — faster on every axis, including the hot path
+
+Every node eagerly built three prop maps, two notifiers and a child
+backing before a single prop reached it. Most nodes are leaves that
+never insert a child, and most touch exactly one of the three prop
+lanes, so the common node held six live sub-objects to store one map's
+worth of data.
+
+All of it is now lazy. Measured over 200 000 nodes:
+
+| | eager | lazy | |
+|---|---|---|---|
+| construct only | 373.6 ms | **60.8 ms** | −84% |
+| construct + 3 cold props | 645.6 ms | **258.8 ms** | −60% |
+| 4 M warm `setPropU32` (drain hot path) | 355.4 ms | **270.9 ms** | **−24%** |
+
+The third row is the one worth reading twice. The expectation going in
+was that laziness would *cost* on the drain — `(_props ??= {})[k] = v`
+adds a null check to the hottest write in the framework, and the whole
+point of the eager `final` fields was to avoid it.
+
+It is 24% faster instead. A null check on a field that is already
+non-null is close to free, while the eager object kept six live
+sub-objects alive per node for the collector to trace and scattered the
+node's data across six allocations. Locality and GC pressure cost more
+than the branch saved.
+
+Notifiers are now created by the SUBSCRIBER, not the producer:
+`notifyCold()` / `notifyHot()` skip entirely when no widget has ever
+listened, which is the normal case for the interior of a large tree.
+
+### The Zig store does NOT have the JS store's aliasing bug
+
+Audited after fixing the JS `LogStore`, because native is what actually
+runs on device — the kitchen-sink reports "Backend: native · schema v1",
+so the P0 fix and `test/store.test.js` cover the fallback path only.
+
+The bug cannot occur there, structurally: `SkalStore.open()` has no hint
+file at all. It enumerates `seg-NNNNN.log`, sorts ids ascending, appends
+in that order, and `activeSeg()` returns the last element — always the
+highest id. `compact()` skips the active segment explicitly and removes
+with `orderedRemove`, which preserves the ordering that guarantee rests
+on. There is no stale cursor to trust, so there is nothing to get wrong.
+
+It did have the double startup scan: `mapSegment` walks every frame with
+CRC verification to derive the write cursor, and `replayInto` then walked
+the same bytes with verification again. The second pass now skips
+verification — the first has just checked every byte below `cursor`, on
+a mapping nothing else can touch during `open()`. Halves startup CRC
+work. **Requires a libskal rebuild to take effect.**
+
+
 ## How to re-run
 
 To resurrect the bench:

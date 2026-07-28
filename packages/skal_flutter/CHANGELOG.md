@@ -79,6 +79,17 @@
   invokes, and the ring moved inside `publishProgress` so all three
   publish paths get it — including `flushAndWaitForDrain`, which
   otherwise spins five seconds against a sleeping host.
+- **Every node allocated six objects before holding any data.**
+  `NodeState` eagerly built three prop maps, two notifiers and a child
+  backing at construction. Most nodes are leaves that never insert a
+  child and touch exactly one of the three prop lanes. All of it is lazy
+  now, and notifiers are created by the SUBSCRIBER — `notifyCold()` /
+  `notifyHot()` skip entirely when no widget ever listened.
+  Over 200 000 nodes: construction 373.6 ms -> 60.8 ms (-84%), and the
+  drain's warm `setPropU32` path got **24% faster**, not slower, despite
+  gaining a null check. `props` / `propsF` / `propsStr` are no longer
+  public fields — use `setPropU32` / `getPropU32` / `rawPropU32` /
+  `hasPropU32` and their F32 / Str counterparts, and `removeProp`.
 - **`<row>` is no longer a scroll container.** Every Row was wrapped in a
   horizontal `SingleChildScrollView`, costing a Scrollable, viewport,
   ScrollPosition and gesture recognizer per row: 4156 elements and

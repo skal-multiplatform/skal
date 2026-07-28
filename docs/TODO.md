@@ -146,7 +146,43 @@ before touching:
 - Hydration performs many independent reactive writes where one batch
   would do.
 
-### 6b. Event path — two allocations/round-trips never addressed
+### 6b. Event path — analysed 2026-07-28, deliberately NOT done
+
+Both are real. Both are also in code this repo cannot currently test,
+and in each case the win is smaller than the risk of shipping an
+unverified change to the event path. Recording the analysis so this is a
+decision rather than an omission.
+
+**`EventDrainTask` allocated per wake** (`patches/skal_entry.zig`,
+`skal_wake_js`). One `create` + `destroy` of `{*Runtime, AnyTask,
+ConcurrentTask}` per dispatched event — tens of nanoseconds against an
+event that crosses into JSC and runs a JS handler. The fix is to reuse
+one task behind an atomic pending flag, which means getting the flag
+right on a lock-free `enqueueTaskConcurrent` path: enqueue only when not
+pending, clear at the START of `run` so a wake during the drain
+schedules a fresh one. Get that wrong and you corrupt the task queue's
+linked list — a crash in the native runtime.
+
+The Zig test harness extracts only the std-only STORE region; this is
+bun-coupled and outside it (`awk` between the markers finds zero
+references). So the trade is: save one malloc per event, in exchange for
+an untestable concurrency change to the runtime's scheduler. Not worth
+it. Revisit if the harness ever grows to cover the bun-coupled half.
+
+**Web `syncToJs` / drain / `syncFromJs` per event**
+(`skal_ffi_web.dart`, `wakeJs`). `syncToJs` is NOT a no-op — it copies
+three header ranges plus reply-heap and event-ring slices — so a burst
+pays it per event. The burst case is real: a Dart stream emitting N
+values in one turn wakes N times. A gesture at 120 Hz is one event per
+frame and gains nothing.
+
+The fix is a coalesced pending flag draining once per microtask. It
+changes event timing from synchronous to deferred, and
+`skal_ffi_web.dart` imports `dart:js_interop`, so it cannot run under
+`flutter test` at all — there is no way to verify it here. Wants a web
+integration test first; that is the actual prerequisite.
+
+### 6b-orig. (superseded — kept for the original framing)
 
 Flagged by the performance report and **not done**; I closed the
 reply-heap half and dropped these two on the floor when writing this

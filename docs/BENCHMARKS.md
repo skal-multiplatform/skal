@@ -1862,7 +1862,16 @@ than the branch saved.
 
 Notifiers are now created by the SUBSCRIBER, not the producer:
 `notifyCold()` / `notifyHot()` skip entirely when no widget has ever
-listened, which is the normal case for the interior of a large tree.
+listened.
+
+**Read the notifier row with a caveat.** This bench constructs
+`NodeState`s in isolation, so it measures the never-built case. In the
+real tree `_hotLayer()` is called for every node that BUILDS and always
+subscribes to `node.hot`, so a built node allocates both notifiers
+regardless. The saving is therefore proportional to how much of the tree
+goes unbuilt — large in a windowed list where ~20 of 5000 rows build,
+and limited to the three prop maps plus the child backing in a
+fully-built tree. See TODO.md § 6c.
 
 ### The Zig store does NOT have the JS store's aliasing bug
 

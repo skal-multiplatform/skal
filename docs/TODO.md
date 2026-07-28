@@ -88,6 +88,41 @@ before touching:
 - Hydration performs many independent reactive writes where one batch
   would do.
 
+### 6b. Event path — two allocations/round-trips never addressed
+
+Flagged by the performance report and **not done**; I closed the
+reply-heap half and dropped these two on the floor when writing this
+list up. Recorded now so they are not lost twice.
+
+- `EventDrainTask` (`patches/skal_entry.zig`) is allocated and destroyed
+  per host wake. A coalesced pending flag would reuse one. Needs a
+  libskal rebuild to land, same as item 2.
+- Web events do an individual `syncFromJs` / drain / `syncToJs` round
+  trip each (`skal_ffi_web.dart`). The dart2wasm mirror has to be
+  reconciled at those boundaries, but not necessarily per event.
+
+### 6c. The hot layer is still installed on every node
+
+Partially addressed and worth being precise about, because the headline
+number in `BENCHMARKS.md` Bench 8 does not tell the whole story.
+
+`NodeState`'s storage is lazy as of 2026-07-28. But `_hotLayer()` in
+`root.dart` is called for EVERY node and always returns a layer
+(`_StaticHotLayer` / `_AnimatedHotLayer` / `_SpringHotLayer`) that
+subscribes to `node.hot` — so any node that is actually BUILT allocates
+both notifiers regardless of the laziness.
+
+The laziness is therefore effective exactly in proportion to how much of
+the tree goes unbuilt: in a windowed 5000-row list where ~20 rows build,
+~4980 nodes skip both notifiers. In a fully-built tree it saves the
+three prop maps and the child backing, and nothing else.
+
+The existing comment in `root.dart` explains why the builders are
+unconditional — making them conditional means reading hot values in the
+outer build, which subscribes the outer build to them and defeats the
+purpose — and calls the cost "tiny". That reasoning is sound; the cost
+claim is now measurable and unmeasured.
+
 ### 7. Codegen rebuilds more than it needs to
 
 A fresh analyzer context per invocation, every Dart file in every

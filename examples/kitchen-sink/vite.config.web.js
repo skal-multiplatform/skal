@@ -257,9 +257,29 @@ export default defineConfig({
     // from 'skal/renderer-web' directly) so the same web-main.jsx file
     // works as a copy-paste template for new web entries, regardless of
     // which Skal renderer the host config picks.
-    alias: {
-      '~renderer': 'skal/renderer-web',
-    },
+    // ARRAY form, and the first entry is an anchored RegExp on purpose.
+    // Vite's object form matches by PREFIX, and 'skal/renderer' is a
+    // prefix of 'skal/renderer-web' — so an object entry would rewrite
+    // the web renderer's own specifier into 'skal/renderer-web-web' and
+    // break the build. /^skal\/renderer$/ matches the bare specifier
+    // only.
+    alias: [
+      // The app-facing imperative API — setDesign / showDialog /
+      // showSnackbar / the pickers — is re-exported by BOTH renderers.
+      // App code imports it from 'skal/renderer' (one import site for
+      // every target), so on the DOM build that specifier has to land on
+      // the DOM implementations. Without this it resolved to the native
+      // renderer, whose versions write ops into a bridge that does not
+      // exist here: every call was dropped with a console error and the
+      // working implementations in renderer-web.js were never reached.
+      //
+      // Safe on THIS config only. vite.config.js (moduleName
+      // 'skal/renderer') builds the native bundle, which is also what
+      // Flutter Web loads as skal-app.js — that target has a real bridge
+      // and must keep the native versions.
+      { find: /^skal\/renderer$/, replacement: 'skal/renderer-web' },
+      { find: '~renderer', replacement: 'skal/renderer-web' },
+    ],
   },
   // index.html is at the project root; vite picks it up automatically.
   // Dev server: `bun run dev:web` → opens http://localhost:5173/

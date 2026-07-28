@@ -2326,7 +2326,9 @@ function StoreTab() {
 
       {/* ── Collection — an array of objects ─────────────────────── */}
       <Section title="Collection — todos (array of objects)">
-        <Row gap={8}>
+        {/* Wrap, not Row — four buttons overflow an iPhone by 84 px.
+            See the design-system section above. */}
+        <Wrap gap={8}>
           <Button label="Add" onClick={() => db.todos.push({ text: 'todo ' + Date.now() })} />
           <Button label="Add 100" onClick={() => batch(() => {
             for (let i = 0; i < 100; i++) {
@@ -2335,7 +2337,7 @@ function StoreTab() {
           })} />
           <Button label="Remove first" onClick={() => { if (db.todos.length) db.todos.shift(); }} />
           <Button label="Clear" onClick={() => { db.todos.splice(0, db.todos.length); }} />
-        </Row>
+        </Wrap>
         <Text label={`${db.todos.length} todos — add/remove writes one element frame + the index, never the whole list`} fontSize={12} fontWeight={700} color={ACCENT} />
         <Box height={220} cornerRadius={10} background={CHIP}>
           <ListView scrollbar>

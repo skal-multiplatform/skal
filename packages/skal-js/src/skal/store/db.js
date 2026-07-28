@@ -1257,7 +1257,17 @@ export function createSkalStore(initState, config = {}) {
         }
       }
       if (!engine) {
-        const backend = await openBackend(dataDir);
+        // Namespace by store name, exactly as the native path above
+        // does. Without this every store in a process shared ONE
+        // segment directory: a second `createSkalStore` hydrated the
+        // first one's data over its own initState, and their writes
+        // interleaved into the same keyspace.
+        //
+        // `name` is not decorative — docs/BENCHMARKS.md builds two
+        // stores in one run (`RUN + '-warm'`, `RUN + '-frame'`) and
+        // relies on it for isolation, which held on native and silently
+        // did not here.
+        const backend = await openBackend(dataDir + '/' + cfg.name);
         const ls = new LogStore(backend);
         ls.open();
         engine = ls;

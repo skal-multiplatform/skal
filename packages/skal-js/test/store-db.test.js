@@ -26,11 +26,10 @@ import * as path from 'node:path';
 // 1. Without an injected dir, `fetchDataDir` polls a host hook that does
 //    not exist here — five attempts on 800 ms timeouts, ~5 s before it
 //    gives up. Injecting one attaches the engine at once.
-// 2. A FRESH dir per store. The JS engine path is
-//    `openBackend(dataDir)` and does not incorporate `cfg.name` (only
-//    the native path appends it), so every store sharing a dataDir
-//    shares one segment directory — and each test hydrated the previous
-//    test's todos. Isolation has to come from the directory.
+// 2. A fresh dir per store. Store `name` now namespaces the JS engine
+//    too, so this is belt-and-braces rather than load-bearing — but a
+//    test that shares a directory with its neighbours is one refactor
+//    away from being about the wrong thing.
 function freshStore(initState) {
   globalThis.__skal_data_dir =
     fs.mkdtempSync(path.join(os.tmpdir(), 'skal-db-test-'));
@@ -270,5 +269,54 @@ describe('collections seeded in initState', () => {
 
     const s2 = await reopen();
     expect(s2.todos).toEqual([]);
+  });
+});
+
+describe('store isolation', () => {
+  // The JS engine path took `openBackend(dataDir)` and never saw
+  // `cfg.name` — only the native path appended it. So every store in a
+  // process shared one segment directory: a second createSkalStore
+  // hydrated the first one's data over its own initState.
+  //
+  // Not hypothetical and not new: docs/BENCHMARKS.md builds two stores
+  // in one run (`RUN + '-warm'`, `RUN + '-frame'`) and relies on `name`
+  // for isolation. That held on native and silently did not here, so
+  // any bench arm measured on the JS engine could have been reading the
+  // other arm's data.
+
+  test('two stores in one data dir do not see each other', async () => {
+    globalThis.__skal_data_dir =
+      fs.mkdtempSync(path.join(os.tmpdir(), 'skal-iso-'));
+
+    const a = createSkalStore({ value: 'from-A' },
+      { persist: true, name: 'alpha' });
+    expect(await settle(a)).toBe(true);
+    a.value = 'A-WROTE';
+    a[STORE].flushNow();
+
+    const b = createSkalStore({ value: 'from-B' },
+      { persist: true, name: 'beta' });
+    expect(await settle(b)).toBe(true);
+
+    expect(b.value).toBe('from-B');       // its own initState, not A's
+    expect(a.value).toBe('A-WROTE');
+  });
+
+  test('the same name in the same dir DOES reopen the same data', async () => {
+    // The other half of the contract — namespacing must not break
+    // reopening, which is the whole point of persistence.
+    globalThis.__skal_data_dir =
+      fs.mkdtempSync(path.join(os.tmpdir(), 'skal-iso-'));
+
+    const a = createSkalStore({ value: 'init' },
+      { persist: true, name: 'shared' });
+    expect(await settle(a)).toBe(true);
+    a.value = 'PERSISTED';
+    a[STORE].flushNow();
+
+    const b = createSkalStore({ value: 'init' },
+      { persist: true, name: 'shared' });
+    expect(await settle(b)).toBe(true);
+    expect(b.value).toBe('PERSISTED');
   });
 });

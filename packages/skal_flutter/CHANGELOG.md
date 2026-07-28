@@ -67,6 +67,15 @@
 
 ### Fixed (store)
 
+- **Every store in a process shared one keyspace on the JS engine.** The
+  fallback path called `openBackend(dataDir)` and never passed
+  `cfg.name` — only the native path appended it — so a second
+  `createSkalStore` hydrated the first one's data over its own
+  `initState` and their writes interleaved. Now namespaced on both.
+  **Migration:** JS-engine data moves from `<dataDir>/` to
+  `<dataDir>/<name>/` (default `store`), so existing persisted data on
+  that path reads as empty.
+
 - **A collection declared in `initState` could not be persisted.** Its
   index frame was only ever written when membership changed, so editing
   an element wrote that element's bytes with no id list to reach them

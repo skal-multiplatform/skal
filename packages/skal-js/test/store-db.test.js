@@ -320,3 +320,95 @@ describe('store isolation', () => {
     expect(b.value).toBe('PERSISTED');
   });
 });
+
+describe('bulk removal evicts the node memo', () => {
+  // dropMemo used to check every memo key against every removed prefix.
+  // Both grow together — clearing a collection passes one prefix per
+  // element while the memo holds an entry per element ever touched — so
+  // it was O(memo x removed). A splice(0, 5000) took 1435 ms.
+  //
+  // It now walks each memo key's own ancestor chain against a Set of
+  // the removed keys, which is O(memo x path-depth). 1.8 ms.
+  //
+  // What these can and cannot check, established by mutation rather
+  // than assumed — the first draft of this block got it wrong.
+  //
+  // `nodeMemo` caches the PROXY, not the data, and a proxy re-resolves
+  // its path on every access. So neither a missed eviction nor a
+  // spurious one changes an observed VALUE: breaking the ancestor walk
+  // outright, and making it over-match siblings, both leave every
+  // value-level assertion below green. Memo eviction is memory hygiene
+  // and identity freshness, not correctness of reads.
+  //
+  // The load-bearing test here is therefore the BUDGET. The value tests
+  // stay because a rewrite of this function could plausibly break
+  // reads even though this one does not — but they are a floor, not
+  // the point, and they are not evidence that the eviction logic is
+  // right.
+
+  test('re-adding the same ids after a bulk clear reads fresh values', async () => {
+    const s = freshStore({ todos: [] });
+    expect(await settle(s)).toBe(true);
+
+    for (let i = 1; i <= 40; i++) s.todos.push({ _id: i, title: `first ${i}` });
+    for (let i = 0; i < 40; i++) expect(s.todos[i].title).toBe(`first ${i + 1}`);
+
+    s.todos.splice(0, s.todos.length);
+    expect(s.todos.length).toBe(0);
+
+    // Same ids again. A stale memo entry would serve the OLD proxy and
+    // report "first N".
+    for (let i = 1; i <= 40; i++) s.todos.push({ _id: i, title: `second ${i}` });
+    for (let i = 0; i < 40; i++) expect(s.todos[i].title).toBe(`second ${i + 1}`);
+  });
+
+  test('the small and large paths agree', async () => {
+    // Under 8 removed keys keeps the original loop; 8 and over takes the
+    // Set + ancestor walk. Both must evict exactly the same entries.
+    for (const n of [3, 40]) {
+      const s = freshStore({ todos: [] });
+      expect(await settle(s)).toBe(true);
+      for (let i = 1; i <= n; i++) s.todos.push({ _id: i, title: `a${i}` });
+      for (let i = 0; i < n; i++) void s.todos[i].title;   // warm the memo
+
+      s.todos.splice(0, n);
+      for (let i = 1; i <= n; i++) s.todos.push({ _id: i, title: `b${i}` });
+      for (let i = 0; i < n; i++) {
+        expect(s.todos[i].title).toBe(`b${i + 1}`);
+      }
+    }
+  });
+
+  test('removing one element leaves its prefix-sharing siblings', async () => {
+    // `todos.1` must not swallow `todos.10`. Note this asserts the
+    // VALUES survive, which over-eviction would not disturb — it is a
+    // plain removal check, not proof the boundary logic is right.
+    const s = freshStore({ todos: [] });
+    expect(await settle(s)).toBe(true);
+    for (const id of [1, 10, 100]) s.todos.push({ _id: id, title: `t${id}` });
+    for (let i = 0; i < 3; i++) void s.todos[i].title;
+
+    s.todos.splice(0, 1);                       // removes _id 1 only
+    expect(s.todos.map((t) => t.title)).toEqual(['t10', 't100']);
+  });
+
+  test('clearing a large collection is not quadratic', async () => {
+    // 1435 ms before the rewrite, 1.8 ms after — so 150 ms sits two
+    // orders of magnitude clear of the fixed path and an order clear of
+    // the broken one. An earlier draft used N=3000 / 300 ms and did NOT
+    // catch the quadratic version when mutated back; the shapes only
+    // separate decisively further up the curve.
+    const s = freshStore({ todos: [] });
+    expect(await settle(s)).toBe(true);
+    const N = 5000;
+    for (let i = 1; i <= N; i++) s.todos.push({ _id: i, title: `t${i}` });
+    for (let i = 0; i < N; i++) void s.todos[i].title;
+
+    const t0 = performance.now();
+    s.todos.splice(0, N);
+    const ms = performance.now() - t0;
+
+    expect(s.todos.length).toBe(0);
+    expect(ms).toBeLessThan(150);
+  });
+});

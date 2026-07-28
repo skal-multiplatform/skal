@@ -15,6 +15,19 @@
 
 ### Fixed
 
+- **An animation on a hidden `<tabs>` tab kept the whole app rendering
+  at full frame rate, forever.** Tab subtrees are deliberately kept
+  alive so switching never re-mounts, but `IndexedStack` says nothing
+  about tickers — so a looping animation or an indeterminate spinner on
+  a tab the user could not see went on requesting a frame every vsync.
+  Stopping the host's own pump ticker could not help: those frames come
+  from Flutter's animation scheduler, not from Skal. Hidden tabs are now
+  wrapped in `TickerMode(enabled: false)`, which pauses animation
+  without unmounting — state, scroll offset and the keep-alive guarantee
+  are untouched, and animations resume when the tab returns. Measured on
+  the kitchen-sink demo (macOS release), sitting on a tab with nothing
+  animating: 61 FPS → 2 FPS, 7.83% → 0.67% CPU. A stock Flutter app
+  doing nothing idles at 0.10%.
 - A UI op committed in the same JS tick as a service call could take
   hundreds of milliseconds to paint, or never paint until unrelated
   traffic arrived — `setLoading(true); api.fetch()` in one handler is

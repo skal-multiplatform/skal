@@ -3583,10 +3583,28 @@ Widget _buildTabs(NodeState n, SkalBridge bridge) {
   // whose content is a scroller (`<listView>` / `<scrollView>`) gets a
   // bounded height instead of an unconstrained one. Without a height
   // the body sizes loosely to its largest tab.
+  // Hidden tabs stay MOUNTED but must not stay ANIMATING. IndexedStack
+  // keeps every subtree alive and paints one; it does nothing about
+  // tickers, so an animation in a tab you cannot see goes on requesting
+  // a frame every vsync forever. Measured on the demo: a looping
+  // animation plus an indeterminate spinner, three tabs away, held the
+  // whole app at 61 FPS and ~7% CPU while it sat there doing nothing —
+  // and no amount of stopping SkalRoot's own pump ticker helps, because
+  // these frames are scheduled by Flutter's animation scheduler, not by
+  // us.
+  //
+  // TickerMode is the framework mechanism for exactly this (it is what
+  // an off-screen route gets). Disabling it does not unmount, rebuild
+  // or reset anything: state, scroll offset and the keep-alive
+  // guarantee above are untouched, and an animation resumes when its
+  // tab comes back.
   final Widget body = IndexedStack(
     index: active,
     sizing: bounded ? StackFit.expand : StackFit.loose,
-    children: contents,
+    children: <Widget>[
+      for (var i = 0; i < contents.length; i++)
+        TickerMode(enabled: i == active, child: contents[i]),
+    ],
   );
 
   final Widget bar = cupertino

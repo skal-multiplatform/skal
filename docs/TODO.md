@@ -106,10 +106,9 @@ Builder-mode `<listView count renderItem>` is windowed as of
 - **JSX-children lists.** The renderer is handed already-built nodes and
   has nowhere to defer them to. Needs a different contract, not a
   different loop.
-- **Horizontal builder lists** (`axis=1`) keep the 1500-row eager path.
-  Windowing them is the same work against `scrollLeft`/`clientWidth`;
-  they are rare, and the fallback is pinned by a test so it cannot rot
-  silently.
+- ~~**Horizontal builder lists**~~ — done (2026-07-28). Windowed on the
+  same path: `_AXIS` selects width / scrollLeft / offsetWidth, and the
+  1500-row cap is deleted rather than relaxed.
 
 See also *Web target — Flutter→DOM consistency* below, which tracks a
 different web gap (hand-maintained widget mapping), and

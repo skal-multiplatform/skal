@@ -124,6 +124,7 @@ _skal_wake_js
 _skal_runtime_was_reused
 _skal_init_dart_api
 _skal_set_host_port
+_skal_prewarm_store
 EOF
 
 # ── Link flags ─────────────────────────────────────────────────────────
@@ -154,6 +155,7 @@ LDFLAGS=(
   -Wl,-u,_skal_runtime_was_reused
   -Wl,-u,_skal_init_dart_api
   -Wl,-u,_skal_set_host_port
+  -Wl,-u,_skal_prewarm_store
   # Same system libs bun-profile links. libicucore + libresolv exist
   # on iOS device at the same /usr/lib paths as macOS/Simulator.
   -licucore

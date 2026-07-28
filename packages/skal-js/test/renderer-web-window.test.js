@@ -30,18 +30,22 @@ beforeAll(async () => {
 
 /// Give an element the geometry happy-dom will not compute, so the
 /// windowing maths has something real to work against.
-function fakeGeometry(el, { viewport, rowHeight }) {
-  Object.defineProperty(el, 'clientHeight', {
+function fakeGeometry(el, { viewport, rowHeight, axis = 0 }) {
+  const extent = axis === 1 ? 'clientWidth' : 'clientHeight';
+  const scroll = axis === 1 ? 'scrollLeft' : 'scrollTop';
+  const size = axis === 1 ? 'offsetWidth' : 'offsetHeight';
+
+  Object.defineProperty(el, extent, {
     configurable: true, get: () => viewport,
   });
-  let scrollTop = 0;
-  Object.defineProperty(el, 'scrollTop', {
+  let pos = 0;
+  Object.defineProperty(el, scroll, {
     configurable: true,
-    get: () => scrollTop,
-    set: (v) => { scrollTop = v; },
+    get: () => pos,
+    set: (v) => { pos = v; },
   });
-  // Every row wrapper reports a fixed height.
-  Object.defineProperty(window.HTMLElement.prototype, 'offsetHeight', {
+  // Every row wrapper reports a fixed extent along the scroll axis.
+  Object.defineProperty(window.HTMLElement.prototype, size, {
     configurable: true,
     get() { return this._skalBuilderRow ? rowHeight : 0; },
   });
@@ -160,12 +164,39 @@ describe('builder-mode list windowing', () => {
 
   // ── the horizontal fallback ──────────────────────────────────────
 
-  test('a horizontal list keeps the eager path', async () => {
-    // Windowing it needs the same work against scrollLeft/clientWidth;
-    // documented as unhandled, so pin that it still renders rather than
-    // silently windowing to nothing.
-    const el = await list(40, { axis: 1 });
-    expect(mountedRows(el).length).toBe(40);
-    expect([...el.children].some((c) => c._skalSpacer)).toBe(false);
+  test('a horizontal list windows too, against width/scrollLeft', async () => {
+    // This used to bail to the eager path with a 1500 cap, purely
+    // because the geometry was hardcoded to height/scrollTop.
+    const el = await list(10000, {
+      axis: 1,
+      geometry: { viewport: 480, rowHeight: 48, axis: 1 },
+    });
+    const rows = mountedRows(el);
+    expect(rows.length).toBeGreaterThan(5);
+    expect(rows.length).toBeLessThan(40);
+    expect(rows.length).toBeLessThan(1500);   // the cap it used to hit
+  });
+
+  test('a horizontal list sizes its spacers on WIDTH, not height', async () => {
+    const el = await list(1000, {
+      axis: 1,
+      geometry: { viewport: 480, rowHeight: 48, axis: 1 },
+    });
+    const spacers = [...el.children].filter((c) => c._skalSpacer);
+    expect(spacers.length).toBe(2);
+    expect(parseInt(spacers[1].style.width, 10)).toBeGreaterThan(40000);
+    expect(spacers[1].style.height).toBe('');
+  });
+
+  test('a horizontal list scrolls to rows past the old cap', async () => {
+    const el = await list(10000, {
+      axis: 1,
+      geometry: { viewport: 480, rowHeight: 48, axis: 1 },
+    });
+    el.scrollLeft = 9000 * 48;
+    el.dispatchEvent(new window.Event('scroll'));
+    await flush();
+    const idx = mountedRows(el).map((r) => r._skalRowIndex);
+    expect(Math.max(...idx)).toBeGreaterThan(8000);
   });
 });

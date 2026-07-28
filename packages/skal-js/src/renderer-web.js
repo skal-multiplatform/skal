@@ -1289,8 +1289,10 @@ function warnOnce(tag) {
 // scroll — exact offsets would need every row measured up front, which
 // is the O(count) cost this exists to avoid.
 //
-// Horizontal lists (axis=1) keep the eager path: windowing them needs
-// the same work against scrollLeft/clientWidth, and they are rare.
+// Both axes are windowed. The first version bailed to the eager path
+// for `axis=1` rather than parameterise four property names, which left
+// a 1500-row cap sitting behind a rare-but-real prop; `_AXIS` picks the
+// right ones and the cap is gone.
 //
 // Each row still runs in its own createRoot so signals inside renderItem
 // stay live and unmounting disposes cleanly.
@@ -1308,19 +1310,24 @@ const WEB_EST_ROW_H = 48;
 /// batch keeps prerendered output meaningful.
 const WEB_HEADLESS_ROWS = 20;
 
-/// Eager cap, retained ONLY for the horizontal fallback below.
-const WEB_BUILDER_ROW_CAP = 1500;
-let _warnedBuilderCap = false;
+/// Axis-agnostic geometry. A horizontal list is the same algorithm
+/// against width/scrollLeft; the only differences are four property
+/// names.
+const _AXIS = {
+  0: { extent: 'clientHeight', scroll: 'scrollTop',  size: 'offsetHeight', dim: 'height' },
+  1: { extent: 'clientWidth',  scroll: 'scrollLeft', size: 'offsetWidth',  dim: 'width'  },
+};
+const _axisOf = (node) => _AXIS[node._skalListAxis === 1 ? 1 : 0];
 
-/// Average measured row height for this list, falling back to the
-/// estimate until something has actually been measured.
+/// Average measured row extent along the scroll axis, falling back to
+/// the estimate until something has actually been measured.
 function _rowH(node) {
   const m = node._skalRowH;
   return (m && m.n > 0) ? m.total / m.n : WEB_EST_ROW_H;
 }
 
 function _measureRow(node, el) {
-  const h = el.offsetHeight;
+  const h = el[_axisOf(node).size];
   if (!h) return;                        // no layout (headless) — skip
   const m = node._skalRowH || (node._skalRowH = { total: 0, n: 0 });
   m.total += h;
@@ -1329,12 +1336,13 @@ function _measureRow(node, el) {
 
 /// Which rows should exist right now.
 function _windowFor(node, count) {
-  const vh = node.clientHeight | 0;
+  const ax = _axisOf(node);
+  const vh = node[ax.extent] | 0;
   if (vh <= 0) {
     return { start: 0, end: Math.min(count, WEB_HEADLESS_ROWS) };
   }
   const h = _rowH(node);
-  const first = Math.max(0, Math.floor((node.scrollTop | 0) / h) - WEB_WINDOW_OVERSCAN);
+  const first = Math.max(0, Math.floor((node[ax.scroll] | 0) / h) - WEB_WINDOW_OVERSCAN);
   const visible = Math.ceil(vh / h) + WEB_WINDOW_OVERSCAN * 2;
   return { start: first, end: Math.min(count, first + visible) };
 }
@@ -1410,30 +1418,6 @@ function _syncBuilderRows(node) {
     c = next;
   }
 
-  // Horizontal lists keep the old eager path — see the note above.
-  if (node._skalListAxis === 1) {
-    const want = Math.min(count, WEB_BUILDER_ROW_CAP);
-    if (count > WEB_BUILDER_ROW_CAP && !_warnedBuilderCap) {
-      _warnedBuilderCap = true;
-      console.warn(
-        `skal-web: horizontal builder-mode <ListView> renders eagerly — ` +
-        `capped at ${WEB_BUILDER_ROW_CAP} of ${count} rows. Vertical lists ` +
-        `are windowed and have no cap.`);
-    }
-    for (const [i, row] of rows) {
-      if (i < want) continue;
-      rows.delete(i);
-      try { row.el.remove(); } catch (_) { /* already detached */ }
-      try { row.dispose(); } catch (_) { /* user cleanup threw */ }
-    }
-    for (let i = 0; i < want; i++) {
-      if (rows.has(i)) continue;
-      _mountRow(node, rows, i, fn);
-      node.appendChild(rows.get(i).el);
-    }
-    return;
-  }
-
   _armWindowListeners(node);
   const { start, end } = _windowFor(node, count);
 
@@ -1459,8 +1443,16 @@ function _syncBuilderRows(node) {
   }
 
   const h = _rowH(node);
-  top.style.height = `${Math.max(0, start) * h}px`;
-  bottom.style.height = `${Math.max(0, count - end) * h}px`;
+  const dim = _axisOf(node).dim;
+  // flexShrink:0 — the list is a flex container, and without it the
+  // layout collapses the spacers and the scrollbar goes wrong.
+  //
+  // NOT covered by a test: happy-dom does no flex layout, so removing
+  // this line fails nothing. Reasoned, not verified.
+  top.style.flexShrink = '0';
+  bottom.style.flexShrink = '0';
+  top.style[dim] = `${Math.max(0, start) * h}px`;
+  bottom.style[dim] = `${Math.max(0, count - end) * h}px`;
 
   // Rebuild the child order: [top spacer, rows in index order, bottom].
   node.appendChild(top);

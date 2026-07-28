@@ -412,3 +412,37 @@ describe('bulk removal evicts the node memo', () => {
     expect(ms).toBeLessThan(150);
   });
 });
+
+describe('store init on a DOM target', () => {
+  // `fetchDataDir` asks the host for a data directory over RPC:
+  // `getAppDataDir()` writes an invoke op into the bridge ring and waits
+  // for an answer. On a DOM target there is no host and nothing drains
+  // the ring, so every attempt timed out — 5 x (800 ms + 150 ms backoff)
+  // = 4.75 s — before returning '' and falling back to the in-memory
+  // backend it was always going to use.
+  //
+  // Measured: ready after 4774 ms. Nobody had flagged it; it was found
+  // while checking whether the fallback bridge buffer is genuinely
+  // inert on web. It is not — that RPC writes into it.
+
+  test('does not wait on an RPC no host can answer', async () => {
+    const savedDir = globalThis.__skal_data_dir;
+    const savedAcq = globalThis.__skal_acquireBridge;
+    delete globalThis.__skal_data_dir;      // no injected dir
+    delete globalThis.__skal_acquireBridge; // and no native bridge
+    try {
+      const t0 = performance.now();
+      const s = createSkalStore({ n: 0 }, { persist: true, name: 'domboot' });
+      expect(await settle(s)).toBe(true);
+      const ms = performance.now() - t0;
+
+      // 4774 ms before, ~12 ms after. 1000 ms is comfortably below one
+      // single retry cycle (800 ms timeout + 150 ms backoff), so a
+      // return to even ONE round trip fails this.
+      expect(ms).toBeLessThan(1000);
+    } finally {
+      if (savedDir !== undefined) globalThis.__skal_data_dir = savedDir;
+      if (savedAcq !== undefined) globalThis.__skal_acquireBridge = savedAcq;
+    }
+  });
+});

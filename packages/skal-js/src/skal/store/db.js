@@ -27,7 +27,7 @@
 import { createSignal, untrack } from 'solid-js';
 import { createStore as createSolidStore, produce } from 'solid-js/store';
 import { LogStore, NativeLogStore, openBackend } from './engine.js';
-import { getAppDataDir } from '../../bridge.js';
+import { getAppDataDir, HAS_NATIVE_BRIDGE } from '../../bridge.js';
 
 const FLUSH_DEBOUNCE_MS = 60;
 // LRU cap on memoized proxy nodes (see makeNode). Deliberately moderate:
@@ -113,6 +113,19 @@ function _clone(v) {
 async function fetchDataDir() {
   const injected = globalThis.__skal_data_dir;
   if (typeof injected === 'string' && injected.length) return injected;
+
+  // No native host to ask, so do not spend five seconds asking.
+  //
+  // `getAppDataDir()` is an RPC: it writes an invoke op into the bridge
+  // ring and waits for a host to answer. On a DOM target there is no
+  // host and no drain, so every attempt times out — 5 x (800 ms + 150 ms
+  // backoff) = 4.75 s before returning '' and falling back to the
+  // in-memory backend it was always going to use.
+  //
+  // Measured before this guard: `createSkalStore(...)` on a DOM target
+  // reported ready after 4774 ms. After: ~0 ms.
+  if (!HAS_NATIVE_BRIDGE) return '';
+
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const d = await Promise.race([

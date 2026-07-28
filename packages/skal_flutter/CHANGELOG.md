@@ -65,6 +65,16 @@
   sweep, and retained payloads are now capped (~4 M chars) with one
   diagnostic rather than growing until the app dies.
 
+### Fixed (store)
+
+- **A collection declared in `initState` could not be persisted.** Its
+  index frame was only ever written when membership changed, so editing
+  an element wrote that element's bytes with no id list to reach them
+  by: the edit vanished on restart and its frame was orphaned on disk.
+  Collections built by `push` were unaffected, which is why it went
+  unnoticed. An unpersisted collection is now seeded — elements and
+  index together — at first open.
+
 ### Performance
 
 - **An idle app no longer renders.** `SkalRoot`'s Ticker ran forever, so

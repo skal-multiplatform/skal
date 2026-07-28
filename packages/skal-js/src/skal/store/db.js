@@ -1206,7 +1206,30 @@ export function createSkalStore(initState, config = {}) {
       return;
     }
     const whole = engine.get('k:' + sk);             // a whole-frame array
-    if (whole != null) setAt(sp, decodeFrame(whole));
+    if (whole != null) { setAt(sp, decodeFrame(whole)); return; }
+
+    // Nothing persisted for this array at all: it exists only because
+    // `initState` declared it. Stage it now, at first open.
+    //
+    // Not an optimisation — a correctness hole. Initial state is
+    // otherwise never written (it lives in the app's code, so a scalar
+    // that is never changed hydrates to the same value either way). For
+    // a COLLECTION that reasoning breaks: editing one element stages
+    // that element's frame, but the index `#x` is only staged when
+    // membership changes, so the store ends up holding element bytes
+    // with no id list to reach them by. `hydrateArray` needs the index
+    // to rebuild the array, finds none, and leaves the live array at its
+    // initState value — the edit is silently gone after a restart, and
+    // its frame is orphaned on disk forever.
+    //
+    // Seeding here writes the elements AND the index together, so the
+    // very first open leaves the collection fully addressable. Runs once
+    // per collection ever: the next open takes the `idxBytes` path
+    // above.
+    const live = readSolid(sp);
+    if (Array.isArray(live) && live.length > 0 && _isColl(live)) {
+      stageAt(sp, sk, null, live);
+    }
   }
 
   async function init() {

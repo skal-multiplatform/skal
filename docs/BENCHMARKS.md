@@ -940,7 +940,40 @@ any UI op batched alongside. Fixed by `_flushTouched()`, and pinned by
 > `frame build` p50 went 0.10 ms → 0.89 ms, i.e. widgets had started
 > rebuilding again.
 
-### How to re-run
+### Bench 10 — Seeded collections were silently unpersistable
+
+Found while building Bench 9's harness, and worse than the thing that
+harness was for.
+
+Initial state is deliberately never written: it lives in the app's code,
+so a scalar that is never changed hydrates to the same value either way.
+For a COLLECTION that reasoning broke.
+
+Editing one element stages that element's frame. The collection INDEX
+(`k:<c>#x`, the id list) is only staged when membership changes. So a
+collection that existed only in `initState` ended up on disk as element
+bytes with no index to reach them by. `hydrateArray` needs the index to
+rebuild the array, found none, and left the live array at its initState
+value — the edit was gone after a restart, and its frame was orphaned on
+disk permanently.
+
+Persisted keys after seeding two elements and editing one:
+
+| | keys written |
+|---|---|
+| seeded in `initState` (before) | `k:#meta`, `k:todos.1` |
+| built by `push` | `k:#meta`, `k:todos#x`, `k:todos.1`, `k:todos.2` |
+| seeded in `initState` (after) | `k:#meta`, `k:todos#x`, `k:todos.1`, `k:todos.2` |
+
+`hydrateArray` now seeds an unpersisted collection at first open —
+elements and index together — so the very first open leaves it fully
+addressable. Runs once per collection ever; every later open takes the
+index path.
+
+Silent, and it survived because the two paths that matter (seed vs push)
+were never compared. Both key sets are now identical by construction.
+
+## How to re-run
 
 **Not in the tree.** The harness needs two default-off switches in
 shipping code, and a flag no product code sets is a liability — so it
@@ -1892,9 +1925,9 @@ the deferral fails the encode-count test.
 Two things surfaced while building that harness, neither of them fixed
 here:
 
-- **A collection seeded in `initState` does not come back on reopen**,
-  while one built by `push` does. Scalars round-trip either way. That is
-  a real asymmetry and a bigger deal than the perf win.
+- **A collection seeded in `initState` did not come back on reopen**,
+  while one built by `push` did. Scalars round-trip either way. That was
+  a bigger deal than the perf win and is now fixed — see below.
 - **The JS engine path ignores `cfg.name`.** `openBackend(dataDir)`
   gets no store name — only the native path appends it — so two stores
   sharing a data directory share one segment directory. Each test

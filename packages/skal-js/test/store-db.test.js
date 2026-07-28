@@ -202,7 +202,73 @@ describe('deferred element frames', () => {
   });
 });
 
-// NOTE, found while building this: a collection seeded in `initState`
-// does not come back on reopen, while one built by `push` does. Scalars
-// round-trip either way. Not touched here — it is a separate bug from
-// the staging change, and worth its own investigation.
+describe('collections seeded in initState', () => {
+  // Initial state is deliberately not persisted — it lives in the app's
+  // code, so an unchanged scalar hydrates to the same value either way.
+  // For a COLLECTION that reasoning broke: editing an element staged
+  // that element's frame, but the index `#x` is only staged when
+  // membership changes, so the store held element bytes with no id list
+  // to reach them by. hydrateArray found no index, left the array at its
+  // initState value, and the edit was gone after a restart — with its
+  // frame orphaned on disk.
+  //
+  // The persisted key sets are now identical whether a collection is
+  // seeded or pushed: k:<c>#x plus one k:<c>.<id> per element.
+
+  test('an edit to a seeded collection survives a restart', async () => {
+    const s = freshStore({ todos: [body(1), body(2)] });
+    expect(await settle(s)).toBe(true);
+
+    s.todos[0].title = 'EDITED';
+    s[STORE].flushNow();
+
+    const s2 = await reopen();
+    expect(s2.todos.length).toBe(2);
+    expect(s2.todos[0].title).toBe('EDITED');
+    expect(s2.todos[1].title).toBe('record 2');
+  });
+
+  test('a seeded collection is fully addressable after first open', async () => {
+    // Every element, not just the edited one — an index listing ids the
+    // store has no frames for would rebuild a SHORTER array.
+    const s = freshStore({ todos: [body(1), body(2), body(3)] });
+    expect(await settle(s)).toBe(true);
+    s[STORE].flushNow();
+
+    const s2 = await reopen();
+    expect(s2.todos.map((t) => t.title))
+        .toEqual(['record 1', 'record 2', 'record 3']);
+  });
+
+  test('pushing onto a seeded collection keeps both halves', async () => {
+    const s = freshStore({ todos: [body(1)] });
+    expect(await settle(s)).toBe(true);
+
+    s.todos.push({ _id: 99, title: 'pushed' });
+    s.todos[0].title = 'seeded-edited';
+    s[STORE].flushNow();
+
+    const s2 = await reopen();
+    expect(s2.todos.map((t) => t.title)).toEqual(['seeded-edited', 'pushed']);
+  });
+
+  test('removing a seeded element persists the removal', async () => {
+    const s = freshStore({ todos: [body(1), body(2), body(3)] });
+    expect(await settle(s)).toBe(true);
+
+    s.todos.shift();
+    s[STORE].flushNow();
+
+    const s2 = await reopen();
+    expect(s2.todos.map((t) => t.title)).toEqual(['record 2', 'record 3']);
+  });
+
+  test('an empty seeded collection stays empty, and writes nothing', async () => {
+    const s = freshStore({ todos: [] });
+    expect(await settle(s)).toBe(true);
+    s[STORE].flushNow();
+
+    const s2 = await reopen();
+    expect(s2.todos).toEqual([]);
+  });
+});

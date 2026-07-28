@@ -1593,49 +1593,71 @@ function ListTab() {
 
   // createMemo — recomputed only when visibleTweets changes. <For>
   // diffs old vs new by identity, emitting the minimum add/remove ops.
-  const tweetsToShow = createMemo(() => TWEETS.slice(0, visibleTweets()));
+  // Builder mode: `count` + `renderItem`, NOT <For> over a sliced array.
+  //
+  // This screen is titled "virtualized" and its body text says
+  // "ListView.builder materializes only the visible window" — and it
+  // used to render `<For each={tweetsToShow()}>`, i.e. JSX children,
+  // which mounts every tweet. The copy described a feature the demo was
+  // not using, and `renderItem` appeared nowhere in this file, so the
+  // one path that virtualizes on native (and, since the web renderer
+  // learned to window, on DOM too) was exercised by nothing.
+  //
+  // The header rides at index 0 so it still scrolls away with the feed —
+  // builder mode ignores JSX children on both targets, so it cannot
+  // simply sit alongside them.
+  const HEADER_ROWS = 1;
 
-  // The control row scrolls together with the feed — matching the
-  // Twitter/X UX where the header scrolls away as you read.
+  function header() {
+    return (
+      <Column gap={12}>
+        <Text label="Tweet feed — virtualized" fontSize={24} fontWeight={800} color={INK} />
+        <Text
+          label="ListView.builder materializes only the visible window; the source pool is 15 000 items. Tap a count to mount N."
+          fontSize={13}
+          color={SUBTLE}
+        />
+        <Wrap gap={6}>
+          <For each={COUNT_BUTTONS}>
+            {(n) => (
+              <Button
+                label={`${n}`}
+                onClick={() => {
+                  const t1 = performance.now();
+                  try {
+                    setVisibleTweets(n);
+                    const ms = (performance.now() - t1).toFixed(2);
+                    setTweetBenchMs(`mounted ${n} in ${ms} ms`);
+                  } catch (e) {
+                    const msg = (e && (e.message || String(e))) || 'unknown';
+                    setTweetBenchMs(`ERROR @ ${n}: ${msg}`);
+                  }
+                }}
+              />
+            )}
+          </For>
+        </Wrap>
+        <Text
+          label={tweetBenchMs() || `showing ${visibleTweets()} tweets`}
+          fontSize={12}
+          color={SUBTLE}
+        />
+      </Column>
+    );
+  }
+
   return (
-    <ListView background={BG} padding={16} gap={12}>
-      <Text label="Tweet feed — virtualized" fontSize={24} fontWeight={800} color={INK} />
-      <Text
-        label="ListView.builder materializes only the visible window; the source pool is 15 000 items. Tap a count to mount N."
-        fontSize={13}
-        color={SUBTLE}
-      />
-      <Wrap gap={6}>
-        <For each={COUNT_BUTTONS}>
-          {(n) => (
-            <Button
-              label={`${n}`}
-              onClick={() => {
-                const t1 = performance.now();
-                try {
-                  setVisibleTweets(n);
-                  const ms = (performance.now() - t1).toFixed(2);
-                  setTweetBenchMs(`mounted ${n} in ${ms} ms`);
-                } catch (e) {
-                  const msg = (e && (e.message || String(e))) || 'unknown';
-                  setTweetBenchMs(`ERROR @ ${n}: ${msg}`);
-                }
-              }}
-            />
-          )}
-        </For>
-      </Wrap>
-      <Text
-        label={tweetBenchMs() || `showing ${visibleTweets()} tweets`}
-        fontSize={12}
-        color={SUBTLE}
-      />
-      <For each={tweetsToShow()}>
-        {(tweet) => (
-          <Tweet author={tweet.author} body={tweet.body} num={tweet.num} />
-        )}
-      </For>
-    </ListView>
+    <ListView
+      background={BG}
+      padding={16}
+      gap={12}
+      count={HEADER_ROWS + visibleTweets()}
+      renderItem={(i) => {
+        if (i < HEADER_ROWS) return header();
+        const t = TWEETS[i - HEADER_ROWS];
+        return t ? <Tweet author={t.author} body={t.body} num={t.num} /> : null;
+      }}
+    />
   );
 }
 

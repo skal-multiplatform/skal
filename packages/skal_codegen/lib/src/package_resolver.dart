@@ -40,17 +40,52 @@ import 'package:path/path.dart' as p;
 /// Resolved as `<rootUri>/<packageUri>` (file URI → filesystem path).
 /// For path-style deps the rootUri may be relative; in that case we
 /// resolve it against the config file's directory.
-String? resolvePackageLibDir(String pkgRoot, String packageName) {
-  final cfgPath = p.join(pkgRoot, '.dart_tool', 'package_config.json');
-  final cfgFile = File(cfgPath);
-  if (!cfgFile.existsSync()) return null;
+/// Parsed `package_config.json`, keyed by its path.
+///
+/// [resolvePackageLibDir] is called once per wrapped package AND once
+/// per declared service, so a project with a handful of each re-read and
+/// re-parsed the same file that many times per build.
+///
+/// Invalidated by (modified, length) rather than held forever: under
+/// `build_runner watch` a `pub get` between builds rewrites this file,
+/// and a cache that outlived it would resolve packages against a layout
+/// that no longer exists. A `stat` is far cheaper than a read + JSON
+/// parse, so the check costs a fraction of what it saves.
+final Map<String, ({DateTime mtime, int len, Map<String, dynamic> cfg})>
+    _cfgCache = {};
 
-  final Map<String, dynamic> cfg;
+Map<String, dynamic>? _loadPackageConfig(String cfgPath) {
+  final cfgFile = File(cfgPath);
+  final FileStat st;
   try {
-    cfg = jsonDecode(cfgFile.readAsStringSync()) as Map<String, dynamic>;
-  } on FormatException {
+    st = cfgFile.statSync();
+    if (st.type == FileSystemEntityType.notFound) return null;
+  } catch (_) {
     return null;
   }
+
+  final hit = _cfgCache[cfgPath];
+  if (hit != null && hit.mtime == st.modified && hit.len == st.size) {
+    return hit.cfg;
+  }
+
+  final Map<String, dynamic> parsed;
+  try {
+    parsed = jsonDecode(cfgFile.readAsStringSync()) as Map<String, dynamic>;
+  } on FormatException {
+    return null;
+  } catch (_) {
+    return null;
+  }
+  _cfgCache[cfgPath] =
+      (mtime: st.modified, len: st.size, cfg: parsed);
+  return parsed;
+}
+
+String? resolvePackageLibDir(String pkgRoot, String packageName) {
+  final cfgPath = p.join(pkgRoot, '.dart_tool', 'package_config.json');
+  final cfg = _loadPackageConfig(cfgPath);
+  if (cfg == null) return null;
   final pkgs = (cfg['packages'] as List?) ?? const [];
   for (final entry in pkgs.cast<Map<String, dynamic>>()) {
     if (entry['name'] != packageName) continue;

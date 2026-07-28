@@ -85,8 +85,21 @@ jobs:
         with:
           bun-version: latest
 
+      # No install step existed here, and nothing noticed: the original
+      # tests only imported bridge.js, which pulls in nothing. The
+      # renderer and runtime tests import solid-js (declared, never
+      # installed on the runner) and failed with "Cannot find module
+      # 'solid-js/universal'" — a gap that could not reproduce locally,
+      # where the workspace root hoists solid-js in from the demo.
+      - name: bun install
+        run: bun install
+
       - name: bun test (skal-js)
         working-directory: packages/skal-js
+        run: bun test
+
+      - name: bun test (skal-plugin-geolocator)
+        working-directory: packages/skal-plugin-geolocator
         run: bun test
 
       - name: zig test (native store)

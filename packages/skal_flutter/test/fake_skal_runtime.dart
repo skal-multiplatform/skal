@@ -251,9 +251,16 @@ class FakeSkalRuntime implements SkalRuntime {
       final argValue = _d.getInt32(base + 8, Endian.little);
       final argOffset = _d.getInt32(base + 12, Endian.little);
       String? payload;
+      // eventArgStrChunk carries a payload exactly like the others —
+      // real JS reads it and advances the reply cursor before stashing
+      // the part. Omitting it here left the cursor un-advanced, so the
+      // heap never freed and an oversize payload stalled after two
+      // chunks. A test double that under-reports what the real reader
+      // consumes fails the implementation, not the code under test.
       if (argType == eventArgStr ||
           argType == eventArgJson ||
-          argType == eventArgTuple) {
+          argType == eventArgTuple ||
+          argType == eventArgStrChunk) {
         payload = utf8.decode(bridge.sublist(
             kReplyHeapOff + argOffset, kReplyHeapOff + argOffset + argValue));
         if (advanceReplyCursor) {

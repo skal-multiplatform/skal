@@ -51,10 +51,13 @@
 - Payloads larger than the whole 256 KiB reply heap were truncated
   mid-UTF-8, handing the receiver a string that fails to decode.
   Truncation now lands on a codepoint boundary and logs in debug. A
-  value that large still cannot be delivered whole — that needs chunked
-  payload ownership on the wire. Such a payload also spans the entire
-  heap, so it now waits for JS to drain like any other write instead of
-  clobbering every live reference.
+  Such a payload also spans the entire heap, so it waits for JS to drain
+  like any other write instead of clobbering every live reference.
+- **A reply larger than the whole 256 KiB heap is now delivered whole**,
+  where it used to be truncated. New arg type `eventArgStrChunk` (0x08):
+  Dart splits the payload into parts plus a final record carrying the
+  real type, JS reassembles by record id. Chunks are cut on codepoint
+  boundaries.
 - Clearing a stack-positioning prop (`top`/`right`/`bottom`/`left`) did
   not re-dirty the parent `<stack>`, so the child stayed pinned at the
   offset that had just been removed. `opClearProp` now mirrors

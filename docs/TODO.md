@@ -114,15 +114,17 @@ See also *Web target — Flutter→DOM consistency* below, which tracks a
 different web gap (hand-maintained widget mapping), and
 [`WEB_SUPPORT_PLAN.md`](WEB_SUPPORT_PLAN.md).
 
-### 5. Reply payloads larger than the whole reply heap still truncate
+### 5. ~~Reply payloads larger than the whole reply heap truncate~~ — done (2026-07-28)
 
 A single value over 256 KiB cannot be delivered whole: an event record
 carries one `(offset, length)` into a fixed region. It now truncates on
 a codepoint boundary and says so in debug, rather than mid-sequence and
 silently — but it is still truncation.
 
-Carrying it properly needs chunked payload ownership: a multi-part arg
-type on the wire, implemented in both JS and Dart.
+Fixed with `eventArgStrChunk` (0x08): Dart splits an oversize payload
+into N-1 part records plus a final one carrying the real arg type, and
+JS accumulates by record id and prepends on completion. Ordering comes
+free from the overflow queue. Chunks are cut on codepoint boundaries.
 
 ### 6. Store — measured; one was real, one was not
 

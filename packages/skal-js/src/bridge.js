@@ -298,6 +298,19 @@ export const EVENT_ARG_TUPLE = 0x06;
 // (pan dx/dy, scale factor + rotation) that fire every drag frame.
 export const EVENT_ARG_VEC2  = 0x07;
 
+// A PART of a payload too large for the 256 KiB reply heap. An event
+// record carries one (offset, length) into that region, so a single
+// larger value had no representation and was truncated. Dart now sends
+// N-1 of these carrying successive slices, then one final record with
+// the REAL arg type. See `_replyChunks`.
+export const EVENT_ARG_STR_CHUNK = 0x08;
+
+// Accumulated chunks, keyed by the record's id (handlerId or callId).
+// Cleared as soon as the final record lands, so a completed reply keeps
+// nothing. An abandoned transfer — a host that died mid-payload — leaks
+// one entry; that is a dead app, not a leak worth a reaper.
+const _replyChunks = new Map();
+
 // ───────────────────────────────────────────────────────────────────────
 // Prop key namespace — must match wire.dart's prop* constants.
 // Partitioned by tier; see PROPS_PLAN.md §6.
@@ -2025,6 +2038,18 @@ function readReplyString(offset, length) {
 /// confirm no in-flight string event references bytes about to be
 /// clobbered. If Dart wraps, it resets BOTH cursors to 0 — our next
 /// bump starts fresh.
+/// Complete a chunked payload: prepend anything accumulated for `id`,
+/// then forget it. A payload that was never chunked passes straight
+/// through, which is the overwhelmingly common case and costs one Map
+/// miss.
+function _joinChunks(id, tail) {
+  const acc = _replyChunks.get(id);
+  if (acc === undefined) return tail;
+  _replyChunks.delete(id);
+  acc.push(tail);
+  return acc.join('');
+}
+
 function _advanceReplyReadCursor(offset, length) {
   u32[H_REPLY_HEAP_READ_POS] = offset + length;
 }
@@ -2057,6 +2082,7 @@ function _drainEvents() {
     // bytes from the reply heap (Dart-produced strings live there).
     let arg = undefined;
     let hasArg = false;
+    let isChunkPart = false;
     if (argType === EVENT_ARG_I32) {
       arg = argRaw | 0;
       hasArg = true;
@@ -2067,19 +2093,32 @@ function _drainEvents() {
     } else if (argType === EVENT_ARG_BOOL) {
       arg = argRaw !== 0;
       hasArg = true;
+    } else if (argType === EVENT_ARG_STR_CHUNK) {
+      // A part, not a value. Stash it and dispatch nothing — the final
+      // record for this id carries the real arg type and completes it.
+      //
+      // NOT `continue`: the ring cursor advances AFTER this block, so
+      // skipping the rest of the iteration would re-read this same
+      // record forever. Flagged instead, and the dispatch below is
+      // guarded on it.
+      const part = readReplyString(argOffset, argRaw);
+      _advanceReplyReadCursor(argOffset, argRaw);
+      const acc = _replyChunks.get(idSlot);
+      if (acc) acc.push(part); else _replyChunks.set(idSlot, [part]);
+      isChunkPart = true;
     } else if (argType === EVENT_ARG_STR) {
       // argRaw is the byte length; argOffset is the reply-heap offset.
-      arg = readReplyString(argOffset, argRaw);
+      arg = _joinChunks(idSlot, readReplyString(argOffset, argRaw));
       hasArg = true;
       _advanceReplyReadCursor(argOffset, argRaw);
     } else if (argType === EVENT_ARG_JSON) {
-      const raw = readReplyString(argOffset, argRaw);
+      const raw = _joinChunks(idSlot, readReplyString(argOffset, argRaw));
       try { arg = JSON.parse(raw); }
       catch (_) { arg = raw; /* fall through to raw string */ }
       hasArg = true;
       _advanceReplyReadCursor(argOffset, argRaw);
     } else if (argType === EVENT_ARG_TUPLE) {
-      const raw = readReplyString(argOffset, argRaw);
+      const raw = _joinChunks(idSlot, readReplyString(argOffset, argRaw));
       try { arg = JSON.parse(raw); }
       catch (_) { arg = []; }
       hasArg = true;
@@ -2098,7 +2137,12 @@ function _drainEvents() {
       // SPREAD on the handler — see the regular-event branch.
     }
 
-    if (eventKind === EV_METHOD_REPLY) {
+    // A chunk carries no value: accumulate only, dispatch nothing. The
+    // cursor still advances below, which is why this is a guard rather
+    // than a `continue`.
+    if (isChunkPart) {
+      // fall through to the cursor advance
+    } else if (eventKind === EV_METHOD_REPLY) {
       // RPC reply — resolve the pending Promise. The id slot is
       // callId, not handlerId. Pass `undefined` for void returns
       // (hasArg=false).

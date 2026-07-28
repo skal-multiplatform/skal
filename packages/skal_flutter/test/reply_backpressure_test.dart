@@ -121,23 +121,63 @@ void main() {
           reason: 'the payload-less event must stay behind the queued one');
     });
 
-    test('a payload larger than the whole heap is truncated on a '
-        'codepoint boundary', () {
-      // '€' is THREE UTF-8 bytes and the heap size is not a multiple of
-      // three, so a blind cut at kReplyHeapSize lands inside a sequence
-      // — which is exactly the case the backoff exists for.
-      final huge = '€' * kReplyHeapSize; // 3× the heap in bytes
-      bridge.dispatchEventStr(600, huge);
+    test('a payload larger than the whole heap arrives INTACT, in chunks', () {
+      // It used to be truncated — loudly, but truncated. An event record
+      // carries one (offset, length) into a 256 KiB region, so a single
+      // larger value had no representation at all. It is now split into
+      // eventArgStrChunk parts plus a final record with the real type.
+      final huge = 'A' * (kReplyHeapSize * 3 + 517);
+      bridge.dispatchEventStr(900, huge);
 
+      // Drain across pumps: each chunk has to fit the heap, so later
+      // ones queue behind the ones JS has not read yet.
+      final parts = <FakeEvent>[];
+      for (var round = 0; round < 40; round++) {
+        parts.addAll(js.drainEvents());
+        bridge.pumpOps();
+      }
+      parts.addAll(js.drainEvents());
+
+      expect(parts.length, greaterThan(1), reason: 'must have been split');
+      // Every record but the last announces itself as a part.
+      for (var i = 0; i < parts.length - 1; i++) {
+        expect(parts[i].argType, eventArgStrChunk);
+      }
+      expect(parts.last.argType, eventArgStr);
+
+      final joined = parts.map((e) => e.payload!).join();
+      expect(joined.length, huge.length);
+      expect(joined, huge);
+    });
+
+    test('a multi-byte payload splits on codepoint boundaries', () {
+      // JS reassembles before decoding, so a mid-sequence cut would
+      // still join correctly — but anything inspecting a part on its own
+      // would see mojibake, and the cost of not relying on that is a few
+      // bytes per chunk.
+      final huge = '€' * kReplyHeapSize;    // 3 bytes each
+      bridge.dispatchEventStr(901, huge);
+
+      final parts = <FakeEvent>[];
+      for (var round = 0; round < 40; round++) {
+        parts.addAll(js.drainEvents());
+        bridge.pumpOps();
+      }
+      parts.addAll(js.drainEvents());
+
+      // drainEvents utf8-decodes each part; a split sequence throws
+      // FormatException there. Reaching this line is half the assertion.
+      expect(parts.map((e) => e.payload!).join(), huge);
+    });
+
+    test('a payload that FITS is not chunked', () {
+      bridge.dispatchEventStr(902, 'small');
       final seen = js.drainEvents();
       expect(seen.length, 1);
-      // The utf8.decode inside drainEvents is half the assertion: a cut
-      // through a continuation byte throws FormatException there.
-      final got = seen.single.payload!;
-      expect(got.length, lessThan(huge.length));
-      expect(got.length, kReplyHeapSize ~/ 3);
-      expect(got.split('').every((c) => c == '€'), isTrue);
+      expect(seen.single.argType, eventArgStr);
+      expect(seen.single.payload, 'small');
     });
+
   });
 
   group('oversize payloads', _oversizeTests);
@@ -163,7 +203,7 @@ void _oversizeTests() {
     bridge = SkalBridge(js);
   });
 
-  test('an oversize payload waits rather than clobbering unread bytes', () {
+  test('an oversize payload does not clobber bytes JS has not read', () {
     bridge.dispatchEventStr(700, 'keep-me');
     final first = js.drainEvents(advanceReplyCursor: false);
     expect(first.single.payload, 'keep-me');
@@ -171,20 +211,26 @@ void _oversizeTests() {
     final length = first.single.argValueI32;
 
     // JS has NOT advanced its read cursor — 'keep-me' is still live.
+    // This payload is larger than the whole heap, so it is chunked; each
+    // chunk still has to wait for room like any other write.
     bridge.dispatchEventStr(701, 'x' * (kReplyHeapSize * 2));
 
-    // ...and the bytes the first event points at must be untouched.
     final stillThere = utf8.decode(js.bridge.sublist(
         kReplyHeapOff + offset, kReplyHeapOff + offset + length));
     expect(stillThere, 'keep-me',
-        reason: 'the oversize payload must be queued, not written over this');
+        reason: 'a chunk must not be written over a live reference');
 
-    // Once JS catches up, the queued payload is delivered (truncated).
+    // Once JS catches up the whole thing arrives, intact.
     js.consumeReplyHeap();
-    bridge.pumpOps();
-    final second = js.drainEvents();
-    expect(second.single.id, 701);
-    expect(second.single.payload!.length, kReplyHeapSize);
+    final parts = <FakeEvent>[];
+    for (var round = 0; round < 40; round++) {
+      parts.addAll(js.drainEvents());
+      bridge.pumpOps();
+    }
+    parts.addAll(js.drainEvents());
+
+    final forId701 = parts.where((e) => e.id == 701).toList();
+    expect(forId701.map((e) => e.payload!).join().length, kReplyHeapSize * 2);
   });
 }
 

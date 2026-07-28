@@ -1587,6 +1587,11 @@ class SkalBridge {
       return;
     }
 
+    if (payload != null && utf8.encode(payload).length > kReplyHeapSize) {
+      _dispatchChunked(handlerId, eventKind, argType, payload);
+      return;
+    }
+
     if (payload != null) {
       final slot = _tryWriteReplyString(payload);
       if (slot == null) {
@@ -1626,6 +1631,54 @@ class SkalBridge {
     final seq = _getU64(_data, hEventSeq);
     _setU64(_data, hEventSeq, seq + 1);
     skal.wakeJs();
+  }
+
+  /// Deliver a payload larger than the whole reply heap, in parts.
+  ///
+  /// An event record carries a single (offset, length) into a 256 KiB
+  /// region, so one bigger value has no representation. It used to be
+  /// truncated — loudly, but truncated, and a 100 KB+ XFile JSON is not
+  /// far off that ceiling.
+  ///
+  /// Split it instead: N-1 `eventArgStrChunk` records carrying
+  /// successive slices, then one final record with the REAL arg type
+  /// carrying the last. JS keys the parts by the record's id and
+  /// prepends them when the final one lands.
+  ///
+  /// Slices are cut on CODEPOINT boundaries even though JS reassembles
+  /// before decoding — a chunk that ends mid-sequence would still be
+  /// decoded by anything that inspects parts individually, and the cost
+  /// of not relying on that is a few bytes per chunk.
+  void _dispatchChunked(
+      int handlerId, int eventKind, int argType, String payload) {
+    final bytes = utf8.encode(payload);
+    // Leave headroom so a chunk always fits even when the heap is
+    // partly occupied — otherwise the first chunk defers, the queue
+    // drains it, and the next still cannot fit.
+    final limit = kReplyHeapSize ~/ 2;
+
+    var at = 0;
+    while (at < bytes.length) {
+      var end = at + limit;
+      if (end >= bytes.length) {
+        end = bytes.length;
+      } else {
+        // Back off to a lead byte so no chunk ends mid-sequence.
+        while (end > at && (bytes[end] & 0xC0) == 0x80) {
+          end--;
+        }
+      }
+      final isLast = end >= bytes.length;
+      dispatchEvent(
+        handlerId,
+        eventKind: eventKind,
+        // Only the LAST record carries the real type; the rest announce
+        // themselves as parts so JS accumulates instead of dispatching.
+        argType: isLast ? argType : eventArgStrChunk,
+        payload: utf8.decode(bytes.sublist(at, end)),
+      );
+      at = end;
+    }
   }
 
   /// Append one record to [_eventOverflow] (and its string, if the

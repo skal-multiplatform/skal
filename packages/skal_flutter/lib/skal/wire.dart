@@ -556,6 +556,24 @@ const int eventArgTuple = 0x06;
 // Dispatched via `bridge.dispatchEventVec2(handlerId, x, y)`.
 const int eventArgVec2 = 0x07;
 
+/// A PART of a payload too large for the reply heap.
+///
+/// The heap is 256 KiB and an event record carries one (offset, length)
+/// into it, so a single larger value could not be delivered at all — it
+/// was truncated, loudly since 2026-07-28 but still truncated, and a
+/// 100 KB+ XFile JSON is not far off that ceiling.
+///
+/// Dart now splits such a payload: N-1 events of this type carrying
+/// successive slices, then one final event with the REAL arg type
+/// (`eventArgStr` / `eventArgJson` / `eventArgTuple`) carrying the last
+/// slice. JS accumulates chunks keyed by the record's id and prepends
+/// them when the final event lands.
+///
+/// Ordering is guaranteed by the overflow queue: the first chunk that
+/// cannot be placed spills, and from then on everything spills behind it
+/// in dispatch order.
+const int eventArgStrChunk = 0x08;
+
 // ── Prop key namespace ────────────────────────────────────────────────
 // Partitioned by tier so apps + future expansions don't collide. See
 // PROPS_PLAN.md §6.

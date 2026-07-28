@@ -1,1 +1,78 @@
 Never commit unless explicitly told
+
+# Performance first, always
+
+Every change is a performance decision. When two implementations are
+equally correct, take the one that does less work — fewer allocations,
+fewer encodes, fewer copies, fewer wakes, fewer frames. Say so in the
+comment when the cheaper shape is non-obvious, so the next person
+doesn't "simplify" it back.
+
+But **a performance claim is a measurement, not an argument.** The rules
+below all exist because they were broken here and cost real time.
+
+## Never claim a number you did not measure properly
+
+- **No perf claim from a debug build.** Debug Flutter and the iOS
+  simulator are for correctness and interaction, never for numbers.
+  Release, on the closest thing to real hardware available. macOS
+  release is buildable locally; the simulator refuses release.
+- **No perf claim from a single sample.** A second run of identical code
+  once gave 695 ms → 8 ms for the same payload. One sample is noise with
+  a decimal point. Take medians, and report the spread when it is wide.
+- **A/B interleaved**, baseline and candidate alternating, so machine
+  state lands on both. Sequential A-then-B has produced +99.5%, −6.7%
+  and +0.1% for the same pair.
+- **Prove the workload ran.** Assert the count. A "39% faster" list
+  benchmark was timing 10 virtualized rows, not 2000. A 20k-dispatch
+  loop clocked 17 ns/op because the queue ceiling was refusing almost
+  every call — it was timing the rejection path.
+- If the honest answer is "too noisy to tell", that is the answer. Say
+  it instead of picking the flattering run.
+
+## Before reporting a bug found through a tool, rule out the tool
+
+Four times in one session an environment artifact impersonated a product
+bug. Reproduce outside the harness, or prove the harness is innocent,
+first:
+
+- **The browser pane is often `visibilityState: "hidden"`, viewport
+  0×0.** Hidden documents fire no scroll events and deliver no rAF or
+  ResizeObserver callbacks. `resize_window` does not fix it. Windowed
+  lists "not re-windowing" and lazy Flutter-embed hosts "never booting"
+  were both this. Use a real browser (`open <url>`) and have the page
+  report back via `fetch('/__probe?...')` — the static server logs the
+  path, and `preview_logs` can read it.
+- **Vite/browser HTTP cache serves stale modules.** An alias fix looked
+  inert through three reloads. Prove what is actually served by fetching
+  the module and grepping its text, or test the production build on a
+  fresh port.
+- **Inactive tabs are hidden, so their children have zero size.** Lazy
+  work gated on first layout correctly does not fire there. Activate the
+  tab before concluding anything.
+- **`find.byType` skips offstage widgets by default.** An `IndexedStack`
+  child is offstage, so the obvious widget test passed against the
+  unfixed code. Read the parent's child list directly.
+
+## Test the other side of the wire
+
+Tests written by the pass that wrote the code cover the half its author
+was looking at. Chunked replies shipped with a mutation-tested splitter
+and a reassembler with no tests at all — three live bugs sat in that
+gap, all on the untested side.
+
+- Every test gets **mutation-checked**: break the fix, watch the test
+  fail. A test that passes with the fix deleted is worse than no test.
+- A test double that under-reports what the real consumer does will fail
+  correct code. Model what the real reader consumes.
+- When N config files or symbol lists must agree, assert it. Four link
+  scripts drifted and `skal_prewarm_store` went unexported on iOS only —
+  it links, loads, boots and renders, and the only observable is a
+  missing symbol.
+
+## Read the whole file before asserting what it does
+
+Claims about CI, build scripts and configs have been wrong from reading
+the first screen. Check the artifact you are about to trust: several
+`libskal.dylib` copies exist and they do not all export the same
+symbols.

@@ -1240,6 +1240,25 @@ Widget _hotLayer({required NodeState node, required Widget child}) {
   if (node.getPropU32(propAnimDuration, 0) > 0) {
     return _AnimatedHotLayer(node: node, child: child);
   }
+  // No hot prop has ever reached this node, and it does not drive its
+  // own transform through a gesture — so it needs no listener at all.
+  //
+  // This wrapper used to be unconditional, for a real reason: deciding
+  // from the hot VALUES means reading them in the outer build, which
+  // subscribes the outer build to them and defeats the hot/cold split.
+  // `everHot` sidesteps that — it is a plain bool latched by the drain,
+  // and reading a bool subscribes to nothing. The drain also dirties
+  // COLD the first time it latches, so the subtree rebuilds WITH the
+  // layer at the moment it is first needed.
+  //
+  // The gesture case stays wrapped from the start whatever `everHot`
+  // says: inserting a Transform the moment a drag first moves would
+  // re-parent the GestureDetector below it and dispose the in-flight
+  // recognizer, killing the drag after one frame.
+  //
+  // Measured: the wrapper cost +32% on a 2000-node build, ~8 us per
+  // node (debug). Most nodes in a real tree are static.
+  if (!node.everHot && !_selfTransformingGesture(node)) return child;
   return _StaticHotLayer(node: node, child: child);
 }
 

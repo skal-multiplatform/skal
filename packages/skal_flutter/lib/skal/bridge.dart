@@ -1248,6 +1248,10 @@ class SkalBridge {
           if (node != null) {
             node.opacity = _bitsToF32(c);
             node.hotDirty = true;
+            // First hot prop: the node has no hot layer yet, so also
+            // dirty COLD once to rebuild the subtree WITH one. See
+            // NodeState.everHot.
+            if (!node.everHot) { node.everHot = true; node.coldDirty = true; }
             touched.add(a);
           }
           break;
@@ -1256,6 +1260,10 @@ class SkalBridge {
           if (node != null) {
             node.translationX = _bitsToF32(c);
             node.hotDirty = true;
+            // First hot prop: the node has no hot layer yet, so also
+            // dirty COLD once to rebuild the subtree WITH one. See
+            // NodeState.everHot.
+            if (!node.everHot) { node.everHot = true; node.coldDirty = true; }
             touched.add(a);
           }
           break;
@@ -1264,6 +1272,10 @@ class SkalBridge {
           if (node != null) {
             node.translationY = _bitsToF32(c);
             node.hotDirty = true;
+            // First hot prop: the node has no hot layer yet, so also
+            // dirty COLD once to rebuild the subtree WITH one. See
+            // NodeState.everHot.
+            if (!node.everHot) { node.everHot = true; node.coldDirty = true; }
             touched.add(a);
           }
           break;
@@ -1272,6 +1284,10 @@ class SkalBridge {
           if (node != null) {
             node.scaleX = _bitsToF32(c);
             node.hotDirty = true;
+            // First hot prop: the node has no hot layer yet, so also
+            // dirty COLD once to rebuild the subtree WITH one. See
+            // NodeState.everHot.
+            if (!node.everHot) { node.everHot = true; node.coldDirty = true; }
             touched.add(a);
           }
           break;
@@ -1280,6 +1296,10 @@ class SkalBridge {
           if (node != null) {
             node.scaleY = _bitsToF32(c);
             node.hotDirty = true;
+            // First hot prop: the node has no hot layer yet, so also
+            // dirty COLD once to rebuild the subtree WITH one. See
+            // NodeState.everHot.
+            if (!node.everHot) { node.everHot = true; node.coldDirty = true; }
             touched.add(a);
           }
           break;
@@ -1288,6 +1308,10 @@ class SkalBridge {
           if (node != null) {
             node.rotationZ = _bitsToF32(c);
             node.hotDirty = true;
+            // First hot prop: the node has no hot layer yet, so also
+            // dirty COLD once to rebuild the subtree WITH one. See
+            // NodeState.everHot.
+            if (!node.everHot) { node.everHot = true; node.coldDirty = true; }
             touched.add(a);
           }
           break;

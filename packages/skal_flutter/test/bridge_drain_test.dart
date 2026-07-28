@@ -225,7 +225,13 @@ void main() {
     // Everything the cold lane relies on has to hold here too, and this
     // is the lane where a stranded update is most visible — it is what
     // drives Transform/Opacity.
-    test('a frame drain notifies hot, not cold', () {
+    test('the FIRST hot prop also dirties cold, exactly once', () {
+      // The hot/cold split exists so an animating node does not
+      // invalidate its cached widget tree 60 times a second. That still
+      // holds — but the first hot prop is special: until one arrives the
+      // node has NO hot ListenableBuilder at all (see NodeState.everHot,
+      // worth +32% on a 2000-node build), so the subtree has to rebuild
+      // once to acquire one.
       js
         ..setOpacity(nodeA, 0.5)
         ..commit();
@@ -233,8 +239,26 @@ void main() {
 
       expect(bridge.nodes[nodeA]!.opacity, closeTo(0.5, 1e-6));
       expect(hot[nodeA], 1);
-      expect(cold[nodeA], 0,
-          reason: 'a hot prop must not invalidate the cached widget tree');
+      expect(cold[nodeA], 1,
+          reason: 'the first hot prop installs the hot layer');
+      expect(bridge.nodes[nodeA]!.everHot, isTrue);
+    });
+
+    test('every LATER hot prop notifies hot only', () {
+      // This is the invariant that matters at 60 fps: the one-off above
+      // must not become a per-frame cold invalidation.
+      js..setOpacity(nodeA, 0.5)..commit();
+      bridge.pumpOps();
+      final coldAfterFirst = cold[nodeA];
+
+      for (var i = 0; i < 20; i++) {
+        js..setOpacity(nodeA, 0.1 * i)..commit();
+        bridge.pumpOps();
+      }
+
+      expect(hot[nodeA], 21);
+      expect(cold[nodeA], coldAfterFirst,
+          reason: 'an animating node must not invalidate its cached tree');
     });
 
     test('an off-frame drain defers the hot notify, and the next frame '

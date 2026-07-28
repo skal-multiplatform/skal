@@ -307,6 +307,24 @@ class NodeState {
   bool coldDirty = false;
   bool hotDirty  = false;
 
+  /// Has a hot prop ever reached this node?
+  ///
+  /// One-way latch, set by the drain on the first opacity / translation
+  /// / scale / rotation op. `_hotLayer()` reads it to decide whether the
+  /// node needs a `ListenableBuilder` on [hot] at all — most nodes are
+  /// static and never animate, and that wrapper measured +32% on a
+  /// 2000-node build (~8 us each, debug).
+  ///
+  /// A plain bool, deliberately: the reason the wrapper used to be
+  /// unconditional is that deciding from the hot VALUES would mean
+  /// reading them in the outer build, which subscribes the outer build
+  /// to them and defeats the whole hot/cold split. Reading a bool
+  /// subscribes to nothing.
+  ///
+  /// Never cleared. A node that animated once keeps its layer, so the
+  /// tree shape stops changing after first use rather than oscillating.
+  bool everHot = false;
+
   NodeState(this.type);
 
   /// Pick the children-list backing based on the widget type. Done

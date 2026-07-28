@@ -1852,6 +1852,56 @@ a mapping nothing else can touch during `open()`. Halves startup CRC
 work. **Requires a libskal rebuild to take effect.**
 
 
+## Bench 9 — Store write staging
+
+A write inside a collection element re-encoded the WHOLE element, on
+every mutation. `dirty` is a Map keyed by store key, so only the last
+staging of a key ever reaches the engine — every earlier encode was
+thrown away before it could be written.
+
+200 mutations inside one element, one debounce window:
+
+| | before | after |
+|---|---|---|
+| `JSON.stringify` calls | 200 | **0** (all deferred to flush) |
+| bytes serialized | 278 600 | **0** before flush; one 463-byte frame at it |
+| discarded | 278 137 (99.8%) | none |
+
+Encoding now happens at flush from live state, which is exactly how
+`INDEX_DIRTY` has always handled the collection index.
+
+**Why this is safe, and what had to be checked.** Deferring the READ
+means resolving a path later than the write that staged it. That is only
+sound because a collection element's solid path is id-addressed
+(`{__id, hint}`) rather than index-addressed — a splice shifts indices,
+and an index-addressed deferred path would then resolve to a DIFFERENT
+element and persist its body under the original's key.
+
+### The measurement that was nearly wrong
+
+The first version of these tests asserted live Solid state after the
+flush. All seven passed, and **both** mutations of the fix — index-
+addressing the deferred path, and dropping the removed-element guard —
+passed too. The tests were vacuous: the in-memory tree is correct either
+way, because the bug is in the BYTES.
+
+They now flush, reopen the store from the same directory, and assert on
+what hydrates. Index-addressing the path fails the splice test; reverting
+the deferral fails the encode-count test.
+
+Two things surfaced while building that harness, neither of them fixed
+here:
+
+- **A collection seeded in `initState` does not come back on reopen**,
+  while one built by `push` does. Scalars round-trip either way. That is
+  a real asymmetry and a bigger deal than the perf win.
+- **The JS engine path ignores `cfg.name`.** `openBackend(dataDir)`
+  gets no store name — only the native path appends it — so two stores
+  sharing a data directory share one segment directory. Each test
+  hydrated the previous test's data until every store got its own
+  directory.
+
+
 ## How to re-run
 
 To resurrect the bench:

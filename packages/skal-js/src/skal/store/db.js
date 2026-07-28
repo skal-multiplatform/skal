@@ -43,6 +43,28 @@ const NODE_MEMO_MAX = 8192;
 // rebuilt on every push — see doFlush. Keeps push O(1) instead of O(n).
 const INDEX_DIRTY = Symbol('skal.indexDirty');
 
+/// A frame whose bytes are produced at FLUSH time by reading live state
+/// at `sp`, instead of at mutation time.
+///
+/// `dirty` is a Map keyed by store key, so only the LAST staging of a
+/// key ever reaches the engine — every earlier encode was thrown away.
+/// For a write inside a collection element that meant re-encoding the
+/// WHOLE element on every keystroke: measured at 278 600 bytes
+/// serialized to persist a final 463-byte frame, 99.8% of it discarded.
+///
+/// INDEX_DIRTY has always worked this way for the collection index
+/// ("a burst of N pushes encodes the index once at flush"). This is the
+/// same trick for the element frames themselves.
+///
+/// Deferring the READ is only safe because a collection element's solid
+/// path is id-addressed (`{__id, hint}`), not index-addressed — see the
+/// `elSp` construction in arrayProxy. A splice that shifts indices
+/// resolves to the same element, or to nothing; it can never resolve to
+/// a DIFFERENT one. Index-based paths could not be deferred this way.
+class DeferredFrame {
+  constructor(sp) { this.sp = sp; }
+}
+
 // ── frame codec — JSON ──────────────────────────────────────────────
 // JSC's JSON.stringify / JSON.parse are heavily-optimized native C++
 // and beat any JS-implemented codec at every size: faster encode,
@@ -209,6 +231,17 @@ export function createSkalStore(initState, config = {}) {
       // index once at flush instead of rebuilding it on every push.
       if (val === null) {
         engine.del(key);
+      } else if (val instanceof DeferredFrame) {
+        const live = readSolid(val.sp);
+        // DEFENSIVE, and known to be so: removing an element routes
+        // through tombstoneTree, which overwrites this very key with a
+        // `null` tombstone, so the removed case never reaches here.
+        // Deleting this guard fails no test — that was checked, not
+        // assumed. It stays because encodeFrame(undefined) would write
+        // the literal bytes "undefined", which the next open()'s
+        // JSON.parse throws on, and the cost of the check is one
+        // comparison per dirty key per flush.
+        if (live !== undefined) engine.put(key, encodeFrame(live));
       } else if (val === INDEX_DIRTY) {
         const sk = key.slice(2, -2);                 // 'k:' + sk + '#x'
         const a = readSolid(sk === '' ? [] : sk.split('.'));
@@ -372,8 +405,10 @@ export function createSkalStore(initState, config = {}) {
   // inside an element re-stages that whole element frame.
   function stageAt(sp, sk, elInfo, value) {
     if (elInfo) {
-      dirty.set('k:' + elInfo.storeKey,
-        encodeFrame(readSolid(elInfo.solidPath)));
+      // Staged, not encoded — see DeferredFrame. A burst of writes
+      // inside one element now costs one encode at flush instead of one
+      // per write.
+      dirty.set('k:' + elInfo.storeKey, new DeferredFrame(elInfo.solidPath));
       return;
     }
     if (_isColl(value)) {

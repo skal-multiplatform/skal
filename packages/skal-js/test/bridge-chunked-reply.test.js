@@ -310,3 +310,31 @@ describe('chunk ownership', () => {
     expect(h.calls[0][0]).toBe('prefix-kept');
   });
 });
+
+// LAST in the file on purpose: beginReload() disposes the reactive root
+// and resets the host tree for the whole module instance, which every
+// other test here shares.
+describe('hot reload', () => {
+  test('a transfer in flight does not survive into the next generation', () => {
+    // Ids are deliberately carried across generations (bridge.js hands
+    // the next one its nextCallId / nextHandlerId high-water marks), so
+    // an id live before a reload can be live again after it. Parts left
+    // in _replyChunks would then be prepended to a payload from the NEW
+    // generation — a silently short value, and short JSON that still
+    // parses is the bad case, because it fails nowhere near the bridge.
+    const h = capturingHandler();
+    hostPlaceEvent(EV_CLICK, ARG_STR_CHUNK, h.id,
+                   hostWriteReply(0, 'GEN1-ORPHAN'), 0);
+    globalThis.__skal_drainEvents();
+
+    // Teardown runs bridge.js's registered cleanup, which clears the map.
+    globalThis.__skalHot.beginReload();
+
+    // Same id, new generation, completing record.
+    hostPlaceEvent(EV_CLICK, ARG_STR, h.id, hostWriteReply(16, 'gen2'), 16);
+    globalThis.__skal_drainEvents();
+
+    expect(h.calls.length).toBe(1);
+    expect(h.calls[0][0]).toBe('gen2');
+  });
+});

@@ -723,14 +723,19 @@ function UITab() {
           fontSize={13}
           color={SUBTLE}
         />
-        <Row gap={8}>
+        {/* Wrap, not Row: these three buttons are 20px wider than an
+            iPhone at the default text size. A <row> is a Row — it does
+            not scroll, and an over-wide one reports the overflow rather
+            than hiding it. Wrap keeps every button reachable, which
+            horizontal scrolling would not. */}
+        <Wrap gap={8}>
           <Button label="Material" onClick={() => applyDesign('material', dark())} />
           <Button label="Cupertino" onClick={() => applyDesign('cupertino', dark())} />
           <Button
             label={dark() ? 'Light mode' : 'Dark mode'}
             onClick={() => applyDesign(mode(), !dark())}
           />
-        </Row>
+        </Wrap>
         <Text
           label="Buttons, switches, sliders, the text field & spinner all swap Material↔Cupertino."
           fontSize={11}

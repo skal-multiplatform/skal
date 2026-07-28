@@ -115,7 +115,17 @@ silently — but it is still truncation.
 Carrying it properly needs chunked payload ownership: a multi-part arg
 type on the wire, implemented in both JS and Dart.
 
-### 6. Store — two unmeasured candidates
+### 6. Store — measured; one was real, one was not
+
+- `dropMemo` **was** quadratic and is fixed (2026-07-28): 1435 ms ->
+  1.8 ms to clear a 5000-element collection.
+- **Hydration batching is NOT worth doing.** Measured on reopen:
+  2202 records hydrate in 2.1 ms (702 in 1.3 ms) — linear, about a
+  microsecond per record, against a total store-open of ~4 ms. The
+  "many independent reactive writes" concern is real in shape and
+  irrelevant in size. Left alone deliberately.
+
+### 6z. (former text, kept for the reasoning)
 
 Flagged by review, **not measured**, and this session's record on
 unmeasured perf claims is poor (see `BENCHMARKS.md` Bench 6 and 9 — two

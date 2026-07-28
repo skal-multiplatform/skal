@@ -234,6 +234,11 @@ subsystem in Skal that can return silently WRONG data — everything else
 fails as a crash, a missing frame, or a dropped paint — so treat a change
 there as needing a test that fails against the unfixed engine.
 
+`test/renderer-web-window.test.js` covers builder-mode list windowing,
+including the headless path: happy-dom reports `clientHeight` 0, which
+is not just a test artefact but the shape the site prerender runs in, and
+windowing off it would render an empty list on every prerendered page.
+
 `test/renderer-web-clear.test.js` covers turning a DOM prop back off,
 including two tests that pin the *limits* of the learned-declaration
 approach. Those are deliberate: if someone makes the clear exact, the

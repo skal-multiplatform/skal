@@ -42,11 +42,13 @@ const TAG_TO_HTML = {
   // PAINT, which is the cheap part; it still builds every element,
   // lays it out, keeps it in memory, and runs whatever observers and
   // Solid roots hang off it. Calling that "the browser's own scroll
-  // virtualization" (as this comment used to) reads as parity and is
-  // not: a 10k-row list costs 10k elements on web and a screenful on
-  // native. Real windowing — measured extents plus spacer elements —
-  // is the fix; until it lands, treat web as a COMPATIBILITY target
-  // for lists, not a parity one.
+  // virtualization" (as this comment used to) read as parity and was
+  // not.
+  //
+  // BUILDER mode (`<listView count renderItem>`) is now genuinely
+  // windowed — see _syncBuilderRows — so it costs a viewport, not a
+  // list. Children passed as JSX are still all mounted: the renderer
+  // is handed built nodes and has nowhere to defer them to.
   //
   // Reorder UX is also not wired up on web; the tag is accepted for
   // renderer parity so the SAME JSX runs both targets.
@@ -1037,7 +1039,10 @@ const CLEAR_PROP = {
   alignment:     _rm('justifyContent'),
   // Both branches of the value test, so the clear does not depend on
   // which one ran.
-  axis:           _rm('flexDirection', 'overflowX', 'overflowY'),
+  axis: (node, s) => {
+    node._skalListAxis = 0;
+    s.flexDirection = ''; s.overflowX = ''; s.overflowY = '';
+  },
   crossAxisCount: _rm('gridTemplateColumns'),
   aspectRatio:    () => {},          // applyProp is a no-op on web
 
@@ -1136,6 +1141,9 @@ function applyProp(node, name, value) {
     }
     case 'axis': {
       // Scroll axis for scrollView / listView. 1 = horizontal.
+      // Recorded because builder-mode windowing is vertical-only and
+      // branches on it (see _syncBuilderRows).
+      node._skalListAxis = value === 1 ? 1 : 0;
       if (value === 1) {
         s.flexDirection = 'row';
         s.overflowX = 'auto';
@@ -1263,15 +1271,88 @@ function warnOnce(tag) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Builder-mode <listView count renderItem> — web fallback. The DOM
-// target has no pull-based row protocol (the browser culls offscreen
-// paint itself), so rows render EAGERLY up to a cap. Native virtualizes
-// the full count; a count above the cap warns once. Each row runs in
-// its own createRoot so signals inside renderItem stay live and
-// unmounting disposes cleanly.
+// Builder-mode <listView count renderItem> — WINDOWED on the DOM target.
+//
+// This used to mount every row eagerly up to a 1500 cap, under a comment
+// claiming "the browser culls offscreen paint itself". Browsers cull
+// PAINT. They still build every element, lay it out, keep it in memory,
+// and run every observer and Solid root hanging off it — so a 10k list
+// cost 10k roots and silently lost everything past 1500.
+//
+// Only the rows intersecting the viewport (plus overscan) now exist,
+// with a spacer above and below standing in for the rest. Cost is
+// O(viewport), not O(count), and there is no cap.
+//
+// Heights are ESTIMATED and refined by measurement: rows are measured as
+// they mount and the running average drives the spacers. With wildly
+// uneven rows the scrollbar is therefore approximate and settles as you
+// scroll — exact offsets would need every row measured up front, which
+// is the O(count) cost this exists to avoid.
+//
+// Horizontal lists (axis=1) keep the eager path: windowing them needs
+// the same work against scrollLeft/clientWidth, and they are rare.
+//
+// Each row still runs in its own createRoot so signals inside renderItem
+// stay live and unmounting disposes cleanly.
 // ──────────────────────────────────────────────────────────────────────
+/// Rows kept beyond the viewport on each side. Absorbs fast scrolling
+/// without a blank frame.
+const WEB_WINDOW_OVERSCAN = 6;
+
+/// Height assumed for a row that has never been measured.
+const WEB_EST_ROW_H = 48;
+
+/// How many rows to mount when the viewport height is unknowable —
+/// happy-dom and any SSR pass report clientHeight 0, and windowing off
+/// that would mount NOTHING and render an empty list. A screenful-ish
+/// batch keeps prerendered output meaningful.
+const WEB_HEADLESS_ROWS = 20;
+
+/// Eager cap, retained ONLY for the horizontal fallback below.
 const WEB_BUILDER_ROW_CAP = 1500;
 let _warnedBuilderCap = false;
+
+/// Average measured row height for this list, falling back to the
+/// estimate until something has actually been measured.
+function _rowH(node) {
+  const m = node._skalRowH;
+  return (m && m.n > 0) ? m.total / m.n : WEB_EST_ROW_H;
+}
+
+function _measureRow(node, el) {
+  const h = el.offsetHeight;
+  if (!h) return;                        // no layout (headless) — skip
+  const m = node._skalRowH || (node._skalRowH = { total: 0, n: 0 });
+  m.total += h;
+  m.n += 1;
+}
+
+/// Which rows should exist right now.
+function _windowFor(node, count) {
+  const vh = node.clientHeight | 0;
+  if (vh <= 0) {
+    return { start: 0, end: Math.min(count, WEB_HEADLESS_ROWS) };
+  }
+  const h = _rowH(node);
+  const first = Math.max(0, Math.floor((node.scrollTop | 0) / h) - WEB_WINDOW_OVERSCAN);
+  const visible = Math.ceil(vh / h) + WEB_WINDOW_OVERSCAN * 2;
+  return { start: first, end: Math.min(count, first + visible) };
+}
+
+/// Scroll / resize listeners, once per list.
+function _armWindowListeners(node) {
+  if (node._skalWindowArmed) return;
+  node._skalWindowArmed = true;
+  const onScroll = () => _scheduleBuilderSync(node);
+  node.addEventListener('scroll', onScroll, { passive: true });
+  node._skalWindowOff = () => node.removeEventListener('scroll', onScroll);
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(() => _scheduleBuilderSync(node));
+    ro.observe(node);
+    const off = node._skalWindowOff;
+    node._skalWindowOff = () => { off(); ro.disconnect(); };
+  }
+}
 
 // Tie builder teardown to the owner active while <ListView> renders, so
 // an ANCESTOR unmount (which only calls removeNode on the subtree root,
@@ -1294,56 +1375,110 @@ function _scheduleBuilderSync(node) {
   });
 }
 
+function _mountRow(node, rows, i, fn) {
+  createRoot((dispose) => {
+    // Wrapper + insert() mirrors the native renderer: fragments/null
+    // render correctly and the row is reactive, with no bare `Node`
+    // reference (absent under the happy-dom prerender harness).
+    const wrapper = document.createElement('div');
+    wrapper._skalBuilderRow = true;
+    wrapper._skalRowIndex = i;
+    insert(wrapper, () => {
+      try {
+        return fn(i);
+      } catch (e) {
+        try { console.error('skal:', e); } catch (_) { /* ignore */ }
+        return null;
+      }
+    });
+    rows.set(i, { el: wrapper, dispose });
+  });
+}
+
 function _syncBuilderRows(node) {
   const fn = node._skalRenderItem;
   if (!fn) return;
   const rows = node._skalRows || (node._skalRows = new Map());
   const count = node._skalRowCount | 0;
-  const want = Math.min(count, WEB_BUILDER_ROW_CAP);
-  if (count > WEB_BUILDER_ROW_CAP && !_warnedBuilderCap) {
-    _warnedBuilderCap = true;
-    console.warn(
-      `skal-web: builder-mode <ListView> renders eagerly on the DOM target — ` +
-      `capped at ${WEB_BUILDER_ROW_CAP} of ${count} rows (native virtualizes the full count).`,
-    );
-  }
+
   // Builder mode ignores JSX children (contract matches native, which
   // reads builderRows and never the child list). Drop any child that
-  // isn't one of our row wrappers so web doesn't render children + rows.
+  // isn't one of our row wrappers or spacers.
   for (let c = node.firstChild; c; ) {
     const next = c.nextSibling;
-    if (!c._skalBuilderRow) node.removeChild(c);
+    if (!c._skalBuilderRow && !c._skalSpacer) node.removeChild(c);
     c = next;
   }
+
+  // Horizontal lists keep the old eager path — see the note above.
+  if (node._skalListAxis === 1) {
+    const want = Math.min(count, WEB_BUILDER_ROW_CAP);
+    if (count > WEB_BUILDER_ROW_CAP && !_warnedBuilderCap) {
+      _warnedBuilderCap = true;
+      console.warn(
+        `skal-web: horizontal builder-mode <ListView> renders eagerly — ` +
+        `capped at ${WEB_BUILDER_ROW_CAP} of ${count} rows. Vertical lists ` +
+        `are windowed and have no cap.`);
+    }
+    for (const [i, row] of rows) {
+      if (i < want) continue;
+      rows.delete(i);
+      try { row.el.remove(); } catch (_) { /* already detached */ }
+      try { row.dispose(); } catch (_) { /* user cleanup threw */ }
+    }
+    for (let i = 0; i < want; i++) {
+      if (rows.has(i)) continue;
+      _mountRow(node, rows, i, fn);
+      node.appendChild(rows.get(i).el);
+    }
+    return;
+  }
+
+  _armWindowListeners(node);
+  const { start, end } = _windowFor(node, count);
+
+  // Retire rows that fell out of the window.
   for (const [i, row] of rows) {
-    if (i < want) continue;
+    if (i >= start && i < end) continue;
     rows.delete(i);
     try { row.el.remove(); } catch (_) { /* already detached */ }
     try { row.dispose(); } catch (_) { /* user cleanup threw */ }
   }
-  for (let i = 0; i < want; i++) {
-    if (rows.has(i)) continue;
-    createRoot((dispose) => {
-      // Wrapper + insert() mirrors the native renderer: fragments/null
-      // render correctly and the row is reactive, with no bare `Node`
-      // reference (absent under the happy-dom prerender harness).
-      const wrapper = document.createElement('div');
-      wrapper._skalBuilderRow = true;
-      insert(wrapper, () => {
-        try {
-          return fn(i);
-        } catch (e) {
-          try { console.error('skal:', e); } catch (_) { /* ignore */ }
-          return null;
-        }
-      });
-      node.appendChild(wrapper);
-      rows.set(i, { el: wrapper, dispose });
-    });
+
+  // Spacers stand in for the rows that do not exist, so the scrollbar
+  // reflects the whole list rather than the handful that are mounted.
+  let top = node._skalTopSpacer;
+  let bottom = node._skalBottomSpacer;
+  if (!top) {
+    top = document.createElement('div');
+    top._skalSpacer = true;
+    node._skalTopSpacer = top;
+    bottom = document.createElement('div');
+    bottom._skalSpacer = true;
+    node._skalBottomSpacer = bottom;
   }
+
+  const h = _rowH(node);
+  top.style.height = `${Math.max(0, start) * h}px`;
+  bottom.style.height = `${Math.max(0, count - end) * h}px`;
+
+  // Rebuild the child order: [top spacer, rows in index order, bottom].
+  node.appendChild(top);
+  for (let i = start; i < end; i++) {
+    if (!rows.has(i)) _mountRow(node, rows, i, fn);
+    node.appendChild(rows.get(i).el);
+  }
+  node.appendChild(bottom);
+
+  // Measure whatever just landed, so the next pass estimates better.
+  for (let i = start; i < end; i++) _measureRow(node, rows.get(i).el);
 }
 
 function _teardownBuilderRows(node) {
+  if (node._skalWindowOff) { node._skalWindowOff(); node._skalWindowOff = null; }
+  node._skalWindowArmed = false;
+  node._skalTopSpacer = null;
+  node._skalBottomSpacer = null;
   const rows = node._skalRows;
   if (!rows) return;
   node._skalRenderItem = null;

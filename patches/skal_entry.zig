@@ -799,6 +799,12 @@ fn notifyHost_jsCallback(
 // holds many frames; a single frame larger than this gets its own
 // segment sized exactly to it — so a value of any size is storable,
 // bounded only by device storage, never rejected.
+// ─── SKAL STORE BEGIN ──────────────────────────────────────────────
+// Everything to the END marker is std-only and is extracted VERBATIM by
+// packages/skal_native/test/run.sh, which compiles it with
+// store_test.zig appended. The tests therefore exercise this source,
+// not a copy that could drift from it. Moving these markers, or adding
+// a bun/JSC dependency between them, breaks that build loudly.
 const STORE_SEG_SIZE: usize = 256 * 1024;
 const STORE_FRAME_HEADER: usize = 15;
 const STORE_FLAG_TOMBSTONE: u8 = 1;
@@ -1167,6 +1173,7 @@ const SkalStore = struct {
         return true;
     }
 };
+// ─── SKAL STORE END ────────────────────────────────────────────────
 
 // ── Store prewarm ──────────────────────────────────────────────────
 // Opening the store (segment scan → keydir) is native, schema-free and

@@ -175,6 +175,36 @@ was only found by a 45-second benchmark on a real macOS build. See
 `_flushTouched`, add a case there** — and check your test actually fails
 against the unfixed code before you trust it.
 
+### The native store (Zig)
+
+`bun run test:native`, or `packages/skal_native/test/run.sh` directly.
+
+`patches/skal_entry.zig` is a patch applied into vendor/bun and cannot
+be compiled alone — but the store region inside it is std-only. The
+runner slices that region out VERBATIM between its `SKAL STORE
+BEGIN`/`END` markers, appends `store_test.zig`, and compiles the result.
+Extracting rather than copying is the point: the tests run against the
+shipping source, and moving the markers (or letting something
+bun-coupled land between them) fails the build instead of silently
+testing a stale duplicate.
+
+It uses **bun's vendored zig**, not whatever is on PATH — the file
+targets bun's pinned 0.15.2, and Homebrew's 0.16 rejects it outright
+(`std.fs.cwd()` was removed). The runner skips with a message if the
+vendor tree has not been fetched.
+
+This subsystem had no tests at all and it is the one that runs on
+device: the kitchen-sink reports "Backend: native". Its JS twin gave up
+three bugs in one session, every one a silently WRONG read rather than a
+crash. The recovery tests here exist for that class — in particular that
+`open()` always makes the newest segment active, which is the invariant
+the JS store got wrong.
+
+Mutation-checked: pointing `activeSeg()` at the oldest segment, letting
+compaction drop the active one, and disabling CRC verification each fail
+it. One mutation deliberately is NOT covered and says so in the test —
+see the note on tombstone accounting.
+
 ### The JS side
 
 `bun test` in `packages/skal-js` covers the bridge's encoder, diff cache

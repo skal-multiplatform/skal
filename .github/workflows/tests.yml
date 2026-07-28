@@ -89,6 +89,11 @@ jobs:
         working-directory: packages/skal-js
         run: bun test
 
+      - name: zig test (native store)
+        # Uses bun's vendored zig; skips with a message if the vendor
+        # tree has not been fetched on this runner.
+        run: ./packages/skal_native/test/run.sh
+
       - name: dart test (skal_codegen)
         working-directory: packages/skal_codegen
         run: |

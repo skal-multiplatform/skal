@@ -151,9 +151,12 @@ void main() {
       // [IndexedChildList] and applies the workload (build phase IS
       // the workload). For workloads that need a pre-built list, use
       // [runReadWorkload] instead so the populate phase isn't timed.
+      final ratios = <String, double>{};
+
       void runWorkload(String name, int n, void Function(IndexedChildList) build) {
         final listMs = _bench(() => build(ListChildList()));
         final treapMs = _bench(() => build(TreapChildList()));
+        ratios['$name/$n'] = listMs / treapMs;
         stdout.writeln(formatRow.row([
           name,
           '$n',
@@ -169,6 +172,8 @@ void main() {
       // conflates the impls' (different) build costs with the operation
       // we actually want to measure — pure indexOf cost, in the IndexOf×N
       // row's case.
+      // Recorded so the benchmark can ASSERT, not just print. See the
+      // budget check at the end.
       void runReadWorkload(
         String name,
         int n,
@@ -181,6 +186,7 @@ void main() {
         populate(preT);
         final listMs = _bench(() => read(preL));
         final treapMs = _bench(() => read(preT));
+        ratios['$name/$n'] = listMs / treapMs;
         stdout.writeln(formatRow.row([
           name,
           '$n',
@@ -266,8 +272,38 @@ void main() {
       stdout.writeln('  List / Treap < 1.0  →  List is faster (Treap takes longer)');
       stdout.writeln('');
 
-      // Always passes — this is informational.
-      expect(true, isTrue);
+      // ── The budget ────────────────────────────────────────────────
+      //
+      // This used to be `expect(true, isTrue)` with a comment saying it
+      // was informational — a benchmark that could not fail, printing
+      // numbers nobody diffed. The whole reason TreapChildList exists is
+      // that positional insert/remove/reorder on a large list is O(N)
+      // and the treap is O(log N); if that stopped being true the table
+      // would show it and the suite would still go green.
+      //
+      // The floors are deliberately far below what is measured (18-44x
+      // at N=5000 on an M-series laptop) so ordinary machine-to-machine
+      // and CI noise cannot trip them. They exist to catch the treap
+      // degrading toward linear, not to police small drifts.
+      const floors = <String, double>{
+        'RandomInsert/5000': 5.0,
+        'RandomRemove/5000': 5.0,
+        'SortLike/5000': 5.0,
+      };
+      final regressions = <String>[];
+      floors.forEach((key, floor) {
+        final got = ratios[key];
+        if (got == null) {
+          regressions.add('$key — workload missing from the run');
+        } else if (got < floor) {
+          regressions.add('$key — treap only ${got.toStringAsFixed(1)}x '
+              'faster than List, floor is ${floor.toStringAsFixed(1)}x');
+        }
+      });
+      expect(regressions, isEmpty,
+          reason: 'TreapChildList exists to make these sublinear; if it '
+              'is no longer clearly beating a plain List at N=5000 the '
+              'data structure is not earning its complexity');
     });
   });
 }

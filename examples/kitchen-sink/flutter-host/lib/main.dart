@@ -339,9 +339,16 @@ class _PerfHudState extends State<PerfHud> {
   // reports any time frames complete faster than the vsync interval
   // (we saw "166 FPS" / "266 FPS" — pure artifact, all those frames
   // were vsync-limited to 60 Hz on this emulator).
-  double _fps = 0;
+  /// Below this many frames in the last second, the app is resting
+  /// rather than running slowly. The HUD's own refresh is 2 Hz, and a
+  /// tap costs a handful — so anything under this is "nobody asked for
+  /// a frame", not "frames are late".
+  static const int _kIdleFrameRate = 8;
+
+  /// vsync timestamps (us) from the last second. Frames ACTUALLY
+  /// produced — the only honest rate for a demand-driven renderer.
+  final List<int> _recentFrames = <int>[];
   double _frameMs = 0;
-  int? _prevVsyncUs;
   Timer? _refreshTimer;
 
   @override
@@ -377,15 +384,30 @@ class _PerfHudState extends State<PerfHud> {
       // not as Duration getters. vsyncStart is when the OS told Flutter
       // to start producing a new frame — successive vsyncStart deltas
       // give true inter-frame intervals.
+      // Count frames PRODUCED in the last second. Not an average of
+      // inter-frame gaps.
+      //
+      // SkalRoot stops its ticker when the app is idle, so a quiet
+      // screen renders a few times a second with long gaps between.
+      // Averaging 1e6/gap reported that idleness AS the frame rate:
+      // measured on the simulator the readout sat at "9 FPS" for an app
+      // whose frames cost build 3-4 ms and raster 1.3-1.5 ms — the
+      // framework's best optimisation displayed as its worst number,
+      // and with nothing else running the only thing requesting frames
+      // was this widget's own 500 ms timer. The HUD was measuring
+      // itself.
+      //
+      // Filtering long gaps out of that average does not fix it: frames
+      // arrive in PAIRS (gaps alternated 50 ms / 450 ms), so the short
+      // one survives the filter and the readout flips to a confident
+      // "60 FPS" while the app is doing nothing at all. Counting is the
+      // only version that cannot be fooled either way.
       final vsyncUs = t.timestampInMicroseconds(FramePhase.vsyncStart);
-      if (_prevVsyncUs != null) {
-        final intervalUs = vsyncUs - _prevVsyncUs!;
-        if (intervalUs > 0) {
-          final fps = 1e6 / intervalUs;
-          _fps = _fps == 0 ? fps : _fps * 0.9 + fps * 0.1;
-        }
+      _recentFrames.add(vsyncUs);
+      final cutoff = vsyncUs - 1000000;
+      while (_recentFrames.isNotEmpty && _recentFrames.first < cutoff) {
+        _recentFrames.removeAt(0);
       }
-      _prevVsyncUs = vsyncUs;
     }
     final ms = timings.last.totalSpan.inMicroseconds / 1000.0;
     _frameMs = _frameMs == 0 ? ms : _frameMs * 0.9 + ms * 0.1;
@@ -425,7 +447,13 @@ class _PerfHudState extends State<PerfHud> {
             Text('init ${widget.initMs.toStringAsFixed(1)} ms · '
                 'first eval ${widget.evalMs.toStringAsFixed(1)} ms · '
                 'boot ${widget.bootMs.toStringAsFixed(1)} ms'),
-            Text('${_fps.toStringAsFixed(0)} FPS '
+            // "idle" rather than a number when nothing has asked for a
+            // frame recently: a demand-driven renderer at rest has no
+            // frame rate, and printing one invites reading stillness as
+            // slowness.
+            Text('${_recentFrames.length < _kIdleFrameRate
+                    ? 'idle'
+                    : '${_recentFrames.length} fps'} '
                 '(${_frameMs.toStringAsFixed(2)} ms) · '
                 'pump ${pumpMs.toStringAsFixed(3)} ms '
                 '(peak ${peakMs.toStringAsFixed(3)} ms) · '

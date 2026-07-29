@@ -294,12 +294,44 @@ outer build, which subscribes the outer build to them and defeats the
 purpose — and calls the cost "tiny". That reasoning is sound; the cost
 claim is now measurable and unmeasured.
 
-### 7. Codegen rebuilds more than it needs to
+### 7. Codegen is slow, but not for the reasons listed — measured 2026-07-29
 
-A fresh analyzer context per invocation, every Dart file in every
-selected package re-resolved, service discovery walking the package
-again, and `package_config.json` re-read and re-parsed. Real; none of it
-on a runtime hot path.
+Timed on the demo's local widget, three runs, `skal_codegen.dart`:
+
+    total                13.06 - 14.59 s
+      context creation        608 ms   (4.5%)
+      first getResolvedUnit  8581 ms   (63%)
+      rest (VM start, JIT, emit)  ~4.4 s
+
+So the dominant cost is the analyzer building its element model for the
+Flutter SDK on the first resolve. That is not codegen redoing work — it
+is the price of resolving anything at all, paid once per process.
+
+Three of the four original claims do not survive the measurement:
+
+- ~~`package_config.json` re-read and re-parsed~~ — already cached in
+  `package_resolver.dart`, invalidated on (mtime, length) so a `pub get`
+  between builds is picked up.
+- ~~fresh analyzer context per invocation~~ — the CLI already shares one
+  across watch rebuilds (see the comment at `skal_codegen.dart:194`).
+  The `build_runner` builder does construct one per build, but that is
+  608 ms against a 13 s run.
+- **Service discovery walking the package again** — real: `builder.dart`
+  resolves every file at :165 and again at :504. Whether it costs
+  anything is UNMEASURED, and probably little, because the second pass
+  should hit the analyzer's session cache. Measure before touching it.
+
+The one lever that would matter is a persistent byte store, so the
+element model survives between processes instead of being rebuilt for
+8.6 s every run. `AnalysisContextCollection` does not expose it; it
+needs `AnalysisContextCollectionImpl` from `analyzer/src/…`, a private
+API that moves between analyzer versions.
+
+**Not doing it now, deliberately.** This is build-time only, and the
+failure mode of a wrongly-invalidated analyzer cache is silently WRONG
+generated code — the worst thing a codegen tool can produce, and not
+something the current tests would catch. Worth doing with a real
+invalidation test behind it, not as a speed patch.
 
 ### 8. Smaller, real, independent
 

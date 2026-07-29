@@ -24,7 +24,8 @@ A performance report covering the ticker, node inflation, store hot
 path and web lists was worked through on 2026-07-28. It gets re-read,
 and re-reading it wastes time because most of it is done. Its own
 validation line dates it: "74 Flutter, 33 codegen, 50 JS/store" is a
-mid-sweep snapshot; the tree is now 97 / 33 / 123 plus 14 Zig.
+mid-sweep snapshot; the tree is now 112 Flutter / 33 codegen / 147 JS
+plus 6 plugin and 14 Zig.
 
 | Report item | Status |
 |---|---|
@@ -32,7 +33,7 @@ mid-sweep snapshot; the tree is now 97 / 33 / 123 plus 14 Zig.
 | 2 · per-node memory | **partly** — NodeState lazy in `e763910`; the hot layer is still installed on every node, see § 6c |
 | 3 · ChunkedFor / web lists | **mostly** — scheduler `992674d`, builder windowing `50a65c1`. The prefix re-slice it flags measures 0.010 ms/mount — negligible. JSX-children and horizontal lists still eager, see § 4 |
 | 4 · store hot path | **partly** — staging `068f8c7`, index hints `a83f4fd`. Hydration batching open, see § 6 |
-| 5 · event-path stalls | **partly** — reply heap `e83e0ef`. Zig per-wake task and web sync round trip open, see § 6b |
+| 5 · event-path stalls | **partly** — reply heap `e83e0ef`; the wake hang below `35d1ddd` / `31fec35`. Zig per-wake task and web sync round trip declined, see § 6b |
 | `<Row>` → SingleChildScrollView | **done** — `7987927` |
 | codegen caching | open, see § 7 |
 | native store double scan | **done in source** — `e763910`; inert until a libskal rebuild, see § 2 |
@@ -43,9 +44,9 @@ mid-sweep snapshot; the tree is now 97 / 33 / 123 plus 14 Zig.
 | HUD forcing continuous frames | **done** — `eafdb1c` |
 | Zig store has no tests | **done** — `fa51592`, 14 tests |
 | `skal.h` dispose mismatch | **done** — `992674d` |
-| kitchen-sink "virtualized" feed | open — see § 9 |
+| kitchen-sink "virtualized" feed | **done** — `3b0c52d`, see § 9 |
 | 11,600 lines across five files | open, unaddressed |
-| mobile-perf benchmark is a scaffold | open, unaddressed |
+| mobile-perf benchmark is a scaffold | **partly** — a repeatable release-only scroll harness now lives in `benchmarks/mobile-perf`; nothing else is automated |
 
 What the report does NOT contain, found while working through it — all
 fixed, listed so nobody re-derives them from a report that never
@@ -57,17 +58,13 @@ branch clobbering unread bytes (both `e83e0ef`), a `will-change` layer
 pinned forever after clearing a hot prop (`50a65c1`), and two rows in
 the demo that genuinely overflow an iPhone (`ae5230b`, `e65a57f`).
 
-### 1. Nothing on this branch has been through CI
+### 1. ~~Nothing on this branch has been through CI~~ — done (2026-07-29)
 
-`fix/store-corruption-and-prop-clear` carries 15 commits and CI has
-never run on any of them. Local suites are green (123 JS · 14 Zig ·
-97 Flutter · 33 codegen) and it has been exercised on macOS and an
-iPhone 17 Pro simulator, but the android/desktop/ios-sim matrix has not
-seen a line of it — and android was red for a week earlier the same day.
+Merged to `main` and pushed. The full matrix — tests, desktop, ios-sim,
+android, nightly — is green. Suites now 147 JS · 6 plugin · 14 Zig ·
+33 codegen · 112 Flutter.
 
-Everything below is lower priority than getting this pushed.
-
-### 2. libskal rebuild — one fix is inert without it
+### 2. libskal rebuild — partly done (2026-07-29)
 
 `patches/skal_entry.zig` no longer CRC-verifies every frame twice at
 startup (`mapSegment` already checks everything below the cursor, so
@@ -75,6 +72,18 @@ startup (`mapSegment` already checks everything below the cursor, so
 libskal is rebuilt and the binaries republished.
 
 Same applies to anything else landing in the Zig store.
+
+**Done for the iOS Simulator** (2026-07-29): relinked while fixing the
+missing `skal_prewarm_store` export, so the halved startup CRC is live
+there. The iOS-device, Android and desktop binaries are still the old
+build — the source fix remains inert on those until they are
+republished.
+
+Note `build/skal-darwin/libskal.dylib` is a stale May-11 artifact that
+exports no `skal_*` symbols at all. Nothing links it today, but it cost
+a silently-dead baseline build once (the app launched, found no
+`skal_create_runtime`, and reported 0% CPU with no boot line). Delete or
+regenerate it — it is exactly the trap `c127687` exists to prevent.
 
 ### 3. ~~Web still allocates a 6 MiB bridge it never uses~~ — done (2026-07-28)
 
@@ -148,6 +157,28 @@ Hot-path cost went with it: the size check was encoding the whole
 payload and throwing the result away, leaving `_tryWriteReplyString` to
 encode it again. It now decides from the UTF-16 length in the common
 case and never allocates.
+
+**The chunking was not the end of it (2026-07-29).** Measuring the
+finished feature on macOS **release** found a hang underneath it, older
+than chunking and not caused by it: `_flushEventOverflow` woke JS only
+while records were still queued, so the record that COMPLETED a
+back-pressure burst was written into the ring and never announced. JS
+drains only when woken, so it sat there. One byte decided it — 262144 B
+took 1.8 ms, 262145 B never completed in 40 s with the app otherwise
+silent, and completed in exactly 2001.6 ms / 12002.1 ms when given an
+unrelated 2 s / 12 s heartbeat. It was never slow; it was waiting to be
+knocked. Any spilled event could hit it; chunked replies hit it almost
+every time because their tail is usually the record that empties the
+queue.
+
+After the fix, release, no heartbeat: 262145 B **16.7 ms**, 1 MiB
+**50.2 ms**, 4 MiB **265.7 ms** — ~0.05-0.065 ms/KB, flat.
+
+Two lessons worth keeping: the earlier "large replies are quadratic"
+reading (40 / 688 / 10769 ms) was a DEBUG build measuring this hang plus
+whatever incidental traffic released it, and a follow-up review found
+the fix itself had one untested half plus the same stranding one branch
+away in `_dispatchChunked`. See CLAUDE.md.
 
 ### 6. Store — measured; one was real, one was not
 
@@ -258,12 +289,18 @@ on a runtime hot path.
   blank interval. Every docs content module is also bundled into one
   client chunk (~102 KB of raw strings).
 
-### 9. The kitchen-sink feed is not actually virtualized
+### 9. ~~The kitchen-sink feed is not actually virtualized~~ — done (2026-07-28)
+
+Converted to builder mode in `3b0c52d`. Measured afterwards: 10 000 rows
+mount in 0.10 ms on web with 25 rows materialized, and scrolling to the
+midpoint materializes rows 5071-5088 with the DOM bounded at 758 nodes.
+`virt-bench` renders 100 000 rows in 87 DOM nodes.
+
+The original entry read:
 
 `examples/kitchen-sink/src/App.jsx` renders the tweet feed with a plain
 `<For each={tweetsToShow()}>` inside a `<ListView>` — JSX children, not
-builder mode — so every tweet is created eagerly. The report is right
-about this and it is still true.
+builder mode — so every tweet is created eagerly.
 
 It matters more than a demo blemish: the builder path (`count` +
 `renderItem`) is the one that virtualizes on native and, as of
@@ -283,7 +320,9 @@ workload at the same time.
   needs an exact-byte assertion brittle enough to break on any
   frame-header change. See the note in `store_test.zig`.
 - **Perf budgets.** Only `indexed_child_list_test.dart` has one. The
-  benchmarks in `BENCHMARKS.md` are run by hand.
+  benchmarks in `BENCHMARKS.md` are run by hand. `benchmarks/mobile-perf`
+  now holds a repeatable scroll harness (opt-in, release-only) — see its
+  README; nothing runs it automatically.
 
 ### Open question
 

@@ -33,6 +33,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'adapters/generated/skal_adapters.g.dart' as local_gen;
+import 'scroll_bench.dart';
 import 'skal_codegen.g.dart' as packages_gen;
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/dialogs.dart';
@@ -212,6 +213,11 @@ void main() async {
     evalMs: (tEval1 - tEval0) / 1000.0,
     bootMs: (tEval1 - t0) / 1000.0,
   ));
+
+  // Opt-in scroll benchmark. `kScrollBenchEnabled` is a const, so this
+  // whole branch folds away in a normal build.
+  // benchmarks/mobile-perf/README.md.
+  if (kScrollBenchEnabled) startScrollBench();
 }
 
 class SkalApp extends StatelessWidget {

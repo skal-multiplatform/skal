@@ -50,6 +50,19 @@ first:
 - **Inactive tabs are hidden, so their children have zero size.** Lazy
   work gated on first layout correctly does not fire there. Activate the
   tab before concluding anything.
+- **A simulator RUNTIME can be the bug.** Emoji rendered as tofu on the
+  iOS 26.3 simulator — `🚀` U+1F680 and `↩` U+21A9 both, while `♥`
+  U+2665 was fine. Not Skal: the same build renders them on the iOS 18.6
+  simulator and on web. The emoji font is even present in the 26.3
+  runtime (`AppleColorEmoji-160px.ttc`), so it is a fallback failure in
+  the engine on that runtime, not a missing file. Before touching text
+  or font code, run the SAME build on a second runtime.
+
+  The attempted fix cost more than the bug: adding `fontFamilyFallback`
+  with the platform emoji fonts turned EVERY glyph in the app to tofu,
+  because that property REPLACES Flutter's implicit fallback chain
+  rather than extending it — an emoji-only list leaves nothing with
+  Latin glyphs.
 - **`find.byType` skips offstage widgets by default.** An `IndexedStack`
   child is offstage, so the obvious widget test passed against the
   unfixed code. Read the parent's child list directly.

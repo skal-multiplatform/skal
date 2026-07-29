@@ -303,12 +303,23 @@ on a runtime hot path.
 
 ### 8. Smaller, real, independent
 
-- `skal-plugin-geolocator` boots what is effectively a Flutter Web
-  runtime on web to reach `navigator.geolocation`. Call it directly.
-- The site prerenderer injects a script that clears the static tree
-  before the module remounts it, so "prerendered first paint" can be a
-  blank interval. Every docs content module is also bundled into one
-  client chunk (~102 KB of raw strings).
+- ~~`skal-plugin-geolocator` boots a Flutter Web runtime to reach
+  `navigator.geolocation`~~ — done in `86aa2fa`. Calls the browser API
+  directly; `callPlugin` stays as the fallback for a browser without it,
+  so nothing that worked stopped working.
+- ~~The site prerenderer clears the static tree before the module
+  remounts it~~ — done (2026-07-29). The inline
+  `<script>…innerHTML=''</script>` before `</body>` ran during parse,
+  while the bundle is deferred and re-renders only after fetch, parse
+  and execute; everything between was a blank page, and it grew with
+  latency. `main.jsx` now clears one statement before `render()`, so the
+  swap is a single task. It also degrades the right way — if the bundle
+  never arrives the reader keeps the prerendered content. Verified in a
+  browser: no duplicated nav, and the auto-demo interval runs, which
+  only happens if the module mounted. Both halves pinned by
+  `prerender-paint.test.js`, mutation-checked.
+- **Still open:** every docs content module is bundled into one client
+  chunk (~102 KB of raw strings). Unmeasured.
 
 ### 9. ~~The kitchen-sink feed is not actually virtualized~~ — done (2026-07-28)
 

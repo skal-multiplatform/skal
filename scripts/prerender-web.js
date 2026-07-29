@@ -87,13 +87,20 @@ for (const route of routes) {
     if (/<title>/.test(headExtra)) html = html.replace(/<title>[^<]*<\/title>\s*/, '');
     html = html.replace('</head>', `${headExtra}\n</head>`);
   }
-  // Clear the prerendered tree right before the (deferred) module
-  // bundle re-renders — crawlers and no-JS keep the content; browsers
-  // swap it for the live app. Adopt-mode hydration replaces this in v2.
-  html = html.replace(
-    '</body>',
-    `<script>document.getElementById('app').innerHTML=''</script>\n</body>`,
-  );
+  // NOTE: the prerendered tree is NOT cleared here.
+  //
+  // It used to be, by an inline `<script>…innerHTML=''</script>` before
+  // </body>. That runs the instant the parser reaches it — but the app
+  // bundle is DEFERRED, so it re-renders only after download, parse and
+  // execute. Everything in between was a blank page: the prerender
+  // bought a fast first paint and then threw it away, and the slower
+  // the connection the longer the blank.
+  //
+  // main.jsx clears the mount immediately before render() instead, so
+  // the static markup stays on screen until the live tree replaces it
+  // in the same frame. It also fails better — if the bundle never
+  // arrives, the reader keeps the prerendered content instead of
+  // staring at nothing. Adopt-mode hydration replaces both in v2.
 
   // "/" and "/docs/" → <dir>/index.html; "/docs/state.html" → that file.
   const rel = route.replace(/^\//, '');

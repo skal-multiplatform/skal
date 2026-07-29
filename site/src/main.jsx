@@ -13,4 +13,19 @@ import { PAGES } from './pages/index.js';
 // the .html path verbatim, so the bug only shows on Cloudflare.)
 const path = location.pathname.replace(/\/index\.html$/, '/');
 const Page = PAGES[path] ?? PAGES[path + '.html'] ?? PAGES['/'];
-render(() => <Page />, document.getElementById('app'));
+const mount = document.getElementById('app');
+// Drop the prerendered markup HERE, one statement before the live tree
+// replaces it — not from an inline script in the HTML.
+//
+// The prerenderer used to inject `<script>…innerHTML=''</script>` before
+// </body>. That fires while the parser is still walking the document,
+// whereas this bundle is deferred and re-renders only after it has been
+// fetched, parsed and executed. The gap between the two was a blank
+// page, and it grew with latency — the prerender's whole point, a fast
+// first paint, was being discarded a few milliseconds later.
+//
+// Clearing here costs nothing extra (render() would overwrite anyway)
+// and degrades the right way: if the bundle never loads, the reader
+// keeps the prerendered page.
+mount.innerHTML = '';
+render(() => <Page />, mount);

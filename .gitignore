@@ -74,3 +74,8 @@ examples/*/flutter-host/assets/skal-app.cjs.jsc
 !examples/kitchen-sink/flutter-host/assets/skal-app.js
 !examples/kitchen-sink/flutter-host/assets/skal-app.cjs
 !examples/kitchen-sink/flutter-host/assets/skal-app.cjs.jsc
+
+# Benchmark v2 — Skal vs React Native comparison work in progress.
+# Untracked until the methodology is settled and the numbers are real.
+# See benchmark_v2/BENCHMARK_PLAN_V2.md.
+benchmark_v2/

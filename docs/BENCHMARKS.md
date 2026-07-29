@@ -11,6 +11,14 @@ and reproduce.
 All numbers are on Android release builds on the same arm64-v8a
 Pixel-class emulator, Skal commit `native-store-engine`.
 
+> **Cold start lives in its own doc.**
+> [ANDROID_COLD_START.md](ANDROID_COLD_START.md) has the 2026-07-30
+> numbers, measured on **physical hardware** (Galaxy A14 5G) with a
+> pure-Flutter control arm — which is what shows that roughly half the
+> gap to React Native is Flutter's and not Skal's. It also records the
+> six optimisations that did **not** work, and the measurement traps
+> that produced a confident wrong number first.
+
 ---
 
 ## At a glance — what a typical user would feel

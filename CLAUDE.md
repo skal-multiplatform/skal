@@ -27,6 +27,24 @@ below all exist because they were broken here and cost real time.
   benchmark was timing 10 virtualized rows, not 2000. A 20k-dispatch
   loop clocked 17 ns/op because the queue ceiling was refusing almost
   every call — it was timing the rejection path.
+- **A big segment is not a critical-path segment.** Sizing the phases
+  tells you where time is *spent*, not where it is *costing*. Three
+  targets picked by size in one session all evaporated under a control:
+  a 78 ms "bundle extraction" that sub-timing showed was 3 ms (the
+  phase timer bracketed a whole function and charged it the label on
+  the outside); a 59 ms first-frame raster that a one-rect control
+  screen cut to 2.3 ms with **zero** change to the total, because the
+  frame waits on vsync regardless; and a 91 ms MethodChannel delay that
+  sits entirely off the path — `Fully drawn` lands 84 ms *after* the
+  call it supposedly gates. The only evidence that a segment costs
+  anything is removing it and re-measuring the **total**.
+- **A/B/A, and quantify the drift.** When two builds can't be
+  interleaved per-run (same applicationId, compile-time flags), run
+  A-block, B-block, A-block and report the A-to-A drift alongside the
+  delta. A change smaller than the drift is not proven. This caught a
+  combined arm reading "no change" that was hiding a real +20 ms win
+  under a −13 ms regression, and a prefetch that looked like a clean
+  win at n=3 and was an 18 ms regression at n=10.
 - If the honest answer is "too noisy to tell", that is the answer. Say
   it instead of picking the flattering run.
 

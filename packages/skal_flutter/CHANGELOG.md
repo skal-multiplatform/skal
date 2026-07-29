@@ -15,6 +15,22 @@
 
 ### Fixed
 
+- **A spilled event whose flush emptied the queue was delivered and then
+  never read.** `_flushEventOverflow` woke JS only while records were
+  still queued, so the record that COMPLETED a back-pressure burst was
+  written into the ring and never announced — and JS drains only when
+  woken. It sat there until unrelated traffic happened to wake JS for
+  its own reasons. Any spilled event could hit it; chunked replies hit
+  it almost every time, because their tail is usually the record that
+  empties the queue.
+
+  Measured on macOS release with the app otherwise silent: a reply ONE
+  byte over the reply heap (262145) never completed at all in 40 s,
+  while 262144 took 1.8 ms. With an unrelated 2 s heartbeat the same
+  call completed in 2001.6 ms, and with a 12 s heartbeat in 12002.1 ms —
+  it was never slow, it was waiting to be knocked. After the fix, with
+  no heartbeat: 262145 in 16.7 ms, 1 MiB in 50.2 ms, 4 MiB in 265.7 ms,
+  ~0.05-0.065 ms/KB flat across the range.
 - **An animation on a hidden `<tabs>` tab kept the whole app rendering
   at full frame rate, forever.** Tab subtrees are deliberately kept
   alive so switching never re-mounts, but `IndexedStack` says nothing

@@ -210,6 +210,35 @@ void main() {
           reason: 'chunks must queue behind what was already there');
     });
 
+    test('the flush announces the record that EMPTIES the queue', () {
+      // JS drains only when woken. The flush used to wake only while
+      // something was still queued, so the record that completed a
+      // spilled burst was written into the ring and never announced —
+      // it sat there until unrelated traffic woke JS for its own
+      // reasons. Chunked replies hit this almost every time, because
+      // their tail is usually the record that empties the queue.
+      //
+      // Measured on macOS release before the fix: a reply one byte over
+      // the heap never completed in 40 s with the app otherwise silent,
+      // and completed in exactly 2001.6 ms / 12002.1 ms with an
+      // unrelated 2 s / 12 s heartbeat. Not slow — waiting to be knocked.
+      for (var i = 0; i < 4; i++) {
+        bridge.dispatchEventStr(600 + i, chunk(big, 'w'));   // the 4th spills
+      }
+      js.drainEvents(advanceReplyCursor: false);
+      js.consumeReplyHeap();
+      expect(bridge.queuedReplyBytes, greaterThan(0),
+          reason: 'this test is only meaningful with something queued');
+
+      final before = js.wakeJsCalls;
+      bridge.pumpOps();          // places the last queued record
+
+      expect(bridge.queuedReplyBytes, 0, reason: 'the flush must complete');
+      expect(js.wakeJsCalls, greaterThan(before),
+          reason: 'the record that empties the queue must still wake JS, '
+              'or it is delivered and never read');
+    });
+
     test('a payload that FITS is not chunked', () {
       bridge.dispatchEventStr(902, 'small');
       final seen = js.drainEvents();

@@ -2134,6 +2134,7 @@ class SkalBridge {
   /// each event is 6 consecutive ints — kind, argType, handlerId,
   /// argValueI32, argHeapOffset, hasPayload.
   void _flushEventOverflow() {
+    var placed = 0;
     while (_eventOverflow.isNotEmpty) {
       final pos = _data.getInt32(hEventWritePos, Endian.little);
       final nextPos = (pos + 16) % kEventRingSize;
@@ -2168,8 +2169,26 @@ class SkalBridge {
       _data.setInt32(hEventWritePos, nextPos, Endian.little);
       final seq = _getU64(_data, hEventSeq);
       _setU64(_data, hEventSeq, seq + 1);
+      placed++;
     }
-    if (_eventOverflow.isNotEmpty) skal.wakeJs();
+    // Wake if this flush PLACED anything — not only if something is
+    // still queued.
+    //
+    // The old condition (`_eventOverflow.isNotEmpty`) announced every
+    // partial flush and stayed silent on the one that COMPLETED the
+    // burst. JS drains only when woken, so the last record of a spilled
+    // burst was written into the ring and then never read: the event was
+    // delivered and simply sat there until unrelated traffic happened to
+    // wake JS for its own reasons.
+    //
+    // Any spilled event could hit this, but chunked replies made it
+    // trivial — their tail is almost always the record that empties the
+    // queue. Measured on macOS release, a reply ONE byte over the heap
+    // (262145) never completed at all in 40 s with the app otherwise
+    // silent; with an unrelated 2 s heartbeat it completed in 2001.6 ms,
+    // and with a 12 s one in 12002.1 ms. It was never slow. It was
+    // waiting for someone else to knock.
+    if (placed > 0 || _eventOverflow.isNotEmpty) skal.wakeJs();
   }
 
   // ──────────────────────────────────────────────────────────────────

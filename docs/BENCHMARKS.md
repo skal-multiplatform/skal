@@ -796,10 +796,19 @@ Capacity confirmed at **262,144 B (256 KiB)**, matching `kReplyHeapSize`.
 | 270,336 B | 262,144 B | **truncated** |
 | 524,288 B | 262,144 B | **truncated** |
 
-Oversize replies truncate **silently** — no error, no rejection, just a
-short string (`_writeReplyString`, `bridge.dart`). That is a data-loss
-footgun for any service that returns a large blob, and it is the
-enforcement mechanism behind the payload law: pass paths and handles.
+> **Superseded (2026-07-29).** Oversize replies are no longer truncated.
+> `eventArgStrChunk` (0x08) splits anything over the heap into parts
+> that JS reassembles, so a reply of any size arrives whole. The table
+> above records the behaviour this replaced.
+>
+> Re-measured on macOS **release**, 5 samples per size, app otherwise
+> idle: 262144 B (no chunking) **2.9 ms**, 262145 B (first size that
+> chunks) **16.7 ms**, 1 MiB **50.2 ms**, 4 MiB **265.7 ms** —
+> ~0.05-0.065 ms/KB, flat across a 16x range.
+>
+> Earlier debug-simulator figures for this path (40 / 688 / 10769 ms)
+> are withdrawn: they were measuring a wake bug, not encode cost. See
+> CLAUDE.md on debug-build numbers.
 
 Wraparound is cheap: 1,600 KiB pushed through the 256 KiB heap
 (≈6 wraps) delivered all 400 events in 38.58 ms. The documented 50 ms
@@ -810,10 +819,13 @@ spin-wait never fired.
 3,000 events into a JS handler burning real CPU per event: **3,000
 received, 52.16 ms, lossless.**
 
-Policy is therefore **unbounded queue** — nothing coalesces, nothing
-drops. A producer faster than the handler grows memory and delays the
-frame rather than shedding load. Any coalescing a service needs must be
-implemented on the Dart side, before the value enters the stream.
+Policy is **queue, then shed** — nothing coalesces, and nothing drops
+until retained payloads pass `_kReplyOverflowMaxBytes` (4 MiB), past
+which further payloads are refused with one debug diagnostic. (This
+section originally read "unbounded queue"; the ceiling was added after
+a wedged JS worker turned "hold rather than clobber" into an OOM.) Any
+coalescing a service needs must still be implemented on the Dart side,
+before the value enters the stream.
 
 ### What these numbers changed
 

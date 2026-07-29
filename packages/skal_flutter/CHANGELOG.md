@@ -15,6 +15,18 @@
 
 ### Fixed
 
+- **Wakes are now deferred out of the pump window and coalesced.** On
+  web `wakeJs` drains JS INLINE, so waking from inside a pump ran JS
+  handlers with the reentrancy guard set; if such a handler overflowed
+  the op ring it called back through `__skal_drainOpsSync`, got no
+  drain, and JS blind-rewound over ops the host never consumed. That was
+  already reachable from the flush's partial-flush wake — deferring
+  makes it unreachable rather than rare, and the correlation was the bad
+  part (a back-pressure burst means a big payload, and a big payload
+  means a big render). Also collapses N wakes per pump into one.
+  `_dispatchChunked`'s ceiling-refusal path no longer returns without
+  announcing its terminator, which was the same stranding one branch
+  away.
 - **A spilled event whose flush emptied the queue was delivered and then
   never read.** `_flushEventOverflow` woke JS only while records were
   still queued, so the record that COMPLETED a back-pressure burst was

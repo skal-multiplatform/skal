@@ -55,7 +55,7 @@ buffers**. Exceeding them is silent, not an error:
 |---|---:|---|---|
 | Op ring | see `kOpRingSize` | JS → Dart | rewind + host re-checkpoint |
 | JS string heap | 768 KiB | JS → Dart | reset on commit; bounds every string prop + string/JSON method arg |
-| Reply heap | 256 KiB | Dart → JS | **silently truncates** an oversize reply; wraparound spin-waits up to 50 ms |
+| Reply heap | 256 KiB | Dart → JS | oversize replies are **chunked**, not truncated (`eventArgStrChunk`); wraparound queues behind the overflow queue — the 50 ms spin-wait is gone |
 
 ---
 
@@ -123,10 +123,13 @@ truncated silently (measured: 270,336 B in → 262,144 B out, no error).
 `XFile` already conforms by returning a path. Never base64 a photo into
 a reply.
 
-**Backpressure is an unbounded queue.** 3,000 events into a
-deliberately slow JS handler: 3,000 delivered, nothing dropped or
-coalesced. A producer faster than its consumer grows memory and delays
-the frame. Coalescing, if a service needs it, belongs on the Dart side
+**Backpressure queues, then sheds.** 3,000 events into a deliberately
+slow JS handler: 3,000 delivered, nothing dropped or coalesced. Nothing
+is dropped until retained payloads exceed 4 MiB
+(`_kReplyOverflowMaxBytes`), past which further payloads are refused
+with one debug diagnostic — the bound exists because "hold rather than
+clobber" without one is an OOM. A producer faster than its consumer
+grows memory and delays the frame. Coalescing, if a service needs it, belongs on the Dart side
 before the value enters the stream.
 
 **Cold-path rule.** Custom-widget JSON props (`options` on

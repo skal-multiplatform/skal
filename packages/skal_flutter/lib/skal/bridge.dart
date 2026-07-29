@@ -108,13 +108,17 @@ class SkalBridge {
   /// The flush retries the head on every pump until the heap has room,
   /// and it used to retry with the String — so the reply write
   /// re-encoded the whole payload, threw it away, and returned "not
-  /// now", once per pump. The number of pumps a payload waits grows with
-  /// its size, so the total encode work was O(n^2) in the payload. On an
-  /// iPhone simulator that was 40 ms for 64 KB, 688 ms for 256 KB and
-  /// 10.8 s for 1 MiB — 4x the data for ~16x the time, measured.
+  /// now", once per pump. Encoding once at spill time and keeping the
+  /// bytes makes the retry free: a capacity check and a memcpy.
   ///
-  /// Encoding once at spill time and keeping the bytes makes the retry
-  /// free: it is a capacity check and a memcpy, with no re-encode.
+  /// NO measured win is claimed for this. It was written to fix an
+  /// apparent 40 / 688 / 10769 ms curve across 64 KB / 256 KB / 1 MiB,
+  /// which turned out to be a DEBUG-build reading of a wake bug (the
+  /// flush did not announce the record that emptied the queue), not
+  /// superlinear encode cost. Fixing that gave 16.7 / 50.2 / 265.7 ms
+  /// for 262145 / 1 MiB / 4 MiB on macOS release — ~0.05-0.065 ms/KB,
+  /// flat. This still does strictly less work per pump, which is the
+  /// whole of the claim. See CLAUDE.md on debug-build numbers.
   final Queue<Uint8List> _replyOverflow = Queue<Uint8List>();
 
   /// Total payload BYTES held in [_replyOverflow]. Tracked
@@ -141,6 +145,15 @@ class SkalBridge {
   /// bounded or growing until the process dies.
   @visibleForTesting
   int get queuedReplyBytes => _replyOverflowBytes;
+
+  /// Queued event RECORDS. Distinct from [queuedReplyBytes], which
+  /// counts only payload-bearing ones — a test that used bytes as a
+  /// proxy for "the queue is empty" would still read 0 with
+  /// payload-less records (a bool event, `_abandonChunked`'s empty
+  /// terminator) still queued, and would then pass against the very
+  /// wake bug it exists to pin.
+  @visibleForTesting
+  int get queuedEventRecords => _eventOverflow.length ~/ 6;
 
   /// One state per JS-created node, keyed by JS node id (dense small
   /// ints). Plain `Map<int, NodeState>` — primitive int keys avoid
@@ -476,6 +489,34 @@ class SkalBridge {
 
   /// Drain new ops from the ring. Cheap when nothing is pending —
   /// a single u64 load + compare.
+  /// A wake JS is owed, deferred because a pump was on the stack.
+  /// Fired once by the outermost [pumpOps] — see [_requestWake].
+  bool _wakeOwed = false;
+
+  /// Ask JS to drain — coalesced, and never from inside a pump.
+  ///
+  /// Two reasons, and the second is the load-bearing one:
+  ///
+  ///  * N wakes for one pump's worth of work is N cross-thread posts on
+  ///    native where one would do. A chunked transfer used to be the
+  ///    worst case; every producer now funnels through here.
+  ///  * On web `wakeJs` DRAINS JS INLINE (skal_ffi_web.dart), so waking
+  ///    from inside a pump runs JS handlers with `_pumping` still set.
+  ///    If such a handler overflows the op ring it calls back through
+  ///    `__skal_drainOpsSync`, hits the nested-pump guard, gets no
+  ///    drain, and JS blind-rewinds the ring over ops the host never
+  ///    consumed. That was already possible from the flush's
+  ///    partial-flush wake; deferring makes it unreachable rather than
+  ///    rare, and the correlation was the nasty part — a back-pressure
+  ///    burst means a big payload, and a big payload means a big render.
+  void _requestWake() {
+    if (_pumping) {
+      _wakeOwed = true;
+      return;
+    }
+    skal.wakeJs();
+  }
+
   void pumpOps() {
     if (_pumping) return; // nested inline-drain — see [_pumping].
     _pumping = true;
@@ -496,6 +537,15 @@ class SkalBridge {
       }
     } finally {
       _pumping = false;
+    }
+    // Outside the guard on purpose: on web this drains JS inline, and a
+    // nested `__skal_drainOpsSync` must find `_pumping` clear so it can
+    // actually drain instead of blind-rewinding. Cleared BEFORE the call
+    // so a nested pump can own its own wake; work is finite, so this
+    // terminates.
+    if (_wakeOwed) {
+      _wakeOwed = false;
+      skal.wakeJs();
     }
   }
 
@@ -1602,8 +1652,8 @@ class SkalBridge {
     // ONE encode for the entire journey. The reply heap wants bytes, the
     // overflow queue now HOLDS bytes, and _dispatchChunked slices bytes —
     // so nothing downstream re-encodes, and a payload that waits in the
-    // queue is never re-encoded per pump (which is what made large
-    // replies quadratic; see [_replyOverflow]).
+    // queue is never re-encoded per pump. See [_replyOverflow]: this is
+    // less work, not a measured speedup.
     Uint8List? bytes;
     if (payload != null) {
       bytes = utf8.encode(payload);
@@ -1625,7 +1675,7 @@ class SkalBridge {
 
     _placeEvent(
         eventKind, argType, handlerId, argValueI32, argHeapOffset, bytes);
-    skal.wakeJs();
+    _requestWake();
   }
 
   /// Place one record — ring slot or overflow queue — WITHOUT waking JS.
@@ -1741,15 +1791,22 @@ class SkalBridge {
         Uint8List.sublistView(bytes, at, end),
       );
       if (!placed) {
+        // BREAK, not return: the terminator _abandonChunked spills still
+        // has to be announced, and the wake lives after this loop. An
+        // early return here skipped it — the same stranding this file
+        // fixes elsewhere, one function away. It happened to be
+        // survivable only because a ceiling refusal implies a non-empty
+        // queue, so the ticker keeps pumping; that is an accident of the
+        // ceiling arithmetic, not an invariant anybody stated.
         _abandonChunked(handlerId, eventKind, argType, at, bytes.length);
-        return;
+        break;
       }
       at = end;
     }
     // ONE wake for the whole transfer. Going through `dispatchEvent` per
     // part meant a 4 MiB payload rang `onWake` and posted `wakeJs`
     // 32 times for what JS sees as a single value.
-    skal.wakeJs();
+    _requestWake();
   }
 
   /// Close out a transfer whose remaining parts the overflow ceiling
@@ -1831,8 +1888,8 @@ class SkalBridge {
   /// **null** when the write would clobber bytes JS has not read yet.
   ///
   /// Takes BYTES, not a String: the flush retries the head of the
-  /// overflow queue on every pump, and encoding there made large
-  /// payloads quadratic. See [_replyOverflow].
+  /// overflow queue on every pump, and re-encoding there was pure waste.
+  /// See [_replyOverflow].
   ///
   /// Null means "not now", never "not ever": [dispatchEvent] queues the
   /// event and retries on the next pump, by which time JS has drained.
@@ -2127,14 +2184,22 @@ class SkalBridge {
   }
 
   /// Drain queued overflow events into the bridge ring. Called from
-  /// pumpOps before the op-ring drain; the read side (JS) is woken on
-  /// each successful write, so events propagate immediately.
+  /// pumpOps before the op-ring drain.
+  ///
+  /// JS is woken ONCE per flush, not per write, and the wake is deferred
+  /// out of the pump window ([_requestWake]). This comment used to claim
+  /// a wake "on each successful write, so events propagate immediately",
+  /// which was false in the direction that mattered: the wake was
+  /// conditioned on records REMAINING, so the write that completed a
+  /// burst announced nothing and the event sat in the ring unread. This
+  /// is the sentence a reader consults to decide whether a wake is
+  /// owed — it is why the bug was invisible for as long as it was.
   ///
   /// Overflow queue layout matches the event-record layout plus a flag:
   /// each event is 6 consecutive ints — kind, argType, handlerId,
   /// argValueI32, argHeapOffset, hasPayload.
   void _flushEventOverflow() {
-    var placed = 0;
+    var placed = false;
     while (_eventOverflow.isNotEmpty) {
       final pos = _data.getInt32(hEventWritePos, Endian.little);
       final nextPos = (pos + 16) % kEventRingSize;
@@ -2169,7 +2234,7 @@ class SkalBridge {
       _data.setInt32(hEventWritePos, nextPos, Endian.little);
       final seq = _getU64(_data, hEventSeq);
       _setU64(_data, hEventSeq, seq + 1);
-      placed++;
+      placed = true;
     }
     // Wake if this flush PLACED anything — not only if something is
     // still queued.
@@ -2188,7 +2253,7 @@ class SkalBridge {
     // silent; with an unrelated 2 s heartbeat it completed in 2001.6 ms,
     // and with a 12 s one in 12002.1 ms. It was never slow. It was
     // waiting for someone else to knock.
-    if (placed > 0 || _eventOverflow.isNotEmpty) skal.wakeJs();
+    if (placed || _eventOverflow.isNotEmpty) _requestWake();
   }
 
   // ──────────────────────────────────────────────────────────────────

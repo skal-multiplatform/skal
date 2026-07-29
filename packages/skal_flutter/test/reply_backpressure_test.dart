@@ -218,25 +218,75 @@ void main() {
       // reasons. Chunked replies hit this almost every time, because
       // their tail is usually the record that empties the queue.
       //
-      // Measured on macOS release before the fix: a reply one byte over
-      // the heap never completed in 40 s with the app otherwise silent,
-      // and completed in exactly 2001.6 ms / 12002.1 ms with an
-      // unrelated 2 s / 12 s heartbeat. Not slow — waiting to be knocked.
+      // Numbers and the full isolation live on _flushEventOverflow in
+      // bridge.dart — one home, so a correction lands once.
       for (var i = 0; i < 4; i++) {
         bridge.dispatchEventStr(600 + i, chunk(big, 'w'));   // the 4th spills
       }
       js.drainEvents(advanceReplyCursor: false);
       js.consumeReplyHeap();
-      expect(bridge.queuedReplyBytes, greaterThan(0),
+      expect(bridge.queuedEventRecords, greaterThan(0),
           reason: 'this test is only meaningful with something queued');
 
       final before = js.wakeJsCalls;
       bridge.pumpOps();          // places the last queued record
 
-      expect(bridge.queuedReplyBytes, 0, reason: 'the flush must complete');
+      // RECORDS, not bytes: bytes counts only payload-bearing records,
+      // so a payload-less one left queued would still read 0 and this
+      // test would pass against the bug it pins.
+      expect(bridge.queuedEventRecords, 0, reason: 'the flush must complete');
       expect(js.wakeJsCalls, greaterThan(before),
           reason: 'the record that empties the queue must still wake JS, '
               'or it is delivered and never read');
+    });
+
+    test('a flush that can place NOTHING still nudges JS', () {
+      // The OTHER half of the wake condition, and the mirror of the bug
+      // above: when the flush places nothing because the reply heap is
+      // still full, JS is exactly who has to drain to free it. Staying
+      // silent there strands the queue the same way.
+      //
+      // `if (placed) wake` alone passes every other test in this repo —
+      // this is the one that fails it.
+      for (var i = 0; i < 4; i++) {
+        bridge.dispatchEventStr(700 + i, chunk(big, 'n'));
+      }
+      // JS takes the events but does NOT release the reply-heap bytes,
+      // so the next flush can place nothing at all.
+      js.drainEvents(advanceReplyCursor: false);
+      expect(bridge.queuedEventRecords, greaterThan(0));
+
+      final before = js.wakeJsCalls;
+      bridge.pumpOps();
+
+      expect(bridge.queuedEventRecords, greaterThan(0),
+          reason: 'nothing could be placed — that is the case under test');
+      expect(js.wakeJsCalls, greaterThan(before),
+          reason: 'a flush that places nothing must still nudge the side '
+              'whose drain is what frees the heap');
+    });
+
+    test('an oversize CHUNKED reply announces its completing record', () {
+      // The commit that fixed the wake named chunked replies as the
+      // near-certain victim and reproduced with 262145 bytes, but its
+      // regression test used four plain events. This drives the actual
+      // chunk fan-out: the tail is the record that empties the queue.
+      bridge.dispatchEventStr(950, 'A' * (kReplyHeapSize + 1));
+
+      var wokeOnCompletingPump = false;
+      for (var round = 0; round < 40; round++) {
+        js.drainEvents();
+        final hadQueue = bridge.queuedEventRecords > 0;
+        final before = js.wakeJsCalls;
+        bridge.pumpOps();
+        if (hadQueue &&
+            bridge.queuedEventRecords == 0 &&
+            js.wakeJsCalls > before) {
+          wokeOnCompletingPump = true;
+        }
+      }
+      expect(wokeOnCompletingPump, isTrue,
+          reason: 'the pump that placed the last chunk must wake JS');
     });
 
     test('a payload that FITS is not chunked', () {
@@ -346,7 +396,17 @@ void _overflowCapTests() {
     // pinned in the JS map for the life of the process. That is worse
     // than the truncation chunking replaced, which at least delivered.
     final huge = 'z' * (6 * 1024 * 1024);   // past the 4 MiB ceiling
+    final wakesBefore = js.wakeJsCalls;
     bridge.dispatchEventStr(770, huge);
+
+    // The terminator has to be ANNOUNCED, not merely spilled. The
+    // abandon path used to `return` straight out of _dispatchChunked,
+    // skipping the wake every other exit takes — the same stranding
+    // this file exists to pin, one branch away. It was survivable only
+    // because a ceiling refusal implies a non-empty queue, so the ticker
+    // keeps pumping; that is an accident of the arithmetic, not a rule.
+    expect(js.wakeJsCalls, greaterThan(wakesBefore),
+        reason: 'a cut-short transfer must still announce its terminator');
 
     final parts = <FakeEvent>[];
     for (var round = 0; round < 80; round++) {

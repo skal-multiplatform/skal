@@ -37,6 +37,7 @@ import 'scroll_bench.dart';
 import 'skal_codegen.g.dart' as packages_gen;
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/dialogs.dart';
+import 'package:skal_flutter/skal/early_frame.dart';
 import 'package:skal_flutter/skal/root.dart';
 import 'package:skal_flutter/skal_ffi.dart';
 
@@ -47,6 +48,15 @@ void main() async {
   final bootClock = Stopwatch()..start();
   final t0 = bootClock.elapsedMicroseconds;
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Paint a frame NOW, before Skal.create() and the bundle eval, so
+  // Android's ~90 ms splash-reveal animation overlaps boot instead of
+  // running after it. `early.reveal()` below swaps the child under a
+  // root that already exists — see SkalEarlyFrame for why a second
+  // runApp() is a regression rather than an alternative.
+  //
+  // Measured: cold start 346 -> 320 ms (A/B/A, n=10, 6 ms drift).
+  final early = SkalEarlyFrame.show();
 
   // E2E visibility — force Flutter's semantics tree on so Maestro /
   // integration_test can read it. Native Flutter only builds semantics when
@@ -117,7 +127,7 @@ void main() async {
   final tCreate0 = bootClock.elapsedMicroseconds;
   final skal = Skal.create(dataDir);
   if (skal == null) {
-    runApp(const _ErrorApp(message: 'skal_create_runtime returned 0'));
+    early.reveal(const _ErrorApp(message: 'skal_create_runtime returned 0'));
     return;
   }
   final tCreate1 = bootClock.elapsedMicroseconds;
@@ -207,7 +217,7 @@ void main() async {
       'result=${result.value} '
       'nodes=${bridge.nodes.length}');
 
-  runApp(SkalApp(
+  early.reveal(SkalApp(
     bridge: bridge,
     initMs: (tCreate1 - tCreate0) / 1000.0,
     evalMs: (tEval1 - tEval0) / 1000.0,

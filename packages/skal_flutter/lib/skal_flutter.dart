@@ -8,6 +8,7 @@
 
 export 'skal/bridge.dart';
 export 'skal/dialogs.dart';
+export 'skal/early_frame.dart';
 export 'skal/registry.dart';
 export 'skal/root.dart';
 export 'skal/wire.dart';

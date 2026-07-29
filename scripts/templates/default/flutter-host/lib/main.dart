@@ -21,11 +21,29 @@ import 'package:path_provider/path_provider.dart';
 
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/dialogs.dart';
+import 'package:skal_flutter/skal/early_frame.dart';
 import 'package:skal_flutter/skal/root.dart';
 import 'package:skal_flutter/skal_ffi.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Paint a frame NOW, before Skal.create() and the bundle eval.
+  //
+  // Flutter holds the Android 12+ system splash until its first frame,
+  // then the OS runs a ~90 ms `starting_reveal` animation to hand over —
+  // pure serial latency at the END of cold start. Getting a cheap frame
+  // up first lets that reveal overlap boot instead of following it.
+  //
+  // `early.reveal()` below swaps the child under a root that already
+  // exists. Do NOT replace this with a second runApp(): that rebuilds
+  // the whole element tree and measured 13 ms SLOWER. See
+  // SkalEarlyFrame for the full comparison.
+  //
+  // Measured on a Galaxy A14 (release, A/B/A n=10, 6 ms drift):
+  // cold start 346 -> 320 ms. Neutral on other platforms — they have no
+  // system splash reveal to overlap.
+  final early = SkalEarlyFrame.show();
   // E2E visibility — force Flutter's semantics tree on so Maestro can read it.
   // Native Flutter only builds semantics when an accessibility service is
   // active, and Maestro's UIAutomator query doesn't reliably trigger that, so
@@ -36,17 +54,17 @@ void main() async {
     WidgetsBinding.instance.ensureSemantics();
   }
   try {
-    await _boot();
+    await _boot(early);
   } catch (e, st) {
     // Surface the failure instead of leaving a black screen. Common cause on
     // a fresh app: libskal.dylib not embedded in the .app (dlopen throws) —
     // see scripts/skal-link.sh / docs/DEBUGGING.md.
     debugPrint('[skal] BOOT FAILED: $e\n$st');
-    runApp(_BootError(message: '$e', detail: '$st'));
+    early.reveal(_BootError(message: '$e', detail: '$st'));
   }
 }
 
-Future<void> _boot() async {
+Future<void> _boot(SkalEarlyFrame early) async {
   // Resolve the data dir up front so the JS store can read it
   // synchronously (skips the async getDataDir() RPC at boot).
   String dataDir = '';
@@ -106,7 +124,9 @@ Future<void> _boot() async {
   debugPrint('[skal] init=${((tCreate1 - tCreate0) / 1000).toStringAsFixed(1)}ms '
       'nodes=${bridge.nodes.length}');
 
-  runApp(MaterialApp(
+  // reveal(), not runApp() — a subtree insert under the root the early
+  // frame already put up.
+  early.reveal(MaterialApp(
     debugShowCheckedModeBanner: false,
     navigatorKey: skalNavigatorKey,
     scaffoldMessengerKey: skalScaffoldMessengerKey,

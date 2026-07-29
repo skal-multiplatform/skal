@@ -200,3 +200,41 @@ describe('builder-mode list windowing', () => {
     expect(Math.max(...idx)).toBeGreaterThan(8000);
   });
 });
+
+// ── The eager JSX-children cliff is loud, not silent ───────────────
+//
+// A <listView> given JSX children cannot be windowed — Solid has built
+// them all before the renderer sees them, and the reconciler walks the
+// real DOM — so the cost is O(rendered) per mutation and O(N^2) to
+// build N. The framework cannot fix that from here, but it must not let
+// an app discover it as mystery jank.
+describe('JSX-children listView warning', () => {
+  test('warns once past the threshold, and never in builder mode', () => {
+    const warnings = [];
+    const orig = console.warn;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    try {
+      const eager = document.createElement('div');
+      eager._skalTag = 'listView';
+      for (let i = 0; i < 260; i++) {
+        R.insertNode(eager, document.createElement('div'), null);
+      }
+      expect(warnings.length, 'exactly one warning, not one per child')
+          .toBe(1);
+      expect(warnings[0]).toContain('builder mode');
+
+      // Builder mode is the windowed path — it must stay silent however
+      // many rows it mounts, or the warning trains people to ignore it.
+      warnings.length = 0;
+      const windowed = document.createElement('div');
+      windowed._skalTag = 'listView';
+      windowed._skalRenderItem = () => document.createElement('div');
+      for (let i = 0; i < 260; i++) {
+        R.insertNode(windowed, document.createElement('div'), null);
+      }
+      expect(warnings.length, 'builder mode must not warn').toBe(0);
+    } finally {
+      console.warn = orig;
+    }
+  });
+});

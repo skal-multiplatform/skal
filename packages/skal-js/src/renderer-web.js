@@ -1310,6 +1310,10 @@ const WEB_EST_ROW_H = 48;
 /// batch keeps prerendered output meaningful.
 const WEB_HEADLESS_ROWS = 20;
 
+/// JSX children on a <listView> past which the eager-mount cliff is
+/// worth a one-time warning. Well above any hand-written list.
+const _JSX_LIST_WARN_AT = 200;
+
 /// Axis-agnostic geometry. A horizontal list is the same algorithm
 /// against width/scrollLeft; the only differences are four property
 /// names.
@@ -1683,6 +1687,37 @@ const _renderer = createRenderer({
   },
 
   insertNode(parent, node, anchor) {
+    // A <listView> given JSX CHILDREN cannot be windowed: Solid has
+    // already built every child by the time we are called, and the
+    // reconciler navigates the real DOM through getFirstChild /
+    // getNextSibling, so we cannot quietly leave most of them
+    // unattached. Builder mode (`count` + `renderItem`) is the windowed
+    // path — it is called lazily, per index.
+    //
+    // The gap is silent and superlinear, which is the worst combination:
+    // every child is a live DOM subtree, so each mutation reconciles the
+    // whole rendered list. Measured on the kitchen-sink todos list
+    // before it was converted: adding 100 items cost 4.5 ms into an
+    // empty list and 72.5 ms into a 3 500-item one — linear in what is
+    // rendered, so building N was quadratic. In builder mode the same
+    // measurement is flat at ~0.5 ms.
+    //
+    // So make the cliff loud rather than let an app discover it as
+    // mystery jank. One counter bump per insert, and only when the
+    // parent is a listView that has not been given a renderItem.
+    if (parent._skalTag === 'listView' && !parent._skalRenderItem) {
+      const n = (parent._skalJsxKids = (parent._skalJsxKids | 0) + 1);
+      if (n === _JSX_LIST_WARN_AT && !parent._skalWarnedJsxKids) {
+        parent._skalWarnedJsxKids = true;
+        console.warn(
+          `Skal: <listView> has ${n}+ JSX children. They are all built ` +
+          `and attached, so every mutation reconciles the whole list and ` +
+          `building N of them is O(N^2). Use builder mode — ` +
+          `<listView count={n} renderItem={(i) => …}> — which mounts ` +
+          `only the visible window. See docs/TODO.md § 4.`);
+      }
+    }
+
     // <tabs> children: the bar should always remain the last DOM
     // child. If a new <tab> arrives with no anchor (append), insert it
     // *before* the bar so the bar stays pinned at the end.

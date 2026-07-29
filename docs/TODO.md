@@ -112,9 +112,30 @@ they would need the same audit.
 Builder-mode `<listView count renderItem>` is windowed as of
 2026-07-28 (O(viewport), no cap). Still eager:
 
-- **JSX-children lists.** The renderer is handed already-built nodes and
-  has nowhere to defer them to. Needs a different contract, not a
-  different loop.
+- **JSX-children lists.** Still eager, and now believed to be the right
+  call rather than merely unfinished. Solid builds every child before
+  the renderer is called, and its reconciler navigates the real DOM
+  through `getFirstChild` / `getNextSibling` — so windowing would mean
+  those two lying about what is attached, on the hot reconcile path, for
+  every node in the tree. That is a contract change with a cost paid by
+  everything to serve one shape.
+
+  Mitigated instead, 2026-07-29:
+  - The renderer **warns once** past 200 JSX children, naming builder
+    mode. The cliff was silent and superlinear; now it is loud.
+  - The demo's todos list — the last one in-tree on this path — is
+    converted. Measured on web, production build, adding 100 items:
+
+    | collection | JSX children | builder mode |
+    |---:|---:|---:|
+    | 0 | 4.5 ms | 4.2 ms |
+    | 1 000 | 18.7 ms | 0.5 ms |
+    | 2 000 | 34.0 ms | 0.5 ms |
+    | 3 500 | 72.5 ms | 0.9 ms |
+
+    Linear-in-rendered became flat, so building N went from quadratic to
+    linear: 80x at 3 500 items. 4 000 todos render as 17 rows / 830 DOM
+    nodes, against 4 758 nodes for 2 000 on the old path.
 - ~~**Horizontal builder lists**~~ — done (2026-07-28). Windowed on the
   same path: `_AXIS` selects width / scrollLeft / offsetWidth, and the
   1500-row cap is deleted rather than relaxed.

@@ -2362,15 +2362,23 @@ function StoreTab() {
         </Wrap>
         <Text label={`${db.todos.length} todos — add/remove writes one element frame + the index, never the whole list`} fontSize={12} fontWeight={700} color={ACCENT} />
         <Box height={220} cornerRadius={10} background={CHIP}>
-          <ListView scrollbar>
-            <For each={db.todos}>
-              {(todo) => (
-                <Box padding={8} background={CARD} cornerRadius={6} borderWidth={1} borderColor={BORDER}>
-                  <Text label={todo.text} fontSize={12} color={INK} />
-                </Box>
-              )}
-            </For>
-          </ListView>
+          {/* Builder mode, not <For>. JSX children are built AND
+              attached eagerly — every todo becomes a live DOM subtree
+              the moment it exists, so each mutation reconciles the
+              whole rendered list. Measured on web before converting:
+              adding 100 todos cost 4.5 ms into an empty list and
+              72.5 ms into a 3 500-item one, i.e. linear in what is
+              rendered, so building N was quadratic overall.
+              `count` + `renderItem` materializes only the window. */}
+          <ListView
+            scrollbar
+            count={db.todos.length}
+            renderItem={(i) => (
+              <Box padding={8} background={CARD} cornerRadius={6} borderWidth={1} borderColor={BORDER}>
+                <Text label={db.todos[i]?.text ?? ''} fontSize={12} color={INK} />
+              </Box>
+            )}
+          />
         </Box>
       </Section>
 

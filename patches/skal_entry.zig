@@ -89,6 +89,14 @@ extern fn JSObjectGetProperty(
     propertyName: JSStringRef,
     exception: ?*?JSValueRef,
 ) JSValueRef;
+// Indexed read on a JS array — used by __skal_store_get_many to walk the
+// key list without materialising it into Zig.
+extern fn JSObjectGetPropertyAtIndex(
+    ctx: JSContextRef,
+    object: JSObjectRef,
+    propertyIndex: c_uint,
+    exception: ?*?JSValueRef,
+) JSValueRef;
 extern fn JSObjectCallAsFunction(
     ctx: JSContextRef,
     object: JSObjectRef,

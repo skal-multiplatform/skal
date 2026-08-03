@@ -461,12 +461,23 @@ of what was **not** done.
       §5e): 500 records cold, eager 7.1 ms vs MMKV 0.66 ms; 5 records,
       lazy 2.1 ms vs 0.26 ms. Fairly measured, store open inside the
       timer on both sides.
-- [ ] **Lazy mode is a trap at volume** — 65-73 ms for 500 records vs
-      7 ms eager, because each leaf pays its own engine.get + JSON.parse
-      + LRU touch. Fix candidates in order: one bulk frame per subtree
-      instead of per leaf; cheaper decode; and scope `bumpTree`, which
-      `faultIn` calls per record, making the loop O(n^2) — that one is
-      ours, introduced by the store rewrite.
+- [ ] **FIRST: scope `bumpTree` — 72-77% of lazy bulk reads is this
+      regression.** Decomposed 2026-08-03: bumpTree is 47.1-56.3 ms of
+      lazy-500's 65.3-72.7 ms. `faultIn` -> `setAt` -> `bumpTree` scans
+      every version signal and lazy reads populate that map as they go,
+      so the loop is O(n^2). Eager escapes it (0.56 us/rec) because
+      `vers` is empty at open. A bug fix, not a redesign; should take
+      lazy-500 from ~69 ms to ~18 ms. Cheapest and biggest storage win.
+- [ ] **THEN: batch native get for eager hydration.** The per-record
+      split is engine.get 51%, setAt 25%, JSON decode 17%, bumpTree 6% —
+      so the native crossing dominates and one call returning many
+      frames is the right target.
+- [ ] ~~Binary codec instead of JSON~~ — WRONG on two counts: decode is
+      the smallest of the three main phases (17%), and a JS-side binary
+      codec was already rejected on measurement (see the codec comment
+      in `db.js`). Only a NATIVE typed decode could win, which means
+      teaching the engine the value model — a much larger change that
+      costs the engine's current value-agnostic simplicity.
 
 ### Not done — measurement debt
 - [ ] **Persistence comparison is confounded.** Identical Skal code read

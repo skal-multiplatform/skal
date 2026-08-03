@@ -709,6 +709,51 @@ signal, making a 500-record fault loop O(n²). The last is ours and
 scales badly; the first is the obvious target (one bulk frame per
 subtree rather than one per leaf).
 
+### Decomposed 2026-08-03 — and it inverts the obvious guess
+
+Temporary instrumentation in `hydrate` (added, measured, reverted — not
+in the tree). Per record, n=500, medians of 3:
+
+| phase | per record | share of attributed |
+|---|---:|---:|
+| **`engine.get`** — native crossing + ArrayBuffer alloc | **5.29–5.61 µs** | **51%** |
+| `setAt` — tree write | 2.57–2.58 µs | 25% |
+| `decodeFrame` — TextDecoder + `JSON.parse` | 1.78–1.95 µs | 17% |
+| `bumpTree` | 0.56–0.63 µs | 6% |
+
+**The native crossing dominates. `JSON.parse` is the SMALLEST of the
+three main phases.** The proposal to replace the JSON codec was aimed at
+the least important term — and it had already been rejected on
+measurement (see the codec comment in `db.js`: JSC's JSON is native C++
+and beats any JS codec at every size). Wrong on both counts.
+
+**The right target for eager hydration is a BATCH GET** — one native
+call returning many frames — because that is the 51%. A codec change
+attacks 17%; a faster tree write attacks 25%.
+
+### Lazy mode: 72–77% of it is a regression I introduced
+
+Same instrumentation on the lazy path: **`bumpTree` is 47.1–56.3 ms of
+the 65.3–72.7 ms total.** `faultIn` → `setAt` → `bumpTree` scans every
+version signal, and lazy reads populate that map as they go, so a
+500-record fault loop is O(n²).
+
+Eager hydration escapes it (0.56 µs/record) because `vers` is still
+empty at open — nothing has subscribed yet. Lazy is quadratic precisely
+because it interleaves reads with faults.
+
+**Fixing this is a bug fix, not a redesign**, and should take lazy-500
+from ~69 ms to roughly ~18 ms. It is the single largest storage win
+available and it is cheaper than everything else on this list.
+
+### Caveat on the absolute numbers
+
+Instrumented total was 11.1–12.6 ms against 7.1–7.7 ms clean, so the
+clock reads cost ~1 µs each and every phase carries about one of them.
+**Treat the RATIOS as the finding, not the absolutes** — subtracting
+~1 µs per phase gives roughly get 4.3, setAt 1.6, decode 0.8, and the
+ordering is unchanged.
+
 ### Not measured
 - MMKV's open cost is now inside the timer but not isolated, so how much
   of RN's 0.662 ms is open vs reads is unknown.

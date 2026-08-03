@@ -772,6 +772,42 @@ clock reads cost ~1 µs each and every phase carries about one of them.
 ~1 µs per phase gives roughly get 4.3, setAt 1.6, decode 0.8, and the
 ordering is unchanged.
 
+### 2026-08-03 — three lossless changes, measured as one
+
+Bundled deliberately so the result is a total, not an attribution:
+
+- **A** the engine key `'k:' + childSk` was built TWICE per record (once
+  for `dirty.has`, once for `engine.get`). Built once.
+- **B** `NativeLogStore.get` wrapped its result in `new Uint8Array(ab)`;
+  `TextDecoder` takes an `ArrayBuffer` directly and every caller hands
+  it straight to `decodeFrame`. One allocation per record removed.
+- **C** hydration routed every leaf through `setAt`, which re-resolves
+  from the ROOT per record — O(depth) of redundant walking plus a
+  `childSp` allocation. `hydrate` now carries the live parent, so a leaf
+  is one property assignment. Notification is unchanged: skipping it
+  would be wrong, because `createSkalStore` returns the proxy before
+  `init()` finishes, so a component can subscribe mid-hydration.
+
+**Result — lazy open + read 500: 56.5 ms → 31.1 ms median** (25.8 /
+31.1 / 36.2 vs 52.0 / 56.5 / 64.8). **Ranges do not overlap; this one is
+proven.** Cumulative for the day on that arm: ~69 → 31.1, **2.4×**.
+
+**Eager is unchanged** (~7.5 ms vs 7.9–8.1), and so are both read-5 arms.
+
+**Which change did it is NOT known, and deliberately so** — they were
+bundled to get one honest total. But the shape is informative: C targets
+the EAGER path and eager did not move, so hydration's per-record walk
+was not a real cost. The lazy win must come from B, the only change on
+the `faultIn` path — an inference, not a measurement.
+
+That makes two intuitions today that looked substantial and paid
+nothing (hydrate's walk, and `bumpTree`'s 72–77%), against one
+unglamorous allocation that apparently paid a lot.
+
+**Unchanged vs RN**: eager-500 is still 7.5 ms against MMKV's 0.662 ms,
+~11×. Lazy is no longer catastrophic but eager remains the right choice
+for bulk, and the gap to MMKV is untouched.
+
 ### Not measured
 - MMKV's open cost is now inside the timer but not isolated, so how much
   of RN's 0.662 ms is open vs reads is unknown.

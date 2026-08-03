@@ -468,10 +468,17 @@ of what was **not** done.
       correctness fix it carries, not for speed. Third failed
       segment-size attribution this session — instrument to form a
       hypothesis, never to size a win.
-- [ ] **Lazy bulk reads are still ~56 ms for 500 records** and the cost
-      is now UNATTRIBUTED. Do not instrument again to find it; bisect by
-      removal instead (stub the decode, stub the engine call, stub the
-      tree write, each in turn, and re-measure the total).
+- [x] **Lazy bulk reads 56.5 -> 31.1 ms** (2026-08-03) via three lossless
+      changes bundled as one measurement: build the engine key once, stop
+      wrapping the native ArrayBuffer in a Uint8Array, and carry the live
+      parent through hydrate. Ranges do not overlap. Eager unchanged, so
+      the win is almost certainly the ArrayBuffer wrapper (the only one
+      of the three on the faultIn path) - inferred, not measured.
+- [ ] **Eager bulk load is still ~11x behind MMKV** (7.5 ms vs 0.662 ms
+      for 500 records) and that gap is untouched. Remaining candidate is
+      a BATCH GET - one native call returning many frames instead of 500.
+      Needs engine work per platform. Do not instrument to size it first;
+      build it and re-measure the total.
 - [ ] **THEN: batch native get for eager hydration.** The per-record
       split is engine.get 51%, setAt 25%, JSON decode 17%, bumpTree 6% —
       so the native crossing dominates and one call returning many

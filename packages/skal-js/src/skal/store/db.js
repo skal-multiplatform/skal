@@ -1433,15 +1433,41 @@ export function createSkalStore(initState, config = {}) {
   }
 
   // ── init — open the engine, migrate, hydrate ───────────────────────
-  function hydrate(node, sp, sk) {
+  // Write one hydrated value. When the live parent is known — which is
+  // every case except a shape divergence — this is a single property
+  // assignment. Routing through setAt instead re-resolves the whole path
+  // FROM THE ROOT for every record, which is O(depth) of redundant
+  // walking plus a childSp array allocation per leaf.
+  //
+  // Notification still happens. It would be tempting to skip it during
+  // hydration on the grounds that nothing has subscribed yet, but that
+  // is not guaranteed: createSkalStore returns the proxy immediately and
+  // init() runs async, so a component can read — and subscribe — before
+  // hydration finishes.
+  function writeHydrated(live, sp, k, sk, decoded) {
+    if (live !== null && typeof live === 'object') {
+      const old = live[k];
+      live[k] = decoded;
+      if (_isNode(decoded) || _isNode(old)) { structGen++; bumpTree(sk); }
+      else bumpKey(sk);
+      return;
+    }
+    setAt([...sp, k], decoded, sk);          // shapes diverged — walk it
+  }
+  const _liveChild = (live, k) =>
+    (live !== null && typeof live === 'object') ? live[k] : undefined;
+
+  function hydrate(node, sp, sk, live) {
     for (const k of Object.keys(node)) {
       const v = node[k];
-      const childSp = [...sp, k];
       const childSk = _join(sk, k);
       const pol = policyFor(childSk);
       if (Array.isArray(v)) {
-        if (pol.persist && !pol.lazy) hydrateArray(childSp, childSk);
-      } else if (_isObj(v)) {
+        if (pol.persist && !pol.lazy) hydrateArray([...sp, k], childSk);
+        continue;
+      }
+      const dk = 'k:' + childSk;             // built ONCE, not per lookup
+      if (_isObj(v)) {
         // Auto-blob: a wholesale assign at this path is stored as one
         // frame here; load it first, then recurse to overlay any
         // deeper-stored leaf overrides on top.
@@ -1450,38 +1476,39 @@ export function createSkalStore(initState, config = {}) {
         // anymore (e.g. a later `state.user = "alice"` or
         // `state.user = null` overwrote an object with a primitive).
         // Detect that and skip the recursion — descending into a non-
-        // object parent would try to write child paths against it via
-        // setState('user', 'name', …), which fails. Any leaf-override
-        // frames under childSk.* are orphans from the previous shape;
-        // schedule a native prefix-tombstone so they don't haunt the
-        // next run.
+        // object parent would try to write child paths against it, which
+        // fails. Any leaf-override frames under childSk.* are orphans
+        // from the previous shape; schedule a native prefix-tombstone so
+        // they don't haunt the next run.
         let recurse = true;
-        if (pol.persist && !pol.lazy && !dirty.has('k:' + childSk)) {
-          const b = engine.get('k:' + childSk);
+        if (pol.persist && !pol.lazy && !dirty.has(dk)) {
+          const b = engine.get(dk);
           if (b != null) {
             const decoded = decodeFrame(b);
-            setAt(childSp, decoded, childSk);
+            writeHydrated(live, sp, k, childSk, decoded);
             if (!_isObj(decoded)) {
               recurse = false;
               if (engine.delPrefix) pendingDelPrefix.add(childSk);
             }
           }
         }
-        if (recurse) hydrate(v, childSp, childSk);
+        if (recurse) hydrate(v, [...sp, k], childSk, _liveChild(live, k));
       } else {
         if (!pol.persist || pol.lazy) continue;   // lazy leaf → faults on access
-        if (dirty.has('k:' + childSk)) continue;  // app already wrote it
-        const b = engine.get('k:' + childSk);
+        if (dirty.has(dk)) continue;              // app already wrote it
+        const b = engine.get(dk);
         if (b != null) {
           const decoded = decodeFrame(b);
-          setAt(childSp, decoded, childSk);
+          writeHydrated(live, sp, k, childSk, decoded);
           // Symmetric to the object branch above: persisted shape may
-          // have upgraded (e.g. initState declared `config: ""` and
-          // the app later did `state.config = {complex: 'obj'}`, then
+          // have upgraded (e.g. initState declared `config: ""` and the
+          // app later did `state.config = {complex: 'obj'}`, then
           // `state.config.complex = 'new'` writing a deeper leaf
-          // override at `k:config.complex`). Recurse on the loaded
-          // shape so any deeper overrides under it get overlaid.
-          if (_isObj(decoded)) hydrate(decoded, childSp, childSk);
+          // override at `k:config.complex`). Recurse on the loaded shape
+          // so any deeper overrides under it get overlaid.
+          if (_isObj(decoded)) {
+            hydrate(decoded, [...sp, k], childSk, _liveChild(live, k));
+          }
         }
       }
     }
@@ -1604,7 +1631,7 @@ export function createSkalStore(initState, config = {}) {
       }
 
       tMig = _now();
-      if (!migrated) hydrate(initState, [], '');
+      if (!migrated) hydrate(initState, [], '', root);
       scheduleFlush();
     } catch (_) {
       // The store still works in-memory; the failure is non-fatal.

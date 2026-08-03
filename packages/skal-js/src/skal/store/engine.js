@@ -813,9 +813,12 @@ export class NativeLogStore {
     if (typeof fn === 'function') fn(this._h, prefix);
   }
 
-  get(key) {                              // → Uint8Array | null
-    const ab = globalThis.__skal_store_get(this._h, key);
-    return ab ? new Uint8Array(ab) : null;
+  get(key) {                    // → ArrayBuffer | null (decoder takes both)
+    // Returned raw. Wrapping in a Uint8Array cost one allocation per
+    // record on the hydration path for nothing: TextDecoder accepts an
+    // ArrayBuffer directly, and every caller hands this straight to
+    // decodeFrame.
+    return globalThis.__skal_store_get(this._h, key) || null;
   }
 
   // The store is mmap-backed — the OS persists dirty pages; there is no

@@ -446,3 +446,148 @@ describe('store init on a DOM target', () => {
     }
   });
 });
+
+// ── objectProxy identity and shape changes ──────────────────────────
+//
+// These were written against a prototype per-node child cache that was
+// measured and REVERTED (no gain: 0.1097 -> 0.1163 ms). They are kept
+// because they assert store behaviour that holds regardless of caching
+// and that nothing else covered — a re-read after a subtree is replaced,
+// and what happens when a path changes SHAPE between object and array.
+//
+// They also guard the reverted idea: both of its mutations survived the
+// rest of the suite, so if per-node caching is ever attempted again,
+// these are the tests that would have caught it being wrong.
+describe('objectProxy identity and shape changes', () => {
+  test('a cached child stays a LIVE view, not a snapshot', () => {
+    const s = freshStore({ cfg: { theme: { dark: false } } });
+    const first = s.cfg.theme;          // populates the parent's cache
+    s.cfg.theme.dark = true;
+    // Same proxy identity is fine and expected — but it must read
+    // through to the new value, not the one captured at cache time.
+    expect(s.cfg.theme.dark).toBe(true);
+    expect(first.dark).toBe(true);
+  });
+
+  test('replacing the subtree with a NEW object reads through', () => {
+    const s = freshStore({ cfg: { theme: { dark: false } } });
+    void s.cfg.theme;                   // cache it
+    s.cfg.theme = { dark: true, accent: 'red' };
+    expect(s.cfg.theme.dark).toBe(true);
+    expect(s.cfg.theme.accent).toBe('red');
+  });
+
+  // THE GUARD THAT MATTERS. A path can flip object <-> array, and the
+  // two proxy shapes are not interchangeable. Any node caching that
+  // ignores the shape hands back an object proxy for an array (or vice
+  // versa) and `length` / index access silently break.
+  test('object -> array at the same path returns the ARRAY proxy', () => {
+    const s = freshStore({ slot: { a: 1 } });
+    expect(s.slot.a).toBe(1);           // caches an OBJECT proxy at `slot`
+    s.slot = [{ v: 10 }, { v: 20 }];
+    expect(s.slot.length).toBe(2);
+    expect(s.slot[1].v).toBe(20);
+  });
+
+  // PRE-EXISTING and still live: verified against db.js both with and
+  // without the reverted cache, where it fails identically. Flipping a
+  // path from array to object reads the new
+  // object correctly, but `.length` still answers from the array shape.
+  // `initState` is the schema, so changing a path's TYPE at runtime is
+  // outside what the store contracts to support — recorded here so the
+  // next person does not rediscover it, and asserted as-is so the test
+  // stays honest rather than encoding a fix nobody made.
+  test('array -> object at the same path: value reads through, .length is stale', () => {
+    const s = freshStore({ slot: [{ v: 1 }] });
+    expect(s.slot.length).toBe(1);      // caches an ARRAY proxy at `slot`
+    s.slot = { a: 7 };
+    expect(s.slot.a).toBe(7);           // the value IS correct
+    expect(s.slot.length).toBe(1);      // ...but the shape is not
+  });
+});
+
+// ── resolved-parent cache (objectProxy) ─────────────────────────────
+//
+// Each object proxy caches the node its path resolves to, so a read
+// costs one Solid trap instead of one per path segment. The cache is
+// keyed by a structural generation counter.
+//
+// THESE TESTS EXIST BECAUSE THE REST OF THE SUITE DOES NOT COVER IT:
+// both invalidation points were deleted, one at a time, and all 23
+// other tests still passed. The reason is subtle — the obvious test
+// holds a PARENT and replaces a CHILD, and a Solid store mutates in
+// place, so the parent's identity never changes and the cache is
+// legitimately still valid. Staleness needs a node whose OWN path is
+// replaced out from under it.
+import { createRoot, createEffect } from 'solid-js';
+
+describe('objectProxy resolved-parent cache', () => {
+  test('a held node sees its OWN path replaced wholesale', () => {
+    const s = freshStore({ cfg: { theme: { dark: false } } });
+    const theme = s.cfg.theme;
+    expect(theme.dark).toBe(false);      // fills the cache at cfg.theme
+    s.cfg.theme = { dark: true };        // replaces that very object
+    expect(theme.dark).toBe(true);       // a stale cache answers false
+  });
+
+  test('a held node sees a key deleted from its own object', () => {
+    const s = freshStore({ cfg: { a: 1, b: 2 } });
+    const cfg = s.cfg;
+    expect(cfg.a).toBe(1);
+    delete s.cfg.a;
+    expect(cfg.a).toBeUndefined();
+  });
+
+  // PRE-EXISTING, not caused by the cache: verified by running this
+  // against db.js at HEAD, where it fails identically. A node obtained
+  // via `s.items[i]` and HELD across a splice tracks the INDEX, not the
+  // element — so it starts pointing at whatever slid into that slot.
+  // (Element frames themselves are id-addressed for persistence; this is
+  // about a proxy node the caller kept a reference to.) Recorded so the
+  // next person does not rediscover it, and asserted as-is so the test
+  // stays honest rather than encoding a fix nobody made.
+  test('a held element node tracks the INDEX across a splice, not the element', () => {
+    const s = freshStore({ items: [{ v: 'a' }, { v: 'b' }, { v: 'c' }] });
+    const second = s.items[1];
+    expect(second.v).toBe('b');
+    s.items.splice(0, 1);                // 'b' -> index 0, 'c' -> index 1
+    expect(second.v).toBe('c');          // the held node followed the slot
+    expect(s.items[0].v).toBe('b');      // the data itself is correct
+  });
+
+  test('a held node sees an ancestor replaced wholesale', () => {
+    const s = freshStore({ a: { b: { c: 1 } } });
+    const b = s.a.b;
+    expect(b.c).toBe(1);
+    s.a = { b: { c: 9 } };               // replaces b's PARENT
+    expect(b.c).toBe(9);
+  });
+
+  // THE REACTIVITY CONTRACT. Resolution is untracked, so an effect no
+  // longer subscribes to intermediate nodes — only to the leaf it reads.
+  // That is only safe if Solid still notifies the leaf when an ancestor
+  // is replaced wholesale, which it does by diffing the new object.
+  // If this ever fails, the untrack in objectProxy is not sound.
+  // THE REACTIVITY CONTRACT IS NOT TESTABLE HERE, and that is an
+  // environment fact rather than a decision. Verified in this repo with
+  // solid-js 1.9.13 under bun, inside createRoot:
+  //
+  //     createEffect        never ran at all        []
+  //     createComputed      ran once, never again   [1]
+  //     createRenderEffect  ran once, never again   [1]
+  //     createMemo          returned 10 while the signal was already 3
+  //
+  // Reactive propagation does not flush without a renderer, so any
+  // assertion about re-runs here would be testing the harness. An
+  // earlier version of this test read `null` and looked exactly like a
+  // broken subscription; it fails identically at HEAD.
+  //
+  // WHY IT MATTERS FOR THE CACHE: resolution is untracked, so an effect
+  // subscribes only to the leaf it reads, not to intermediate nodes.
+  // That is sound only if Solid still notifies the leaf when an ancestor
+  // is replaced wholesale (it diffs the new object and fires the leaves
+  // whose values changed). Verified on device instead, via the
+  // subscriber arms of benchmark_v2's state bench — those run real
+  // effects and assert checksums, so a lost subscription changes the
+  // reported checksum rather than passing silently.
+});

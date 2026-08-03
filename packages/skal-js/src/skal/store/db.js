@@ -14,6 +14,14 @@
 //
 // `initState` IS the schema: shape + defaults, no `kind`, no types.
 //
+// Reading in a loop? HOIST THE PARENT. `const c = state.cfg` outside the
+// loop, then `c[k]` inside, is 1.8x faster than `state.cfg[k]` per
+// iteration — the intermediate node is otherwise re-resolved on every
+// read, which costs an array allocation, a string concat and a Map
+// lookup before any data is touched. Only safe outside a reactive scope:
+// a held parent will not see the parent itself being replaced.
+// (Device medians of 3: 1.204 us vs 0.670 us per read.)
+//
 // Granularity:
 //   • plain object        — per-leaf frames, keyed by path (`a.b.c`)
 //   • array of objects    — a stable-id COLLECTION: an index frame
@@ -405,6 +413,9 @@ export function createSkalStore(initState, config = {}) {
     return cur[key];
   }
   function setAt(sp, ...args) {
+    // Every caller of setAt is a structural mutation (delete, splice,
+    // reorder) — leaf writes go straight to setState from writeAt.
+    structGen++;
     // Fast path: skip resolvePath's array allocation when sp has no
     // object (id-addressed) segments. Hot deletes / produce-mutations
     // route through here.
@@ -419,6 +430,25 @@ export function createSkalStore(initState, config = {}) {
     }
     setState(...sp, ...args);
   }
+
+  // ── resolved-parent cache generation ────────────────────────────────
+  // `readSolidChildValue` walks from the ROOT on every read, firing one
+  // Solid proxy trap per path segment. So `node.display` on a node at
+  // `posts.p3` costs THREE traps (posts, p3, display) even when the
+  // caller already hoisted `node` — hoisting only avoids rebuilding
+  // Skal's child proxy, never the Solid walk. That is why hoisting is
+  // worth just 1.8x while the theoretical floor is ~25x.
+  //
+  // Each object proxy caches the node `sp` resolves to, so a read costs
+  // ONE trap on the leaf. The cache is keyed by this counter rather than
+  // invalidated per path: only STRUCTURAL changes can move a node, and
+  // they are rare compared to reads.
+  //
+  // A primitive-leaf write does NOT bump it — Solid stores mutate in
+  // place, so the parent object's identity is unchanged and the cache
+  // stays valid. That matters: bumping on every write would make the
+  // cache useless in any read/write mix, which is most real code.
+  let structGen = 0;
 
   // ── lazy faulting + LRU eviction ────────────────────────────────────
   // `faulted` holds only lazy paths that have been loaded; its insertion
@@ -533,6 +563,9 @@ export function createSkalStore(initState, config = {}) {
     } else {
       setState(...sp, v);
     }
+    // Wholesale assignment replaces a node, so any cached resolution of
+    // it or of anything beneath it is stale.
+    if (v !== null && typeof v === 'object') structGen++;
     if (Array.isArray(v)) collCache.delete(sk);   // wholesale array write
     // Parallel declared-dep effects: notify any registered for this
     // exact storeKey. Wholesale assigns (v is object/array) also fire
@@ -814,6 +847,7 @@ export function createSkalStore(initState, config = {}) {
   }
 
   function objectProxy(sp, sk, elInfo) {
+    let cachedNode, cachedGen = -1;
     return new Proxy({}, {
       get(_t, key) {
         if (key === STORE) return ctrl;
@@ -829,11 +863,26 @@ export function createSkalStore(initState, config = {}) {
               childSk));
           }
         }
-        // Walk sp + read [key] in one pass — no childSp array alloc on
-        // the primitive-leaf hot path. childSp / childSk are computed
-        // lazily below ONLY when the result is an object (needed for
-        // makeNode). Saves ~0.5 µs/read for primitive leaves.
-        const child = readSolidChildValue(sp, key);
+        // Resolve `sp` once per structural generation, then read the
+        // leaf off it — one Solid trap instead of sp.length + 1.
+        //
+        // UNTRACKED on purpose. Resolving inside the calling reactive
+        // scope would subscribe THAT scope to every intermediate node,
+        // so which effect happened to fill the cache would decide what
+        // every later effect depends on. Untracking makes the dependency
+        // set deterministic: each effect subscribes to exactly the leaf
+        // it reads. Wholesale replacement of an intermediate still
+        // notifies, because Solid diffs the new object and fires the
+        // leaves whose values actually changed.
+        let parent;
+        if (cachedGen === structGen) {
+          parent = cachedNode;
+        } else {
+          parent = untrack(() => readSolid(sp));
+          cachedNode = parent;
+          cachedGen = structGen;
+        }
+        const child = parent == null ? undefined : parent[key];
         if (child !== null && typeof child === 'object') {
           const childSp = sp.length === 0 ? [key] : [...sp, key];
           return makeNode(childSp, sk ? sk + '.' + key : key, elInfo,

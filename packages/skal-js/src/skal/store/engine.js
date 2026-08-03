@@ -672,6 +672,16 @@ export class LogStore {
     for (const key of victims) this.del(key);
   }
 
+  // Same contract as the native batch: one call, N results, nulls for
+  // misses, IN THE ORDER ASKED. The JS backend has no crossing to
+  // amortise, so this is a plain loop — it exists so callers never have
+  // to branch on which backend they got.
+  getMany(keys) {
+    const out = new Array(keys.length);
+    for (let i = 0; i < keys.length; i++) out[i] = this.get(keys[i]);
+    return out;
+  }
+
   get(key) {                              // → Uint8Array | null
     const e = this._keydir.get(key);
     if (!e) return null;
@@ -811,6 +821,52 @@ export class NativeLogStore {
   delPrefix(prefix) {
     const fn = globalThis.__skal_store_del_prefix;
     if (typeof fn === 'function') fn(this._h, prefix);
+  }
+
+  // One crossing for N records instead of N. Returns ArrayBuffer views
+  // | null, IN THE ORDER ASKED.
+  //
+  // Wire format, little-endian, from store_get_many_cb:
+  //   [u32 count][u32 len_0 .. u32 len_{count-1}][bytes_0][bytes_1]...
+  //   len === 0xFFFFFFFF marks a MISSING key — a zero-length value would
+  //   otherwise be indistinguishable from one.
+  //
+  // LIFETIME: the buffer is a no-copy view over the store's reusable
+  // scratch and is valid only until the next get/getMany. The slices
+  // handed back are views into it, so a caller must decode all of them
+  // before issuing another read. `hydrate` does exactly that.
+  getMany(keys) {
+    const fn = globalThis.__skal_store_get_many;
+    if (typeof fn !== 'function') {
+      // Older libskal — fall back to per-key reads.
+      //
+      // THE COPY IS LOAD-BEARING. `get` hands back a view over the
+      // store's single reusable scratch buffer, so a loop that keeps N
+      // of them ends up with N aliases of the SAME memory and every one
+      // decodes to the last record read. Shipped exactly that for one
+      // build; the benchmark's checksum caught it (11263132 against an
+      // expected 16366700) because the batched path is the only reader
+      // that holds more than one buffer at a time.
+      const out = new Array(keys.length);
+      for (let i = 0; i < keys.length; i++) {
+        const ab = this.get(keys[i]);
+        out[i] = ab ? ab.slice(0) : null;
+      }
+      return out;
+    }
+    const ab = fn(this._h, keys);
+    if (!ab) return new Array(keys.length).fill(null);
+    const dv = new DataView(ab);
+    const n = dv.getUint32(0, true);
+    const out = new Array(n);
+    let off = 4 + n * 4;
+    for (let i = 0; i < n; i++) {
+      const len = dv.getUint32(4 + i * 4, true);
+      if (len === 0xFFFFFFFF) { out[i] = null; continue; }
+      out[i] = new Uint8Array(ab, off, len);
+      off += len;
+    }
+    return out;
   }
 
   get(key) {                    // → ArrayBuffer | null (decoder takes both)

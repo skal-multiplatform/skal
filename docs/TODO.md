@@ -474,11 +474,17 @@ of what was **not** done.
       parent through hydrate. Ranges do not overlap. Eager unchanged, so
       the win is almost certainly the ArrayBuffer wrapper (the only one
       of the three on the faultIn path) - inferred, not measured.
-- [ ] **Eager bulk load is still ~11x behind MMKV** (7.5 ms vs 0.662 ms
-      for 500 records) and that gap is untouched. Remaining candidate is
-      a BATCH GET - one native call returning many frames instead of 500.
-      Needs engine work per platform. Do not instrument to size it first;
-      build it and re-measure the total.
+- [ ] **Batch get: WRITTEN BUT UNMEASURED — needs a libskal rebuild.**
+      `__skal_store_get_many` is implemented in `patches/skal_entry.zig`
+      (mirrored into `vendor/bun/src/`), and `engine.js` + `hydrate` use
+      it behind a capability check. The Android `.so` is a PREBUILT
+      download from `release-libskal.yml`, so on the current binary the
+      code takes the fallback and the batch path has never executed.
+      To measure: trigger the libskal release workflow, `scripts/fetch-libskal.sh`,
+      rebuild, then re-run the storage-read screen. Expect nothing until
+      then — eager bulk load is still ~7 ms vs MMKV's 0.66 ms.
+      A local macOS bun build is the only offline alternative (LLVM 21,
+      ninja and cmake are present) but it does not exercise Android.
 - [ ] **THEN: batch native get for eager hydration.** The per-record
       split is engine.get 51%, setAt 25%, JSON decode 17%, bumpTree 6% —
       so the native crossing dominates and one call returning many

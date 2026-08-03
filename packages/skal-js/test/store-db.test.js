@@ -626,3 +626,61 @@ describe('objectProxy resolved-parent cache', () => {
   // effects and assert checksums, so a lost subscription changes the
   // reported checksum rather than passing silently.
 });
+
+// ── batched hydration ───────────────────────────────────────────────
+//
+// Hydration reads every scalar leaf of a level in ONE engine.getMany
+// call. Two things can go wrong that nothing else in this suite could
+// see — both were checked by mutation and BOTH SURVIVED before these
+// tests existed:
+//
+//   1. results coming back in the wrong ORDER, which silently assigns
+//      each leaf its neighbour's value;
+//   2. holding the returned slices across a nested read. They are views
+//      over the engine's REUSABLE SCRATCH buffer, so the next
+//      get/getMany overwrites them.
+//
+// (2) cannot be provoked through the JS backend, which returns fresh
+// arrays — it is guarded by decoding everything before recursing, and
+// by the lifetime note on NativeLogStore.getMany. (1) is covered here.
+describe('batched hydration', () => {
+  test('many leaves each keep their OWN value across a reopen', async () => {
+    globalThis.__skal_data_dir =
+      fs.mkdtempSync(path.join(os.tmpdir(), 'skal-batch-'));
+    const init = () => {
+      const c = {};
+      for (let i = 0; i < 40; i++) c['k' + i] = 0;
+      return { cells: c };
+    };
+    const a = createSkalStore(init(), { name: 'batch' });
+    expect(await settle(a)).toBe(true);
+    for (let i = 0; i < 40; i++) a.cells['k' + i] = i * 7 + 1;   // all distinct
+    a[STORE].flushNow();
+
+    const b = createSkalStore(init(), { name: 'batch' });
+    expect(await settle(b)).toBe(true);
+    for (let i = 0; i < 40; i++) {
+      // Reversing or rotating getMany's results still yields the right
+      // SET of values, so a checksum would pass. Each key is asserted
+      // against its own value instead.
+      expect(b.cells['k' + i]).toBe(i * 7 + 1);
+    }
+  });
+
+  test('a missing leaf keeps its default while its neighbours load', async () => {
+    globalThis.__skal_data_dir =
+      fs.mkdtempSync(path.join(os.tmpdir(), 'skal-batch2-'));
+    const init = () => ({ cells: { a: -1, gap: -1, b: -1 } });
+    const s1 = createSkalStore(init(), { name: 'gap' });
+    expect(await settle(s1)).toBe(true);
+    s1.cells.a = 10;
+    s1.cells.b = 30;                    // `gap` is never written
+    s1[STORE].flushNow();
+
+    const s2 = createSkalStore(init(), { name: 'gap' });
+    expect(await settle(s2)).toBe(true);
+    expect(s2.cells.a).toBe(10);
+    expect(s2.cells.gap).toBe(-1);      // default, not a shifted neighbour
+    expect(s2.cells.b).toBe(30);
+  });
+});

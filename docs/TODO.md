@@ -404,6 +404,67 @@ empty. Native was always namespaced and is unaffected.
 
 ---
 
+## Store & benchmark work parked 2026-08-03
+
+From the store read-path session. Full findings and the sequenced plan
+are in [`STORE_SLOT_PLAN.md`](STORE_SLOT_PLAN.md); this is the checklist
+of what was **not** done.
+
+### Shipped in that session (for orientation)
+- Resolved-parent cache in `objectProxy` — 1.70× on the hoisted read
+  arm, both invalidation points mutation-tested.
+- `snapshot()` removed (silent-mutation footgun, see STORE_SLOT_PLAN §7).
+
+### Not done — store
+- [ ] **A. Re-run two thin arms at n=3.** `leaf, full literal path` and
+      `leaf, parent hoisted` are single-round numbers and they are the
+      headline figures (RN 16.7× / 7.8× ahead). Everything is sized
+      against them.
+- [ ] **B. Spike the Solid-trap cost** before any rewrite. Two controls
+      currently contradict each other: raw `createStore` reads 0.0503
+      while Skal's hoisted read — a Solid trap *plus* Skal's own —
+      reads 0.0395. Strictly more work, less time. That discrepancy is
+      the number the whole rewrite would be justified by.
+- [ ] **C. Replace the Solid backing** (only if B pays ≥2×). Hard part
+      is reproducing Solid's diff-on-wholesale-replace, which the
+      resolved-parent cache's `untrack` depends on for correctness.
+- [ ] **D. `makeNode` on object reads** — `s.user` is 6.8× behind RN and
+      `object + 6 fields` 17.2×. That cost is entirely Skal's (array
+      alloc + string concat + `nodeMemo` lookup), so it is attackable
+      without touching the backing. Probably the best value per hour.
+- [ ] **E. Lazy init** — Skal's eager init walk is 67% of the +38 ms a
+      4 500-leaf store adds to cold start. Machinery exists but is
+      opt-in (`paths: { x: { lazy: true } }`, `faulted`, `residentMax`).
+
+### Not done — shipping fixes
+- [ ] **WebCrypto ≥64-byte dispatch** — `TODO_OPTIMIZATIONS.md` §5. The
+      one unambiguous benchmark RN wins; problem measured, fix designed,
+      **not shipped**. Re-measure against benchmark §6 after.
+- [ ] **Stale-bundle guard** — `if (!cjs.existsSync())` in
+      `scripts/templates/default`, `examples/gallery`,
+      `examples/virt-bench`. Only `examples/kitchen-sink` has the
+      byte-comparing fix. `adb install -r` updates the APK and the app
+      keeps running the previously extracted JS. Cost a full measurement
+      round on 2026-08-02; presents as "my code didn't take effect".
+      Workaround until fixed: `adb shell pm clear <pkg>` before each run.
+
+### Not done — measurement debt
+- [ ] **Persistence comparison is confounded.** Identical Skal code read
+      0.0139–0.0167 in one run and 0.0396–0.0591 in another; adding the
+      granular sweep ahead of it warmed the engine. Until re-run
+      interleaved under one condition, **neither figure is usable** and
+      whether MMKV or Skal wins durability is open.
+- [ ] Storage / collection-shape results never written into
+      `benchmark_v2/final-benchmark/RESULTS.md`.
+- [ ] 5-minute background→resume produced no data (`resume-300s.csv` is
+      a bare header).
+- [ ] 15 code-review findings on `benchmark_v2` unaddressed.
+
+**Note:** `benchmark_v2/` is gitignored, so every harness, bench screen
+and prototype from that session (`ministore.js`, `FeedStoreScreen.jsx`,
+`StoreBootScreen.jsx`, `harness/feedstore-scroll.sh`, the REAL/CTRL/MINI
+arms) exists **only in the working tree**. It is not in any commit.
+
 ## Build pipeline
 
 ### Runtime bytecode version check

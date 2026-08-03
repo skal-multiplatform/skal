@@ -756,6 +756,165 @@ yet confirmed.** Until it is, the practical rules are: run probes with
 the window foregrounded, and do not infer a Skal-level defect from a
 backgrounded macOS run.
 
+## 5. ◈ WebCrypto dispatches every call ≥64 bytes to a work queue — NOT SHIPPED
+
+**Measured 2026-08-01** on a Galaxy A14 5G (Android 15, release, screen
+awake) against React Native + `react-native-quick-crypto`. Full writeup:
+[`WEBCRYPTO_DISPATCH.md`](WEBCRYPTO_DISPATCH.md).
+
+**This is the only metric in the whole benchmark where RN beats Skal.**
+
+`vendor/bun/src/jsc/bindings/webcrypto/CryptoAlgorithmSHA256.cpp:54`:
+
+```cpp
+if (message.size() < 64) {          // <-- the threshold
+    digest->addBytes(...);          // inline, on the calling thread
+    auto result = digest->computeHash();
+    ScriptExecutionContext::postTaskTo(...);
+    return;
+}
+workQueue.dispatch(context.globalObject(), [...]);   // thread-pool hop
+```
+
+`workQueue` is `Bun::PhonyWorkQueue` → `CppTask.Concurrent` → Bun's
+`WorkPool`. Every digest of ≥64 bytes costs a thread hand-off, a
+`crossThreadCopy` of the result, and a `postTaskTo` back to the JS
+context. **Round trip measured at ≈0.165 ms.**
+
+**It is a step function, not a gradient.** 1 byte costs 0.0145 ms — and
+that is *faster* than RN's 0.0371 ms. 1 KB costs 0.1793 ms. The 12×
+jump between them is the threshold, not 1023 extra bytes of hashing.
+
+| SHA-256 over | Skal | RN | |
+|---|---:|---:|---|
+| 1 byte | **0.0145 ms** | 0.0371 | Skal 2.6× faster |
+| 1 KB | 0.1793 ms | **0.0378** | RN 4.7× |
+| 64 KB | 0.3459 ms | **0.0901** | RN 3.8× |
+| 1 MB | 2.1778 ms | **0.8557** | RN 2.5× |
+
+**Worse: only the SHA digests have a fast path at all.** HMAC, AES-GCM,
+ECDSA, PBKDF2 and RSA route through
+`CryptoAlgorithm::dispatchOperationInWorkQueue` (`CryptoAlgorithm.cpp:96`),
+where `grep -c 'size() < '` returns **0** — no inline case at any size.
+
+### The fix, and the trade-off
+
+Raise the threshold. Hashing 64 KB inline costs ~0.166 ms of CPU;
+dispatching it costs ~0.165 ms of latency **plus** the same hashing.
+Break-even is ≈**72 KB** — everything below is strictly cheaper inline.
+
+The trade-off is real and must ship with whatever number is chosen: the
+dispatch exists to keep the JS thread free. Raising the threshold buys
+throughput at the cost of blocking the main thread for up to the same
+duration it would otherwise have spent waiting. **A few tens of KB**
+looks right — far above 64 bytes, far below a missed frame.
+
+The larger win is adding an inline path to
+`dispatchOperationInWorkQueue`, since that is where HMAC/AES/ECDSA/PBKDF2
+all land today with none.
+
+**Upstream bun/WebKit code, not a Skal modification** — the webcrypto
+files carry no `[skal]`-prefixed commits in `vendor/bun`. We inherit it
+by vendoring and can patch it in the fork.
+
+### Before touching it, know what it is NOT
+
+Four hypotheses were tested and refuted; each is the obvious first guess:
+
+| hypothesis | evidence against |
+|---|---|
+| per-`await` promise overhead | Skal's 1-byte digest is 2.6× *faster* than RN's; batching 50 behind one await made Skal **worse** |
+| missing ARMv8 SHA instructions | `libskal.so` contains `"SHA256 block transform for ARMv8, CRYPTOGAMS"`, 56 `sha256h`/`sha256su` instructions, and imports `getauxval` |
+| scheduled onto LITTLE cores | Skal's hot thread ran **85% on cpu6/cpu7**, the 2.2 GHz A75 pair |
+| the Bun worker pool is slow | `Bun Pool` threads were nearly idle (57 ticks vs the main thread's 988) |
+
+### Verification
+
+`benchmark_v2/final-benchmark/` §6 is the instrument — re-run it after
+the change. Expect SHA-256 at 64 KB to move from 8.3× behind toward
+parity, and HMAC/AES/ECDSA to move if the generic path gets a fast case
+too.
+
+**Measure with the screen held awake** (`svc power stayon true`, assert
+`dumpsys power | grep mWakefulness`). A dozing screen inflated Skal's
+numbers ~2× and left RN's untouched — an error that penalises exactly
+one arm and is invisible in the output.
+
+Not proven: whether a buffer copy also contributes on top of the
+dispatch. `simpleperf` would separate them but `perf_event_open` is
+blocked without root on this device.
+
 ---
 
-*Last updated: 2026-07-25.*
+## 6. ✗ Store read path re-derives the data's location on every read — MEASURED, NOT ON THE CRITICAL PATH
+
+**Full write-up and plan: [`STORE_SLOT_PLAN.md`](STORE_SLOT_PLAN.md).**
+
+Measured 2026-08-02 (A14 5G, release, screen awake, medians of 3, ms per
+100 reads). Reads are the one arm React Native wins:
+
+| | Skal today | slot prototype | RN |
+|---|---:|---:|---:|
+| store read, best case | 0.0670 | **0.0027** | 0.0336 |
+| *bare reactive read (the floor)* | *0.0024* | | *none exists* |
+
+A 35-line prototype that resolves each path to an integer slot at
+construction and reads a bare Solid signal lands **on the reactive
+floor** — 24.8× the current store, and it flips RN's 2.0× read win into
+a 12.4× loss.
+
+The decomposition says the cost is *repeated work whose answer never
+changes for a static path*: 40% is Solid's `createStore` proxy, 14%
+Skal's leaf trap, 44% Skal re-resolving the intermediate node (an array
+allocation, a string concat and a Map lookup **before any data is
+touched**).
+
+**Why it can't be tuned away:** delete both Skal traps and you land on
+Solid's `createStore` at 0.0503 — still 1.5× slower than RN. Escaping
+requires not calling `createStore` at all.
+
+**A real-app control was run on 2026-08-02 and killed it.** A
+store-backed 500-row feed, A/B/A, showed **no difference** between a
+plain object, the current store and the slot prototype — 0.00% janky,
+p50 5 ms, p95 6 ms in every arm, with the A-to-A drift as large as any
+delta. A **20× positive control** (180 store reads per row instead of 9)
+moved nothing either, which is what makes the null conclusive rather
+than merely underpowered.
+
+The reason: `ListView.builder` calls `renderItem` once per row
+**materialised**, not per frame, so an 8-swipe gesture performs ~207
+store reads in **total** — about 0.14 ms spread over 4.8 seconds. A
+windowed list does almost no store reading.
+
+To consume the ~6 ms of per-frame headroom would take ~5 000 reads per
+frame; the feed does ~36. **Do not resume this without first finding a
+real workload that reads at frame rate** — hundreds of components
+re-reading store leaves every frame. The microbenchmark numbers above
+are reproducible and correct; what failed is the claim that they reach
+a frame.
+
+Reads escape the frame twice: a windowed list materialises ~23 rows per
+gesture, and a fine-grained read only re-runs when its own leaf changes.
+**Cold start replaced it as the open question — and that one came back
+POSITIVE.** Measured 2026-08-02, 8 launches per arm, A/B/A, drift
+7.0/7.5 ms: a 4 500-leaf store costs **+38 ms Displayed / +37 ms Fully
+drawn**, ~8.4 µs per leaf, and it decomposes as
+
+| component | Displayed | share |
+|---|---:|---:|
+| Solid's `createStore` | +1.0 | ~0, within drift |
+| **Skal's own eager init walk** | **+25.5** | **67%** |
+| engine open + hydrate | +11.5 | 30% |
+
+**Solid is innocent** — its store is lazy and costs nothing to
+construct. The cost is Skal walking every leaf at init to compute
+storage keys and seed `nodeMemo`. That also kills the "replace
+createStore" idea as a cold-start fix.
+
+**The fix: make Skal's init lazy, as Solid's already is.** The machinery
+exists but is opt-in (`paths: { x: { lazy: true } }`, `faulted`,
+`residentMax`). See [`STORE_SLOT_PLAN.md`](STORE_SLOT_PLAN.md) §5b.
+
+---
+
+*Last updated: 2026-08-02.*

@@ -489,20 +489,20 @@ describe('objectProxy identity and shape changes', () => {
     expect(s.slot[1].v).toBe(20);
   });
 
-  // PRE-EXISTING and still live: verified against db.js both with and
-  // without the reverted cache, where it fails identically. Flipping a
-  // path from array to object reads the new
-  // object correctly, but `.length` still answers from the array shape.
-  // `initState` is the schema, so changing a path's TYPE at runtime is
-  // outside what the store contracts to support — recorded here so the
-  // next person does not rediscover it, and asserted as-is so the test
-  // stays honest rather than encoding a fix nobody made.
-  test('array -> object at the same path: value reads through, .length is stale', () => {
+  // WAS a known bug, FIXED by dropping solid-js/store. Flipping a path
+  // from array to object used to read the new object correctly while
+  // `.length` still answered 1 from the stale array shape. The plain
+  // tree resolves the node fresh and the child cache is keyed on
+  // is-array, so the shape can no longer lag the value.
+  //
+  // Kept as a regression test rather than deleted: it is the assertion
+  // that would fail first if node caching ever stops checking shape.
+  test('array -> object at the same path changes SHAPE, not just value', () => {
     const s = freshStore({ slot: [{ v: 1 }] });
-    expect(s.slot.length).toBe(1);      // caches an ARRAY proxy at `slot`
+    expect(s.slot.length).toBe(1);      // an array at `slot`
     s.slot = { a: 7 };
-    expect(s.slot.a).toBe(7);           // the value IS correct
-    expect(s.slot.length).toBe(1);      // ...but the shape is not
+    expect(s.slot.a).toBe(7);           // value reads through
+    expect(s.slot.length).toBeUndefined();   // ...and so does the shape
   });
 });
 
@@ -553,6 +553,19 @@ describe('objectProxy resolved-parent cache', () => {
     s.items.splice(0, 1);                // 'b' -> index 0, 'c' -> index 1
     expect(second.v).toBe('c');          // the held node followed the slot
     expect(s.items[0].v).toBe('b');      // the data itself is correct
+  });
+
+  // Covers setAt's structural-generation bump specifically. Deletes and
+  // splices route through mutateAt, which advances the generation
+  // separately — so without this, removing setAt's bump broke nothing
+  // and the whole suite still passed.
+  test('a held element node sees its own slot replaced', () => {
+    const s = freshStore({ items: [{ v: 1 }, { v: 2 }] });
+    const first = s.items[0];
+    expect(first.v).toBe(1);
+    s.items[0] = { v: 9 };              // replaces the object at that slot
+    expect(first.v).toBe(9);            // stale cached node answers 1
+    expect(s.items[0].v).toBe(9);
   });
 
   test('a held node sees an ancestor replaced wholesale', () => {

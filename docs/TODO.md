@@ -456,6 +456,18 @@ of what was **not** done.
       round on 2026-08-02; presents as "my code didn't take effect".
       Workaround until fixed: `adb shell pm clear <pkg>` before each run.
 
+### Not done — storage reads are RN's clear win
+- [ ] **Skal is ~10x slower getting data off disk** (`STORE_SLOT_PLAN.md`
+      §5e): 500 records cold, eager 7.1 ms vs MMKV 0.66 ms; 5 records,
+      lazy 2.1 ms vs 0.26 ms. Fairly measured, store open inside the
+      timer on both sides.
+- [ ] **Lazy mode is a trap at volume** — 65-73 ms for 500 records vs
+      7 ms eager, because each leaf pays its own engine.get + JSON.parse
+      + LRU touch. Fix candidates in order: one bulk frame per subtree
+      instead of per leaf; cheaper decode; and scope `bumpTree`, which
+      `faultIn` calls per record, making the loop O(n^2) — that one is
+      ours, introduced by the store rewrite.
+
 ### Not done — measurement debt
 - [ ] **Persistence comparison is confounded.** Identical Skal code read
       0.0139–0.0167 in one run and 0.0396–0.0591 in another; adding the

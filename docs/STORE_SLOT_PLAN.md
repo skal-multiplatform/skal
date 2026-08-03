@@ -659,6 +659,64 @@ row; the third is the storage table.
 
 ---
 
+## 5e. Getting data OUT of storage — RN wins, ~8–11×
+
+**Measured 2026-08-03**, cold process, interleaved, checksums identical
+across stacks (`16366700` for 500 records, `142888` for 5).
+
+The question is the one an app asks: **from a cold process, how long
+until N records are readable in JS**, with each stack's store open
+INSIDE the timer.
+
+| need | Skal | RN (MMKV) | RN faster |
+|---|---:|---:|---:|
+| **all 500 records** | eager **7.13–7.75 ms** | **0.662 ms** | **~11×** |
+| | *lazy 64.9–73.0 ms* | | |
+| **5 of 500 records** | lazy **2.08–2.09 ms** | **0.259 ms** | **~8×** |
+| | *eager 5.79–6.00 ms* | | |
+
+**This is RN's clearest win in the whole comparison** and it is not
+close. Skal is faster at reads once resident, at writes, and at frames;
+it is ~10× slower at getting bytes off disk into JS.
+
+### A wrong number, and why it was wrong
+
+A first pass reported **RN 129× faster** (113.59 µs/record vs 0.88).
+**That figure is void.** It timed Skal's per-record fault-in against
+MMKV's `getNumber` — but MMKV mmaps and parses the WHOLE file inside
+`createMMKV()`, which sat outside the timer. So it compared Skal doing
+real disk work against RN doing a memory lookup whose disk cost had
+already been paid off-camera. Moving the open inside the timer took the
+gap from 129× to ~8–11×.
+
+The tell was in the data and was missed on the first read: RN's "cold"
+pass (0.88 µs/rec) was barely above its own warm control (0.69). A real
+first-touch-from-disk cannot be 1.3× a memory re-read; that ratio said
+the disk cost was elsewhere.
+
+### Lazy is a trap at volume
+
+Reading all 500 through `lazy: true` costs **64.9–73.0 ms** against
+**7.1–7.7 ms** eager — **~9× worse**, because each leaf pays its own
+`engine.get` + `JSON.parse` + tree write + LRU bookkeeping. Lazy only
+pays off when you genuinely touch few records: at 5 of 500 it is 2.08 ms
+against eager's 5.79 ms.
+
+Contributors to the per-record cost, in likely order: `JSON.parse` per
+record, `touchFaulted`'s LRU bookkeeping, and — introduced by the
+rewrite — `faultIn` → `setAt` → `bumpTree`, which scans every version
+signal, making a 500-record fault loop O(n²). The last is ours and
+scales badly; the first is the obvious target (one bulk frame per
+subtree rather than one per leaf).
+
+### Not measured
+- MMKV's open cost is now inside the timer but not isolated, so how much
+  of RN's 0.662 ms is open vs reads is unknown.
+- One seed + 3 interleaved rounds; Skal's spread is ±10% on the lazy
+  arms, RN's is tight. No medians-of-many.
+
+---
+
 ## 6. Not to build
 
 - **Persistence improvements.** Measured as engine-bound at ~0.1 ms per

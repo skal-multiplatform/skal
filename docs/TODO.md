@@ -420,14 +420,22 @@ of what was **not** done.
       `leaf, parent hoisted` are single-round numbers and they are the
       headline figures (RN 16.7× / 7.8× ahead). Everything is sized
       against them.
-- [ ] **B. Spike the Solid-trap cost** before any rewrite. Two controls
-      currently contradict each other: raw `createStore` reads 0.0503
-      while Skal's hoisted read — a Solid trap *plus* Skal's own —
-      reads 0.0395. Strictly more work, less time. That discrepancy is
-      the number the whole rewrite would be justified by.
-- [ ] **C. Replace the Solid backing** (only if B pays ≥2×). Hard part
-      is reproducing Solid's diff-on-wholesale-replace, which the
-      resolved-parent cache's `untrack` depends on for correctness.
+- [x] **B/C. Solid backing replaced** — done 2026-08-03, see
+      `STORE_SLOT_PLAN.md` §5d. Reads 3.3×–5.2× faster, writes to 3.9×,
+      storage staging 1.8× faster, cold start unchanged. The spike was
+      skipped in favour of doing the real thing; the contradiction it
+      would have investigated (raw `createStore` 0.0503 vs Skal's
+      0.0395) is now moot since neither path exists.
+- [ ] **B2. The Proxy trap is now the floor.** RN still leads leaf reads
+      2.3×–3.6×; a bare signal read is 0.0023 vs our 0.0086, so the
+      remainder is the `get` trap plus one cache lookup. Options:
+      accessor properties on a plain object (cannot intercept assignment
+      to NEW keys — would need a fallback), or compile-time path
+      resolution. Neither is costed.
+- [ ] **B3. `bumpTree` over-notifies.** Solid diffed a replaced subtree
+      and woke only changed leaves; we wake every descendant with a
+      signal, at O(leaves ever read) per structural write. Fix is a
+      version tree rather than a flat map — measure before building.
 - [ ] **D. `makeNode` on object reads** — `s.user` is 6.8× behind RN and
       `object + 6 fields` 17.2×. That cost is entirely Skal's (array
       alloc + string concat + `nodeMemo` lookup), so it is attackable

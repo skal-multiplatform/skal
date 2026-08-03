@@ -601,6 +601,64 @@ Also removed: **`snapshot()`** — see §7.
 
 ---
 
+## 5d. DONE 2026-08-03 — solid-js/store removed
+
+`db.js` imports only `createSignal` and `untrack` from solid-js core.
+`root` is a plain mutable tree and the single source of truth;
+reactivity is a side table of version signals created lazily per store
+key on first read, carrying no value. A leaf read is one Skal trap, a
+cached parent object, a version call to subscribe, and a plain property
+read. One proxy layer, and nothing walks.
+
+Device medians of 3, release, screen awake, checksums matched:
+
+| ms/100 | before | after | gain | RN |
+|---|---:|---:|---:|---:|
+| leaf, full literal path | 0.1505 | **0.0325** | 4.6× | 0.0090 |
+| leaf, parent hoisted | 0.0288 | **0.0086** | 3.3× | 0.0037 |
+| whole object `s.user` | 0.0486 | **0.0093** | 5.2× | 0.0072 |
+| object + 6 fields | 0.3276 | **0.0743** | 4.4× | 0.0191 |
+| write 1 leaf | 0.0062 | **0.0016** | 3.9× | 0.0849 |
+| write 200 leaves | 1.31 | **0.62** | 2.1× | 44.2 |
+| realistic frame | 0.0996 | **0.0498** | 2.0× | 0.8553 |
+
+**RN is still ahead on leaf reads** — 2.3× hoisted, 3.6× full path — and
+level on whole-object reads (1.3×). The remaining term is the Proxy
+`get` trap: a bare signal read is 0.0023 against our 0.0086, so ~0.006
+per 100 is trap plus lookup. That is irreducible while `state.a.b` is
+the API. Writes and frames are 17×–71× ahead.
+
+### Storage was not regressed by the rewrite — it improved
+
+| | before | after | |
+|---|---:|---:|---|
+| stage-loop, 200 leaves | 3.7689 | **2.1047** | 1.8× |
+| stage-loop, 10 | 0.1921 | **0.1102** | 1.7× |
+| flush, 200 of 200 | 1.1688 | **0.9055** | 1.3× |
+| flush, 10 of 200 | 0.0795 | 0.0759 | flat |
+| persist 500 + flush | 0.0139 | **0.0099** | 1.4× |
+
+The 1-of-200 flush arm stays too wide to call (0.032–0.175 across
+rounds), as it was before. §3's granular-vs-coarse ratio is preserved.
+
+### Cold start is UNCHANGED, exactly as §5b predicted
+
+A 4 500-leaf store costs **+33.5 / +37.0 ms** against **+38.0 / +36.8**
+before — inside the 7.0/7.5 ms drift. §5b attributed the cost to Skal's
+own eager init walk and measured Solid's `createStore` at ~0, so
+removing Solid was never going to help boot. It didn't. **Lazy init (E)
+remains the only fix for cold start**, and it is untouched by this work.
+
+### What the read numbers do and do not cover
+
+Every read figure above is **memory-only** — the store is hydrated by
+then, so a read touches the plain tree and never the log. Storage enters
+at three points: hydration at open, `faultIn` on first access of a lazy
+path, and staging + flush on writes. The first two are the cold-start
+row; the third is the storage table.
+
+---
+
 ## 6. Not to build
 
 - **Persistence improvements.** Measured as engine-bound at ~0.1 ms per

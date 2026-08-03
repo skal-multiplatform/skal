@@ -568,6 +568,28 @@ describe('objectProxy resolved-parent cache', () => {
     expect(s.items[0].v).toBe(9);
   });
 
+  // Replacing an object with a SCALAR is structural too. An earlier
+  // version tested only the NEW value, so `state.user = 'alice'` bumped
+  // `user` and left every subscriber to `user.name` stale — and left
+  // cached nodes pointing at the old object. The old value is free to
+  // check, since the parent is already resolved by then.
+  test('replacing an object with a SCALAR is structural', () => {
+    const s = freshStore({ user: { name: 'Ada' } });
+    const u = s.user;
+    expect(u.name).toBe('Ada');
+    s.user = 'alice';
+    expect(s.user).toBe('alice');
+    expect(u.name).toBeUndefined();     // a stale cache answers 'Ada'
+  });
+
+  test('replacing an array with a scalar is structural', () => {
+    const s = freshStore({ items: [{ v: 1 }] });
+    const it = s.items;
+    expect(it.length).toBe(1);
+    s.items = 0;
+    expect(s.items).toBe(0);
+  });
+
   test('a held node sees an ancestor replaced wholesale', () => {
     const s = freshStore({ a: { b: { c: 1 } } });
     const b = s.a.b;

@@ -461,13 +461,17 @@ of what was **not** done.
       §5e): 500 records cold, eager 7.1 ms vs MMKV 0.66 ms; 5 records,
       lazy 2.1 ms vs 0.26 ms. Fairly measured, store open inside the
       timer on both sides.
-- [ ] **FIRST: scope `bumpTree` — 72-77% of lazy bulk reads is this
-      regression.** Decomposed 2026-08-03: bumpTree is 47.1-56.3 ms of
-      lazy-500's 65.3-72.7 ms. `faultIn` -> `setAt` -> `bumpTree` scans
-      every version signal and lazy reads populate that map as they go,
-      so the loop is O(n^2). Eager escapes it (0.56 us/rec) because
-      `vers` is empty at open. A bug fix, not a redesign; should take
-      lazy-500 from ~69 ms to ~18 ms. Cheapest and biggest storage win.
+- [x] **`bumpTree` scoped — 2026-08-03. The predicted win did NOT
+      materialise.** Instrumentation attributed 72-77% of lazy bulk
+      reads to bumpTree and predicted ~69 ms -> ~18 ms. Measured after
+      the fix: 56.5 ms median, ~18%, ranges overlapping. Kept for the
+      correctness fix it carries, not for speed. Third failed
+      segment-size attribution this session — instrument to form a
+      hypothesis, never to size a win.
+- [ ] **Lazy bulk reads are still ~56 ms for 500 records** and the cost
+      is now UNATTRIBUTED. Do not instrument again to find it; bisect by
+      removal instead (stub the decode, stub the engine call, stub the
+      tree write, each in turn, and re-measure the total).
 - [ ] **THEN: batch native get for eager hydration.** The per-record
       split is engine.get 51%, setAt 25%, JSON decode 17%, bumpTree 6% —
       so the native crossing dominates and one call returning many

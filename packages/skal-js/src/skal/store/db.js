@@ -91,6 +91,8 @@ function decodeFrame(bytes) {
 export const STORE = Symbol.for('skal.store');
 
 const _isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+// Object OR array — i.e. anything that can have descendants.
+const _isNode = (v) => v !== null && typeof v === 'object';
 // An array is a granular collection iff every element is a plain object
 // (empty counts — so `items: []` becomes a collection on first push).
 const _isColl = (v) => Array.isArray(v) && v.every(_isObj);
@@ -647,13 +649,14 @@ export function createSkalStore(initState, config = {}) {
       const seg = sp[i];
       if (seg !== null && typeof seg === 'object') { needsResolve = true; break; }
     }
-    const wholesale = v !== null && typeof v === 'object';
+    let structural = _isNode(v);
     {
       const path = needsResolve ? concreteOf(sp) : sp;
       if (path === null) return;                   // target element gone
       if (path.length === 0) {
+        structural = true;
         for (const k of Object.keys(root)) delete root[k];
-        if (wholesale) Object.assign(root, v);
+        if (_isNode(v)) Object.assign(root, v);
       } else {
         let cur = root;
         for (let i = 0; i < path.length - 1; i++) {
@@ -661,14 +664,17 @@ export function createSkalStore(initState, config = {}) {
           if (cur[k] === null || typeof cur[k] !== 'object') cur[k] = {};
           cur = cur[k];
         }
-        cur[path[path.length - 1]] = v;
+        const last = path[path.length - 1];
+        // See setAt: overwriting an object with a scalar is structural
+        // too, and the old value costs nothing to read here.
+        if (_isNode(cur[last])) structural = true;
+        cur[last] = v;
       }
     }
-    // THE HOT PATH. A primitive leaf write wakes exactly its own key —
-    // one Map lookup and one signal set. Only a wholesale object/array
-    // assignment needs the subtree sweep, because only then can
-    // descendants have moved.
-    if (wholesale) { structGen++; bumpTree(sk); } else bumpKey(sk);
+    // THE HOT PATH. A scalar leaf write over a scalar wakes exactly its
+    // own key — one Map lookup and one signal set. Only a change that
+    // can move descendants pays the subtree sweep.
+    if (structural) { structGen++; bumpTree(sk); } else bumpKey(sk);
     // Wholesale assignment replaces a node, so any cached resolution of
     // it or of anything beneath it is stale.
     if (v !== null && typeof v === 'object') structGen++;

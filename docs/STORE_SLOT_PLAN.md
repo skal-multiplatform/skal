@@ -742,9 +742,27 @@ Eager hydration escapes it (0.56 µs/record) because `vers` is still
 empty at open — nothing has subscribed yet. Lazy is quadratic precisely
 because it interleaves reads with faults.
 
-**Fixing this is a bug fix, not a redesign**, and should take lazy-500
-from ~69 ms to roughly ~18 ms. It is the single largest storage win
-available and it is cheaper than everything else on this list.
+**PREDICTION MADE HERE: fixing it takes lazy-500 from ~69 ms to ~18 ms.**
+
+**IT DID NOT. Fixed 2026-08-03 and measured: ~69 ms → 56.5 ms median
+(52.0 / 56.5 / 64.8), about 18%, with the ranges OVERLAPPING at the
+boundary — 64.8 after against 64.9 before.** Eager is unchanged (8.0 vs
+7.1–7.7). The change is directionally right and not proven.
+
+**The attribution was wrong and the removal control is the authority.**
+That is the third time in this session that segment-sizing failed under
+a control — after the feed read benchmark (§5) and Solid's `createStore`
+construction cost (§5b). Clock overhead alone (~1 ms over 1000 reads)
+cannot explain a 47 ms error; the likely mechanism is that instrumenting
+a hot function with paired `performance.now()` calls deoptimises it, so
+the most heavily instrumented phase absorbs the distortion.
+
+**Standing rule this reinforces: instrument to generate a hypothesis,
+never to size a win. Only removing the segment and re-measuring the
+total counts.**
+
+The change was kept, because it carries a genuine correctness fix
+alongside the (unproven) performance one — see below.
 
 ### Caveat on the absolute numbers
 

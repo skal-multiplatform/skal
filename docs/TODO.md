@@ -456,7 +456,7 @@ of what was **not** done.
       round on 2026-08-02; presents as "my code didn't take effect".
       Workaround until fixed: `adb shell pm clear <pkg>` before each run.
 
-### Not done — reactivity regressions from dropping solid-js/store
+### DONE 2026-08-04 — reactivity parity restored, at no measurable cost
 - [ ] **No-op writes notify** (regression vs Solid `store.cjs:134`).
       Two-line fix: skip the bump when non-structural and the value is
       identical. Highest value of the three — hits every "assign the

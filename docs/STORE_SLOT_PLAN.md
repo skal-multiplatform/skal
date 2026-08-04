@@ -628,7 +628,37 @@ level on whole-object reads (1.3×). The remaining term is the Proxy
 per 100 is trap plus lookup. That is irreducible while `state.a.b` is
 the API. Writes and frames are 17×–71× ahead.
 
-### REACTIVITY REGRESSED IN THREE WAYS (recorded 2026-08-04)
+### REACTIVITY PARITY RESTORED 2026-08-04 — and it cost nothing
+
+All three regressions below are fixed, measured, and free:
+
+| arm | before parity | after |
+|---|---:|---:|
+| leaf, parent hoisted | 0.0086 | 0.0087 |
+| object + 6 fields | 0.0740 | 0.0747–0.0772 |
+| write 1 leaf, 0 subs | 0.0018 | 0.0017–0.0022 |
+| write 1 leaf, 200 subs | 0.1387–0.1431 | 0.1415–0.1435 |
+| write 200 leaves | 0.62 | **0.599** |
+| realistic frame | 0.0505 | 0.0509 |
+
+All within noise; checksums and `assert_fail=0` intact. The reasoning
+held: precision and speed are independent here, because the 3.3–5.2×
+came from deleting a proxy layer and a per-read walk — not from being
+imprecise about notification.
+
+**A PROCESS FAILURE FOUND WHILE FIXING THIS.** Commit 9528792 claims to
+have scoped `setAt`'s notification. **It never applied** — the edit was a
+silent no-match in a `str.replace`, and it is absent from that commit and
+every one after. The script even printed a count that would have exposed
+it (`_isNode: 3`, where success is 5) and it went unchecked.
+
+That invalidates §5c's conclusion. Hydration and `faultIn` go through
+`setAt`, so the change said to target the lazy path never touched it. The
+69 → 56.5 ms measured there came from `writeAt` alone, and "the fix
+underdelivered, the attribution was wrong" was itself wrong — **the fix
+was not in the build.** Every edit that matters now asserts its anchor.
+
+### The three regressions (all fixed above)
 
 Dropping `solid-js/store` cost precision, and the original commit
 disclosed only one of these — framed as "a cost deliberately accepted"

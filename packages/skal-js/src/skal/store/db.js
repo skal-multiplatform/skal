@@ -255,6 +255,43 @@ export function createSkalStore(initState, config = {}) {
   // Cost is O(number of leaves ever read), since only those have
   // signals. If that ever shows up in a profile the fix is a tree of
   // version nodes rather than a flat map — measure before building it.
+  // Notify a REPLACED node: the node itself, then only the descendants
+  // whose values actually differ.
+  //
+  // Replaces a blanket `bumpTree` on wholesale assignment. solid-js/store
+  // diffed here and woke only what changed; sweeping every version signal
+  // instead was a regression — it re-runs effects on leaves that are
+  // identical before and after.
+  //
+  // Reference equality prunes whole subtrees: an untouched child object
+  // is `===` on both sides, so recursion stops there. That makes this
+  // O(what changed) rather than O(every leaf ever read), which is what
+  // the sweep cost.
+  function bumpReplaced(sk, oldV, newV) {
+    if (oldV === newV) return;
+    bumpKey(sk);                          // the node at `sk` itself changed
+    const o = _isNode(oldV) ? oldV : null;
+    const n = _isNode(newV) ? newV : null;
+    if (!o && !n) return;                 // scalar -> scalar, nothing beneath
+    const seen = new Set();
+    if (o) for (const k of Object.keys(o)) seen.add(k);
+    if (n) for (const k of Object.keys(n)) seen.add(k);
+    for (const k of seen) {
+      bumpReplaced(_join(sk, k), o ? o[k] : undefined, n ? n[k] : undefined);
+    }
+  }
+
+  // Array reads subscribe per INDEX (`sk#3`) and to length (`sk#len`),
+  // mirroring solid-js/store, which keeps a node per property including
+  // array indices plus a separate `length` node. Collapsing all of them
+  // onto the array's own key — which is what this store did — meant any
+  // splice re-ran every consumer that had touched the list.
+  const _ix = (sk, i) => sk + '#' + i;
+  const _len = (sk) => sk + '#len';
+  function bumpIndices(sk, from, to) {
+    for (let i = from; i < to; i++) bumpKey(_ix(sk, i));
+  }
+
   function bumpTree(sk) {
     if (sk === '') {
       for (const v of vers.values()) v[1]((n) => n + 1);
@@ -487,30 +524,44 @@ export function createSkalStore(initState, config = {}) {
 
   // Assign into the plain tree. `sk` is the store key of the subtree
   // being changed, used to scope the notification.
-  function setAt(sp, value, sk) {
+  function setAt(sp, value, sk, silent) {
     const path = concreteOf(sp);
     if (path === null) return;                   // target element gone
-    structGen++;
-    if (path.length === 0) {
+    const key = sk === undefined ? '' : sk;
+    if (path.length === 0) {                     // whole-tree replace (migrate)
+      structGen++;
       for (const k of Object.keys(root)) delete root[k];
-      if (value !== null && typeof value === 'object') Object.assign(root, value);
-    } else {
-      let cur = root;
-      for (let i = 0; i < path.length - 1; i++) {
-        const k = path[i];
-        if (cur[k] === null || typeof cur[k] !== 'object') cur[k] = {};
-        cur = cur[k];
-      }
-      cur[path[path.length - 1]] = value;
+      if (_isNode(value)) Object.assign(root, value);
+      bumpTree(key);                             // no old snapshot to diff
+      return;
     }
-    bumpTree(sk === undefined ? '' : sk);
+    let cur = root;
+    for (let i = 0; i < path.length - 1; i++) {
+      const k = path[i];
+      if (cur[k] === null || typeof cur[k] !== 'object') cur[k] = {};
+      cur = cur[k];
+    }
+    const last = path[path.length - 1];
+    const old = cur[last];
+    // Structural iff EITHER side can have descendants — replacing an
+    // object with a scalar moves things just as much as the reverse.
+    const structural = _isNode(value) || _isNode(old);
+    // No-op writes do not notify, matching solid-js/store's setProperty.
+    // This is the path hydration and faultIn take, so it also stops a
+    // reload from re-notifying leaves whose stored value equals the
+    // default already in the tree.
+    if (!structural && old === value) return;
+    cur[last] = value;
+    if (silent) { structGen++; return; }
+    if (structural) { structGen++; bumpReplaced(key, old, value); }
+    else bumpKey(key);
   }
 
   // Mutate the node AT `sp` in place. Replaces solid-js/store's
   // `produce` — with a plain tree the callback can simply operate on the
   // real object, so delete / splice / sort / length are ordinary
   // JavaScript rather than a tracked-write protocol.
-  function mutateAt(sp, fn, sk) {
+  function mutateAt(sp, fn, sk, silent) {
     const path = concreteOf(sp);
     if (path === null) return;
     let cur = root;
@@ -521,7 +572,11 @@ export function createSkalStore(initState, config = {}) {
     if (cur == null) return;
     structGen++;
     fn(cur);
-    bumpTree(sk === undefined ? '' : sk);
+    // `silent` is for in-place ARRAY mutations, which notify per index
+    // themselves. Bumping the array's own key here as well would wake
+    // every consumer that merely read the list, which is the coarseness
+    // this replaces.
+    if (!silent) bumpTree(sk === undefined ? '' : sk);
   }
 
   // ── resolved-parent cache generation ────────────────────────────────
@@ -650,6 +705,7 @@ export function createSkalStore(initState, config = {}) {
       if (seg !== null && typeof seg === 'object') { needsResolve = true; break; }
     }
     let structural = _isNode(v);
+    let old;
     {
       const path = needsResolve ? concreteOf(sp) : sp;
       if (path === null) return;                   // target element gone
@@ -667,14 +723,21 @@ export function createSkalStore(initState, config = {}) {
         const last = path[path.length - 1];
         // See setAt: overwriting an object with a scalar is structural
         // too, and the old value costs nothing to read here.
-        if (_isNode(cur[last])) structural = true;
+        old = cur[last];
+        if (_isNode(old)) structural = true;
+        // NO-OP WRITES DO NOT NOTIFY. solid-js/store skips these
+        // (`setProperty`: `if (!deleting && state[property] === value)
+        // return;`) and dropping it was a regression: assigning a whole
+        // server payload re-rendered every field, including the ones
+        // that had not changed.
+        if (!structural && old === v) return;
         cur[last] = v;
       }
     }
     // THE HOT PATH. A scalar leaf write over a scalar wakes exactly its
-    // own key — one Map lookup and one signal set. Only a change that
-    // can move descendants pays the subtree sweep.
-    if (structural) { structGen++; bumpTree(sk); } else bumpKey(sk);
+    // own key — one Map lookup and one signal set. A structural change
+    // diffs, waking only descendants that actually differ.
+    if (structural) { structGen++; bumpReplaced(sk, old, v); } else bumpKey(sk);
     // Wholesale assignment replaces a node, so any cached resolution of
     // it or of anything beneath it is stale.
     if (v !== null && typeof v === 'object') structGen++;
@@ -1111,10 +1174,16 @@ export function createSkalStore(initState, config = {}) {
       // tracked array. Any other splice (mid-array, deletion) takes the
       // general produce route.
       if (delCount === 0 && start === len && ins.length > 0) {
-        for (let i = 0; i < ins.length; i++) setAt([...sp, len + i], ins[i], sk);
+        for (let i = 0; i < ins.length; i++) setAt([...sp, len + i], ins[i], sk, true);
       } else {
-        mutateAt(sp, (x) => { x.splice(start, delCount, ...ins); }, sk);
+        mutateAt(sp, (x) => { x.splice(start, delCount, ...ins); }, sk, true);
       }
+      // Per-index notification: everything from `start` onward may have
+      // shifted, and the length changed. Indices before `start` are
+      // untouched, so their readers are left alone — that is the whole
+      // point of tracking per index.
+      bumpIndices(sk, start, Math.max(len, arr().length));
+      bumpKey(_len(sk));
       // Tombstone removed records + drop their memoized proxies. Runs
       // unconditionally (not gated on the post-splice array still being
       // a collection) so a splice that empties or degrades the array
@@ -1166,7 +1235,10 @@ export function createSkalStore(initState, config = {}) {
     // whole thing. (Without these, the methods fall through to
     // Array.prototype bound to the Solid array and throw on mutation.)
     function reorderBy(fn, indexOnly) {
-      mutateAt(sp, fn, sk);
+      const before = arr().length;
+      mutateAt(sp, fn, sk, true);
+      bumpIndices(sk, 0, Math.max(before, arr().length));
+      bumpKey(_len(sk));
       const coll = collCache.get(sk);
       if (indexOnly && !elInfo && (coll === undefined ? _isColl(arr()) : coll)) {
         dirty.set('k:' + sk + '#x', INDEX_DIRTY);
@@ -1198,11 +1270,11 @@ export function createSkalStore(initState, config = {}) {
         // Subscribe to the array itself for length and element reads.
         // Splices, reorders and truncations all bump this key, so a
         // consumer iterating the array re-runs when its shape changes.
-        if (key === 'length') { verFor(sk)(); return arr().length; }
+        if (key === 'length') { verFor(_len(sk))(); return arr().length; }
         if (typeof key === 'string' && Object.hasOwn(mutators, key)) {
           return mutators[key];
         }
-        if (_isNumKey(key)) verFor(sk)();
+        if (_isNumKey(key)) verFor(_ix(sk, key))();
         if (_isNumKey(key)) {
           // Keep using `arr()[i]` here: making arrayProxy also call
           // `readSolidChildValue` made the function polymorphic across
@@ -1288,7 +1360,10 @@ export function createSkalStore(initState, config = {}) {
             const wasColl = cached === undefined ? _isColl(arr()) : cached;
             if (wasColl) removed = arr().slice(newLen);
           }
-          mutateAt(sp, (x) => { x.length = newLen; }, sk);
+          const oldLen = arr().length;
+          mutateAt(sp, (x) => { x.length = newLen; }, sk, true);
+          bumpIndices(sk, Math.min(oldLen, newLen), Math.max(oldLen, newLen));
+          bumpKey(_len(sk));
           collCache.delete(sk);            // truncate/extend may degrade it
           if (removed) {
             const prefixes = [];
@@ -1314,7 +1389,8 @@ export function createSkalStore(initState, config = {}) {
           if (!elInfo && _isObj(value) && value._id == null) {
             v = { ...value, _id: (old && old._id != null) ? old._id : genId(sk) };
           }
-          setAt([...sp, i], v, sk);
+          setAt([...sp, i], v, sk, true);
+          bumpKey(_ix(sk, i));            // exactly this slot, nothing else
           // Cached collection-ness, maintained incrementally — same
           // shape as splice's collCache update: derive once if cold,
           // then on a single index-assign the array can only DEGRADE

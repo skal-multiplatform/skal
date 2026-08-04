@@ -32,7 +32,7 @@
 //   • eager (default)     — hydrated at open
 //   • lazy (config)       — faulted in on first access; LRU-evicted
 
-import { createSignal, untrack } from 'solid-js';
+import { createSignal, untrack, batch } from 'solid-js';
 import { LogStore, NativeLogStore, openBackend } from './engine.js';
 import { getAppDataDir } from '../../bridge.js';
 
@@ -316,6 +316,15 @@ export function createSkalStore(initState, config = {}) {
     for (let i = from; i < to; i++) bumpKey(_ix(sk, i));
   }
 
+  // COALESCE. Each version signal is `equals:false`, so every bump
+  // schedules its own flush — a single delete that bumps the parent key
+  // and the removed subtree re-ran one effect TWICE, and a wholesale
+  // replace re-ran a leaf's effect once per bump that reached it.
+  // Wrapping a mutation's notification in solid's batch collapses them
+  // into one run per effect, which is what "only what changed
+  // re-renders" has to mean to be worth anything.
+  const notify = (fn) => batch(fn);
+
   function bumpTree(sk) {
     if (sk === '') {
       for (const v of vers.values()) v[1]((n) => n + 1);
@@ -577,7 +586,7 @@ export function createSkalStore(initState, config = {}) {
     if (!structural && old === value) return;
     cur[last] = value;
     if (silent) { structGen++; return; }
-    if (structural) { structGen++; bumpReplaced(key, old, value); }
+    if (structural) { structGen++; notify(() => bumpReplaced(key, old, value)); }
     else bumpKey(key);
   }
 
@@ -761,7 +770,8 @@ export function createSkalStore(initState, config = {}) {
     // THE HOT PATH. A scalar leaf write over a scalar wakes exactly its
     // own key — one Map lookup and one signal set. A structural change
     // diffs, waking only descendants that actually differ.
-    if (structural) { structGen++; bumpReplaced(sk, old, v); } else bumpKey(sk);
+    if (structural) { structGen++; notify(() => bumpReplaced(sk, old, v)); }
+    else bumpKey(sk);
     // Wholesale assignment replaces a node, so any cached resolution of
     // it or of anything beneath it is stale.
     if (v !== null && typeof v === 'object') structGen++;
@@ -1142,7 +1152,15 @@ export function createSkalStore(initState, config = {}) {
         const childSk = sk ? sk + '.' + key : key;
         const childSp = sp.length === 0 ? [key] : [...sp, key];
         const old = readSolid(childSp);            // capture before deletion
-        mutateAt(sp, (o) => { delete o[key]; }, sk);
+        // Silent + precise, for the same reason array mutations are:
+        // letting mutateAt sweep `sk` would wake every SIBLING under the
+        // parent, when the only thing that changed is this key and what
+        // hung beneath it.
+        mutateAt(sp, (o) => { delete o[key]; }, sk, true);
+        notify(() => {
+          bumpKey(sk);                     // the parent's shape changed
+          bumpTree(childSk);               // ...and this subtree is gone
+        });
         if (elInfo) stageAt(sp, sk, elInfo, null);          // re-stage element
         else if (!hasNonPersistPaths || policyFor(childSk).persist) {
           tombstoneTree(childSk, old);
@@ -1206,8 +1224,10 @@ export function createSkalStore(initState, config = {}) {
       // shifted, and the length changed. Indices before `start` are
       // untouched, so their readers are left alone — that is the whole
       // point of tracking per index.
-      bumpIndices(sk, start, Math.max(len, arr().length));
-      bumpKey(_len(sk));
+      notify(() => {
+        bumpIndices(sk, start, Math.max(len, arr().length));
+        bumpKey(_len(sk));
+      });
       // Tombstone removed records + drop their memoized proxies. Runs
       // unconditionally (not gated on the post-splice array still being
       // a collection) so a splice that empties or degrades the array
@@ -1261,8 +1281,10 @@ export function createSkalStore(initState, config = {}) {
     function reorderBy(fn, indexOnly) {
       const before = arr().length;
       mutateAt(sp, fn, sk, true);
-      bumpIndices(sk, 0, Math.max(before, arr().length));
-      bumpKey(_len(sk));
+      notify(() => {
+        bumpIndices(sk, 0, Math.max(before, arr().length));
+        bumpKey(_len(sk));
+      });
       const coll = collCache.get(sk);
       if (indexOnly && !elInfo && (coll === undefined ? _isColl(arr()) : coll)) {
         dirty.set('k:' + sk + '#x', INDEX_DIRTY);
@@ -1386,8 +1408,10 @@ export function createSkalStore(initState, config = {}) {
           }
           const oldLen = arr().length;
           mutateAt(sp, (x) => { x.length = newLen; }, sk, true);
-          bumpIndices(sk, Math.min(oldLen, newLen), Math.max(oldLen, newLen));
-          bumpKey(_len(sk));
+          notify(() => {
+            bumpIndices(sk, Math.min(oldLen, newLen), Math.max(oldLen, newLen));
+            bumpKey(_len(sk));
+          });
           collCache.delete(sk);            // truncate/extend may degrade it
           if (removed) {
             const prefixes = [];
@@ -1548,7 +1572,10 @@ export function createSkalStore(initState, config = {}) {
     if (live !== null && typeof live === 'object') {
       const old = live[k];
       live[k] = decoded;
-      if (_isNode(decoded) || _isNode(old)) { structGen++; bumpTree(sk); }
+      // Diff rather than sweep, matching writeAt/setAt. `old` is right
+      // here, so there is no reason for hydration to be the one path
+      // that wakes unchanged leaves.
+      if (_isNode(decoded) || _isNode(old)) { structGen++; bumpReplaced(sk, old, decoded); }
       else bumpKey(sk);
       return;
     }

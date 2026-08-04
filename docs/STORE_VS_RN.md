@@ -53,7 +53,7 @@ row: 4 levels, 4 traps.
 | 1 leaf, 200 subs | **0.1421–0.1476** | 0.2119–0.2174 | Skal 1.5× |
 | 200 leaves, 1 sub each | **~0.63** | 38.15–38.66 | **Skal 61×** |
 | no-op write (same value) | **0.0007** | 0.0016 | Skal 2.3× |
-| wholesale replace, 1 of 3 changed | 0.0034–0.0037 | **0.0013–0.0014** | RN 2.6× |
+| wholesale replace, 1 of 3 changed | 0.0037–0.0048 | **0.0013–0.0014** | RN 3.4× |
 | array push + splice, length stable | 0.0298–0.0393 | **0.0058** | RN 5.9× |
 
 RN's 38 ms on the 200-leaf sweep is zustand's `{...st.cells, [k]: v}`
@@ -87,12 +87,12 @@ Same benchmark code, same device, same session — only `db.js` and
 | write 1 leaf, 50 subs | 0.0688 | **0.0355** | 1.9× | 0.1851 |
 | write 1 leaf, 200 subs | 0.2693 | **0.1476** | 1.8× | 0.2119 |
 | no-op write | 0.0042 | **0.0007** | 6.0× | 0.0016 |
-| **wholesale replace, 1 of 3** | 0.0060 | **0.0034** | **1.8×** | 0.0013 |
+| **wholesale replace, 1 of 3** | 0.0060 | **0.0048** | **1.25×** | 0.0013 |
 | **array push + splice** | 0.1745 | **0.0393** | **4.4×** | 0.0058 |
-| precision write (200 subs) | 0.0053 | **0.0023** | 2.3× | 0.1500 |
+| precision write (200 subs) | 0.0053 | **0.0030** | 1.8× | 0.1500 |
 
 **Every arm improved, including the two that lose to RN.** Wholesale
-replace and array mutation are 1.8× and 4.4× FASTER than they were,
+replace and array mutation are 1.25× and 4.4× FASTER than they were,
 while also being more precise about what they re-render. The diff and
 the per-index notification were not paid for out of throughput.
 
@@ -108,7 +108,7 @@ Also worth noting: on `solid-js/store`, Skal LOST the no-op write to RN
 | | Skal | RN |
 |---|---:|---:|
 | **subscribers actually woken** | **1 of 200** | **1 of 200** |
-| cost of that write | **0.0023–0.0027 ms** | 0.1500 ms |
+| cost of that write | **0.0027–0.0030 ms** | 0.1500 ms |
 
 **Both stacks are exactly precise.** zustand with `subscribeWithSelector`
 wakes only the subscriber whose selector result changed — the same
@@ -117,7 +117,7 @@ answer Skal's per-leaf signals give.
 **The difference is what precision costs.** zustand must evaluate all 200
 selectors on every write to discover which changed; Skal's signal graph
 routes straight to the one subscriber and touches nothing else. That is
-**65×**, and it is the clearest single statement of the architectural
+**50×**, and it is the clearest single statement of the architectural
 difference in this whole comparison — invisible to every read benchmark
 and to any write benchmark that does not count subscribers.
 

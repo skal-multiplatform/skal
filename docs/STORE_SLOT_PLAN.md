@@ -1056,6 +1056,10 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ANDROID_
 
 ## Related
 
+- [`STORE_VS_RN.md`](STORE_VS_RN.md) — **the current, authoritative
+  Skal-vs-RN store comparison (2026-08-04).** This file is the working
+  record of how the store got there, including four corrected
+  mis-attributions; that file is the result.
 - [`ENGINE_AND_REACTIVITY.md`](ENGINE_AND_REACTIVITY.md) — rungs 1 and 2.
 - [`WEBCRYPTO_DISPATCH.md`](WEBCRYPTO_DISPATCH.md) — the other place RN wins.
 - [`TODO_OPTIMIZATIONS.md`](TODO_OPTIMIZATIONS.md) §6 — the index entry.

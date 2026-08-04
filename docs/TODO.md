@@ -513,6 +513,21 @@ of what was **not** done.
       teaching the engine the value model — a much larger change that
       costs the engine's current value-agnostic simplicity.
 
+### Not done — from the comprehensive comparison (STORE_VS_RN.md)
+- [ ] **Reads are 1.3–4.8× behind RN on every shape.** Skal pays a proxy
+      trap + signal read per level (0.0086 vs a 0.0023 bare-signal
+      floor); zustand hands back a plain object. Irreducible while
+      `state.a.b` is the API — needs accessor properties or compile-time
+      path resolution.
+- [ ] **Array mutation is 5.9× behind** — stable ids, per-record frames
+      and per-index notification vs a 50-element spread copy.
+- [ ] **Wholesale replace is 2.6× behind** — the diff that buys
+      re-render precision. Probably the right trade; recorded so it is a
+      choice rather than a surprise.
+- [ ] **A JS-level runaway (unbounded array push) SEGFAULTS libskal**
+      rather than throwing. Found while building the benchmark; the
+      native engine should fail safely.
+
 ### Not done — measurement debt
 - [ ] **Persistence comparison is confounded.** Identical Skal code read
       0.0139–0.0167 in one run and 0.0396–0.0591 in another; adding the

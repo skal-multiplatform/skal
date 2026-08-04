@@ -456,6 +456,19 @@ of what was **not** done.
       round on 2026-08-02; presents as "my code didn't take effect".
       Workaround until fixed: `adb shell pm clear <pkg>` before each run.
 
+### Not done — reactivity regressions from dropping solid-js/store
+- [ ] **No-op writes notify** (regression vs Solid `store.cjs:134`).
+      Two-line fix: skip the bump when non-structural and the value is
+      identical. Highest value of the three — hits every "assign the
+      whole payload" pattern.
+- [ ] **Structural replace sweeps instead of diffing** — wakes
+      descendants whose values did not change.
+- [ ] **Arrays are array-grained** — Solid had per-index nodes plus a
+      length node; we have one key per array, so any splice wakes every
+      reader of the list.
+      All three are more re-renders, never stale UI. None is observable
+      in `bun test` (Solid's scheduler does not flush headless).
+
 ### Not done — storage reads are RN's clear win
 - [ ] **Skal is ~10x slower getting data off disk** (`STORE_SLOT_PLAN.md`
       §5e): 500 records cold, eager 7.1 ms vs MMKV 0.66 ms; 5 records,

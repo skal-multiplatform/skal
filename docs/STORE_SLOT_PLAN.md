@@ -628,6 +628,43 @@ level on whole-object reads (1.3×). The remaining term is the Proxy
 per 100 is trap plus lookup. That is irreducible while `state.a.b` is
 the API. Writes and frames are 17×–71× ahead.
 
+### REACTIVITY REGRESSED IN THREE WAYS (recorded 2026-08-04)
+
+Dropping `solid-js/store` cost precision, and the original commit
+disclosed only one of these — framed as "a cost deliberately accepted"
+rather than as a regression. All three verified against Solid's own
+source in `solid-js/store/dist/store.cjs`:
+
+1. **No-op writes now notify.** `setProperty` line 134:
+   `if (!deleting && state[property] === value) return;` — Solid skips a
+   write whose value is unchanged. `writeAt` has no such check and the
+   version signals are `equals: false`, so `state.count = 5` when it is
+   already 5 re-runs every subscriber. This bites the common pattern of
+   assigning a whole payload from the network: every field re-renders
+   even where nothing changed. **Fix: two lines, mirroring Solid —
+   skip the bump when non-structural and `cur[last] === v`.**
+
+2. **Structural replace over-notifies.** Solid diffed a replaced subtree
+   and woke only leaves whose values changed; `bumpTree` sweeps every
+   descendant that has a signal. Fix is a real diff — moderate work.
+
+3. **Arrays are array-grained.** Solid creates a node per property
+   INCLUDING array indices (`getNode(nodes, property, value)`) plus a
+   separate `length` node, so a splice woke the affected indices. We
+   subscribe every index read and every `length` read to ONE array-level
+   key, so any mutation wakes every reader of the list. Fields inside an
+   element are still per-leaf. Fix: per-index version keys — moderate,
+   and it interacts with the id-addressed collection model.
+
+None of these is unsound; all three are strictly MORE re-renders, never
+stale UI. But "only the changed leaf re-renders" is now true for plain
+leaves and false for the other two cases, and that was the store's
+headline property.
+
+**Cannot be unit-tested here** — Solid's scheduler does not flush
+headless, so reactivity is only observable on device. That is exactly
+why these went unnoticed.
+
 ### Storage was not regressed by the rewrite — it improved
 
 | | before | after | |

@@ -808,6 +808,40 @@ unglamorous allocation that apparently paid a lot.
 ~11×. Lazy is no longer catastrophic but eager remains the right choice
 for bulk, and the gap to MMKV is untouched.
 
+### Batch get MEASURED 2026-08-04 — works, under-delivers
+
+Built locally against this branch: bun's Android cross-build (ICU + JSC
+were already cached, so the CMake-4 problem that breaks
+`build-jsc-android.sh` never applied), then `link-libskal-flutter.sh`
+relinked from source, `.so` verified to export `__skal_store_get_many`,
+and the APK verified to carry it. **No push, no CI, and nothing near the
+`libskal-dev` rolling release that `npm create skal` users resolve
+through.**
+
+The screen asserts which path ran — `native batch get available? YES`
+on every round. Without that, the correct-but-per-key fallback produces
+entirely plausible numbers for the wrong code.
+
+| open + read, cold | per-key | **native batch** |
+|---|---:|---:|
+| EAGER 500 | 6.5–8.1 | **5.853** (5.675 / 5.853 / 6.554) |
+| EAGER 5 | 4.6–6.0 | **3.455** |
+| LAZY 500 | 31.1 | 25.1 — overlapping; `faultIn` does not use getMany |
+| LAZY 5 | 2.08–2.76 | 2.169 |
+
+~11% against the immediately-prior run with identical JS (6.551), ~22%
+against the pre-batch-JS baseline (7.515). **Not the ~2× that "the
+crossing is 51% of per-record time" implies.**
+
+**Fourth over-prediction from segment sizing today**, after the feed
+reads (§5), `createStore` construction (§5b) and `bumpTree` (§5c). The
+probable cause here is specific and worth remembering: the A+B+C change
+had already removed the `Uint8Array` wrapper on that same crossing, so
+**the 51% was measured on a code path that no longer existed by the time
+the batch landed.** An attribution has a shelf life.
+
+**RN is still ~9× ahead on this arm** (0.662 ms). Narrowed, not closed.
+
 ### Not measured
 - MMKV's open cost is now inside the timer but not isolated, so how much
   of RN's 0.662 ms is open vs reads is unknown.

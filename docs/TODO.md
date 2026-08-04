@@ -474,7 +474,11 @@ of what was **not** done.
       parent through hydrate. Ranges do not overlap. Eager unchanged, so
       the win is almost certainly the ArrayBuffer wrapper (the only one
       of the three on the faultIn path) - inferred, not measured.
-- [ ] **Batch get: WRITTEN BUT UNMEASURED — needs a libskal rebuild.**
+- [x] **Batch get: BUILT LOCALLY AND MEASURED 2026-08-04** — eager 500
+      7.5 -> 5.85 ms (~22%), or ~11% against the same JS on the old
+      libskal. Works; far short of the ~2x the 51% attribution
+      implied, because A+B+C had already removed the wrapper on that
+      same crossing. RN still ~9x ahead (0.662 ms). Original note:
       `__skal_store_get_many` is implemented in `patches/skal_entry.zig`
       (mirrored into `vendor/bun/src/`), and `engine.js` + `hydrate` use
       it behind a capability check. The Android `.so` is a PREBUILT

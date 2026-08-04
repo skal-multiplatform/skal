@@ -290,6 +290,16 @@ export function createSkalStore(initState, config = {}) {
     // node <-> scalar is always a shape change, and only one side has
     // keys to walk. Guarding this with `!o && !n` alone crashed on
     // Object.keys(null) — the mixed case has to be handled explicitly.
+    // ARRAYS SUBSCRIBE BY `sk#i` / `sk#len` / `sk#all`, never by dotted
+    // child keys — so recursing with `_join(sk, '0')` notified nobody and
+    // a wholesale `state.items = [...]` was invisible to index readers.
+    if (Array.isArray(oldV) || Array.isArray(newV)) {
+      const ol = Array.isArray(oldV) ? oldV.length : 0;
+      const nl = Array.isArray(newV) ? newV.length : 0;
+      bumpKey(sk);                              // the node itself changed
+      bumpArray(sk, 0, Math.max(ol, nl));
+      return;
+    }
     const oo = o || {}, nn = n || {};
     let shaped = !o || !n || Array.isArray(oldV) !== Array.isArray(newV);
     if (!shaped) {
@@ -312,6 +322,17 @@ export function createSkalStore(initState, config = {}) {
   // splice re-ran every consumer that had touched the list.
   const _ix = (sk, i) => sk + '#' + i;
   const _len = (sk) => sk + '#len';
+  // Whole-array key. Index reads subscribe per index, but map/filter/
+  // for..of/spread go through the method fall-through and touch no
+  // index at all — they subscribed to NOTHING, so `state.items.map(...)`
+  // in a component never re-ran. Every array mutation bumps this, and
+  // every non-index read subscribes to it.
+  const _all = (sk) => sk + '#all';
+  function bumpArray(sk, from, to) {
+    bumpKey(_all(sk));
+    bumpKey(_len(sk));
+    for (let i = from; i < to; i++) bumpKey(_ix(sk, i));
+  }
   function bumpIndices(sk, from, to) {
     for (let i = from; i < to; i++) bumpKey(_ix(sk, i));
   }
@@ -585,7 +606,10 @@ export function createSkalStore(initState, config = {}) {
     // default already in the tree.
     if (!structural && old === value) return;
     cur[last] = value;
-    if (silent) { structGen++; return; }
+    // Only a shape change invalidates the parent caches. Bumping for a
+    // primitive array write defeated the cache in any read/write mix,
+    // which is the exact scenario its own comment says must not happen.
+    if (silent) { if (structural) structGen++; return; }
     if (structural) { structGen++; notify(() => bumpReplaced(key, old, value)); }
     else bumpKey(key);
   }
@@ -975,9 +999,16 @@ export function createSkalStore(initState, config = {}) {
 
   // `isArray` lets a caller that already read the value skip a second
   // resolvePath traversal (the hot get path always knows it).
-  function makeNode(sp, sk, elInfo, isArray) {
+  // `memoKey` separates ID-addressed collection elements from
+  // INDEX-addressed ones. Both derive a store key of the form
+  // `items.<n>`, and generated ids start at 1 — so element `_id` '1'
+  // collided with index 1 and the memo served the wrong element
+  // (`[items[0].v, items[1].v]` returned [20,20] for [10,20]). The store
+  // key is unchanged, so nothing on disk moves.
+  function makeNode(sp, sk, elInfo, isArray, memoKey) {
     if (isArray === undefined) isArray = Array.isArray(readSolid(sp));
-    const hit = nodeMemo.get(sk);
+    const mk = memoKey === undefined ? sk : memoKey;
+    const hit = nodeMemo.get(mk);
     if (hit !== undefined && hit.isArray === isArray) {
       // Insertion-order eviction WITHOUT an LRU touch — the touch
       // (Map.delete + Map.set on every hit) was measured as ~0.4 µs of
@@ -990,7 +1021,7 @@ export function createSkalStore(initState, config = {}) {
     const node = isArray
       ? arrayProxy(sp, sk, elInfo)
       : objectProxy(sp, sk, elInfo);
-    nodeMemo.set(sk, { node, isArray });
+    nodeMemo.set(mk, { node, isArray });
     if (nodeMemo.size > NODE_MEMO_MAX) {
       nodeMemo.delete(nodeMemo.keys().next().value);
     }
@@ -1226,7 +1257,7 @@ export function createSkalStore(initState, config = {}) {
       // point of tracking per index.
       notify(() => {
         bumpIndices(sk, start, Math.max(len, arr().length));
-        bumpKey(_len(sk));
+        bumpKey(_len(sk)); bumpKey(_all(sk));
       });
       // Tombstone removed records + drop their memoized proxies. Runs
       // unconditionally (not gated on the post-splice array still being
@@ -1283,7 +1314,7 @@ export function createSkalStore(initState, config = {}) {
       mutateAt(sp, fn, sk, true);
       notify(() => {
         bumpIndices(sk, 0, Math.max(before, arr().length));
-        bumpKey(_len(sk));
+        bumpKey(_len(sk)); bumpKey(_all(sk));
       });
       const coll = collCache.get(sk);
       if (indexOnly && !elInfo && (coll === undefined ? _isColl(arr()) : coll)) {
@@ -1355,8 +1386,14 @@ export function createSkalStore(initState, config = {}) {
               // the proxy survives splices that shift its index.
               const elSk = _join(sk, el._id);
               const elSp = [...sp, { __id: el._id, hint: i }];
+              // Memoize in a SEPARATE namespace from index-addressed
+              // nodes: both produce `items.<n>`, and generated ids start
+              // at 1, so element _id '1' collided with index 1 and the
+              // memo handed back the wrong element. The store key is
+              // untouched, so nothing on disk moves.
               return makeNode(elSp, elSk,
-                { solidPath: elSp, storeKey: elSk }, false);
+                { solidPath: elSp, storeKey: elSk }, false,
+                elSk + '\u0000id');
             }
             const childSk = _join(sk, key);
             const idxSp = [...sp, i];
@@ -1384,9 +1421,13 @@ export function createSkalStore(initState, config = {}) {
           }
           return el;
         }
-        // inherited read methods (map/filter/forEach/find/…): bind to
-        // the live array so they iterate the real values. Hoist arr()
-        // to a single call so .bind doesn't trigger a second readSolid.
+        // Inherited read methods (map/filter/forEach/find/join/…) and
+        // Symbol.iterator, which is what `for..of` and spread use. These
+        // touch no index, so without this they registered NO dependency
+        // and the consumer never re-ran. Subscribing to the whole-array
+        // key is coarser than per-index and necessarily so: the callback
+        // reads raw values off a plain array, out of reach of any trap.
+        verFor(_all(sk))();
         const a = arr();
         const v = a[key];
         return typeof v === 'function' ? v.bind(a) : v;
@@ -1410,7 +1451,7 @@ export function createSkalStore(initState, config = {}) {
           mutateAt(sp, (x) => { x.length = newLen; }, sk, true);
           notify(() => {
             bumpIndices(sk, Math.min(oldLen, newLen), Math.max(oldLen, newLen));
-            bumpKey(_len(sk));
+            bumpKey(_len(sk)); bumpKey(_all(sk));
           });
           collCache.delete(sk);            // truncate/extend may degrade it
           if (removed) {
@@ -1437,8 +1478,17 @@ export function createSkalStore(initState, config = {}) {
           if (!elInfo && _isObj(value) && value._id == null) {
             v = { ...value, _id: (old && old._id != null) ? old._id : genId(sk) };
           }
+          const grewFrom = arr().length;
           setAt([...sp, i], v, sk, true);
-          bumpKey(_ix(sk, i));            // exactly this slot, nothing else
+          const grewTo = arr().length;
+          if (grewTo !== grewFrom) {
+            // Assigning past the end grows `length`; every other
+            // length-changing path remembers to say so.
+            bumpArray(sk, Math.min(grewFrom, i), Math.max(grewTo, i + 1));
+          } else {
+            bumpKey(_ix(sk, i));          // exactly this slot…
+            bumpKey(_all(sk));            // …plus anything iterating
+          }
           // Cached collection-ness, maintained incrementally — same
           // shape as splice's collCache update: derive once if cold,
           // then on a single index-assign the array can only DEGRADE
@@ -1571,11 +1621,13 @@ export function createSkalStore(initState, config = {}) {
   function writeHydrated(live, sp, k, sk, decoded) {
     if (live !== null && typeof live === 'object') {
       const old = live[k];
+      const structural = _isNode(decoded) || _isNode(old);
+      // Same no-op guard setAt has, for the same reason: a persisted
+      // value equal to the default in initState is not news, and on a
+      // large store this woke every subscriber at cold start.
+      if (!structural && old === decoded) return;
       live[k] = decoded;
-      // Diff rather than sweep, matching writeAt/setAt. `old` is right
-      // here, so there is no reason for hydration to be the one path
-      // that wakes unchanged leaves.
-      if (_isNode(decoded) || _isNode(old)) { structGen++; bumpReplaced(sk, old, decoded); }
+      if (structural) { structGen++; bumpReplaced(sk, old, decoded); }
       else bumpKey(sk);
       return;
     }
@@ -1782,7 +1834,9 @@ export function createSkalStore(initState, config = {}) {
       }
 
       tMig = _now();
-      if (!migrated) hydrate(initState, [], '', root);
+      // ONE flush for the whole open. Un-batched, an N-leaf hydration
+      // scheduled N separate update cycles on the cold-start path.
+      if (!migrated) notify(() => hydrate(initState, [], '', root));
       scheduleFlush();
     } catch (_) {
       // The store still works in-memory; the failure is non-fatal.

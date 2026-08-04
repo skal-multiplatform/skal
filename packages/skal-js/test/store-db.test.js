@@ -519,7 +519,7 @@ describe('objectProxy identity and shape changes', () => {
 // place, so the parent's identity never changes and the cache is
 // legitimately still valid. Staleness needs a node whose OWN path is
 // replaced out from under it.
-import { createRoot, createEffect } from 'solid-js';
+import { createRoot, createEffect, createRenderEffect } from 'solid-js';
 
 describe('objectProxy resolved-parent cache', () => {
   test('a held node sees its OWN path replaced wholesale', () => {
@@ -603,28 +603,18 @@ describe('objectProxy resolved-parent cache', () => {
   // That is only safe if Solid still notifies the leaf when an ancestor
   // is replaced wholesale, which it does by diffing the new object.
   // If this ever fails, the untrack in objectProxy is not sound.
-  // THE REACTIVITY CONTRACT IS NOT TESTABLE HERE, and that is an
-  // environment fact rather than a decision. Verified in this repo with
-  // solid-js 1.9.13 under bun, inside createRoot:
+  // REACTIVITY *IS* TESTABLE HERE. An earlier version of this file
+  // claimed the opposite — "solid's scheduler never flushes headless" —
+  // and dropped the coverage. That was a module-resolution artifact, not
+  // a property of the world: solid-js's export map lists `node` before
+  // `development` and bun always sets `node`, so a bare import landed on
+  // dist/server.js, the SSR build where createSignal never notifies and
+  // createEffect is a no-op. Every reactivity assertion silently became a
+  // tautology, and five real regressions shipped behind it.
   //
-  //     createEffect        never ran at all        []
-  //     createComputed      ran once, never again   [1]
-  //     createRenderEffect  ran once, never again   [1]
-  //     createMemo          returned 10 while the signal was already 3
-  //
-  // Reactive propagation does not flush without a renderer, so any
-  // assertion about re-runs here would be testing the harness. An
-  // earlier version of this test read `null` and looked exactly like a
-  // broken subscription; it fails identically at HEAD.
-  //
-  // WHY IT MATTERS FOR THE CACHE: resolution is untracked, so an effect
-  // subscribes only to the leaf it reads, not to intermediate nodes.
-  // That is sound only if Solid still notifies the leaf when an ancestor
-  // is replaced wholesale (it diffs the new object and fires the leaves
-  // whose values changed). Verified on device instead, via the
-  // subscriber arms of benchmark_v2's state bench — those run real
-  // effects and assert checksums, so a lost subscription changes the
-  // reported checksum rather than passing silently.
+  // `bun test --conditions=browser` (wired into the root `test:js` script
+  // and CI) resolves dist/solid.js instead. The first test below fails
+  // loudly if that ever regresses.
 });
 
 // ── batched hydration ───────────────────────────────────────────────
@@ -682,5 +672,83 @@ describe('batched hydration', () => {
     expect(s2.cells.a).toBe(10);
     expect(s2.cells.gap).toBe(-1);      // default, not a shifted neighbour
     expect(s2.cells.b).toBe(30);
+  });
+});
+
+// ── reactivity: what actually re-renders ────────────────────────────
+
+const rx = (read) => {
+  let n = 0;
+  createRoot(() => createRenderEffect(() => { read(); n++; }));
+  return () => n;
+};
+const memStore = (init) => {
+  globalThis.__skal_data_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rx-'));
+  const top = {};
+  for (const k of Object.keys(init)) top[k] = { persist: false };
+  return createSkalStore(init, { paths: top });
+};
+
+describe('reactivity', () => {
+  // GUARD. If solid resolves to its SSR build again this is the only
+  // test that says so — every other reactive assertion would just pass.
+  test('the reactive build is the one under test', () => {
+    const s = memStore({ a: { x: 1 } });
+    const n = rx(() => s.a.x);
+    const b = n();
+    s.a.x = 2;
+    expect(n() - b).toBe(1);
+  });
+
+  test('array methods track: map / filter / for..of / spread', () => {
+    const s = memStore({ list: [{ v: 1 }] });
+    const m = rx(() => s.list.map((e) => e.v));
+    const f = rx(() => s.list.filter((e) => e.v > 0).length);
+    const o = rx(() => { for (const e of s.list) e.v; });
+    const sp = rx(() => [...s.list].length);
+    const b = [m(), f(), o(), sp()];
+    s.list.push({ v: 2 });
+    expect([m() - b[0], f() - b[1], o() - b[2], sp() - b[3]]).toEqual([1, 1, 1, 1]);
+  });
+
+  test('a wholesale array replace reaches index subscribers', () => {
+    const s = memStore({ items: [{ v: 1 }, { v: 2 }] });
+    const n = rx(() => { s.items[0]; });
+    const b = n();
+    s.items = [{ v: 10 }, { v: 20 }];
+    expect(n() - b).toBeGreaterThanOrEqual(1);
+  });
+
+  test('assigning past the end wakes length subscribers', () => {
+    const s = memStore({ items: [{ v: 1 }, { v: 2 }] });
+    const n = rx(() => s.items.length);
+    const b = n();
+    s.items[5] = { v: 99 };
+    expect(s.items.length).toBe(6);
+    expect(n() - b).toBeGreaterThanOrEqual(1);
+  });
+
+  test('id-addressed elements do not collide with indices', () => {
+    const s = memStore({ items: [{ v: 1 }, { v: 2 }] });
+    void s.items[0].v; void s.items[1].v;      // memoize index-addressed nodes
+    s.items = [{ v: 10 }, { v: 20 }];          // now the elements gain _id
+    expect([s.items[0].v, s.items[1].v]).toEqual([10, 20]);
+  });
+
+  test('hydration is batched and skips leaves equal to their default', async () => {
+    globalThis.__skal_data_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hy-'));
+    const s1 = createSkalStore({ c: { a: 0, b: 0, d: 0 } }, { name: 'HY' });
+    expect(await settle(s1)).toBe(true);
+    s1.c.a = 7; s1.c.b = 8; s1.c.d = 9;
+    await new Promise((r) => setTimeout(r, 0));
+    s1[STORE].flushNow();
+    // `a` reopens with a default that ALREADY equals what was stored.
+    const s2 = createSkalStore({ c: { a: 7, b: 0, d: 0 } }, { name: 'HY' });
+    const unchanged = rx(() => s2.c.a);
+    const all = rx(() => { s2.c.a; s2.c.b; s2.c.d; });
+    const bu = unchanged(), ba = all();
+    expect(await settle(s2)).toBe(true);
+    expect(unchanged() - bu).toBe(0);          // nothing changed for it
+    expect(all() - ba).toBe(1);                // one batched flush, not three
   });
 });

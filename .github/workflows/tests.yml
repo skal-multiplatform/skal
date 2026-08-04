@@ -96,7 +96,7 @@ jobs:
 
       - name: bun test (skal-js)
         working-directory: packages/skal-js
-        run: bun test
+        run: bun test --conditions=browser
 
       - name: bun test (skal-plugin-geolocator)
         working-directory: packages/skal-plugin-geolocator

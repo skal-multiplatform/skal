@@ -820,3 +820,48 @@ describe('version-signal growth', () => {
     expect(ctl.versions()).toBeLessThan(base * 3);
   });
 });
+
+// ── regressions from fixing the review findings ─────────────────────
+describe('notification survives key churn', () => {
+  // Pruning a version signal orphans any effect already holding it: a
+  // later write to the same key interns a FRESH signal and the old
+  // subscriber never re-runs. Measured when delete pruned: 1 re-run for
+  // the delete, 0 for the re-create. Only spliced-out collection records
+  // are pruned now, because genId never reissues an id.
+  test('delete then re-create the same key still notifies', async () => {
+    globalThis.__skal_data_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kc-'));
+    // Distinct name: `cfg.name` defaults to 'store', so without it this
+    // shares a backing store with every other test in the file.
+    const s = createSkalStore({ cfg: { a: 1, b: 2 } },
+      { name: 'KC', paths: { cfg: { persist: false } } });
+    // Record what the subscriber SAW rather than how many times it ran:
+    // run counts are sensitive to batching left over from earlier async
+    // tests, and what matters is that the re-create reached it at all.
+    const seen = [];
+    createRoot(() => createRenderEffect(() => { seen.push(s.cfg.a); }));
+    delete s.cfg.a;
+    s.cfg.a = 5;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(s.cfg.a).toBe(5);
+    expect(seen).toContain(undefined);   // saw the delete
+    expect(seen).toContain(5);           // …and the re-create
+  });
+
+  test('a persisted null survives, across the chunk boundary too', async () => {
+    globalThis.__skal_data_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nl-'));
+    const N = 300;                    // > the 256-key hydration chunk
+    const init = () => { const c = {}; for (let i = 0; i < N; i++) c['k' + i] = 'default'; return { cells: c }; };
+    const a = createSkalStore(init(), { name: 'NL' });
+    expect(await settle(a)).toBe(true);
+    for (let i = 0; i < N; i++) a.cells['k' + i] = (i === 5 || i === 280) ? null : 'v' + i;
+    await new Promise((r) => setTimeout(r, 0));
+    a[STORE].flushNow();
+    const b = createSkalStore(init(), { name: 'NL' });
+    expect(await settle(b)).toBe(true);
+    // A stored null is a VALUE, not an absent frame — it must not fall
+    // back to the initState default.
+    expect(b.cells.k5).toBe(null);
+    expect(b.cells.k280).toBe(null);
+    expect(b.cells.k6).toBe('v6');
+  });
+});

@@ -35,6 +35,9 @@ import { LogStore, NativeLogStore, openBackend } from './engine.js';
 import { getAppDataDir } from '../../bridge.js';
 
 const FLUSH_DEBOUNCE_MS = 60;
+// Distinguishes "no frame on disk" from "the stored value is null",
+// which a plain null cannot.
+const MISSING = Symbol('skal.missing');
 // LRU cap on memoized proxy nodes (see makeNode). Deliberately moderate:
 // a larger cap was measured to *regress* large-collection throughput
 // 2-3x — it retains the whole proxy graph, so heap + GC pressure
@@ -349,27 +352,23 @@ export function createSkalStore(initState, config = {}) {
   // re-renders" has to mean to be worth anything.
   const notify = (fn) => batch(fn);
 
-  // Drop version signals under `sk`. `vers` interns one signal per store
-  // key ever READ and nothing removed them, so a list that pushes and
-  // shifts leaked a signal per dead element id for the process lifetime,
-  // and bumpTree (O(vers.size)) got monotonically slower.
+  // Prune the version signals of SPLICED-OUT COLLECTION RECORDS.
   //
-  // Safe because it is only called for subtrees that are GONE — deleted,
-  // spliced out, tombstoned. No future write can target those keys, so
-  // no subscriber can miss a notification; a reader that touches the
-  // path again simply interns a fresh signal.
-  function pruneVers(sk) {
-    if (vers.size === 0 || !sk) return;
-    const dot = sk + '.', hash = sk + '#';
-    for (const k of vers.keys()) {
-      if (k === sk || k.startsWith(dot) || k.startsWith(hash)) vers.delete(k);
-    }
-  }
-
-  // Prune many sibling records in ONE pass. Calling pruneVers per removed
-  // element made a splice O(removed x vers.size) — a 500-element splice
-  // blew a 150 ms budget in the existing perf test. This walks `vers`
-  // once and matches each key's id segment against the removed set.
+  // ONLY these. Deleting a signal orphans any effect already holding it:
+  // if the key is ever written again the write interns a FRESH signal and
+  // the old subscriber never re-runs — silent under-notification, the
+  // dangerous direction. `delete state.cfg.a` followed by
+  // `state.cfg.a = 5` is exactly that, and pruning on delete produced it
+  // (measured: 1 re-run for the delete, 0 for the re-create).
+  //
+  // Removed records are the one case where it is provably safe: element
+  // ids come from genId, which increments monotonically and is seeded
+  // past the persisted high-water mark on hydrate, so a spliced-out id
+  // can never be issued again.
+  //
+  // One pass, not one per record: pruning per element made a splice
+  // O(removed x vers.size) and a 500-element splice blew a 150 ms
+  // budget in the existing perf test.
   function pruneVersRecords(sk, ids) {
     if (vers.size === 0 || ids.size === 0) return;
     const dot = sk + '.';
@@ -1218,7 +1217,6 @@ export function createSkalStore(initState, config = {}) {
           dropMemo([childSk]);
           collCache.delete(childSk);
         }
-        pruneVers(childSk);            // the keys under it can never return
         // Declared-dep effects: deleting a subtree always invalidates
         // descendants too (e.g. `delete s.user` should fire effects on
         // 'user.name'). Pass `true` for the prefix walk.
@@ -1716,7 +1714,10 @@ export function createSkalStore(initState, config = {}) {
         // Decode eagerly per chunk: the next getMany invalidates these
         // views (see NativeLogStore.getMany).
         for (let j = 0; j < part.length; j++) {
-          out.push(part[j] == null ? null : decodeFrame(part[j]));
+          // PRESENCE, not value. Pushing the decoded value and testing it
+          // for null later conflated "key missing" with "stored value IS
+          // null" — a persisted null came back as the initState default.
+          out.push(part[j] == null ? MISSING : decodeFrame(part[j]));
         }
       }
       return out;
@@ -1732,7 +1733,7 @@ export function createSkalStore(initState, config = {}) {
     const has = new Array(lk.length);
     for (let i = 0; i < lk.length; i++) {
       const b = bufs[i];
-      has[i] = b != null;
+      has[i] = preDecoded ? b !== MISSING : b != null;
       if (has[i]) vals[i] = preDecoded ? b : decodeFrame(b);
     }
     for (let i = 0; i < lk.length; i++) {

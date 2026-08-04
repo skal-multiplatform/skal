@@ -60,12 +60,44 @@ RN's 38 ms on the 200-leaf sweep is zustand's `{...st.cells, [k]: v}`
 copying per write, making 200 writes O(n²). That is inherent to
 immutable state management, not imposed by the harness.
 
-**The two rows Skal loses are both the price of features it chose.**
-Wholesale replace is slower because Skal *diffs* old against new to keep
-re-renders precise (see below) where zustand swaps a reference. Array
-mutation is slower because Skal maintains stable `_id`s, per-record
-persistence frames and per-index notification, where zustand copies a
-50-element array.
+**The two rows Skal loses to RN are still large IMPROVEMENTS on what
+Skal had before** — a claim that they were "the price of features
+chosen" was wrong, and the A/B below settles it. Wholesale replace is
+behind RN because Skal *diffs* old against new to keep re-renders
+precise where zustand swaps a reference; array mutation is behind
+because Skal maintains stable `_id`s, per-record persistence frames and
+per-index notification where zustand copies a 50-element array. Neither
+cost anything relative to the previous implementation.
+
+---
+
+## Against the previous implementation (solid-js/store)
+
+Same benchmark code, same device, same session — only `db.js` and
+`engine.js` swapped back to commit `71e7446`, the last on
+`solid-js/store`. Checksums matched throughout.
+
+| ms per op / per 100 reads | solid-js/store | **own store** | gain | RN |
+|---|---:|---:|---:|---:|
+| deep path `a.b.c.d` | 0.2949 | **0.0421** | 7.0× | 0.0087 |
+| collection sweep ×200 | 0.3321 | **0.0511** | 6.5× | 0.0308 |
+| object + 6 fields | 0.3246 | **0.0767** | 4.2× | 0.0191 |
+| read x100 untracked | 0.1545 | **0.0416** | 3.7× | 0.0413 |
+| write 1 leaf, 0 subs | 0.0043 | **0.0012** | 3.6× | 0.1081 |
+| write 1 leaf, 50 subs | 0.0688 | **0.0355** | 1.9× | 0.1851 |
+| write 1 leaf, 200 subs | 0.2693 | **0.1476** | 1.8× | 0.2119 |
+| no-op write | 0.0042 | **0.0007** | 6.0× | 0.0016 |
+| **wholesale replace, 1 of 3** | 0.0060 | **0.0034** | **1.8×** | 0.0013 |
+| **array push + splice** | 0.1745 | **0.0393** | **4.4×** | 0.0058 |
+| precision write (200 subs) | 0.0053 | **0.0023** | 2.3× | 0.1500 |
+
+**Every arm improved, including the two that lose to RN.** Wholesale
+replace and array mutation are 1.8× and 4.4× FASTER than they were,
+while also being more precise about what they re-render. The diff and
+the per-index notification were not paid for out of throughput.
+
+Also worth noting: on `solid-js/store`, Skal LOST the no-op write to RN
+(0.0042 vs 0.0016). It now wins it 2.3×.
 
 ---
 

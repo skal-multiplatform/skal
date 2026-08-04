@@ -1362,11 +1362,19 @@ fn store_get_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, 
 fn store_get_many_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, args: [*]const JSValueRef, _: ?*?JSValueRef) callconv(.c) ?JSValueRef {
     if (argc < 2) return JSValueMakeNull(ctx);
     const store = skalStoreFromArg(ctx, args[0]) orelse return JSValueMakeNull(ctx);
+    // VALIDATE BEFORE CASTING. `@ptrCast` on a non-object produces a
+    // bogus JSObjectRef, and `@intFromFloat` on the NaN that a missing
+    // `length` yields is illegal behavior in ReleaseFast — an arbitrary
+    // `count` would then drive a wild allocation and loop. store_get_cb
+    // never faced this because its argument is a string routed through
+    // skalStoreArgString.
+    if (!JSValueIsObject(ctx, args[1])) return JSValueMakeNull(ctx);
     const arr: JSObjectRef = @ptrCast(args[1]);
     const len_str = JSStringCreateWithUTF8CString("length");
     defer JSStringRelease(len_str);
-    const len_v = JSObjectGetProperty(ctx, arr, len_str, null);
-    const count: u32 = @intFromFloat(JSValueToNumber(ctx, len_v, null));
+    const len_f = JSValueToNumber(ctx, JSObjectGetProperty(ctx, arr, len_str, null), null);
+    if (!(len_f >= 0) or len_f > 1_000_000) return JSValueMakeNull(ctx);  // NaN fails >= 0
+    const count: u32 = @intFromFloat(len_f);
 
     // Pass 1 — size the payload. Keys are fetched twice (here and in
     // pass 2) rather than buffered, trading a second keydir lookup for

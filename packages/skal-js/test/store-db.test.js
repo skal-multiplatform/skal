@@ -752,3 +752,71 @@ describe('reactivity', () => {
     expect(all() - ba).toBe(1);                // one batched flush, not three
   });
 });
+
+// ── batched reads share one scratch buffer ──────────────────────────
+//
+// Both backends hand back VIEWS over a reusable buffer that the next
+// read invalidates. That is deliberate on the JS side: returning copies
+// there made it a test double that under-reports the real consumer, so a
+// caller holding results across another read passed in CI and returned
+// another record's bytes on device. It shipped once; only a benchmark
+// checksum caught it.
+//
+// A level wider than the 256-key chunk is the case that bites: chunk 2's
+// read invalidates chunk 1's views, so chunk 1 must be decoded first.
+describe('chunked hydration', () => {
+  test('300 leaves across a chunk boundary each keep their own value', async () => {
+    globalThis.__skal_data_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ck-'));
+    const N = 300;
+    const init = () => {
+      const c = {};
+      for (let i = 0; i < N; i++) c['k' + i] = 0;
+      return { cells: c };
+    };
+    const a = createSkalStore(init(), { name: 'CK' });
+    expect(await settle(a)).toBe(true);
+    // Distinct, variable-LENGTH values: equal-width records would still
+    // line up if the views were misaligned by a whole record.
+    for (let i = 0; i < N; i++) a.cells['k' + i] = 'v' + i + '-'.repeat(i % 7);
+    await new Promise((r) => setTimeout(r, 0));
+    a[STORE].flushNow();
+
+    const b = createSkalStore(init(), { name: 'CK' });
+    expect(await settle(b)).toBe(true);
+    for (let i = 0; i < N; i++) {
+      expect(b.cells['k' + i]).toBe('v' + i + '-'.repeat(i % 7));
+    }
+  });
+});
+
+// ── version signals are bounded ─────────────────────────────────────
+//
+// `vers` interns one signal per store key ever READ. Nothing removed
+// them, so a list that pushes and shifts leaked a signal per dead
+// element id for the process lifetime, and notification (O(vers.size))
+// degraded with it. Only observable through ctrl.versions(), which is
+// why the leak survived every other test in this file.
+describe('version-signal growth', () => {
+  test('churning a collection does not grow the signal table', async () => {
+    globalThis.__skal_data_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-'));
+    const s = createSkalStore({ todos: [] }, { name: 'VG' });
+    expect(await settle(s)).toBe(true);
+    const ctl = s[STORE];
+
+    for (let i = 0; i < 20; i++) {          // warm up, then take a baseline
+      s.todos.push({ title: 't' + i });
+      void s.todos[s.todos.length - 1].title;
+      s.todos.splice(0, 1);
+    }
+    const base = ctl.versions();
+
+    for (let i = 0; i < 200; i++) {          // 10x the churn
+      s.todos.push({ title: 'x' + i });
+      void s.todos[s.todos.length - 1].title;
+      s.todos.splice(0, 1);
+    }
+    // Bounded, not merely "smaller than 200x": the dead records' keys
+    // must actually be gone, leaving only the live window plus indices.
+    expect(ctl.versions()).toBeLessThan(base * 3);
+  });
+});

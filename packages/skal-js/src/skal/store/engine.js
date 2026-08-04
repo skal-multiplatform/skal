@@ -677,8 +677,30 @@ export class LogStore {
   // amortise, so this is a plain loop — it exists so callers never have
   // to branch on which backend they got.
   getMany(keys) {
+    // VIEWS OVER A REUSABLE SCRATCH, deliberately — matching what the
+    // native backend does. Returning fresh copies here made the JS
+    // backend a test double that under-reports the real consumer: a
+    // caller that holds these across another read is correct in CI and
+    // returns another record's bytes on device. That exact bug shipped
+    // once and only a benchmark checksum caught it.
+    let total = 0;
+    const parts = new Array(keys.length);
+    for (let i = 0; i < keys.length; i++) {
+      const v = this.get(keys[i]);
+      parts[i] = v;
+      if (v) total += v.length;
+    }
+    if (!this._many || this._many.length < total) this._many = new Uint8Array(total);
+    const buf = this._many;
     const out = new Array(keys.length);
-    for (let i = 0; i < keys.length; i++) out[i] = this.get(keys[i]);
+    let off = 0;
+    for (let i = 0; i < keys.length; i++) {
+      const v = parts[i];
+      if (!v) { out[i] = null; continue; }
+      buf.set(v, off);
+      out[i] = buf.subarray(off, off + v.length);
+      off += v.length;
+    }
     return out;
   }
 

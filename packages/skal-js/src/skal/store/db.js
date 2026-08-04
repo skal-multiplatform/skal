@@ -14,13 +14,11 @@
 //
 // `initState` IS the schema: shape + defaults, no `kind`, no types.
 //
-// Reading in a loop? HOIST THE PARENT. `const c = state.cfg` outside the
-// loop, then `c[k]` inside, is 1.8x faster than `state.cfg[k]` per
-// iteration — the intermediate node is otherwise re-resolved on every
-// read, which costs an array allocation, a string concat and a Map
-// lookup before any data is touched. Only safe outside a reactive scope:
-// a held parent will not see the parent itself being replaced.
-// (Device medians of 3: 1.204 us vs 0.670 us per read.)
+// Reading in a loop? Hoisting the parent (`const c = state.cfg` outside
+// the loop, `c[k]` inside) still helps, but far less than it used to:
+// each proxy node caches the object its path resolves to, so a read
+// costs one trap on the leaf rather than one per path segment. Device
+// medians: full literal path 0.0294 ms/100 vs 0.0087 hoisted.
 //
 // Granularity:
 //   • plain object        — per-leaf frames, keyed by path (`a.b.c`)
@@ -269,6 +267,11 @@ export function createSkalStore(initState, config = {}) {
   // the sweep cost.
   function bumpReplaced(sk, oldV, newV) {
     if (oldV === newV) return;
+    // Nothing has ever been read, so nothing can be listening. Without
+    // this, hydrating a 5000-element collection allocated a Set and a
+    // joined string per node to notify an empty map — on the cold-start
+    // path, which is the one this is meant to be cheap on.
+    if (vers.size === 0) return;
     const o = _isNode(oldV) ? oldV : null;
     const n = _isNode(newV) ? newV : null;
     if (!o && !n) { bumpKey(sk); return; }     // a scalar leaf changed
@@ -345,6 +348,40 @@ export function createSkalStore(initState, config = {}) {
   // into one run per effect, which is what "only what changed
   // re-renders" has to mean to be worth anything.
   const notify = (fn) => batch(fn);
+
+  // Drop version signals under `sk`. `vers` interns one signal per store
+  // key ever READ and nothing removed them, so a list that pushes and
+  // shifts leaked a signal per dead element id for the process lifetime,
+  // and bumpTree (O(vers.size)) got monotonically slower.
+  //
+  // Safe because it is only called for subtrees that are GONE — deleted,
+  // spliced out, tombstoned. No future write can target those keys, so
+  // no subscriber can miss a notification; a reader that touches the
+  // path again simply interns a fresh signal.
+  function pruneVers(sk) {
+    if (vers.size === 0 || !sk) return;
+    const dot = sk + '.', hash = sk + '#';
+    for (const k of vers.keys()) {
+      if (k === sk || k.startsWith(dot) || k.startsWith(hash)) vers.delete(k);
+    }
+  }
+
+  // Prune many sibling records in ONE pass. Calling pruneVers per removed
+  // element made a splice O(removed x vers.size) — a 500-element splice
+  // blew a 150 ms budget in the existing perf test. This walks `vers`
+  // once and matches each key's id segment against the removed set.
+  function pruneVersRecords(sk, ids) {
+    if (vers.size === 0 || ids.size === 0) return;
+    const dot = sk + '.';
+    for (const k of vers.keys()) {
+      if (!k.startsWith(dot)) continue;
+      let end = k.indexOf('.', dot.length);
+      const hash = k.indexOf('#', dot.length);
+      if (hash >= 0 && (end < 0 || hash < end)) end = hash;
+      const id = end < 0 ? k.slice(dot.length) : k.slice(dot.length, end);
+      if (ids.has(id)) vers.delete(k);
+    }
+  }
 
   function bumpTree(sk) {
     if (sk === '') {
@@ -536,33 +573,6 @@ export function createSkalStore(initState, config = {}) {
     }
     return cur;
   }
-  // Walk `sp` and then read [key] on the resolved node — without
-  // allocating a child-path array. The hot get trap uses this so a
-  // primitive-leaf read costs ZERO new allocations (no `[...sp, key]`
-  // and no resolvePath wrapper object).
-  function readSolidChildValue(sp, key) {
-    let cur = root;
-    for (let i = 0; i < sp.length; i++) {
-      const seg = sp[i];
-      if (seg !== null && typeof seg === 'object') {
-        let idx = -1;
-        if (Array.isArray(cur)) {
-          const h = seg.hint;
-          if (h >= 0 && h < cur.length && cur[h] && cur[h]._id === seg.__id) {
-            idx = h;
-          } else {
-            idx = _findFromHint(cur, seg.__id, h);
-            seg.hint = idx;
-          }
-        }
-        cur = idx < 0 ? undefined : cur[idx];
-      } else {
-        cur = (cur == null) ? undefined : cur[seg];
-      }
-      if (cur == null) return undefined;
-    }
-    return cur[key];
-  }
   // Concrete key path for `sp` — id-addressed segments resolved to their
   // CURRENT index. Returns null when an addressed element is gone.
   function concreteOf(sp) {
@@ -637,12 +647,9 @@ export function createSkalStore(initState, config = {}) {
   }
 
   // ── resolved-parent cache generation ────────────────────────────────
-  // `readSolidChildValue` walks from the ROOT on every read, firing one
-  // Solid proxy trap per path segment. So `node.display` on a node at
-  // `posts.p3` costs THREE traps (posts, p3, display) even when the
-  // caller already hoisted `node` — hoisting only avoids rebuilding
-  // Skal's child proxy, never the Solid walk. That is why hoisting is
-  // worth just 1.8x while the theoretical floor is ~25x.
+  // Reads used to walk from the ROOT every time, firing one proxy trap
+  // per path segment. Each object proxy now caches the node its path
+  // resolves to, so a read costs one trap on the leaf.
   //
   // Each object proxy caches the node `sp` resolves to, so a read costs
   // ONE trap on the leaf. The cache is keyed by this counter rather than
@@ -986,6 +993,12 @@ export function createSkalStore(initState, config = {}) {
     pending: () => dirty.size,
     flushes: () => flushCount,
     resident: () => faulted.size,
+    // Live version signals — one per store key ever READ. Exposed
+    // alongside pending/resident/flushes because it is the store's other
+    // unbounded-growth risk: nothing pruned it until removed subtrees
+    // started being swept, and a leak here is invisible except as
+    // gradually slower notification.
+    versions: () => vers.size,
     engineStats: () => (engine && engine.stats ? engine.stats() : null),
     createEffect: createSkalEffect,   // declared-dep effects
   };
@@ -1205,6 +1218,7 @@ export function createSkalStore(initState, config = {}) {
           dropMemo([childSk]);
           collCache.delete(childSk);
         }
+        pruneVers(childSk);            // the keys under it can never return
         // Declared-dep effects: deleting a subtree always invalidates
         // descendants too (e.g. `delete s.user` should fire effects on
         // 'user.name'). Pass `true` for the prefix walk.
@@ -1265,14 +1279,17 @@ export function createSkalStore(initState, config = {}) {
       // still releases the removed element frames.
       if (!elInfo) {
         const prefixes = [];
+        const removedIds = new Set();
         for (const r of removed) {
           if (r && r._id != null) {
             const rSk = _join(sk, r._id);
             dirty.set('k:' + rSk, null);
             prefixes.push(rSk);
+            removedIds.add(String(r._id));
           }
         }
         dropMemo(prefixes);
+        if (removedIds.size > 0) pruneVersRecords(sk, removedIds);
       }
       // Is `sk` a collection? Cached + maintained incrementally so a
       // push burst skips the O(n) _isColl rescan: derive once from the
@@ -1353,12 +1370,10 @@ export function createSkalStore(initState, config = {}) {
         }
         if (_isNumKey(key)) verFor(_ix(sk, key))();
         if (_isNumKey(key)) {
-          // Keep using `arr()[i]` here: making arrayProxy also call
-          // `readSolidChildValue` made the function polymorphic across
-          // its callers and measurably regressed objectProxy reads
-          // (the function couldn't be inlined as aggressively). The
-          // arrayProxy hot path is rarely a bottleneck — arrays are
-          // iterated via <For>, not read in tight loops.
+          // `arr()` is one resolve for the whole trap; indexing it is a
+          // plain property read. The arrayProxy hot path is rarely a
+          // bottleneck — arrays are iterated via <For>, not read in
+          // tight loops.
           const a = arr();
           const i = +key;
           const el = a[i];
@@ -1688,7 +1703,25 @@ export function createSkalStore(initState, config = {}) {
     }
     if (lk.length === 0) return;
 
-    const bufs = engine.getMany(ldk);
+    // CHUNKED. The native batch sizes its scratch to the whole request
+    // and only ever grows it, so an unchunked level would leave the
+    // store holding its largest payload for the process lifetime — set
+    // by the widest object in initState, on mobile. 256 keys keeps the
+    // crossing amortised while bounding the retained buffer.
+    const CHUNK = 256;
+    const bufs = ldk.length <= CHUNK ? engine.getMany(ldk) : (() => {
+      const out = [];
+      for (let i = 0; i < ldk.length; i += CHUNK) {
+        const part = engine.getMany(ldk.slice(i, i + CHUNK));
+        // Decode eagerly per chunk: the next getMany invalidates these
+        // views (see NativeLogStore.getMany).
+        for (let j = 0; j < part.length; j++) {
+          out.push(part[j] == null ? null : decodeFrame(part[j]));
+        }
+      }
+      return out;
+    })();
+    const preDecoded = ldk.length > CHUNK;
     // DECODE EVERYTHING BEFORE ANY FURTHER READ. The slices are views
     // over the engine's REUSABLE SCRATCH BUFFER and stay valid only
     // until the next get/getMany — so recursing (which reads again)
@@ -1700,7 +1733,7 @@ export function createSkalStore(initState, config = {}) {
     for (let i = 0; i < lk.length; i++) {
       const b = bufs[i];
       has[i] = b != null;
-      if (has[i]) vals[i] = decodeFrame(b);
+      if (has[i]) vals[i] = preDecoded ? b : decodeFrame(b);
     }
     for (let i = 0; i < lk.length; i++) {
       if (!has[i]) continue;

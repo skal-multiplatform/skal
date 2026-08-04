@@ -824,9 +824,33 @@ cannot explain a 47 ms error; the likely mechanism is that instrumenting
 a hot function with paired `performance.now()` calls deoptimises it, so
 the most heavily instrumented phase absorbs the distortion.
 
-**Standing rule this reinforces: instrument to generate a hypothesis,
-never to size a win. Only removing the segment and re-measuring the
-total counts.**
+**CORRECTED 2026-08-04 — this conclusion was wrong.** The `setAt` half
+of the fix never applied (silent `str.replace` no-match; see §5f), so
+the 56.5 ms above was measured on a build that did not contain it. With
+`setAt` genuinely scoped, **lazy-500 is 9.16 ms** (9.159 / 8.919 /
+9.772) — 2.7× below the 25.1 ms it sat at afterwards, and **better than
+the ~18 ms this section forecast.**
+
+**The attribution was RIGHT.** `bumpTree` was dominating lazy hydration
+exactly as the instrumentation said. What failed was my check that the
+fix was in the binary.
+
+So the standing rule needs stating more carefully than "never size a win
+by instrumenting". Of the four over-predictions logged today:
+
+- **feed reads (§5)** — genuine failure of SEGMENT-SIZE reasoning,
+  confirmed by a positive control.
+- **`createStore` construction (§5b)** — genuine failure, confirmed by
+  ablation arms.
+- **`bumpTree` (this section)** — **not a failure.** Correct
+  attribution, measured against a build missing the fix.
+- **batch get (§5e)** — real but small, with a specific cause: the
+  attribution had gone stale, having been taken before A+B+C removed the
+  wrapper on that same crossing.
+
+**The honest rule: attributions are hypotheses with a shelf life, and
+they must be re-checked against the build that actually ships. Two of
+today's four "failures" were mine, not the method's.**
 
 The change was kept, because it carries a genuine correctness fix
 alongside the (unproven) performance one — see below.

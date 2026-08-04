@@ -269,16 +269,40 @@ export function createSkalStore(initState, config = {}) {
   // the sweep cost.
   function bumpReplaced(sk, oldV, newV) {
     if (oldV === newV) return;
-    bumpKey(sk);                          // the node at `sk` itself changed
     const o = _isNode(oldV) ? oldV : null;
     const n = _isNode(newV) ? newV : null;
-    if (!o && !n) return;                 // scalar -> scalar, nothing beneath
-    const seen = new Set();
-    if (o) for (const k of Object.keys(o)) seen.add(k);
-    if (n) for (const k of Object.keys(n)) seen.add(k);
-    for (const k of seen) {
-      bumpReplaced(_join(sk, k), o ? o[k] : undefined, n ? n[k] : undefined);
+    if (!o && !n) { bumpKey(sk); return; }     // a scalar leaf changed
+
+    // BUMP THE NODE ITSELF ONLY ON A SHAPE CHANGE.
+    //
+    // The get trap subscribes to every key it touches BEFORE it knows
+    // whether that key is a leaf or a node, so reading `s.user.name`
+    // subscribes to `user` as well as `user.name`. Bumping `user` on
+    // every replacement therefore woke everything that merely traversed
+    // it, and the diff below could not help — measured on device: an
+    // effect on `user.name` re-ran when only `user.age` had changed.
+    //
+    // Same keys means nothing a traverser read has moved; the per-leaf
+    // bumps below carry the actual news. A holder that read the node and
+    // nothing else is correctly left alone — the node proxy is memoized
+    // by store key, so its reference stays valid and later reads resolve
+    // against the current tree.
+    // node <-> scalar is always a shape change, and only one side has
+    // keys to walk. Guarding this with `!o && !n` alone crashed on
+    // Object.keys(null) — the mixed case has to be handled explicitly.
+    const oo = o || {}, nn = n || {};
+    let shaped = !o || !n || Array.isArray(oldV) !== Array.isArray(newV);
+    if (!shaped) {
+      const ok = Object.keys(oo), nk = Object.keys(nn);
+      shaped = ok.length !== nk.length;
+      if (!shaped) for (const k of ok) if (!(k in nn)) { shaped = true; break; }
     }
+    if (shaped) bumpKey(sk);
+
+    const seen = new Set();
+    for (const k of Object.keys(oo)) seen.add(k);
+    for (const k of Object.keys(nn)) seen.add(k);
+    for (const k of seen) bumpReplaced(_join(sk, k), oo[k], nn[k]);
   }
 
   // Array reads subscribe per INDEX (`sk#3`) and to length (`sk#len`),

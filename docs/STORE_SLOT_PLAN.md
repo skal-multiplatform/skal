@@ -658,6 +658,44 @@ That invalidates §5c's conclusion. Hydration and `faultIn` go through
 underdelivered, the attribution was wrong" was itself wrong — **the fix
 was not in the build.** Every edit that matters now asserts its anchor.
 
+### Re-render precision, verified on device 2026-08-04
+
+`benchmark_v2/skal-bench/src/RerenderScreen.jsx` counts effect re-runs
+and asserts exactly which fired. It lives on DEVICE because it cannot
+live anywhere else — solid's scheduler never flushes headless, so
+`bun test` observes no effect re-runs at all. **9/9 pass.**
+
+| case | result |
+|---|---|
+| write x → only x re-runs | `{x:1, y:0}` |
+| no-op write → nothing re-runs | `{x:0}` |
+| replace parent → only the CHANGED leaf | `{name:0, age:1}` |
+| replace parent, child `===` → child quiet | `{deep:0}` |
+| splice at 1 → index 0 quiet, 1 + length fire | `{i0:0, i1:1, len:1}` |
+| `items[1] = x` → only index 1 | `{i0:0, i1:1, len:0}` |
+| same-shape replace → node holder quiet | `{user:0}` |
+| shape change → node holder DOES re-run | `{user:1}` |
+| deep leaf unchanged under a new parent → quiet | `{deep:0}` |
+
+**The first run caught two real failures** (`{name:1, age:2}` and
+`{deep:2}`). Cause: the get trap subscribes to every key it touches
+BEFORE knowing whether that key is a leaf or a node, so reading
+`s.user.name` subscribes to `user` as well. Bumping `user` on every
+replacement therefore woke everything that had merely traversed it, and
+the diff underneath could not help. The doubled counts were the parent
+bump plus the leaf bump.
+
+**Fix: bump the node itself only on a SHAPE change** — keys added or
+removed, or node↔scalar, or object↔array. Same keys means nothing a
+traverser read has moved, and the per-leaf bumps carry the news. A
+holder that read the node and nothing else is correctly left alone,
+because the node proxy is memoized by store key so its reference stays
+valid.
+
+That is MORE precise than solid-js/store, which notifies the node on any
+replacement. Costs nothing measurable: every state-bench arm within
+noise, `ck=613` and `assert_fail=0` intact.
+
 ### The three regressions (all fixed above)
 
 Dropping `solid-js/store` cost precision, and the original commit

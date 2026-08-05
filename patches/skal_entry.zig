@@ -1458,6 +1458,51 @@ fn store_get_many_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: us
     return @ptrCast(ab);
 }
 
+// __skal_store_keys(handle) -> packed key list, or null
+//
+// Same wire format as store_get_many_cb: [u32 count][u32 len_i..][bytes..].
+//
+// WHY THIS EXISTS. Hydration used to be driven by the shape of
+// `initState`: for every declared leaf it asked the keydir whether a
+// frame existed. A 4 500-leaf store whose `cells` object persists as ONE
+// blob therefore performed 4 500 point lookups across 18 batch crossings
+// against a keydir holding a single record — measured at +27 ms of a
+// +34 ms cold start on a Galaxy A14. Handing the whole key set over once
+// makes that O(records), which is what is actually on disk.
+fn store_keys_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, args: [*]const JSValueRef, _: ?*?JSValueRef) callconv(.c) ?JSValueRef {
+    if (argc < 1) return JSValueMakeNull(ctx);
+    const store = skalStoreFromArg(ctx, args[0]) orelse return JSValueMakeNull(ctx);
+
+    const count: u32 = @intCast(store.keydir.count());
+    var total: usize = 4 + @as(usize, count) * 4;
+    var it = store.keydir.keyIterator();
+    while (it.next()) |kp| total += kp.*.len;
+
+    if (store.get_scratch.len < total) {
+        if (store.get_scratch.len > 0) bun.default_allocator.free(store.get_scratch);
+        store.get_scratch = bun.default_allocator.alloc(u8, total) catch {
+            store.get_scratch = &[_]u8{};
+            return JSValueMakeNull(ctx);
+        };
+    }
+    const dst = store.get_scratch;
+    std.mem.writeInt(u32, dst[0..4], count, .little);
+
+    var off: usize = 4 + @as(usize, count) * 4;
+    var i: u32 = 0;
+    var it2 = store.keydir.keyIterator();
+    while (it2.next()) |kp| {
+        if (i >= count) break;               // keydir grew under us
+        const k = kp.*;
+        std.mem.writeInt(u32, dst[4 + @as(usize, i) * 4 ..][0..4], @intCast(k.len), .little);
+        @memcpy(dst[off..][0..k.len], k);
+        off += k.len;
+        i += 1;
+    }
+    const ab = JSObjectMakeArrayBufferWithBytesNoCopy(ctx, dst.ptr, off, null, null, null);
+    return @ptrCast(ab);
+}
+
 // __skal_store_compact(handle) -> 1 if a segment was reclaimed, else 0
 fn store_compact_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize, args: [*]const JSValueRef, _: ?*?JSValueRef) callconv(.c) ?JSValueRef {
     if (argc < 1) return JSValueMakeNumber(ctx, 0);
@@ -1499,6 +1544,7 @@ fn installStoreGlobals(ctx: JSContextRef, global_obj: JSObjectRef) void {
     installHostFn(ctx, global_obj, "__skal_store_get_many", store_get_many_cb);
     installHostFn(ctx, global_obj, "__skal_store_del", store_del_cb);
     installHostFn(ctx, global_obj, "__skal_store_del_prefix", store_del_prefix_cb);
+    installHostFn(ctx, global_obj, "__skal_store_keys", store_keys_cb);
     installHostFn(ctx, global_obj, "__skal_store_compact", store_compact_cb);
     installHostFn(ctx, global_obj, "__skal_store_stats", store_stats_cb);
 }

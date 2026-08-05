@@ -658,6 +658,13 @@ export class LogStore {
     this._keydir.delete(key);
   }
 
+  // Every key currently on disk.
+  //
+  // Hydration used to ask "does a frame exist?" once per DECLARED leaf,
+  // so a store whose data lives in one blob still paid a lookup per leaf
+  // of initState. Handing the set over once makes hydration O(records).
+  allKeys() { return new Set(this._keydir.keys()); }
+
   // Tombstone every keydir key starting with `prefix.` or `prefix#`.
   // Used by db.js's wholesale-assign + tombstoneTree paths to clear
   // stale leaf-override frames in one call.
@@ -882,6 +889,27 @@ export class NativeLogStore {
   delPrefix(prefix) {
     const fn = globalThis.__skal_store_del_prefix;
     if (typeof fn === 'function') fn(this._h, prefix);
+  }
+
+  // Every key currently on disk, or null when the host is an older
+  // libskal without the call — hydration then falls back to probing.
+  // Same wire format as getMany.
+  allKeys() {
+    const fn = globalThis.__skal_store_keys;
+    if (typeof fn !== 'function') return null;
+    const ab = fn(this._h);
+    if (!ab) return null;
+    const dv = new DataView(ab);
+    const n = dv.getUint32(0, true);
+    const out = new Set();
+    const dec = new TextDecoder();
+    let off = 4 + n * 4;
+    for (let i = 0; i < n; i++) {
+      const len = dv.getUint32(4 + i * 4, true);
+      out.add(dec.decode(new Uint8Array(ab, off, len)));
+      off += len;
+    }
+    return out;
   }
 
   _perKey(keys) {

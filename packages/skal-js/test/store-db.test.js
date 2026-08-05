@@ -2475,3 +2475,50 @@ describe('deleting distinct keys releases their proxies', () => {
 // deleted with 518 tests green is either covered by a test that does not
 // exist yet, or it is one of these eight — and the difference is the
 // only thing the test count cannot tell you.
+
+// ── hydration is driven by disk, not by initState ────────────────────
+describe('hydration probes what exists, not what is declared', () => {
+  test('a large initState with one record on disk probes nothing', async () => {
+    const cells = {};
+    for (let i = 0; i < 2000; i++) cells['k' + i] = i;
+    const s = freshStore({ cells });
+    expect(await settle(s)).toBe(true);
+    await s[STORE].flushNow();
+    // Nothing was written, so `cells` has no frame and no leaf overrides.
+    expect(s[STORE].engineStats().records).toBeLessThan(3);
+
+    const b = reopenSame({ cells });
+    expect(await settle(b)).toBe(true);
+    // Before this, hydrate asked the keydir about all 2000 declared
+    // leaves regardless — 2000 lookups across 8 batch crossings against
+    // a keydir holding one record.
+    expect(b[STORE].hydrateProbes()).toBe(0);
+  });
+
+  test('...and still loads every leaf that IS on disk', async () => {
+    const cells = {};
+    for (let i = 0; i < 200; i++) cells['k' + i] = 0;
+    const s = freshStore({ cells });
+    expect(await settle(s)).toBe(true);
+    for (let i = 0; i < 200; i++) s.cells['k' + i] = i + 1;   // 200 leaf frames
+    await s[STORE].flushNow();
+
+    const b = reopenSame({ cells });
+    expect(await settle(b)).toBe(true);
+    expect(b[STORE].hydrateProbes()).toBe(200);               // all of them
+    for (let i = 0; i < 200; i++) expect(b.cells['k' + i]).toBe(i + 1);
+  });
+
+  test('a blob parent still overlays its leaf overrides', async () => {
+    const s = freshStore({ cfg: { a: 0, b: 0 } });
+    expect(await settle(s)).toBe(true);
+    s.cfg = { a: 1, b: 1 };            // one blob frame at k:cfg
+    await s[STORE].flushNow();
+    s.cfg.b = 9;                       // a leaf override on top
+    await s[STORE].flushNow();
+    const b = reopenSame({ cfg: { a: 0, b: 0 } });
+    expect(await settle(b)).toBe(true);
+    expect(b.cfg.a).toBe(1);
+    expect(b.cfg.b).toBe(9);
+  });
+});

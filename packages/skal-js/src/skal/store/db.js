@@ -595,6 +595,13 @@ export function createSkalStore(initState, config = {}) {
       if (k === sk || k.startsWith(dot) || k.startsWith(hash)) v[1]((n) => n + 1);
     }
   }
+  // Every key on disk, listed once at open. null = the host cannot list,
+  // so hydration probes every declared leaf as it always did.
+  let diskKeys = null;
+  // Leaf frames actually REQUESTED during hydration. The whole point of
+  // `diskKeys` is that this stops scaling with the size of initState, and
+  // a saving nobody counts is one nobody notices regressing.
+  let hydrateProbes = 0;
   const [ready, setReady] = createSignal(false);
   const [backendKind, setBackendKind] = createSignal('…');
   // init() timing breakdown, set once init completes (null until then).
@@ -1541,6 +1548,7 @@ export function createSkalStore(initState, config = {}) {
     ready,
     backendKind,
     initTiming,
+    hydrateProbes: () => hydrateProbes,
     flushNow,
     version: () => cfg.version,
     pending: () => dirty.size,
@@ -2541,7 +2549,8 @@ export function createSkalStore(initState, config = {}) {
         // Left as a single get: it is one frame per subtree, not per
         // leaf, so there is nothing here to amortise.
         let recurse = true;
-        if (pol.persist && !pol.lazy && !dirty.has(dk)) {
+        if (pol.persist && !pol.lazy && !dirty.has(dk)
+            && (diskKeys === null || diskKeys.has(dk))) {
           const b = engine.get(dk);
           if (b != null) {
             const decoded = decodeFrame(b);
@@ -2604,6 +2613,23 @@ export function createSkalStore(initState, config = {}) {
     // after which the scratch is free.
     const vals = new Array(lk.length);
     const has = new Array(lk.length);
+    // DRIVEN BY WHAT IS ON DISK, not by the shape of initState.
+    //
+    // Every declared leaf used to be probed, so a 4 500-leaf store whose
+    // `cells` object persists as ONE blob performed 4 500 keydir lookups
+    // across 18 batch crossings against a keydir holding a single record
+    // — measured at +27 ms of a +34 ms cold start. `diskKeys` is fetched
+    // once per open; when the host cannot provide it the probe falls
+    // back to asking for everything, which is the old behaviour.
+    if (diskKeys !== null) {
+      let w = 0;
+      for (let i = 0; i < ldk.length; i++) {
+        if (!diskKeys.has(ldk[i])) continue;
+        lk[w] = lk[i]; lsk[w] = lsk[i]; ldk[w] = ldk[i]; w++;
+      }
+      lk.length = w; lsk.length = w; ldk.length = w;
+    }
+    hydrateProbes += ldk.length;
     for (let i = 0; i < ldk.length; i += CHUNK) {
       // No copy when the level fits in one chunk — the common case, and
       // this is the cold-start path. The loop only reaches i > 0 when
@@ -2758,6 +2784,8 @@ export function createSkalStore(initState, config = {}) {
       tMig = _now();
       // ONE flush for the whole open. Un-batched, an N-leaf hydration
       // scheduled N separate update cycles on the cold-start path.
+      // One listing per open, before any probing. O(records).
+      diskKeys = (engine && engine.allKeys) ? engine.allKeys() : null;
       if (!migrated) notify(() => hydrate(initState, [], '', root));
       scheduleFlush();
     } catch (_) {

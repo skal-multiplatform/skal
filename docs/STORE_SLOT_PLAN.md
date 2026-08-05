@@ -451,7 +451,69 @@ paths. Both MINI and variant (b) targeted the layer beneath it. Only
 measuring the TOTAL, with a control that removed each layer in turn,
 caught that.
 
-### The fix this points at
+### CORRECTION — 2026-08-05: the attribution INVERTED, and the fix was elsewhere
+
+Re-measured against the rewritten store, same device, same protocol
+(8 launches per arm, medians, A/B/A, arm asserted from the APK):
+
+| | Displayed | in-memory | engine |
+|---|---:|---:|---:|
+| 2026-08-02, solid-js/store | +38.0 | **+26.5 (67–91%)** | +11.5 (24–30%) |
+| 2026-08-05, own store | +34.2 | **+7.2 (21%)** | **+27.0 (79%)** |
+
+**The rewrite already cut in-memory construction 3.7× — and nobody
+re-measured.** Lazy version signals and lazy proxies removed the eager
+init walk that §5b was written about; the walk this section says to fix
+no longer exists. The total barely moved because the cost simply moved
+house.
+
+**What it moved to was not "engine open + hydrate" being slow. It was
+hydration asking the wrong question.** `hydrate` walked the shape of
+`initState` and asked the keydir, per DECLARED leaf, whether a frame
+existed. A 4 500-leaf store whose `cells` object persists as ONE blob
+therefore performed 4 500 point lookups across 18 batch crossings —
+against a keydir holding **one record**. Verified directly:
+`engineStats().records === 1` after a plain open and reopen.
+
+### The fix, and what it bought
+
+A key listing (`__skal_store_keys`, mirroring `getMany`'s wire format,
+plus `allKeys()` on both backends), fetched once per open. Hydration
+intersects against it instead of probing:
+
+| | Displayed | 4 500-leaf cost | drift |
+|---|---:|---:|---:|
+| before | 433.0 | **+34.2** | −1.5 |
+| after | 414.0 | **+19.0** | −8.0 |
+
+**45% of the cold-start cost removed, 7.61 → 4.22 µs/leaf.** The change
+is 15.2 ms against an 8.0 ms drift floor — under this repo's rules that
+is proven, but only by ~2×, so it is reported with the drift rather than
+alone.
+
+The mechanism is confirmed independently of the timing, which is the
+stronger evidence: `hydrateProbes()` counts the leaf frames actually
+requested, and it is **0** for a 2 000-leaf store with one record on
+disk, **200** when 200 leaf frames exist, and a blob parent still
+overlays its leaf overrides correctly.
+
+### Two harness faults found on the way, both of which would have lied
+
+- The arm-identity check used `unzip -p … | grep -q`. `grep -q` exits on
+  first match, `unzip` takes SIGPIPE, and `set -o pipefail` reports the
+  SUCCESSFUL match as a failed pipeline — so it voided a correct build.
+- `scripts/link-libskal-flutter.sh` installs into **kitchen-sink**, not
+  skal-bench. The first three arms therefore ran against the previous
+  day's libskal. Harmless there (all three shared it), fatal for the
+  after-measurement: the shipped `.so` was dated 16:14 the day before and
+  did not contain `__skal_store_keys`. Caught by asserting the symbol in
+  the artifact rather than assuming the build reached the device — the
+  rule this repo already has about several `libskal` copies not all
+  exporting the same symbols.
+
+### What this section originally pointed at
+
+**Make Skal's init lazy, the way Solid's already is.**
 
 **Make Skal's init lazy, the way Solid's already is.** The machinery
 exists and is not the default: `paths: { x: { lazy: true } }`, the

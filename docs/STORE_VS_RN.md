@@ -1,6 +1,9 @@
 # Skal's store vs React Native's — the comprehensive comparison
 
-**Measured 2026-08-04.** Samsung Galaxy A14 5G (SM-A146P), Android 15,
+**Measured 2026-08-04; Skal's column RE-MEASURED 2026-08-05** after the
+store's seven review rounds and the hydration change (two rounds, same
+device, same driver, checksums matched). RN did not change and was not
+re-run. Samsung Galaxy A14 5G (SM-A146P), Android 15,
 arm64-v8a. **Release builds, physical hardware, screen held awake and
 asserted.** Skal `com.example.skal_bench` vs React Native
 `com.anonymous.rnfeed` (Expo 57 / RN 0.86 / Hermes + zustand +
@@ -24,12 +27,12 @@ roughly an order of magnitude. See `STORE_SLOT_PLAN.md` §0.
 
 | ms per 100 reads | Skal | RN | |
 |---|---:|---:|---|
-| leaf, full literal path `s.user.name.first` | 0.0319 | **0.0090** | RN 3.5× |
-| leaf, parent hoisted | 0.0086 | **0.0037** | RN 2.3× |
-| whole object `s.user` | 0.0093 | **0.0070** | RN 1.3× |
-| `const u = s.user` + 6 fields | 0.0767 | **0.0191** | RN 4.0× |
-| deep path `a.b.c.d` (4 levels) | 0.0421–0.0441 | **0.0086** | RN 4.8× |
-| collection sweep, 200 rows | 0.0504–0.0511 | **0.0308** | RN 1.7× |
+| leaf, full literal path `s.user.name.first` | 0.0319–0.0322 | **0.0090** | RN 3.5× |
+| leaf, parent hoisted | 0.0086–0.0087 | **0.0037** | RN 2.3× |
+| whole object `s.user` | 0.0092–0.0102 | **0.0070** | RN 1.3× |
+| `const u = s.user` + 6 fields | 0.0742–0.0743 | **0.0191** | RN 4.0× |
+| deep path `a.b.c.d` (4 levels) | 0.0419–0.0453 | **0.0086** | RN 4.8× |
+| collection sweep, 200 rows | 0.0504–0.0506 | **0.0308** | RN 1.7× |
 | *floor: plain array, int index* | *0.0002* | *0.0031* | *JSC 15×* |
 | *floor: bare reactive read* | *0.0023* | *none exists* | |
 
@@ -48,13 +51,13 @@ row: 4 levels, 4 traps.
 
 | ms per op | Skal | RN | |
 |---|---:|---:|---|
-| 1 leaf, 0 subs | **0.0012–0.0014** | 0.1081–0.1104 | **Skal 79×** |
-| 1 leaf, 50 subs | **0.0355–0.0363** | 0.1851–0.2295 | Skal 5.7× |
-| 1 leaf, 200 subs | **0.1421–0.1476** | 0.2119–0.2174 | Skal 1.5× |
-| 200 leaves, 1 sub each | **~0.63** | 38.15–38.66 | **Skal 61×** |
-| no-op write (same value) | **0.0007** | 0.0016 | Skal 2.3× |
-| wholesale replace, 1 of 3 changed | 0.0037–0.0048 | **0.0013–0.0014** | RN 3.4× |
-| array push + splice, length stable | 0.0298–0.0393 | **0.0058** | RN 5.9× |
+| 1 leaf, 0 subs | **0.0012–0.0016** | 0.1081–0.1104 | **Skal 79×** |
+| 1 leaf, 50 subs | **0.0356–0.0369** | 0.1851–0.2295 | Skal 5.7× |
+| 1 leaf, 200 subs | **0.1425–0.1447** | 0.2119–0.2174 | Skal 1.5× |
+| 200 leaves, 1 sub each | **0.63–0.66** | 38.15–38.66 | **Skal 61×** |
+| no-op write (same value) | **0.0008–0.0009** | 0.0016 | Skal 1.9× |
+| wholesale replace, 1 of 3 changed | 0.0043–0.0071 | **0.0013–0.0014** | RN 4.2× |
+| array push + splice, length stable | 0.0235–0.0271 | **0.0058** | RN 4.4× |
 
 RN's 38 ms on the 200-leaf sweep is zustand's `{...st.cells, [k]: v}`
 copying per write, making 200 writes O(n²). That is inherent to
@@ -68,6 +71,30 @@ precise where zustand swaps a reference; array mutation is behind
 because Skal maintains stable `_id`s, per-record persistence frames and
 per-index notification where zustand copies a 50-element array. Neither
 cost anything relative to the previous implementation.
+
+### Re-measured after the review rounds — 2026-08-05
+
+Seven independent review rounds fixed ~67 defects in this store, and the
+host A/B during that work suggested a ~20% cost on wholesale replace.
+On device, two rounds:
+
+| arm | before (2026-08-04) | after (2026-08-05) |
+|---|---:|---:|
+| every read arm | — | **unchanged** (within 0–6%, both directions) |
+| write 1 leaf, 0 / 50 / 200 subs | — | **unchanged** |
+| 200 leaves, 1 sub each | ~0.63 | 0.63–0.66 |
+| precision write (200 subs) | 0.0027–0.0030 | **0.0024–0.0025** |
+| **array push + splice** | 0.0298–0.0393 | **0.0235–0.0271** |
+| wholesale replace, 1 of 3 | 0.0037–0.0048 | 0.0043–0.0071 |
+
+**Array mutation is 25–30% FASTER**; nothing else moved.
+
+**The wholesale-replace regression is NOT proven, and the host A/B that
+suggested it was over-read.** That arm's own round-to-round spread is
+0.0043 → 0.0071 — 65%, larger than the effect being looked for — and the
+second round lands inside the previous range. One device round would
+have "confirmed" a +48% regression; two rounds say the arm cannot
+resolve it. Reported as a range rather than a delta for that reason.
 
 ---
 
@@ -108,7 +135,7 @@ Also worth noting: on `solid-js/store`, Skal LOST the no-op write to RN
 | | Skal | RN |
 |---|---:|---:|
 | **subscribers actually woken** | **1 of 200** | **1 of 200** |
-| cost of that write | **0.0027–0.0030 ms** | 0.1500 ms |
+| cost of that write | **0.0024–0.0025 ms** | 0.1500 ms |
 
 **Both stacks are exactly precise** on leaf writes. zustand with
 `subscribeWithSelector` wakes only the subscriber whose selector result
@@ -236,4 +263,4 @@ that loads a large blob at startup and mostly reads it is RN's.
 
 ---
 
-*Last updated: 2026-08-04.*
+*Last updated: 2026-08-05.*

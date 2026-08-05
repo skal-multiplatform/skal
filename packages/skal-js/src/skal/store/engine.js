@@ -663,7 +663,13 @@ export class LogStore {
   // Hydration used to ask "does a frame exist?" once per DECLARED leaf,
   // so a store whose data lives in one blob still paid a lookup per leaf
   // of initState. Handing the set over once makes hydration O(records).
-  allKeys() { return new Set(this._keydir.keys()); }
+  //
+  // A has-VIEW, not a copy: the consumer only ever calls `.has()`, and
+  // `_keydir` already answers that. Copying every key into a fresh Set
+  // is O(records) time and a second reference to every key string, on
+  // the cold-start path, inside a change whose whole purpose is removing
+  // cold-start work.
+  allKeys() { const kd = this._keydir; return { has: (k) => kd.has(k) }; }
 
   // Tombstone every keydir key starting with `prefix.` or `prefix#`.
   // Used by db.js's wholesale-assign + tombstoneTree paths to clear
@@ -891,25 +897,34 @@ export class NativeLogStore {
     if (typeof fn === 'function') fn(this._h, prefix);
   }
 
-  // Every key currently on disk, or null when the host is an older
-  // libskal without the call — hydration then falls back to probing.
-  // Same wire format as getMany, and the same buffer: the result is a
-  // no-copy view over the store's single reusable scratch, so the next
-  // get/getMany invalidates it. Decoded into a Set here, before
-  // returning, for exactly that reason — a caller must never hold it.
+  // Every key currently on disk, or null when the host cannot answer.
+  //
+  // VALIDATED AT EVERY STEP, and null on anything unexpected. The
+  // consumer uses this as a FILTER on hydration, so a malformed buffer
+  // is not a read error that surfaces — it is persisted data quietly
+  // not loading, followed by the next flush writing defaults over it.
+  // Returning null puts hydration back on the probe-everything path,
+  // which is slow and correct. getMany guards the same class one
+  // function down (`n !== keys.length -> _perKey`).
+  //
+  // The buffer is a no-copy view over the store's single reusable
+  // scratch — the same one getMany uses — so it is decoded into a Set
+  // here, before returning. A caller must never hold it.
   allKeys() {
     const fn = globalThis.__skal_store_keys;
     if (typeof fn !== 'function') return null;
-    const ab = fn(this._h);
-    if (!ab) return null;
+    let ab;
+    try { ab = fn(this._h); } catch (_) { return null; }
+    if (!ab || ab.byteLength < 4) return null;
     const dv = new DataView(ab);
     const n = dv.getUint32(0, true);
+    if (4 + n * 4 > ab.byteLength) return null;
     const out = new Set();
-    const dec = new TextDecoder();
     let off = 4 + n * 4;
     for (let i = 0; i < n; i++) {
       const len = dv.getUint32(4 + i * 4, true);
-      out.add(dec.decode(new Uint8Array(ab, off, len)));
+      if (len === 0xFFFFFFFF || off + len > ab.byteLength) return null;
+      out.add(_utf8d(new Uint8Array(ab, off, len)));
       off += len;
     }
     return out;

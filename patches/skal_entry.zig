@@ -1486,27 +1486,41 @@ fn store_keys_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize,
         };
     }
     const dst = store.get_scratch;
+    // Header and body layout are tied together: the body starts at
+    // `4 + count*4`, so the header MUST be `count`. An earlier attempt
+    // wrote `i` after the loop to "size from what was written" — that
+    // desynchronised the two, and the reader, which derives its body
+    // offset from the header, would have started decoding key bytes
+    // INSIDE the length table. Strictly worse than the hypothetical it
+    // was guarding against.
+    std.mem.writeInt(u32, dst[0..4], count, .little);
 
     var off: usize = 4 + @as(usize, count) * 4;
     var i: u32 = 0;
     var it2 = store.keydir.keyIterator();
     while (it2.next()) |kp| {
-        if (i >= count) break;               // keydir grew under us
         const k = kp.*;
+        // REFUSE, NEVER TRUNCATE. Every other refusal in this file
+        // returns null so JS degrades to the slow-and-correct path. A
+        // SHORT key list degrades to the silently-WRONG one: `diskKeys`
+        // is a filter, so a key missing from it reads as "not on disk",
+        // its leaf keeps the initState default, and the next flush
+        // writes that default over the real frame.
+        //
+        // The bounds check on `off` matters for the same reason the
+        // count check does, and more: pass 1 summed the sizes, and a
+        // keydir resize between the passes changes iteration order, so
+        // the first `count` entries seen in pass 2 can carry more bytes
+        // than pass 1 measured. Zig's bounds checks are compiled OUT in
+        // ReleaseFast, which is what ships — that is silent heap
+        // corruption, not a panic.
+        if (i >= count or off + k.len > dst.len) return JSValueMakeNull(ctx);
         std.mem.writeInt(u32, dst[4 + @as(usize, i) * 4 ..][0..4], @intCast(k.len), .little);
         @memcpy(dst[off..][0..k.len], k);
         off += k.len;
         i += 1;
     }
-    // THE HEADER IS WRITTEN FROM `i`, AFTER THE LOOP — not from `count`
-    // before it. The two passes cannot disagree today (no JS runs
-    // between them), but if they ever did, the length slots for the
-    // entries never filled would hold whatever the REUSED scratch had,
-    // and the reader trusts the header. `diskKeys` is a FILTER on
-    // hydration, so a junk key set does not fail loudly — it silently
-    // drops real data. Sizing from what was actually written costs one
-    // moved statement.
-    std.mem.writeInt(u32, dst[0..4], i, .little);
+    if (i != count) return JSValueMakeNull(ctx);
     const ab = JSObjectMakeArrayBufferWithBytesNoCopy(ctx, dst.ptr, off, null, null, null);
     return @ptrCast(ab);
 }

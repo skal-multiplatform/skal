@@ -17,6 +17,7 @@
 
 import { test, expect, describe, beforeEach } from 'bun:test';
 import { createSkalStore, STORE } from '../src/skal/store/db.js';
+import { NativeLogStore, LogStore } from '../src/skal/store/engine.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -2520,5 +2521,99 @@ describe('hydration probes what exists, not what is declared', () => {
     expect(await settle(b)).toBe(true);
     expect(b.cfg.a).toBe(1);
     expect(b.cfg.b).toBe(9);
+  });
+});
+
+// ── the key-listing paths CI never runs ──────────────────────────────
+//
+// `diskKeys` is a FILTER, so every failure here is silent: persisted
+// data does not load, and the next flush writes initState defaults over
+// it. The JS backend always returns a listing, so `diskKeys === null` is
+// dead in the suite — and that is the compatibility path for an older
+// libskal. Nothing drove the native decoder at all: its offset
+// arithmetic could be inverted with the whole suite green.
+describe('hydration survives a host that cannot list keys', () => {
+  test('a null listing falls back to probing, and loads everything', async () => {
+    const s = freshStore({ cfg: { a: 0, b: 0 } });
+    expect(await settle(s)).toBe(true);
+    s.cfg.a = 7;
+    s.cfg.b = 9;
+    await s[STORE].flushNow();
+
+    // Simulate an older libskal: the backend cannot list keys, so
+    // `diskKeys` is null and hydration must probe everything.
+    const realAllKeys = LogStore.prototype.allKeys;
+    LogStore.prototype.allKeys = undefined;
+    let b;
+    try {
+      b = reopenSame({ cfg: { a: 0, b: 0 } });
+      expect(await settle(b)).toBe(true);
+    } finally { LogStore.prototype.allKeys = realAllKeys; }
+    expect(b.cfg.a).toBe(7);
+    expect(b.cfg.b).toBe(9);
+  });
+});
+
+describe('the native key-list decoder', () => {
+  // Hand-built buffers in the documented wire format:
+  //   [u32 count][u32 len_i ..][bytes ..]
+  const pack = (keys) => {
+    const enc = new TextEncoder();
+    const parts = keys.map((k) => enc.encode(k));
+    const total = 4 + parts.length * 4 + parts.reduce((a, p) => a + p.length, 0);
+    const buf = new ArrayBuffer(total);
+    const dv = new DataView(buf);
+    dv.setUint32(0, keys.length, true);
+    let off = 4 + parts.length * 4;
+    parts.forEach((p, i) => {
+      dv.setUint32(4 + i * 4, p.length, true);
+      new Uint8Array(buf, off, p.length).set(p);
+      off += p.length;
+    });
+    return buf;
+  };
+  // Drive NativeLogStore.allKeys through the global the host installs.
+  const decode = (buf) => {
+    const prev = globalThis.__skal_store_keys;
+    globalThis.__skal_store_keys = () => buf;
+    try { return NativeLogStore.prototype.allKeys.call({ _h: 1 }); }
+    finally {
+      if (prev === undefined) delete globalThis.__skal_store_keys;
+      else globalThis.__skal_store_keys = prev;
+    }
+  };
+
+  test('a well-formed buffer round-trips', () => {
+    const out = decode(pack(['k:a', 'k:b.c', 'k:items#x']));
+    expect(out).not.toBe(null);
+    expect(out.has('k:a')).toBe(true);
+    expect(out.has('k:b.c')).toBe(true);
+    expect(out.has('k:items#x')).toBe(true);
+    expect(out.has('k:nope')).toBe(false);
+  });
+
+  test('an empty listing is a Set, not null', () => {
+    const out = decode(pack([]));
+    expect(out).not.toBe(null);
+    expect(out.has('k:anything')).toBe(false);
+  });
+
+  test('a TRUNCATED buffer refuses rather than inventing keys', () => {
+    // The whole point: a malformed listing must put hydration back on
+    // the probe-everything path, not hand back a plausible short set.
+    const full = pack(['k:a', 'k:b']);
+    expect(decode(full.slice(0, 2))).toBe(null);          // shorter than a header
+    expect(decode(full.slice(0, 6))).toBe(null);          // header claims 2, no table
+    expect(decode(full.slice(0, full.byteLength - 1))).toBe(null);  // body cut
+  });
+
+  test('a length that overruns the buffer refuses', () => {
+    const buf = pack(['k:a']);
+    new DataView(buf).setUint32(4, 0xFFFF, true);         // absurd length
+    expect(decode(buf)).toBe(null);
+  });
+
+  test('a null return from the host refuses', () => {
+    expect(decode(null)).toBe(null);
   });
 });

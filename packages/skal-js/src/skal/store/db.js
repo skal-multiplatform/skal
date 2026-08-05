@@ -2551,6 +2551,7 @@ export function createSkalStore(initState, config = {}) {
         let recurse = true;
         if (pol.persist && !pol.lazy && !dirty.has(dk)
             && (diskKeys === null || diskKeys.has(dk))) {
+          hydrateProbes++;                 // point gets count too
           const b = engine.get(dk);
           if (b != null) {
             const decoded = decodeFrame(b);
@@ -2611,8 +2612,6 @@ export function createSkalStore(initState, config = {}) {
     // get/getMany, so recursing while any slice is undecoded would hand
     // back another record's bytes. JSON.parse yields independent values,
     // after which the scratch is free.
-    const vals = new Array(lk.length);
-    const has = new Array(lk.length);
     // DRIVEN BY WHAT IS ON DISK, not by the shape of initState.
     //
     // Every declared leaf used to be probed, so a 4 500-leaf store whose
@@ -2630,6 +2629,8 @@ export function createSkalStore(initState, config = {}) {
       lk.length = w; lsk.length = w; ldk.length = w;
     }
     hydrateProbes += ldk.length;
+    const vals = new Array(ldk.length);
+    const has = new Array(ldk.length);
     for (let i = 0; i < ldk.length; i += CHUNK) {
       // No copy when the level fits in one chunk — the common case, and
       // this is the cold-start path. The loop only reaches i > 0 when
@@ -2666,7 +2667,17 @@ export function createSkalStore(initState, config = {}) {
     if (!policyOf(sk).persist
       || dirty.has('k:' + sk + '#x') || dirty.has('k:' + sk)) return;
     collCache.delete(sk);                  // array replaced — re-derive later
-    const idxBytes = engine.get('k:' + sk + '#x');
+    // The same guard the scalar path gets, but on the READS only —
+    // never as an early return. `collCache.delete` above and the
+    // shape-divergence handling below run regardless of what is on
+    // disk, and skipping the whole function broke three seeded-
+    // collection tests. Without this a store declaring 500 collections
+    // with nothing persisted still performs 1000 point lookups at open:
+    // the identical O(declared) pattern, one function over.
+    const onDisk = (k) => diskKeys === null || diskKeys.has(k);
+    const ixk = 'k:' + sk + '#x';
+    hydrateProbes += onDisk(ixk) ? 1 : 0;
+    const idxBytes = onDisk(ixk) ? engine.get(ixk) : null;
     // Element frames may predate this process; the blob path needs to
     // know they exist before it can decide whether to sweep them.
     if (idxBytes != null) hadElementFrames.add(sk);
@@ -2681,7 +2692,8 @@ export function createSkalStore(initState, config = {}) {
       setAt(sp, els, sk);
       return;
     }
-    const whole = engine.get('k:' + sk);             // a whole-frame array
+    hydrateProbes += onDisk('k:' + sk) ? 1 : 0;
+    const whole = onDisk('k:' + sk) ? engine.get('k:' + sk) : null;   // whole-frame array
     if (whole != null) { setAt(sp, decodeFrame(whole), sk); return; }
 
     // Nothing persisted for this array at all: it exists only because
@@ -2784,9 +2796,21 @@ export function createSkalStore(initState, config = {}) {
       tMig = _now();
       // ONE flush for the whole open. Un-batched, an N-leaf hydration
       // scheduled N separate update cycles on the cold-start path.
-      // One listing per open, before any probing. O(records).
-      diskKeys = (engine && engine.allKeys) ? engine.allKeys() : null;
-      if (!migrated) notify(() => hydrate(initState, [], '', root));
+      if (!migrated) {
+        // One listing per open, and ONLY when hydrate will run — the
+        // migration path does not, so building it there was pure waste
+        // on a launch path. Its own try/catch: init's catch-all treats
+        // failures as non-fatal, so a throw here would skip hydration
+        // entirely and every value would silently revert to its
+        // initState default.
+        try {
+          diskKeys = (engine && engine.allKeys) ? engine.allKeys() : null;
+        } catch (_) { diskKeys = null; }
+        notify(() => hydrate(initState, [], '', root));
+        // Read only during hydrate; holding it pins a key string per
+        // record for the life of the store, on mobile.
+        diskKeys = null;
+      }
       scheduleFlush();
     } catch (_) {
       // The store still works in-memory; the failure is non-fatal.

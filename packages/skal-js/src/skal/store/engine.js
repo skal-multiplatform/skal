@@ -893,7 +893,10 @@ export class NativeLogStore {
 
   // Every key currently on disk, or null when the host is an older
   // libskal without the call — hydration then falls back to probing.
-  // Same wire format as getMany.
+  // Same wire format as getMany, and the same buffer: the result is a
+  // no-copy view over the store's single reusable scratch, so the next
+  // get/getMany invalidates it. Decoded into a Set here, before
+  // returning, for exactly that reason — a caller must never hold it.
   allKeys() {
     const fn = globalThis.__skal_store_keys;
     if (typeof fn !== 'function') return null;

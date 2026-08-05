@@ -1486,7 +1486,6 @@ fn store_keys_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize,
         };
     }
     const dst = store.get_scratch;
-    std.mem.writeInt(u32, dst[0..4], count, .little);
 
     var off: usize = 4 + @as(usize, count) * 4;
     var i: u32 = 0;
@@ -1499,6 +1498,15 @@ fn store_keys_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize,
         off += k.len;
         i += 1;
     }
+    // THE HEADER IS WRITTEN FROM `i`, AFTER THE LOOP — not from `count`
+    // before it. The two passes cannot disagree today (no JS runs
+    // between them), but if they ever did, the length slots for the
+    // entries never filled would hold whatever the REUSED scratch had,
+    // and the reader trusts the header. `diskKeys` is a FILTER on
+    // hydration, so a junk key set does not fail loudly — it silently
+    // drops real data. Sizing from what was actually written costs one
+    // moved statement.
+    std.mem.writeInt(u32, dst[0..4], i, .little);
     const ab = JSObjectMakeArrayBufferWithBytesNoCopy(ctx, dst.ptr, off, null, null, null);
     return @ptrCast(ab);
 }

@@ -7,7 +7,8 @@
 # comment below) that exports just the `skal_*` C ABI from
 # skal_entry.zig — the only surface dart:ffi needs.
 #
-# Output: examples/kitchen-sink/flutter-host/android/app/src/main/jniLibs/arm64-v8a/libskal.so
+# Output: <target app>/flutter-host/android/app/src/main/jniLibs/arm64-v8a/libskal.so
+#         (default: examples/kitchen-sink — see TARGET SELECTION below)
 # (Android's stock native-libs location — the directory name is set by
 # AGP convention even though we don't actually use JNI; dart:ffi calls
 # the C ABI directly.) Override the target via SKAL_FLUTTER_NATIVE_LIBS=<abs>
@@ -24,7 +25,65 @@ set -euo pipefail
 SKAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUN_BUILD="${SKAL_ROOT}/vendor/bun/build/android"
 SKAL_BUILD="${SKAL_ROOT}/build/skal-android"
-FLUTTER_NATIVE_LIBS="${SKAL_FLUTTER_NATIVE_LIBS:-${SKAL_ROOT}/examples/kitchen-sink/flutter-host/android/app/src/main/jniLibs/arm64-v8a}"
+# TARGET SELECTION.
+#
+#   (default)                   examples/kitchen-sink
+#   --app <name> | SKAL_APP     resolved under examples/ then benchmark_v2/
+#   SKAL_FLUTTER_NATIVE_LIBS    an absolute jniLibs dir, wins over both
+#
+# The named form exists because the default installs into ONE app and
+# every other Flutter host in the repo keeps whatever .so it had. A
+# benchmark run against a different app then measures a stale binary and
+# nothing looks wrong — which is exactly what happened on 2026-08-05,
+# where skal-bench ran a day-old libskal missing the symbol under test.
+# See the staleness report at the end of this script.
+SKAL_APP="${SKAL_APP:-}"
+if [[ "${1:-}" == "--app" ]]; then SKAL_APP="${2:?--app needs a name}"; shift 2; fi
+
+resolve_app() {                 # <name> -> jniLibs dir, or empty
+  local n="$1" c
+  for c in "${SKAL_ROOT}/examples/$n" "${SKAL_ROOT}/benchmark_v2/$n"; do
+    if [[ -d "$c/flutter-host/android/app/src/main" ]]; then
+      echo "$c/flutter-host/android/app/src/main/jniLibs/arm64-v8a"; return
+    fi
+  done
+}
+
+if [[ -n "${SKAL_FLUTTER_NATIVE_LIBS:-}" ]]; then
+  FLUTTER_NATIVE_LIBS="${SKAL_FLUTTER_NATIVE_LIBS}"
+elif [[ -n "${SKAL_APP}" ]]; then
+  FLUTTER_NATIVE_LIBS="$(resolve_app "${SKAL_APP}")"
+  if [[ -z "${FLUTTER_NATIVE_LIBS}" ]]; then
+    echo "no Flutter host for app '${SKAL_APP}' under examples/ or benchmark_v2/" >&2
+    exit 1
+  fi
+else
+  FLUTTER_NATIVE_LIBS="${SKAL_ROOT}/examples/kitchen-sink/flutter-host/android/app/src/main/jniLibs/arm64-v8a"
+fi
+
+# ── who else is holding a different libskal? ─────────────────────────
+#
+# This script installs into ONE app. Every other Flutter host in the
+# repo keeps whatever it had, and a benchmark against one of those
+# measures a stale binary with nothing to show for it. Printing the list
+# turns a silent trap into a line of output.
+report_stale() {
+  local installed="$1" me
+  me="$(shasum -a 256 "$installed" | cut -d' ' -f1)"
+  local stale=()
+  while IFS= read -r other; do
+    [[ "$other" == "$installed" ]] && continue
+    [[ "$(shasum -a 256 "$other" | cut -d' ' -f1)" == "$me" ]] && continue
+    stale+=("${other#${SKAL_ROOT}/}")
+  done < <(find "${SKAL_ROOT}/examples" "${SKAL_ROOT}/benchmark_v2" \
+             -path "*/android/app/src/main/jniLibs/*/libskal.so" 2>/dev/null)
+  if [[ ${#stale[@]} -gt 0 ]]; then
+    echo
+    echo "!! these hosts still have a DIFFERENT libskal.so:"
+    printf '     %s\n' "${stale[@]}"
+    echo "   re-run with --app <name> before benchmarking them."
+  fi
+}
 
 # Prebuilt fast path — scripts/fetch-libskal.sh downloaded a ready-made
 # .so into build/skal-android/; install it without relinking (no NDK,
@@ -36,6 +95,7 @@ if [[ -f "${PREBUILT}" ]] && [[ -n "${SKAL_PREBUILT:-}" || ! -f "${BUN_BUILD}/bu
   mkdir -p "${FLUTTER_NATIVE_LIBS}"
   cp "${PREBUILT}" "${FLUTTER_NATIVE_LIBS}/libskal.so"
   echo "✓ libskal.so (prebuilt) → ${FLUTTER_NATIVE_LIBS}/libskal.so"
+  report_stale "${FLUTTER_NATIVE_LIBS}/libskal.so"
   exit 0
 fi
 
@@ -181,3 +241,6 @@ echo "Dynamic exports (skal_* only):"
 
 echo
 echo "✓ libskal.so installed ($(du -sh "${FLUTTER_NATIVE_LIBS}/libskal.so" | cut -f1))"
+
+report_stale "${FLUTTER_NATIVE_LIBS}/libskal.so"
+

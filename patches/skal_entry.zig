@@ -904,6 +904,10 @@ const SkalStore = struct {
     // Reusable scratch for get() results — grown on demand, never freed;
     // JS consumes each result synchronously before the next get.
     get_scratch: []u8 = &[_]u8{},
+    // Bumped by anything that can move or unmap a segment. Read by
+    // store_get_many_cb, which buffers mmap-backed value slices across a
+    // pass over a JS array — see the comment there.
+    get_epoch: u64 = 0,
 
     // Map segment `id`. When `create`, the file is made `capacity` bytes
     // (caller passes max(SEG_SIZE, frameTotal) so an oversized frame
@@ -1059,6 +1063,7 @@ const SkalStore = struct {
     }
 
     fn put(self: *SkalStore, key: []const u8, value: []const u8) !void {
+        self.get_epoch +%= 1;    // may seal + map a new segment
         const e = try self.writeRaw(0, key, value);
         const seg = self.segById(e.seg) orelse return error.SegmentMissing;
         const kslice = seg.mapped[e.off + STORE_FRAME_HEADER .. e.off + STORE_FRAME_HEADER + key.len];
@@ -1073,6 +1078,7 @@ const SkalStore = struct {
     }
 
     fn del(self: *SkalStore, key: []const u8) !void {
+        self.get_epoch +%= 1;    // writeRaw: may seal + map a new segment
         if (self.keydir.fetchRemove(key)) |kv| {
             self.markDead(kv.value.seg, kv.value.len);   // superseded frame
             const te = try self.writeRaw(STORE_FLAG_TOMBSTONE, key, "");
@@ -1085,6 +1091,7 @@ const SkalStore = struct {
     /// when a wholesale assign at `prefix` invalidates leaf-override
     /// frames below it. Runs in one native call; no per-key JS loop.
     fn delPrefix(self: *SkalStore, prefix: []const u8) !void {
+        self.get_epoch +%= 1;    // loops del
         if (prefix.len == 0 or prefix.len > 255) return;
         var dot_buf: [256]u8 = undefined;
         var hash_buf: [256]u8 = undefined;
@@ -1128,6 +1135,7 @@ const SkalStore = struct {
     // re-keys it with a slice into the *new* segment, so once the loop
     // finishes nothing references `worst` and it is safe to drop.
     fn compact(self: *SkalStore) !bool {
+        self.get_epoch +%= 1;    // may munmap a segment
         if (self.segments.items.len < 2) return false;
         const active_id = self.activeSeg().id;
         var worst_idx: ?usize = null;
@@ -1373,21 +1381,55 @@ fn store_get_many_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: us
     const len_str = JSStringCreateWithUTF8CString("length");
     defer JSStringRelease(len_str);
     const len_f = JSValueToNumber(ctx, JSObjectGetProperty(ctx, arr, len_str, null), null);
-    if (!(len_f >= 0) or len_f > 1_000_000) return JSValueMakeNull(ctx);  // NaN fails >= 0
+    // Bounded well below anything the caller uses: the JS side chunks at
+    // 256. The old 1e6 ceiling let a caller-controlled `length` drive a
+    // 16 MB slice-header allocation below before a single key was read.
+    if (!(len_f >= 0) or len_f > 65_536) return JSValueMakeNull(ctx);  // NaN fails >= 0
     const count: u32 = @intFromFloat(len_f);
 
-    // Pass 1 — size the payload. Keys are fetched twice (here and in
-    // pass 2) rather than buffered, trading a second keydir lookup for
-    // not allocating an intermediate slice array.
+    // Pass 1 — resolve every key ONCE and buffer the resulting value
+    // slices.
+    //
+    // The keys are what this costs, not the keydir lookup: each
+    // `skalStoreArgString` is a JSString -> UTF-8 conversion plus an
+    // allocator round-trip, so fetching them again in pass 2 meant 512
+    // of each on a 256-key hydration chunk. `store.get` returns a slice
+    // into the segment's mmap — not into `get_scratch` — so these stay
+    // valid across the scratch (re)allocation below.
+    //
+    // WHAT WOULD INVALIDATE THEM is not the scratch: it is a store
+    // MUTATION between pass 1 and pass 2. `JSObjectGetPropertyAtIndex`
+    // can run user JS (an index getter, a Proxy trap), and a put that
+    // seals a segment or a compact that munmaps one would leave the
+    // slices already in `vals` pointing at unmapped pages for pass 2's
+    // memcpy. Today's only caller passes a plain dense Array, so no JS
+    // runs — but the buffering widened that window from one statement to
+    // the whole first pass, and the guarantee now rests on the caller
+    // rather than on the shape of this function. `store.get_epoch` is
+    // bumped by every put/compact; re-checking it below turns a silent
+    // use-after-free into a null return.
+    const epoch0 = store.get_epoch;
+    const vals = bun.default_allocator.alloc(?[]const u8, count) catch
+        return JSValueMakeNull(ctx);
+    defer bun.default_allocator.free(vals);
     var total: usize = 4 + @as(usize, count) * 4;
     var i: u32 = 0;
     while (i < count) : (i += 1) {
         const kv = JSObjectGetPropertyAtIndex(ctx, arr, i, null);
-        const key = skalStoreArgString(ctx, kv) orelse continue;
+        const key = skalStoreArgString(ctx, kv) orelse {
+            vals[i] = null;
+            continue;
+        };
         defer bun.default_allocator.free(key);
-        if (store.get(key)) |value| total += value.len;
+        vals[i] = store.get(key);
+        if (vals[i]) |value| total += value.len;
     }
 
+    // Epoch check BEFORE the realloc. Refusing after it still freed the
+    // old scratch and allocated one sized to a request that is about to
+    // be thrown away — `get_scratch` only ever grows, so a refused
+    // batch permanently raised resident memory.
+    if (store.get_epoch != epoch0) return JSValueMakeNull(ctx);
     if (store.get_scratch.len < total) {
         if (store.get_scratch.len > 0) bun.default_allocator.free(store.get_scratch);
         store.get_scratch = bun.default_allocator.alloc(u8, total) catch {
@@ -1398,18 +1440,13 @@ fn store_get_many_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: us
     const dst = store.get_scratch;
     std.mem.writeInt(u32, dst[0..4], count, .little);
 
-    // Pass 2 — write the length table and the payload.
+    // Pass 2 — write the length table and the payload. No key work here
+    // at all now: the JS array is not touched again.
     var off: usize = 4 + @as(usize, count) * 4;
     i = 0;
     while (i < count) : (i += 1) {
         const hdr = 4 + @as(usize, i) * 4;
-        const kv = JSObjectGetPropertyAtIndex(ctx, arr, i, null);
-        const key = skalStoreArgString(ctx, kv) orelse {
-            std.mem.writeInt(u32, dst[hdr..][0..4], 0xFFFFFFFF, .little);
-            continue;
-        };
-        defer bun.default_allocator.free(key);
-        if (store.get(key)) |value| {
+        if (vals[i]) |value| {
             std.mem.writeInt(u32, dst[hdr..][0..4], @intCast(value.len), .little);
             @memcpy(dst[off..][0..value.len], value);
             off += value.len;

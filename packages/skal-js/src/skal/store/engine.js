@@ -683,28 +683,62 @@ export class LogStore {
     // caller that holds these across another read is correct in CI and
     // returns another record's bytes on device. That exact bug shipped
     // once and only a benchmark checksum caught it.
-    let total = 0;
-    const parts = new Array(keys.length);
-    for (let i = 0; i < keys.length; i++) {
-      const v = this.get(keys[i]);
-      parts[i] = v;
-      if (v) total += v.length;
-    }
-    if (!this._many || this._many.length < total) this._many = new Uint8Array(total);
-    const buf = this._many;
+    // `_frameValue`, not `get`: get() returns an OWNED copy because its
+    // callers keep the result, but this method copies into the scratch
+    // itself — so routing through get() allocated a throwaway
+    // Uint8Array per key and walked every byte twice. On a 256-key
+    // hydration chunk that is 256 dead allocations and a redundant pass
+    // over the whole payload, on the cold-start path.
+    //
+    // ONE PASS, copying as it goes.
+    //
+    // Two earlier shapes were both wrong. Buffering the slices to size
+    // the payload first pinned one whole segment buffer per distinct
+    // segment touched — `_segBytes` reads an entire file per miss and
+    // the LRU bounds only 8 — so a 256-key chunk spanning 20 segments
+    // retained all 20. Sizing in a separate pass instead resolved every
+    // key TWICE, and the second resolve is not a cheap keydir hit: on an
+    // LRU miss it re-reads the whole segment file. The comment there
+    // asserted it was cheaper, which was an argument, not a measurement.
+    //
+    // Copying into a growable scratch as each key resolves has neither
+    // problem: one resolve per key, and nothing retained past the copy.
     const out = new Array(keys.length);
+    const lens = new Array(keys.length);
     let off = 0;
+    if (!this._many) this._many = new Uint8Array(1024);
     for (let i = 0; i < keys.length; i++) {
-      const v = parts[i];
-      if (!v) { out[i] = null; continue; }
-      buf.set(v, off);
-      out[i] = buf.subarray(off, off + v.length);
+      const v = this._frameValue(keys[i]);
+      if (!v) { lens[i] = -1; continue; }
+      if (off + v.length > this._many.length) {
+        // Grow geometrically and carry the prefix over. Views handed out
+        // below are taken AFTER the loop, so a realloc mid-loop cannot
+        // strand one.
+        let cap = this._many.length * 2;
+        while (cap < off + v.length) cap *= 2;
+        const bigger = new Uint8Array(cap);
+        bigger.set(this._many.subarray(0, off));
+        this._many = bigger;
+      }
+      this._many.set(v, off);
+      lens[i] = v.length;
       off += v.length;
+    }
+    const buf = this._many;
+    let at = 0;
+    for (let i = 0; i < keys.length; i++) {
+      if (lens[i] < 0) { out[i] = null; continue; }
+      out[i] = buf.subarray(at, at + lens[i]);
+      at += lens[i];
     }
     return out;
   }
 
-  get(key) {                              // → Uint8Array | null
+  // Locate a key's committed frame value WITHOUT copying — the result
+  // is a view into the segment buffer and is only valid until that
+  // segment is rewritten. Internal: `get` owns the copy, `getMany`
+  // copies into its own scratch.
+  _frameValue(key) {
     const e = this._keydir.get(key);
     if (!e) return null;
     const bytes = this._segBytes(e.seg);
@@ -713,7 +747,12 @@ export class LogStore {
     // earns its keep only on the recovery scan, not the hot read path).
     const f = decodeFrame(bytes, e.off, false);
     if (!f || (f.flags & FLAG_TOMBSTONE)) return null;
-    return f.value.slice();
+    return f.value;
+  }
+
+  get(key) {                              // → Uint8Array | null
+    const v = this._frameValue(key);
+    return v === null ? null : v.slice();
   }
 
   _segBytes(id) {
@@ -845,6 +884,25 @@ export class NativeLogStore {
     if (typeof fn === 'function') fn(this._h, prefix);
   }
 
+  _perKey(keys) {
+    const out = new Array(keys.length);
+    for (let i = 0; i < keys.length; i++) {
+      // Uint8Array, matching the batched path — the contract above says
+      // "both getMany -> Uint8Array views". This returned ArrayBuffers,
+      // and it is taken only on old libskal or a refused batch, i.e. the
+      // paths CI never runs: correct in CI, wrong on those devices.
+      // UNCONDITIONAL copy. The `ab.slice ? ... : ab` fallback was
+      // unreachable today but its else-arm is precisely the scratch
+      // aliasing this comment records as a shipped bug: N results
+      // aliasing one buffer, every one decoding to the last record read.
+      // A guard that quietly degrades to the known failure is worse than
+      // no guard.
+      const ab = this.get(keys[i]);
+      out[i] = ab === null ? null : new Uint8Array(ab.slice(0));
+    }
+    return out;
+  }
+
   // One crossing for N records instead of N. Returns ArrayBuffer views
   // | null, IN THE ORDER ASKED.
   //
@@ -857,29 +915,41 @@ export class NativeLogStore {
   // scratch and is valid only until the next get/getMany. The slices
   // handed back are views into it, so a caller must decode all of them
   // before issuing another read. `hydrate` does exactly that.
+  // Per-key fallback for both the old-libskal and refused-batch paths.
+  //
+  // THE COPY IS LOAD-BEARING. `get` hands back a view over the store's
+  // single reusable scratch buffer, so a loop that keeps N of them ends
+  // up with N aliases of the SAME memory and every one decodes to the
+  // last record read. Shipped exactly that for one build; the
+  // benchmark's checksum caught it (11263132 against an expected
+  // 16366700) because the batched path is the only reader that holds
+  // more than one buffer at a time.
   getMany(keys) {
     const fn = globalThis.__skal_store_get_many;
-    if (typeof fn !== 'function') {
-      // Older libskal — fall back to per-key reads.
-      //
-      // THE COPY IS LOAD-BEARING. `get` hands back a view over the
-      // store's single reusable scratch buffer, so a loop that keeps N
-      // of them ends up with N aliases of the SAME memory and every one
-      // decodes to the last record read. Shipped exactly that for one
-      // build; the benchmark's checksum caught it (11263132 against an
-      // expected 16366700) because the batched path is the only reader
-      // that holds more than one buffer at a time.
-      const out = new Array(keys.length);
-      for (let i = 0; i < keys.length; i++) {
-        const ab = this.get(keys[i]);
-        out[i] = ab ? ab.slice(0) : null;
-      }
-      return out;
-    }
+    if (typeof fn !== 'function') return this._perKey(keys);   // older libskal
     const ab = fn(this._h, keys);
-    if (!ab) return new Array(keys.length).fill(null);
+    // A NULL RETURN IS A REFUSAL, NOT AN EMPTY RESULT. The native side
+    // returns null when it cannot allocate, when the argument is not a
+    // usable array, and when a store mutation invalidated its buffered
+    // slices mid-call. Mapping that to `fill(null)` said "every key is
+    // missing", which hydrate cannot tell apart from a genuinely empty
+    // store: up to CHUNK persisted leaves would silently revert to
+    // their initState defaults, and the next flush would write those
+    // defaults back over the real data. Fall back to per-key reads,
+    // which are slower and correct.
+    if (!ab) return this._perKey(keys);
     const dv = new DataView(ab);
     const n = dv.getUint32(0, true);
+    // A SHORT result is a refusal too. hydrate sizes its `has`/`vals`
+    // arrays from the REQUEST, so a buffer describing fewer records
+    // leaves the tail as "key missing" — and up to CHUNK persisted
+    // leaves silently revert to their initState defaults, which the next
+    // flush writes back over the real data. Same failure the null
+    // fallback exists to prevent, so it takes the same route.
+    // DEFENSIVE, and untested: no test drives NativeLogStore, so nothing
+    // can construct a short buffer. It guards a native contract
+    // violation, and the cost is one comparison per batch.
+    if (n !== keys.length) return this._perKey(keys);
     const out = new Array(n);
     let off = 4 + n * 4;
     for (let i = 0; i < n; i++) {
@@ -891,6 +961,20 @@ export class NativeLogStore {
     return out;
   }
 
+  // RETURN TYPES DIFFER BY BACKEND, DELIBERATELY, AND THAT IS A TRAP.
+  //
+  //   LogStore.get        -> Uint8Array | null   (owned copy)
+  //   NativeLogStore.get  -> ArrayBuffer | null  (no-copy, see below)
+  //   both getMany        -> Uint8Array views | null
+  //
+  // It works only because every consumer hands the result straight to
+  // `decodeFrame`, which feeds TextDecoder — that accepts both. Anything
+  // doing `b.length` (an ArrayBuffer has `byteLength`), `b[0]`, or
+  // `b.slice(0, n)` is correct against the JS backend in CI and silently
+  // wrong on device. That CI-vs-device split has already shipped once
+  // here, from the scratch-buffer aliasing the getMany comment records.
+  // Normalise at the call site or widen this contract before adding a
+  // consumer that does anything else with these bytes.
   get(key) {                    // → ArrayBuffer | null (decoder takes both)
     // Returned raw. Wrapping in a Uint8Array cost one allocation per
     // record on the hydration path for nothing: TextDecoder accepts an

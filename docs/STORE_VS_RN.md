@@ -101,7 +101,7 @@ Also worth noting: on `solid-js/store`, Skal LOST the no-op write to RN
 
 ---
 
-## Re-render precision — both exact, and Skal is 65× cheaper
+## Re-render precision — both exact, and Skal is 50× cheaper
 
 200 subscribers, one per distinct leaf. One leaf is written.
 
@@ -110,9 +110,16 @@ Also worth noting: on `solid-js/store`, Skal LOST the no-op write to RN
 | **subscribers actually woken** | **1 of 200** | **1 of 200** |
 | cost of that write | **0.0027–0.0030 ms** | 0.1500 ms |
 
-**Both stacks are exactly precise.** zustand with `subscribeWithSelector`
-wakes only the subscriber whose selector result changed — the same
-answer Skal's per-leaf signals give.
+**Both stacks are exactly precise** on leaf writes. zustand with
+`subscribeWithSelector` wakes only the subscriber whose selector result
+changed — the same answer Skal's per-leaf signals give.
+
+One deliberate exception, and it is Skal's only coarse path: a consumer
+that ITERATES an array (`map` / `filter` / `for..of` / spread) is woken
+by any write beneath that array, not only by the elements it read. The
+callback receives raw objects off a plain array, so it registers no
+per-element dependency and there is nothing finer to route to. Index
+readers and leaf readers keep exact per-key precision.
 
 **The difference is what precision costs.** zustand must evaluate all 200
 selectors on every write to discover which changed; Skal's signal graph
@@ -121,11 +128,39 @@ routes straight to the one subscriber and touches nothing else. That is
 difference in this whole comparison — invisible to every read benchmark
 and to any write benchmark that does not count subscribers.
 
-Skal's re-render precision is separately verified case-by-case on device
-(`benchmark_v2/skal-bench/src/RerenderScreen.jsx`, 9/9): sibling leaves
-independent, no-op writes silent, wholesale replace waking only changed
-leaves, shared subtrees pruned by reference, splices waking only shifted
-indices plus length.
+Skal's re-render precision is verified case-by-case on device
+(`benchmark_v2/skal-bench/src/RerenderScreen.jsx`, **17/17**): sibling
+leaves independent, no-op writes silent, wholesale replace waking only
+changed leaves, shared subtrees pruned by reference, splices waking only
+shifted indices plus length, iteration seeing writes inside elements
+without leaking to sibling arrays, one index assign costing one re-run,
+held element proxies surviving re-insertion and wholesale replacement
+under BOTH addressing schemes, and an id that disappears and comes back
+still reaching its holder.
+
+**Seven of those cases exist because three independent reviews found the
+store silently UNDER-notifying**, and they are worth naming because of
+how they hid: in every one the store kept serving the correct value, so
+any test that wrote and then read passed. Only a subscriber count saw
+them. The worst was iteration — `list.map(...)` never re-ran on
+`list[0].v = 42` — and the test that was supposed to cover it mutated
+with `push`, which is structural, and so passed straight over the bug.
+
+Each review then found that the previous round's fixes were incomplete
+or had introduced new defects — twenty-six in total across three rounds,
+eight of them introduced by the fixes themselves. They clustered on three
+axes (the persistence half of an in-memory fix; the other addressing
+scheme; the other call site of the same function), so the suite now
+GENERATES that cross product rather than enumerating it by hand: 343
+tests, of which ~130 are the matrix. It found four more real bugs on its
+first run. See `STORE_SLOT_PLAN.md` §7b–§7d.
+
+Everything is at the drift floor on every benchmarked arm except one:
+a 50-element wholesale replace is ~20% slower (0.0034 -> 0.0040 ms),
+which is the cost of scanning caller-supplied element ids so a generated
+id can never collide with a live one. Deferring that scan off the hot
+path is exactly what destroyed a row in round three, so it is paid up
+front and recorded here rather than optimised away again.
 
 ---
 
@@ -154,7 +189,7 @@ untouched and remains the largest unaddressed number.
 ## The shape of it
 
 **Skal wins the in-memory state layer decisively** — 79× on a leaf
-write, 61× on a bulk write, 16× on a realistic frame, 65× on precise
+write, 61× on a bulk write, 16× on a realistic frame, 50× on precise
 notification.
 
 **RN wins reads (1.3–4.8×) and disk (8–9.4×).** Both for the same

@@ -1015,6 +1015,668 @@ Both are live today and neither should wait on this plan.
 
 ---
 
+## 7b. The under-notification class (found 2026-08-04, all fixed)
+
+An independent review of the rewrite found **fifteen** issues; five were
+silent under-notification and all five reproduced. They are recorded
+together because they share one signature, and that signature is the
+lesson:
+
+> **The store kept serving the correct value.** Every one of these bugs
+> is invisible to a test that writes and then reads. Only a subscriber
+> count sees them.
+
+| what stopped re-rendering | why |
+|---|---|
+| `list.map(...)` / `filter` / `for..of` / spread, on an element FIELD write | iteration binds to the RAW array, so it can only depend on `sk#all`, which no leaf write bumped |
+| a spliced-out element that is re-inserted | its signals were pruned while its memoized proxy kept serving the dead getter from `verCache` |
+| a held element proxy after `state.items = [...]` | `bumpReplaced`'s array branch returned after the index bumps and never recursed into `items.<id>.<field>` |
+| index-1 subscribers on a MIXED array after a splice | `pruneVersRecords` cannot tell an element `_id` from an INDEX — the same collision the memo key namespace had already fixed for `nodeMemo` |
+| a write into a vivified parent (readable in `root`, not through the store) | `cur[k] = {}` did not advance `structGen`, so cached resolutions kept serving `undefined` |
+
+Two further notes worth keeping:
+
+- **The memo fix disabled the memo.** Namespacing element proxies under
+  `items.<id>\0id` put them outside every branch of `dropMemo`'s prefix
+  matching, so no removed element proxy was ever evicted — and each one
+  retained, through its `verCache` closure, the very signals
+  `pruneVersRecords` deleted. `versions()`, added in the same diff to
+  watch for exactly this leak, therefore reported it as FIXED. **One
+  number was not enough to see its own blind spot**; `memos()` now sits
+  beside it.
+- **The test that should have caught the worst one passed over it.**
+  `array methods track: map / filter / for..of / spread` mutates with
+  `push`, which is STRUCTURAL, and structural mutations do bump `#all`.
+  Coverage of the right API surface with the wrong mutation is not
+  coverage.
+
+**Cost of fixing all of it: nothing outside the drift floor.** A/B
+interleaved on host JSC, medians of 9, with an A/A control per arm:
+
+| arm | HEAD | fixed | delta | A/A drift |
+|---|---:|---:|---:|---:|
+| leaf write, plain object (the hot path) | 0.1293 | 0.1246 | −3.6% | +1.6% |
+| leaf write inside a collection element | 0.4612 | 0.4676 | +1.4% | −2.9% |
+| collection read sweep, 200 rows | 0.0610 | 0.0631 | +3.5% | +1.2% |
+| iterate 200 rows with `map` | 0.0015 | 0.0016 | +5.9% | −2.5% |
+| array push + splice | 0.0043 | 0.0042 | −2.9% | +1.9% |
+| wholesale array replace, 50 elements | 0.0034 | 0.0036 | +7.1% | −1.8% |
+
+That is the SECOND version of this table. The first was honest and bad:
+**+46% on the read sweep and +474% on wholesale replace.** Both were
+mine, both were the same mistake in different places — putting work in a
+path that runs far more often than the case it serves:
+
+- the owning-array key chain was rebuilt inside the array get trap, so
+  every element read paid a string concat and an array allocation even
+  on a memo hit (the argument is evaluated before `makeNode` can return
+  the cache). Hoisted to the `arrayProxy` closure, where `sk` and
+  `elInfo` are constants.
+- the per-element diff ran on every wholesale replace, including arrays
+  that had never handed out an element proxy and so could have no
+  holder. Gated on a per-array flag set when such a proxy is created.
+
+A third: the owner wake forced `batch()` on every write inside a
+collection element (+12.3%, against a −1.8% drift — the one delta that
+was real). `#all` only has a signal if something actually iterated, so
+checking first lets the write path skip the batch entirely.
+
+**Verified 15/15 on device** (`RerenderScreen.jsx`, Galaxy A14, release)
+and by 12 new unit tests, every one mutation-checked. One mutant
+survived the first pass — dropping the ancestor chain from `allKeys` —
+because the nested-array test reached the element's `elInfo` directly
+and never exercised the chain. A leaf under a nested array now covers
+it. One line is deliberately kept without a failing test: `setAt`'s
+`structGen++` on vivification, which is unreachable today because
+`setAt`'s only proxy caller re-resolves from the root every access. That
+was checked, not assumed, and it is labelled as such in the source.
+
+---
+
+## 7c. Round two — the review reviewed the fixes
+
+A second independent pass over §7b's fixes found **twelve** more, six of
+which reproduced empirically. **Four were introduced or left unfinished
+by round one**, which is the headline: the round that fixed silent
+under-notification shipped more of it.
+
+| what broke | mine? |
+|---|---|
+| splice read `_isColl(a)` AFTER `mutateAt` spliced `a` in place, so a cold `collCache` classified the POST-splice array — the removed element's frame was never tombstoned | yes, and the comment claimed "PRE-splice" |
+| ids only in the NEW array got a bare `bumpKey(items.<id>)`, which cannot reach a subscriber on `items.<id>.title` — a row that disappears and comes back goes stale | yes: a documented trade whose own comment named the case it failed |
+| the `elemProxied` gate skipped INDEX-addressed element proxies entirely — every non-collection array of objects | yes |
+| the vivified write was correct in memory and GONE on reopen: only `k:a.b.c` was staged while `k:a` still held the clobbered scalar | yes — the test asserted memory only |
+| `writeAt` kept caller `_id`s without seeding `genId`, so a later push reissued a LIVE id and destroyed a row | pre-existing |
+| splice's collection branch wrote element frames straight to `dirty`, bypassing `persist: false` — verified by finding the plaintext value in a segment file | pre-existing |
+| `setAt` never called `_skalNotify`, so lazy fault-in / array hydration / LRU eviction never reached declared-dep effects | pre-existing |
+
+Plus one dual-representation footgun in `hydrate` (raw scratch views
+below 256 keys, decoded values above, behind a `preDecoded` flag — now
+one representation), the file's only ungated `policyFor` on its
+highest-volume caller, a five-way copy-paste of the owning-array wake
+(now one `bumpOwners`), and a double copy in `LogStore.getMany`.
+
+### The perf lesson, which inverts §7b's
+
+Fixing these looked like a **+20% regression on wholesale replace**, and
+a bisect said the whole of it was the id-seeding scan I had just added —
+**not** the per-element diff, which §7b had blamed for +7% and which
+turns out to be free:
+
+```
+baseline (all round-two fixes)                delta +21.5%   drift +0.3%
+without the new-only element walk             delta +17.9%   drift -2.8%
+without the byIx Set.has                      delta +19.2%   drift -4.4%
+without the id-seed scan                      delta  -4.6%   drift -3.6%
+without the id DIFF entirely                  delta +18.8%   drift -1.8%
+```
+
+The scan only has to run before the next id is minted, so it now waits
+in `genId` — once per new element instead of once per replace. And when
+every element already carries an id (the server-payload case) the
+rebuild `.map` is skipped entirely, which is why the arm ends up
+slightly FASTER than before the fix.
+
+**A combined harness could not resolve the hot path.** Its A/A drift on
+`leaf write, plain object` swung ±13% across runs, producing deltas from
+−3.8% to +43.8% for identical code. One arm alone, 200k writes, 21
+rounds, A/B/A:
+
+    HEAD 0.0794 us   fixed 0.0770 us   delta -2.9%   A/A drift -1.9%
+
+Final, all arms, medians of 9 with an A/A control (host JSC, bun — a
+relative comparison of JS-only work, not a device number):
+
+| arm | delta | A/A drift |
+|---|---:|---:|
+| leaf write, plain object | −1.6% | −4.6% |
+| leaf write inside a collection element | +3.2% | +1.1% |
+| collection read sweep, 200 rows | −2.4% | −1.6% |
+| iterate 200 rows with `map` | −0.7% | −0.9% |
+| array push + splice | −21.4% | −6.0% |
+| cold open + hydrate 500 leaves | −2.0% | −3.4% |
+| wholesale array replace, 50 | −0.1% | −4.1% |
+
+Nothing exceeds its drift floor. **17/17 on device**, 204 unit tests,
+every fix mutation-checked with no survivors.
+
+### Three things the mutation pass caught that review did not
+
+- A seeding test used `_id: '5'` and one push, so `genId` never reached
+  the collision and it passed with the fix deleted. Ids and pushes now
+  chosen so the counter actually collides.
+- A splice test asserted only that cold and warm agree — satisfied by
+  "always a collection" as well as by the right answer. A second case
+  now pins the answer itself.
+- Gating tombstone, `dropMemo` and `pruneVersRecords` together on the
+  persistence policy leaked 181 proxies on a `persist: false`
+  collection. The tombstone is persistence; the other two are memory
+  hygiene and must run either way. Caught by the memo-count test, which
+  is precisely why it asserts a number rather than a value.
+
+---
+
+## 7d. Round three — and the matrix that should have existed first
+
+A third review found **fourteen** more; seven reproduced empirically.
+**Eight were mine from rounds one and two.** The worst was an
+optimisation from the same session: deferring the id-seeding scan to
+`genId` (to kill the +20% in §7c) reintroduced the exact data
+destruction seeding exists to prevent, moved across a restart —
+`doFlush` writes `nextId: nextIds.get(sk) || (a.length + 1)`, so a
+wholesale assign that flushed before any push persisted `nextId: 2` for
+`[{_id:'2'}]`. Reopen, push once, two elements collide on `items.2`,
+server row gone. **My test for it pushed before flushing**, which drains
+the deferral and steps around the hole I had just opened.
+
+The same deferral was also wrong in memory: it scanned the array as it
+existed at DRAIN time, so assigning two ids, splicing both out and
+pushing reissued `'1'` — an id `pruneVersRecords` had already deleted
+the signals for. **The deferral is gone.** `seedIds` runs at assign
+time, which costs ~+20% on a 50-element wholesale replace (0.0034 ->
+0.0040 ms, drift ~1%). That is the honest price of not destroying rows,
+and it is recorded rather than optimised away a second time.
+
+Also fixed: `writeHydrated` (the path EVERY eagerly hydrated leaf takes)
+never told declared-dep effects anything, so fixing `setAt` in §7c left
+the common case broken; `setAt`'s whole-tree branch returned before the
+notify, so a version migration reached none of them either; degrading a
+collection left a stale `#x` index that `hydrateArray` reads FIRST,
+silently dropping everything added after; `doFlush` ran `delPrefix`
+before writing the batch, so a leaf staged earlier in the same window
+resurrected on reopen; the truncation path never pruned version records
+(401 live signals where splice left 202) and wrote tombstones for
+`persist: false` records; nested arrays inside elements never marked
+`elemProxiedByIx`.
+
+### The pattern, and what was done about it
+
+Three rounds, twenty-six defects, and the ones I introduced cluster on
+exactly three axes:
+
+1. **the PERSISTENCE half of an in-memory fix**
+2. **the OTHER addressing scheme or nesting level**
+3. **the OTHER call site of the same function**
+
+Hand-written cases kept missing the same three. So the suite now
+GENERATES the cross product: every mutation (leaf write, index assign,
+push, splice out, splice in, truncate, reverse, delete-a-field) against
+every array shape (collection / mixed / nested-in-element) under both
+persistence policies, each checked by four observers — value, iteration
+re-runs, held-element-proxy re-runs, and signal/memo growth — plus a
+reopen and a `persist: false` staging check.
+
+**It found four more real bugs on its first run**, none of which were in
+the review: index assign never notified the element's dotted keys (all
+three shapes); `persist: false` was bypassed by index assign, by
+`reverse`, and by deleting a field inside an element; and `stageAt`
+staged per-element frames for arrays whose elements have no ids, writing
+an index of `ids: [undefined]` that lost the whole array on reopen.
+
+The matrix documents its one accepted gap explicitly: a proxy held
+across a `splice out` or `truncate` is not notified, because
+`pruneVersRecords` deletes those signals so the id can never be reused.
+The list-level notification is the channel that unmounts the row, and
+the iteration observer asserts it.
+
+### Measurement note
+
+The combined A/B harness **cannot resolve the plain leaf write**. It
+reported +6.3% to +12.9% across runs for code an isolated A/B/A measured
+at -2.1%, +0.2% and +3.7% (drift 1-2%). Two instruments, same code,
+opposite answers. Ruled out in order: arm ORDER (alternating A,B/B,A per
+round changed nothing), JIT warm-up (a 5000-iteration warm-up outside
+the timer changed nothing), and sample size (the isolated harness reads
++0.2% at N=20 000 and +3.7% at N=200 000 — both at the floor). What is
+left is cross-arm interference: five other arms allocating stores and
+churning the heap between measurements. **For a single hot arm, use the
+isolated harness**; the combined one is for arms whose deltas are large.
+
+Final state: **343 unit tests** (the matrix is ~130 of them), **17/17 on
+device**, every fix mutation-checked with no survivors across all three
+rounds.
+
+---
+
+## 7e. Round four — a crash, and a flaw in the mutation harness itself
+
+Fourteen more; four reproduced immediately, including the first **crash**
+in this whole sequence.
+
+| | mine? |
+|---|---|
+| `items.length = 4` on a collection threw `undefined is not an object (evaluating 'el._id')` out of the proxy set trap — `_isColl` and `every` SKIP holes, `for...of` does not | **pre-existing** (HEAD has the same shape); my extra `every` guard neither caused nor fixed it |
+| `reorderBy` was the only mutator that never touched `collCache`, so a `fill` that degraded a collection left the cache asserting "collection" and the next push erased the primitives on reopen (`[5,5,{q:1}]` in memory, `[{q:1}]` after) | yes |
+| vivification bumped the leaf but never the materialised ANCESTOR: `s.a` kept serving the stale `5` while `s.a.b.c` read 7 | yes — round three fixed the disk half of this exact scenario and left the reactive half |
+| a null return from the native batch meant "every key missing", and my epoch guard added two new null paths — up to 256 persisted leaves per chunk would revert to initState and be flushed back over the real data | the hazard is mine |
+| `del`/`delPrefix` never bumped `get_epoch`, so my own guard did not uphold the invariant its comment claimed | yes |
+| `reverse` left INDEX-addressed element proxies stale (found by the matrix, not the review) | pre-existing, unfixed by round three |
+
+Plus: the `elInfo` literals were rebuilt inside the get trap on every
+element read — the exact per-read allocation the `allChain` hoist was
+added to remove, reintroduced two rounds later by adding `allKeys` to
+them; `delPrefixLater` scanning `dirty` per assign; three copies of the
+id-seed scan; eleven copy-pasted persistence gates (now `persists(k)` /
+`policyOf(k)`); a 16 MB caller-controlled allocation in the zig; and
+`{ persist: true }` in every persistence test — **not a recognised
+config key**, silently ignored, reading as an opt-in that never existed.
+
+### The mutation harness was lying
+
+`#3`'s declared-dep test was appended and mutation-checked in the same
+step, **without first confirming it passed on unmutated code**. It did
+not — the declared-dep flush is scheduled, not synchronous, and the test
+asserted immediately. A test that fails both with and without the
+mutation reports **KILLED**. Four of that round's checks were worthless
+and looked green.
+
+The harness now runs the baseline first and refuses to report on a
+filter that is not green (and not empty — a typo'd `-t` matches zero
+tests and also "passes"). Same class as everything else in this file:
+the instrument agreed with itself.
+
+### Perf
+
+The vivification fix cost **+6%** on a write inside a collection element
+— a `const bumpViv = vivKeys === null ? null : () => {...}` closure
+variable on the hot path. Inlining the loop into the two `notify`
+callbacks put it back at the floor:
+
+| arm (isolated, medians of 15) | delta | drift |
+|---|---:|---:|
+| leaf write, plain object | −2.0% | +0.6% |
+| leaf write inside a collection element | **+0.9%** | −0.9% |
+
+The combined harness read the same code at **+20.9%** and **+9.0%**. It
+still cannot resolve these arms; §7d has the ruled-out causes.
+
+Standing after four rounds: **347 unit tests, 17/17 on device**, every
+fix mutation-checked against a verified-green baseline, no survivors.
+
+---
+
+## 7f. Round five — the collapse, and why the count kept not falling
+
+Twelve findings. **Five of them were one cause**, and that is the
+finding worth keeping:
+
+> `stageAt` used **"are all the elements objects?"** to answer **"can
+> this be stored as per-element frames?"**, and the four array mutators
+> each maintained the `#x` index frame by hand.
+
+`_isColl` and the format question agree until an array is all-objects
+WITHOUT ids — which happens whenever a whole-array frame comes back off
+disk, or a splice removes the primitive that made a mixed array mixed.
+Every site that conflated them wrote an index of `ids: [undefined]`, and
+`hydrateArray` reads `#x` FIRST, so the index masked the real data.
+Reported as five bugs (splice, degrading index-assign, promoting
+index-assign, extending `length`, `delete`), all silent on disk and
+invisible in memory.
+
+### What changed
+
+- **Two named predicates.** `_isColl` answers ADDRESSING (id vs index);
+  `_isIdColl` answers FORMAT (dense array of `_id`-carrying objects).
+  `_isColl` uses `every`, which skips holes; `_isIdColl` walks by index,
+  which sees them.
+- **One `stageArray(sk, value, changed)`** owns an array's on-disk
+  representation and the `#x` index that selects it. All four mutators
+  call it; none can get it wrong separately. `changed` keeps the
+  deferred-element-frame win (a push must not re-encode the collection).
+- **`tombstoneTree` matches the format actually written**, so deleting
+  an id-less object array deletes the blob rather than only an index
+  that was never there.
+
+Four of the five bugs disappeared the moment the mutators were routed
+through one function — before any of them was addressed individually.
+
+### Also fixed
+
+`persist: false` leaked through **any** wholesale object assign over a
+subtree containing a non-persist leaf, not just the vivification path
+the review named — `s.a = {secret, b}` blobbed the secret into `k:a`
+because the policy was only consulted for `a`. Plus: the
+addressing-scheme sets grew without bound under element churn (nested
+arrays intern `items.<id>.tags`; now swept by `pruneVersRecords`, and
+counted by a new `proxied()` — a leak nobody counts is a leak nobody
+finds); `hydrate` no longer purges staged writes made during the async
+init window; three inlined copies of the persistence gate; a dead
+`i === 0 &&`.
+
+### Two matrix axes it was missing
+
+The generator now has an **`idless`** shape (all objects, no ids — the
+shape all five bugs lived in) and a **flush between the seed and the
+mutation** (without it the two land in one batch and the mutation's
+frames overwrite the seed's, which hides every stale-frame bug). Both
+were needed for any of this to be caught mechanically.
+
+### Perf, and a mis-attribution corrected twice over
+
+The first fix for the `persist: false` leak recursed per key whenever
+the store had ANY non-persist rule: **+449%** on object assign. Scanning
+the rule list instead was still **+47%** — `sk + '.'` allocates a string
+per call on a per-write path. A precomputed ancestor Set is one hash
+lookup: **+3%**.
+
+A bisect on the remaining wholesale-array-replace regression put it
+squarely on `delPrefixLater`'s dirty purge, **not** on the id-seeding
+scan §7d blamed for the same arm:
+
+```
+baseline (all of this branch)          +29.1%   drift +6.1%
+without the id-seed scan               +32.5%   drift +4.5%
+with _isColl instead of _isIdColl      +27.2%   drift -3.7%
+without delPrefixLater's dirty purge    +7.1%   drift +0.6%
+```
+
+That purge stays: it is the difference between a deleted leaf staying
+deleted and resurrecting at the next open, because `doFlush` runs
+`delPrefix` before writing `dirty`. The cost is now recorded at the
+call site instead of being rediscovered.
+
+| arm (medians of 11, A/B/A) | delta | drift |
+|---|---:|---:|
+| leaf write, plain object | +3.3% | −0.4% |
+| leaf write inside a collection element | +3.9% | −0.7% |
+| array push + splice (persisted) | −2.3% | +0.3% |
+| wholesale array replace (persisted) | +21..29% | ±3% |
+| object assign, store has a non-persist path | +3% | — |
+
+### The answer to "why does it keep finding more?"
+
+It was not finding new kinds of defect. It was finding **one invariant
+applied to a subset of its sites**, once per site. Twelve sites touched
+`#x`; twenty-six expressed "is this a collection?"; four mutators had to
+agree on both. A rule written as a convention at N places generates N
+chances to be wrong, and each round's fixes added another convention.
+
+Making the two invariants into two functions is what changed the shape
+of the problem. **402 unit tests, 17/17 on device**, every fix
+mutation-checked against a verified-green baseline, no survivors.
+
+---
+
+## 7g. Round six — `delPrefix` had never once deleted anything
+
+Fifteen findings. One of them is the largest single defect in this whole
+sequence, and it predates every round:
+
+> Every engine key is namespaced **`'k:' + sk`**. `doFlush` handed
+> `delPrefix` the **bare `sk`**, so it tested `startsWith('a.')` against
+> `'k:a.b.c'` and matched nothing — on **both** backends, since the JS
+> one mirrors the native matcher.
+
+`delPrefix` is what sweeps stale leaf-override frames when a wholesale
+assign invalidates a subtree. It has been a no-op for the life of this
+branch. Reproduced: `s.a.b.c = 1`, flush, `s.a = {x:2}`, flush, reopen
+→ `{x:2, b:{c:1}}`. The deleted leaf comes back.
+
+**Every test of this passed** because they all used a SINGLE flush
+window, where `delPrefixLater`'s dirty purge covers it. Two windows is
+what exercises the native sweep, and nothing had two. §7f even
+documented and priced that purge — the +22% is real, but it was buying
+half of what the comment claimed.
+
+Also fixed: `fill`/`copyWithin` destroyed collection elements without
+notifying or pruning any ID-addressed holder (`reorderBy` treated the
+whole family as "only moves things", true for sort/reverse only); the
+blob branch of `stageArray` orphaned a generation of `k:sk.<id>` frames
+per degrade/re-promote cycle; `LogStore.getMany` resolved every key
+twice, and the second resolve re-reads a whole segment file on an
+8-entry-LRU miss — now one pass copying into a growable scratch, which
+has neither the retention of the buffered version nor the double read;
+the zig epoch check moved above the realloc, so a refused batch can no
+longer permanently raise resident memory.
+
+### The matrix had no `fill`, no `copyWithin`, no `sort`
+
+`reverse` was its only `reorderBy` entry, and `reverse` is `indexOnly` —
+so neither the `!indexOnly` staging path nor the element-DESTROYING half
+was ever generated, for any shape. That gap is exactly what hid the
+`fill` bug. All three are in now.
+
+### Two lines kept without a test, and labelled
+
+`stageArray`'s id branch retiring the blob, and its mirror in
+`tombstoneTree`. The resurrection they were reported for DID reproduce,
+but it stops reproducing with the `delPrefix` namespace fix alone, and
+removing **both** leaves the suite green — checked, not assumed. They
+stay because "one owner decides the format" is not satisfied by an owner
+that writes one representation and leaves the other on disk. Labelled
+defensive at both sites, matching the precedent for setAt's vivify
+`structGen`.
+
+### Process notes
+
+- **Five mutants survived the first pass**, because the fixes were made
+  against a probe file that was then deleted without being converted
+  into tests. The probes proved the bugs; nothing pinned the fixes. All
+  five now have tests and all five die.
+- **The first perf run was void** — every arm's A/A drift was +20..35%
+  because the zig build was still running on the same machine. Re-run
+  idle. This is the same "rule out the tool" discipline the browser-pane
+  and stale-bundle rules exist for, applied to my own background job.
+- 34 unrelated bridge tests failed mid-round; that was my probe file
+  leaking a global, not the change. Confirmed by deleting it.
+
+| arm (medians of 11, A/B/A, idle) | delta | drift |
+|---|---:|---:|
+| leaf write, plain object | +3.9% | −1.7% |
+| leaf write inside a collection element | +2.1% | +0.3% |
+| array push + splice (persisted) | −1.2% | −1.9% |
+| wholesale array replace (persisted) | +15..30% | ±5% |
+| cold open + hydrate 400 leaves | −2.1% | −6.5% |
+
+The replace arm remains dominated by `delPrefixLater`'s dirty purge —
+now buying the whole invariant rather than half of it.
+
+**473 unit tests, 17/17 on device**, zig builds ReleaseFast for
+`aarch64-linux-android`.
+
+---
+
+## 7h. Round seven — and the rule that should have been in force
+
+Fourteen findings. **Four were regressions from round six**, and three of
+those four came from work nobody asked for — orphan cleanup and a tidier
+argument, bolted onto a reported fix. Round six's *reported* bugs were
+all still fixed; the damage was entirely in the adjacent tidying.
+
+The worst: `delPrefixLater` had no empty-`sk` guard, so a root-level
+array made the prefix `'k:'` — which matches `k:#meta`. A push
+tombstoned the store's version and shape metadata. `tombstoneTree` and
+`writeAt` both guard with `sk &&`; the one I added did not.
+
+Second worst: `reorderBy`'s `goneIds` prune ran on index-addressed
+arrays, deleting index-N's live signals under the guise of "removing
+element id N". **That is the id-vs-index collision splice already guards
+against, with a comment three lines away describing it.** I read that
+comment and wrote the bug next to it.
+
+Also: `arrayProxy.persist` was the last stageAt caller without a policy
+gate (`s.secrets[0].tags.push()` wrote a `persist: false` element to
+disk); the `missing` scan threw on a sparse array where the `.map` it
+replaced never did; `push(undefined)` was swallowed by setAt's no-op
+guard; splice and `length` never diffed by slot for index-addressed
+holders; an index assign that changed an element's `_id` orphaned the
+old frame, memo and signals; `_perKey` returned ArrayBuffers where the
+contract says Uint8Array.
+
+### The rule
+
+**Fix what reproduced. Nothing adjacent.** Three of this round's four
+self-inflicted defects were unforced improvements. The discipline is not
+"be more careful" — it is to stop making changes no finding asked for.
+
+### Two guards kept without a test, both labelled
+
+- `delPrefixLater`'s empty-`sk` guard is unreachable given the
+  `hadElementFrames` gate that landed with it. Both survive mutation;
+  neither is redundant, because they protect different things ("is there
+  anything to sweep" vs "is `sk` even a prefix").
+- The scalar-delete `bumpKey`-instead-of-`bumpTree` is equivalent by
+  construction, so no test can distinguish it. Asserted by reading, and
+  said so at the site.
+
+### A cost nothing could see
+
+`delPrefixLater` was registering a sweep on every push to a plain
+`number[]` — a full-keydir scan per flush for a namespace that has never
+held a `k:sk.*` record. `records` cannot see it (sweeping nothing
+deletes nothing), so it is now counted: `prefixSweeps()`, alongside
+`versions()` / `memos()` / `proxied()`. The test asserts **zero** for a
+plain array. Every one of those four counters exists because a leak
+went unnoticed until a number moved.
+
+### Corrected
+
+Round six's finding about root-level arrays claimed the push was lost.
+It is — but **root arrays have never persisted, at HEAD or now**. That
+is a separate unsupported shape, and the test asserts only what the
+finding was actually about: that a mutation cannot take `#meta` with it,
+observed through `migrate()` still running on reopen.
+
+**484 unit tests, 17/17 on device**, zig `ast-check` clean.
+
+---
+
+## 7i. Round eight — and an audit of what the tests actually assert
+
+Ten findings, all fixed. Four mattered:
+
+- **A collection replaced by a NON-array never retired `#x`.** `stageArray`
+  is the documented single owner of the index, but `stageAt` only routes
+  there when the new value IS an array — so `s.items = 5` left the index
+  behind and hydrateArray, which reads it first, rebuilt the old
+  collection over the scalar. Same masking as the degrade case, one
+  shape further out.
+- **`vivKeys` was built from the RESOLVED path.** `concreteOf` turns
+  `{__id:'1'}` into an index, so the ancestor bump targeted
+  `items.0.meta` while the proxies had interned `items.1.meta`. It
+  reached nobody, and on a mixed array it would wake an unrelated slot.
+- **The `old === v` no-op return fired AFTER vivification had already
+  clobbered the ancestor.** `held.c = undefined` destroyed `s.a = 5` in
+  memory with nothing notified and nothing staged; disk still said 5.
+- **A truncation re-encoded every survivor** — `length = 40` on a
+  50-element collection staged 52 frames where a push stages 3. No
+  surviving element's bytes change; only membership, which lives in `#x`.
+
+### The fixture that made 44 tests duplicates
+
+`SHAPES.idless` was **byte-identical to `SHAPES.mixed`** — including the
+primitive whose entire purpose is to distinguish them. For three rounds
+the id-less axis existed only in the persistence loop, which compensated
+with a `splice(2,1)`. It was cited three times as evidence that class
+was covered. Now `[{v:1},{v:2}]`, and the compensating splice is gone.
+
+## The audit
+
+**Static:** 112 hand-written tests, zero with no `expect`, zero
+duplicate bodies, one loose bound (a timing guard).
+
+**Mechanical mutation sweep** — delete one effectful statement at a time
+(`bumpKey`, `dirty.set`, `dropMemo`, `_skalNotify`, `stageAt`, …) and see
+whether any of the 489 tests notice:
+
+> **24 of 45 survived.** Over half the store's effectful statements could
+> be deleted with the whole suite green.
+
+Splitting them by reading each site:
+
+**Genuinely redundant** — another line already covers it, so deletion is
+safe: `bumpKey(_all(sk))` inside `bumpArray` (every array mutator bumps
+`_all` in its own notify block), the `bumpIndices` calls that the new
+by-slot diffs now subsume, five `scheduleFlush()` (tests call `flushNow`
+explicitly), three `collCache` writes (a cache — deleting a set only
+forces re-derivation), and `nodeMemo.set` (memoisation, not behaviour).
+
+**Real coverage gaps.** The sharpest: `bumpOwners(elInfo)` in
+`reorderBy`, in the length setter and in the index-assign path — round
+ONE's headline fix, reachable and correct, covered by nothing. The
+`nested` matrix shape only ever observed the INNER array. Adding an
+outer-iteration observer for that shape took the sweep from **24/45 to
+21/45** and added 11 tests.
+
+### Closing them
+
+Written from the SITE rather than from a behaviour someone thought of,
+which is the difference between a suite that grows and one that covers:
+
+```
+24/45 survived  ->  21  ->  13  ->  8
+```
+
+The tests that moved it: index readers on reverse/truncate (`bumpIndices`
+— `s.rows[1]` subscribes to `rows#1`, a different key from the by-slot
+`rows.1` diff added later); declared-dep effects on an ordinary leaf
+write and on an index assign; leaf overrides under a deleted subtree;
+a vivified ancestor not carrying stale siblings back; non-persist
+SIBLINGS still persisting; the debounced flush landing without
+`flushNow` on four separate write paths; proxy identity; the memo not
+growing across DISTINCT deleted keys (the first version reused one key,
+so the memo never grew and the test could not see `dropMemo` at all);
+`bumpArray`'s `#all` on the grow path (on a wholesale replace
+`bumpKey(sk)` already wakes iteration, so `#all` is redundant THERE —
+assigning past the end is where it is the only bump).
+
+**Two of those tests failed when first written, and both times my
+expectation was wrong, not the code.** One asserted a deleted subtree
+reads back `undefined`; it reads back the initState default, because a
+delete removes persisted state, not the schema. At HEAD the same case
+returned the deleted data — that is round six's `delPrefix` fix, now
+covered.
+
+### The eight that remain, classified
+
+Not gaps. Recorded at the bottom of the test file with the reasoning:
+
+- **`structGen++` in setAt's whole-tree branch** — only caller is
+  migrate, which runs before any proxy exists. Unobservable.
+- **Three `scheduleFlush()`** — empirically redundant: the debounce
+  tests exercise all three paths and stay green with the line deleted,
+  because another call on the same path arms the same timer.
+- **`nodeMemo.set`** — `kidCache` already returns the same child proxy
+  for repeated access through one parent. Affects how often a proxy is
+  rebuilt, never what it reads.
+- **Three `collCache` writes** — a cache of "is this a collection?".
+  Dropping a write only forces re-derivation.
+
+A statement that survives is either covered by a test that does not
+exist yet, or one of these eight. **That distinction is the only thing
+the test count cannot tell you**, and it costs 90 seconds to get.
+
+### What the audit is for
+
+A suite is not measured by its test count. 489 green tests coexisted with
+half the store being deletable, and the one number that showed it took
+90 seconds to produce. **Run this sweep before trusting the suite**, not
+after a reviewer finds the hole.
+
+**518 unit tests, 17/17 on device**, zig `ast-check` clean.
+
+---
+
 ## 8. Re-running
 
 Harnesses are byte-identical in both apps (verify with `md5`):

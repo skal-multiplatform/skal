@@ -598,9 +598,13 @@ export function createSkalStore(initState, config = {}) {
   // Every key on disk, listed once at open. null = the host cannot list,
   // so hydration probes every declared leaf as it always did.
   let diskKeys = null;
-  // Leaf frames actually REQUESTED during hydration. The whole point of
+  // Engine reads performed during hydration, taken from the ENGINE's own
+  // counter rather than from db.js's intent to probe. The whole point of
   // `diskKeys` is that this stops scaling with the size of initState, and
-  // a saving nobody counts is one nobody notices regressing.
+  // a saving nobody counts is one nobody notices regressing — but a
+  // counter incremented next to a gate shares that gate's condition, so
+  // deleting the gate left the number unchanged. Counting at the
+  // boundary being crossed cannot be fooled that way.
   let hydrateProbes = 0;
   const [ready, setReady] = createSignal(false);
   const [backendKind, setBackendKind] = createSignal('…');
@@ -2551,7 +2555,6 @@ export function createSkalStore(initState, config = {}) {
         let recurse = true;
         if (pol.persist && !pol.lazy && !dirty.has(dk)
             && (diskKeys === null || diskKeys.has(dk))) {
-          hydrateProbes++;                 // point gets count too
           const b = engine.get(dk);
           if (b != null) {
             const decoded = decodeFrame(b);
@@ -2585,12 +2588,6 @@ export function createSkalStore(initState, config = {}) {
     }
     if (lk.length === 0) return;
 
-    // CHUNKED. The native batch sizes its scratch to the whole request
-    // and only ever grows it, so an unchunked level would leave the
-    // store holding its largest payload for the process lifetime — set
-    // by the widest object in initState, on mobile. 256 keys keeps the
-    // crossing amortised while bounding the retained buffer.
-    const CHUNK = 256;
     // ONE REPRESENTATION, both branches: a decoded value plus a
     // parallel presence flag.
     //
@@ -2628,7 +2625,6 @@ export function createSkalStore(initState, config = {}) {
       }
       lk.length = w; lsk.length = w; ldk.length = w;
     }
-    hydrateProbes += ldk.length;
     const vals = new Array(ldk.length);
     const has = new Array(ldk.length);
     for (let i = 0; i < ldk.length; i += CHUNK) {
@@ -2659,6 +2655,16 @@ export function createSkalStore(initState, config = {}) {
     }
   }
 
+  // CHUNKED. The native batch sizes its scratch to the whole request and
+  // only ever grows it, so an unchunked level would leave the store
+  // holding its largest payload for the process lifetime — set by the
+  // widest object in initState, on mobile. 256 keys keeps the crossing
+  // amortised while bounding the retained buffer.
+  //
+  // Shared by BOTH hydration paths: collection elements were read one at
+  // a time, so the bound only applied to half of hydration.
+  const CHUNK = 256;
+
   function hydrateArray(sp, sk) {
     // Flag-gated like hydrate's: a store of 500 collections otherwise
     // allocated 500 policy objects and 500 permanent policyCache
@@ -2674,26 +2680,36 @@ export function createSkalStore(initState, config = {}) {
     // collection tests. Without this a store declaring 500 collections
     // with nothing persisted still performs 1000 point lookups at open:
     // the identical O(declared) pattern, one function over.
-    const onDisk = (k) => diskKeys === null || diskKeys.has(k);
-    const ixk = 'k:' + sk + '#x';
-    hydrateProbes += onDisk(ixk) ? 1 : 0;
-    const idxBytes = onDisk(ixk) ? engine.get(ixk) : null;
+    // Hoisted: a closure per collection plus two `has` lookups each was
+    // the same O(declared) cold-start waste the gate exists to remove.
+    const bk = 'k:' + sk;
+    const ixk = bk + '#x';
+    const hasIx = diskKeys === null || diskKeys.has(ixk);
+    const hasWhole = diskKeys === null || diskKeys.has(bk);
+    const idxBytes = hasIx ? engine.get(ixk) : null;
     // Element frames may predate this process; the blob path needs to
     // know they exist before it can decide whether to sweep them.
     if (idxBytes != null) hadElementFrames.add(sk);
     if (idxBytes != null) {                          // a persisted collection
       const idx = decodeFrame(idxBytes);             // { ids, nextId }
       nextIds.set(sk, idx.nextId || 1);
+      // BATCHED, like the scalar path. One boundary crossing per
+      // element is the term the scalar path was chunked to avoid — 51%
+      // of a cold load — and a 500-element collection was paying 500 of
+      // them here, uncounted, in the function this change optimises.
+      const ids = idx.ids || [];
       const els = [];
-      for (const id of idx.ids || []) {
-        const b = engine.get('k:' + _join(sk, id));
-        if (b != null) els.push(decodeFrame(b));
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const part = ids.slice(i, i + CHUNK).map((id) => 'k:' + _join(sk, id));
+        const got = engine.getMany(part);
+        for (let j = 0; j < got.length; j++) {
+          if (got[j] != null) els.push(decodeFrame(got[j]));
+        }
       }
       setAt(sp, els, sk);
       return;
     }
-    hydrateProbes += onDisk('k:' + sk) ? 1 : 0;
-    const whole = onDisk('k:' + sk) ? engine.get('k:' + sk) : null;   // whole-frame array
+    const whole = hasWhole ? engine.get(bk) : null;          // whole-frame array
     if (whole != null) { setAt(sp, decodeFrame(whole), sk); return; }
 
     // Nothing persisted for this array at all: it exists only because
@@ -2806,10 +2822,22 @@ export function createSkalStore(initState, config = {}) {
         try {
           diskKeys = (engine && engine.allKeys) ? engine.allKeys() : null;
         } catch (_) { diskKeys = null; }
-        notify(() => hydrate(initState, [], '', root));
-        // Read only during hydrate; holding it pins a key string per
-        // record for the life of the store, on mobile.
-        diskKeys = null;
+        // FINALLY: hydrate can throw — decodeFrame JSON.parses raw
+        // bytes, and a torn frame raises. init's catch-all treats that
+        // as non-fatal, so without this the listing stayed pinned for
+        // the life of the store, which is the leak the release exists
+        // to prevent.
+        //
+        // No test distinguishes the `finally` from a plain sequence, and
+        // none can: the two differ only on the throw path, and what
+        // differs there is retained memory, which nothing observable
+        // reports. Checked, not assumed.
+        const reads0 = engine ? engine.reads : 0;
+        try { notify(() => hydrate(initState, [], '', root)); }
+        finally {
+          hydrateProbes = (engine ? engine.reads : 0) - reads0;
+          diskKeys = null;
+        }
       }
       scheduleFlush();
     } catch (_) {

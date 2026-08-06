@@ -355,6 +355,12 @@ export async function openBackend(baseDir) {
 // ── The log engine ─────────────────────────────────────────────────
 
 export class LogStore {
+  // Engine reads, counted AT THE BOUNDARY. db.js used to count its own
+  // intent to probe, which meant a gate and its counter shared the same
+  // condition — deleting the gate left the count unchanged and the test
+  // green. Counting where the crossing actually happens cannot be
+  // fooled that way.
+  reads = 0;
   constructor(backend) {
     this._b = backend;
     this._keydir = new Map();   // key → { seg, off, len, seq }
@@ -664,12 +670,15 @@ export class LogStore {
   // so a store whose data lives in one blob still paid a lookup per leaf
   // of initState. Handing the set over once makes hydration O(records).
   //
-  // A has-VIEW, not a copy: the consumer only ever calls `.has()`, and
-  // `_keydir` already answers that. Copying every key into a fresh Set
-  // is O(records) time and a second reference to every key string, on
-  // the cold-start path, inside a change whose whole purpose is removing
-  // cold-start work.
-  allKeys() { const kd = this._keydir; return { has: (k) => kd.has(k) }; }
+  // A SNAPSHOT Set, matching what the native backend returns.
+  //
+  // A live `{ has }` view over `_keydir` was cheaper and is reverted: it
+  // gave the two backends different semantics on the one method whose
+  // whole job is to be believed, and CI only ever runs this one. The
+  // saving was argued, never measured — and this repo's rule is that a
+  // performance claim is a measurement. If it is worth having, it is
+  // worth measuring and applying to BOTH backends.
+  allKeys() { return new Set(this._keydir.keys()); }
 
   // Tombstone every keydir key starting with `prefix.` or `prefix#`.
   // Used by db.js's wholesale-assign + tombstoneTree paths to clear
@@ -690,6 +699,7 @@ export class LogStore {
   // amortise, so this is a plain loop — it exists so callers never have
   // to branch on which backend they got.
   getMany(keys) {
+    this.reads += keys.length;
     // VIEWS OVER A REUSABLE SCRATCH, deliberately — matching what the
     // native backend does. Returning fresh copies here made the JS
     // backend a test double that under-reports the real consumer: a
@@ -764,6 +774,7 @@ export class LogStore {
   }
 
   get(key) {                              // → Uint8Array | null
+    this.reads++;
     const v = this._frameValue(key);
     return v === null ? null : v.slice();
   }
@@ -872,6 +883,7 @@ export class LogStore {
 // when the runtime exposes the `__skal_store_*` host functions; the
 // store falls back to the JS LogStore otherwise.
 export class NativeLogStore {
+  reads = 0;
   constructor(dir) {
     this.backendKind = 'native';
     this._dir = dir;
@@ -913,21 +925,32 @@ export class NativeLogStore {
   allKeys() {
     const fn = globalThis.__skal_store_keys;
     if (typeof fn !== 'function') return null;
-    let ab;
-    try { ab = fn(this._h); } catch (_) { return null; }
-    if (!ab || ab.byteLength < 4) return null;
-    const dv = new DataView(ab);
-    const n = dv.getUint32(0, true);
-    if (4 + n * 4 > ab.byteLength) return null;
-    const out = new Set();
-    let off = 4 + n * 4;
-    for (let i = 0; i < n; i++) {
-      const len = dv.getUint32(4 + i * 4, true);
-      if (len === 0xFFFFFFFF || off + len > ab.byteLength) return null;
-      out.add(_utf8d(new Uint8Array(ab, off, len)));
-      off += len;
-    }
-    return out;
+    // The DECODE is inside the try as well as the call. A host handing
+    // back a Uint8Array instead of an ArrayBuffer — the plausible
+    // mistake, since getMany returns views — passes both the truthiness
+    // and byteLength checks and then throws out of `new DataView`. The
+    // contract above promises null; only the caller's own try/catch was
+    // making that true.
+    //
+    // No 0xFFFFFFFF sentinel check: this format has no missing-value
+    // marker (that is getMany's), and the bounds test below already
+    // rejects it. Keeping it implied a sentinel the writer never emits.
+    try {
+      const ab = fn(this._h);
+      if (!ab || ab.byteLength < 4) return null;
+      const dv = new DataView(ab);
+      const n = dv.getUint32(0, true);
+      if (4 + n * 4 > ab.byteLength) return null;
+      const out = new Set();
+      let off = 4 + n * 4;
+      for (let i = 0; i < n; i++) {
+        const len = dv.getUint32(4 + i * 4, true);
+        if (off + len > ab.byteLength) return null;
+        out.add(_utf8d(new Uint8Array(ab, off, len)));
+        off += len;
+      }
+      return out;
+    } catch (_) { return null; }
   }
 
   _perKey(keys) {
@@ -971,6 +994,7 @@ export class NativeLogStore {
   // 16366700) because the batched path is the only reader that holds
   // more than one buffer at a time.
   getMany(keys) {
+    this.reads += keys.length;
     const fn = globalThis.__skal_store_get_many;
     if (typeof fn !== 'function') return this._perKey(keys);   // older libskal
     const ab = fn(this._h, keys);
@@ -1022,6 +1046,7 @@ export class NativeLogStore {
   // Normalise at the call site or widen this contract before adding a
   // consumer that does anything else with these bytes.
   get(key) {                    // → ArrayBuffer | null (decoder takes both)
+    this.reads++;
     // Returned raw. Wrapping in a Uint8Array cost one allocation per
     // record on the hydration path for nothing: TextDecoder accepts an
     // ArrayBuffer directly, and every caller hands this straight to

@@ -908,6 +908,11 @@ const SkalStore = struct {
     // store_get_many_cb, which buffers mmap-backed value slices across a
     // pass over a JS array — see the comment there.
     get_epoch: u64 = 0,
+    // Key-listing buffer, separate from get_scratch so a listing cannot
+    // permanently inflate the READ scratch. Freed at the start of each
+    // listing call: JS decodes the result into a Set before returning
+    // and never holds it.
+    keys_scratch: []u8 = &[_]u8{},
 
     // Map segment `id`. When `create`, the file is made `capacity` bytes
     // (caller passes max(SEG_SIZE, frameTotal) so an oversized frame
@@ -1189,6 +1194,38 @@ const SkalStore = struct {
         return true;
     }
 };
+// Pack a key list into the wire format shared with getMany:
+//   [u32 count][u32 len_0 .. u32 len_{count-1}][bytes_0][bytes_1]...
+//
+// INSIDE the tested region on purpose. store_keys_cb lived outside it,
+// so `zig test` could not reach the encoder at all — and the JS tests
+// exercise the DECODER against a hand-written `pack()` in the test file,
+// i.e. a second implementation of this format rather than this one.
+// Re-introducing a header/body desync left all 527 JS tests green.
+// "Test the other side of the wire" (CLAUDE.md) means the writer, not a
+// model of the writer.
+//
+// Returns the number of bytes written, or null if `dst` is too small.
+// One pass over a materialised slice list, so the header can never
+// disagree with the body — the class of bug that produced two bad
+// commits here.
+fn packKeyList(dst: []u8, keys: []const []const u8) ?usize {
+    const count: u32 = @intCast(keys.len);
+    const header = 4 + @as(usize, count) * 4;
+    var need = header;
+    for (keys) |k| need += k.len;
+    if (dst.len < need) return null;
+
+    std.mem.writeInt(u32, dst[0..4], count, .little);
+    var w: usize = header;
+    for (keys, 0..) |k, i| {
+        std.mem.writeInt(u32, dst[4 + i * 4 ..][0..4], @intCast(k.len), .little);
+        @memcpy(dst[w..][0..k.len], k);
+        w += k.len;
+    }
+    return w;
+}
+
 // ─── SKAL STORE END ────────────────────────────────────────────────
 
 // ── Store prewarm ──────────────────────────────────────────────────
@@ -1473,55 +1510,35 @@ fn store_keys_cb(ctx: JSContextRef, _: JSObjectRef, _: JSObjectRef, argc: usize,
     if (argc < 1) return JSValueMakeNull(ctx);
     const store = skalStoreFromArg(ctx, args[0]) orelse return JSValueMakeNull(ctx);
 
-    const count: u32 = @intCast(store.keydir.count());
-    var total: usize = 4 + @as(usize, count) * 4;
+    // COLLECT FIRST, then pack. The previous shape walked the keydir
+    // twice — once to size, once to fill — and every bug this function
+    // has had came from the two passes being able to disagree: a header
+    // written from one and a body laid out from the other, a truncating
+    // `break`, an unguarded memcpy. Materialising the slice list costs
+    // one transient allocation of count*16 bytes and removes the class.
+    var keys: std.ArrayListUnmanaged([]const u8) = .{};
+    defer keys.deinit(bun.default_allocator);
+    keys.ensureTotalCapacity(bun.default_allocator, store.keydir.count()) catch
+        return JSValueMakeNull(ctx);
     var it = store.keydir.keyIterator();
-    while (it.next()) |kp| total += kp.*.len;
+    while (it.next()) |kp| keys.appendAssumeCapacity(kp.*);
 
-    if (store.get_scratch.len < total) {
-        if (store.get_scratch.len > 0) bun.default_allocator.free(store.get_scratch);
-        store.get_scratch = bun.default_allocator.alloc(u8, total) catch {
-            store.get_scratch = &[_]u8{};
-            return JSValueMakeNull(ctx);
-        };
-    }
-    const dst = store.get_scratch;
-    // Header and body layout are tied together: the body starts at
-    // `4 + count*4`, so the header MUST be `count`. An earlier attempt
-    // wrote `i` after the loop to "size from what was written" — that
-    // desynchronised the two, and the reader, which derives its body
-    // offset from the header, would have started decoding key bytes
-    // INSIDE the length table. Strictly worse than the hypothetical it
-    // was guarding against.
-    std.mem.writeInt(u32, dst[0..4], count, .little);
+    var need: usize = 4 + keys.items.len * 4;
+    for (keys.items) |k| need += k.len;
 
-    var off: usize = 4 + @as(usize, count) * 4;
-    var i: u32 = 0;
-    var it2 = store.keydir.keyIterator();
-    while (it2.next()) |kp| {
-        const k = kp.*;
-        // REFUSE, NEVER TRUNCATE. Every other refusal in this file
-        // returns null so JS degrades to the slow-and-correct path. A
-        // SHORT key list degrades to the silently-WRONG one: `diskKeys`
-        // is a filter, so a key missing from it reads as "not on disk",
-        // its leaf keeps the initState default, and the next flush
-        // writes that default over the real frame.
-        //
-        // The bounds check on `off` matters for the same reason the
-        // count check does, and more: pass 1 summed the sizes, and a
-        // keydir resize between the passes changes iteration order, so
-        // the first `count` entries seen in pass 2 can carry more bytes
-        // than pass 1 measured. Zig's bounds checks are compiled OUT in
-        // ReleaseFast, which is what ships — that is silent heap
-        // corruption, not a panic.
-        if (i >= count or off + k.len > dst.len) return JSValueMakeNull(ctx);
-        std.mem.writeInt(u32, dst[4 + @as(usize, i) * 4 ..][0..4], @intCast(k.len), .little);
-        @memcpy(dst[off..][0..k.len], k);
-        off += k.len;
-        i += 1;
-    }
-    if (i != count) return JSValueMakeNull(ctx);
-    const ab = JSObjectMakeArrayBufferWithBytesNoCopy(ctx, dst.ptr, off, null, null, null);
+    // A DEDICATED buffer, not `get_scratch`. The read scratch is bounded
+    // by db.js's CHUNK=256 precisely so the store does not hold its
+    // largest payload for the process lifetime; sizing it to the whole
+    // key listing defeated that. This one is freed at the START of the
+    // next call, so at most one listing is ever retained, and the read
+    // path's bound is left intact.
+    if (store.keys_scratch.len > 0) bun.default_allocator.free(store.keys_scratch);
+    store.keys_scratch = bun.default_allocator.alloc(u8, need) catch {
+        store.keys_scratch = &[_]u8{};
+        return JSValueMakeNull(ctx);
+    };
+    const n = packKeyList(store.keys_scratch, keys.items) orelse return JSValueMakeNull(ctx);
+    const ab = JSObjectMakeArrayBufferWithBytesNoCopy(ctx, store.keys_scratch.ptr, n, null, null, null);
     return @ptrCast(ab);
 }
 

@@ -2617,3 +2617,83 @@ describe('the native key-list decoder', () => {
     expect(decode(null)).toBe(null);
   });
 });
+
+describe('a listing that fails must not take hydration with it', () => {
+  test('a THROWING allKeys still loads everything', async () => {
+    // init()'s catch-all treats failures as non-fatal, so an unguarded
+    // throw here skipped hydration entirely while ready() still fired —
+    // every value silently reverting to its initState default, and the
+    // next flush writing those over the real frames.
+    const s = freshStore({ cfg: { a: 0, b: 0 } });
+    expect(await settle(s)).toBe(true);
+    s.cfg.a = 7;
+    s.cfg.b = 9;
+    await s[STORE].flushNow();
+
+    const real = LogStore.prototype.allKeys;
+    LogStore.prototype.allKeys = () => { throw new Error('host exploded'); };
+    let b;
+    try {
+      b = reopenSame({ cfg: { a: 0, b: 0 } });
+      expect(await settle(b)).toBe(true);
+    } finally { LogStore.prototype.allKeys = real; }
+    expect(b.cfg.a).toBe(7);
+    expect(b.cfg.b).toBe(9);
+  });
+
+  test('a THROWING host call returns null, not an exception', () => {
+    const prev = globalThis.__skal_store_keys;
+    globalThis.__skal_store_keys = () => { throw new Error('host exploded'); };
+    try {
+      expect(NativeLogStore.prototype.allKeys.call({ _h: 1 })).toBe(null);
+    } finally {
+      if (prev === undefined) delete globalThis.__skal_store_keys;
+      else globalThis.__skal_store_keys = prev;
+    }
+  });
+
+  test('a Uint8Array where an ArrayBuffer was promised returns null', () => {
+    // The plausible host mistake, since getMany hands back views. It
+    // passes the truthiness and byteLength checks, then throws out of
+    // `new DataView` — which the contract says must not escape.
+    const prev = globalThis.__skal_store_keys;
+    globalThis.__skal_store_keys = () => new Uint8Array(16);
+    try {
+      expect(NativeLogStore.prototype.allKeys.call({ _h: 1 })).toBe(null);
+    } finally {
+      if (prev === undefined) delete globalThis.__skal_store_keys;
+      else globalThis.__skal_store_keys = prev;
+    }
+  });
+});
+
+describe('declared-but-unpersisted collections are not probed', () => {
+  test('N declared collections with nothing on disk probe nothing', async () => {
+    const init = {};
+    for (let i = 0; i < 60; i++) init['list' + i] = [];
+    const s = freshStore(init);
+    expect(await settle(s)).toBe(true);
+    await s[STORE].flushNow();
+
+    const b = reopenSame(init);
+    expect(await settle(b)).toBe(true);
+    // hydrateArray's gate. Before it, each declared collection cost two
+    // point lookups at open — the same O(declared) pattern the scalar
+    // path was fixed for, one function over.
+    expect(b[STORE].hydrateProbes()).toBe(0);
+  });
+
+  test('...and a collection that IS on disk still loads', async () => {
+    const s = freshStore({ rows: [] });
+    expect(await settle(s)).toBe(true);
+    for (let i = 0; i < 40; i++) s.rows.push({ v: i });
+    await s[STORE].flushNow();
+
+    const b = reopenSame({ rows: [] });
+    expect(await settle(b)).toBe(true);
+    expect(b.rows.length).toBe(40);
+    expect(b.rows[39].v).toBe(39);
+    // index frame + 40 element frames, all batched
+    expect(b[STORE].hydrateProbes()).toBeGreaterThan(40);
+  });
+});

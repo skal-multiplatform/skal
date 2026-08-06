@@ -485,6 +485,13 @@ intersects against it instead of probing:
 |---|---:|---:|---:|
 | before | 433.0 | **+34.2** | −1.5 |
 | after | 414.0 | **+19.0** | −8.0 |
+| after two rounds of hardening | 411.0 | **+20.2** | −9.5 |
+
+The third row is the same protocol re-run once the key listing had been
+hardened twice (a testable encoder, guards on every decode, reads
+counted at the engine boundary, collection elements batched). It sits
+1.2 ms from the second against a 9.5 ms drift floor: **the hardening
+cost nothing measurable**, and the 45% saving held.
 
 **45% of the cold-start cost removed, 7.61 → 4.22 µs/leaf.** The change
 is 15.2 ms against an 8.0 ms drift floor — under this repo's rules that

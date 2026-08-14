@@ -2697,3 +2697,88 @@ describe('declared-but-unpersisted collections are not probed', () => {
     expect(b[STORE].hydrateProbes()).toBeGreaterThan(40);
   });
 });
+
+// ── round ten: three defects the scoped reviews could not see ────────
+//
+// All three predate the key-listing work and were found only when the
+// review swept the whole branch again. Two of them are the SAME shape
+// the predicate split was meant to end — a rule applied at the sites
+// someone was looking at, and not at its siblings.
+describe('a per-key recursion supersedes the blob it replaces', () => {
+  test('assigning an object over a scalar under a non-persist path', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skal-pk-'));
+    globalThis.__skal_data_dir = dir;
+    const cfg = { name: 'pk', paths: { 'a.secret': { persist: false } } };
+    const s = createSkalStore({ a: { b: 0, secret: '' } }, cfg);
+    expect(await settle(s)).toBe(true);
+    s.a = 5;                             // one blob frame at k:a
+    await s[STORE].flushNow();
+    s.a = { b: 1, secret: 'x' };         // per-key recursion: k:a.b only
+    await s[STORE].flushNow();
+    globalThis.__skal_data_dir = dir;
+    const b = createSkalStore({ a: { b: 0, secret: '' } }, cfg);
+    expect(await settle(b)).toBe(true);
+    // hydrate reads k:a FIRST; a surviving `5` there stops the recursion
+    // and prefix-deletes k:a.b, losing the whole assign.
+    expect(b.a.b).toBe(1);
+  });
+});
+
+describe('ids that can come back are never pruned', () => {
+  test('a caller-supplied id removed and re-sent still notifies', () => {
+    const s = memStore({ items: [] });
+    s.items = [{ _id: 'u1', title: 'a' }, { _id: 'u2', title: 'b' }];
+    const el = s.items[0];
+    const n = rx(() => el.title);
+    s.items.splice(0, 1);
+    const mid = n();
+    s.items.push({ _id: 'u1', title: 'a2' });
+    s.items[s.items.length - 1].title = 'a3';
+    expect(n()).toBeGreaterThan(mid);
+  });
+
+  test('generated ids are still pruned', () => {
+    // The saving must survive the fix: genId is monotonic, so those ids
+    // genuinely cannot reappear and pruning them is safe.
+    const s = memStore({ items: [] });
+    for (let i = 0; i < 80; i++) s.items.push({ t: i });
+    for (let i = 0; i < 80; i++) void s.items[i].t;
+    const peak = s[STORE].versions();
+    s.items.splice(0, s.items.length);
+    expect(s[STORE].versions()).toBeLessThan(peak);
+  });
+});
+
+describe('a mixed array does not lose index subscribers to an id prune', () => {
+  test('splicing an id-carrying element leaves index signals alone', () => {
+    // Only SOME elements carry an `_id`, so `_isColl` is true while the
+    // children are INDEX-addressed. Pruning by id then deletes
+    // `rows.1.*`, which belongs to index 1.
+    const s = memStore({ rows: [{ a: 1 }, { b: 2 }, { c: 3 }, { d: 4 }] });
+    const n = rx(() => s.rows[1]?.b);
+    s.rows[2] = { c: 30 };               // mints _id '1' for slot 2 only
+    s.rows.splice(2, 1);
+    const mid = n();
+    s.rows[1].b = 99;
+    expect(n()).toBeGreaterThan(mid);
+  });
+});
+
+describe('an index assign past the end grows the array', () => {
+  test('rows[5] = undefined', () => {
+    const s = memStore({ rows: [1, 2] });
+    s.rows[5] = undefined;
+    expect(s.rows.length).toBe(6);
+  });
+
+  test('...and an existing slot is not grown by a same-value write', () => {
+    // NB the index setter notifies unconditionally — a same-value assign
+    // still bumps `#i` and `#all`. That is pre-existing over-
+    // notification, not data loss, and deliberately not changed here:
+    // this test pins that `force` did not turn a no-op into a resize.
+    const s = memStore({ rows: [1, 2] });
+    s.rows[0] = 1;
+    expect(s.rows.length).toBe(2);
+    expect(s.rows[0]).toBe(1);
+  });
+});

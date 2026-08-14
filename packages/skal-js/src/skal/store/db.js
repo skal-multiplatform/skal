@@ -559,6 +559,17 @@ export function createSkalStore(initState, config = {}) {
 
   function pruneVersRecords(sk, ids) {
     if (ids.size === 0) return;
+    // ONLY WHEN IDS CANNOT COME BACK. The safety proof below rests on
+    // genId being monotonic — true for ids this store mints, false for
+    // ids a CALLER supplied, which the same store now supports
+    // first-class. A server that drops a row and re-sends it under the
+    // same `_id` (bumpReplaced's own comment says "a server payload
+    // does this routinely") re-interns a fresh signal, and every
+    // subscriber still holding the deleted one goes silent for good.
+    // That is the under-notification this function's comment calls the
+    // dangerous direction; not pruning merely grows `vers`, which
+    // `versions()` reports.
+    if (sawCallerIds.has(sk)) return;
     // The addressing-scheme sets are keyed by store key too, and a
     // nested array inside a collection element interns
     // `items.<id>.tags` — so element churn grew them without bound, and
@@ -721,10 +732,16 @@ export function createSkalStore(initState, config = {}) {
     for (let i = 0; i < els.length; i++) {
       const e = els[i];
       if (!_isObj(e) || e._id == null) continue;
+      // ANY caller id marks the array, numeric or not. Gating the mark
+      // on `max > 0` meant a store using string or uuid ids never set
+      // it — so both protections that depend on it (bumpReplaced's
+      // element walk for a reappearing id, and pruneVersRecords
+      // refusing to prune ids that can come back) were dead for exactly
+      // the id scheme most likely to see one reappear.
+      sawCallerIds.add(sk);
       const n = +e._id;                       // non-numeric ids: NaN, ignored
       if (n > max) max = n;
     }
-    if (max > 0) sawCallerIds.add(sk);
     if (max + 1 > (nextIds.get(sk) || 1)) nextIds.set(sk, max + 1);
   }
 
@@ -1079,6 +1096,18 @@ export function createSkalStore(initState, config = {}) {
     // materialised ancestor), but any wholesale assign over a subtree
     // containing a non-persist leaf had the same hole.
     if (_isObj(value) && (sk === '' || nonPersistUnder(sk))) {
+      // RETIRE THE WHOLE-VALUE FRAME this recursion supersedes. Writing
+      // per-key children while an older `k:sk` blob survives loses the
+      // entire assign: hydrate's object branch reads `k:sk` FIRST, and
+      // if what it finds is not an object it stops recursing and
+      // prefix-deletes the children. `s.a = 5` then `s.a = {b:1}` under
+      // a non-persist path read back as 5.
+      //
+      // writeAt's delPrefixLater(sk) sweeps `k:sk.` and `k:sk#`, which
+      // does not include `k:sk` itself — the same off-by-one namespace
+      // that made delPrefix a no-op for a year. Root has no frame of
+      // its own to retire.
+      if (sk !== '') dirty.set('k:' + sk, null);
       for (const k of Object.keys(value)) {
         const childSk = _join(sk, k);
         if (!persists(childSk)) continue;
@@ -1902,7 +1931,15 @@ export function createSkalStore(initState, config = {}) {
       let wasColl = false;
       if (!elInfo) {
         const cached = collCache.get(sk);
-        wasColl = cached === undefined ? _isColl(a) : cached;
+        // `_isIdColl`, not `_isColl`: this gates ID-ADDRESSED cleanup,
+        // which is a question about the element format, not about
+        // addressing. On a mixed array where only some elements carry an
+        // `_id`, `_isColl` is true and a removed element's id then
+        // deletes the version signals of the INDEX-addressed element at
+        // the same numeric key. reorderBy already uses `_isIdColl` here;
+        // splice, length and index-assign were left on the old one when
+        // the two predicates were split.
+        wasColl = cached === undefined ? _isIdColl(a) : (cached && _isIdColl(a));
       }
       let ins = items;
       if (!elInfo) {
@@ -2232,7 +2269,7 @@ export function createSkalStore(initState, config = {}) {
           let removed = null;
           if (!elInfo && newLen < a.length) {
             const cached = collCache.get(sk);
-            const wasColl = cached === undefined ? _isColl(a) : cached;
+            const wasColl = cached === undefined ? _isIdColl(a) : (cached && _isIdColl(a));
             if (wasColl) removed = a.slice(newLen);
           }
           const oldLen = a.length;
@@ -2311,7 +2348,12 @@ export function createSkalStore(initState, config = {}) {
             }
           }
           const grewFrom = a.length;
-          setAt([...sp, i], v, sk, true);
+          // `force` when the slot does not exist yet. setAt's no-op
+          // guard reads `old` as undefined for a slot past the end, so
+          // `rows[5] = undefined` matched it and the array never grew —
+          // the same defect the flag was added to fix for push, at its
+          // sibling call site.
+          setAt([...sp, i], v, sk, true, i >= grewFrom);
           const grewTo = a.length;
           // Derived BEFORE the notify because the element bump needs it.
           // Same incremental maintenance as before: a single index

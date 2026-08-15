@@ -580,7 +580,7 @@ export function createSkalStore(initState, config = {}) {
   //
   // `removed` may contain primitives and id-less objects; only
   // id-carrying ones were ever addressed by id.
-  function releaseElements(sk, removed, isIdColl) {
+  function releaseElements(sk, removed, isIdColl, alreadyNotified) {
     if (!isIdColl || removed.length === 0) return;
     const persistThis = persists(sk);
     const prefixes = [];
@@ -590,7 +590,7 @@ export function createSkalStore(initState, config = {}) {
       if (!_isObj(r) || r._id == null) continue;
       const id = String(r._id);
       const rSk = _join(sk, id);
-      bumpReplaced(rSk, r, undefined);          // the holder sees it go
+      if (!alreadyNotified) bumpReplaced(rSk, r, undefined);   // holder sees it go
       if (persistThis) dirty.set('k:' + rSk, null);
       prefixes.push(rSk);
       removedIds.add(id);
@@ -774,7 +774,13 @@ export function createSkalStore(initState, config = {}) {
   // REAPPEAR, so only those need the expensive new-element walk above.
   const sawCallerIds = new Set();
 
-  function seedIds(sk, els) {
+  // `markCaller = false` advances the counter without recording that a
+  // CALLER supplied these ids. Hydration restores whatever was stored,
+  // and it cannot tell a minted id from a supplied one — marking them
+  // meant every store disabled pruneVersRecords permanently after its
+  // first reopen, which is the unbounded `vers` growth versions() was
+  // added to catch.
+  function seedIds(sk, els, markCaller = true) {
     let max = 0;
     for (let i = 0; i < els.length; i++) {
       const e = els[i];
@@ -785,7 +791,7 @@ export function createSkalStore(initState, config = {}) {
       // element walk for a reappearing id, and pruneVersRecords
       // refusing to prune ids that can come back) were dead for exactly
       // the id scheme most likely to see one reappear.
-      sawCallerIds.add(sk);
+      if (markCaller) sawCallerIds.add(sk);
       const n = +e._id;                       // non-numeric ids: NaN, ignored
       if (n > max) max = n;
     }
@@ -1210,8 +1216,18 @@ export function createSkalStore(initState, config = {}) {
   function stripNP(sk, v) {
     if (!_isNode(v)) return v;
     if (Array.isArray(v)) {
+      // Elements get the same `persists` check the object branch below
+      // gets. Without it `paths: {'codes.0': {persist:false}}` was
+      // ignored — the recursion descended but never asked the question,
+      // so the leak this function exists to close was open for exactly
+      // half of it. A dropped element becomes a hole rather than
+      // shifting its neighbours, so indices still line up on reload.
       const out = new Array(v.length);
-      for (let i = 0; i < v.length; i++) out[i] = stripNP(_join(sk, i), v[i]);
+      for (let i = 0; i < v.length; i++) {
+        const ck = _join(sk, i);
+        if (!persists(ck)) continue;
+        out[i] = stripNP(ck, v[i]);
+      }
       return out;
     }
     const o = {};
@@ -1260,14 +1276,20 @@ export function createSkalStore(initState, config = {}) {
       for (let i = 0; i < list.length; i++) {
         const el = list[i];
         if (_isObj(el) && el._id != null) {
-          dirty.set('k:' + _join(sk, el._id), encodeAt(_join(sk, el._id), el));
+          const eSk = _join(sk, el._id);          // built once, not twice
+          if (!persists(eSk)) continue;          // a non-persist element
+          dirty.set('k:' + eSk, encodeAt(eSk, el));
         }
       }
       dirty.set('k:' + sk + '#x', INDEX_DIRTY);
-      // ...only if a frame was actually written. `_isIdColl([])` is
-      // true, so `s.nums = []` on a plain number[] otherwise claimed
-      // element frames and armed a full-keydir sweep on the next push.
-      if (list.length > 0) hadElementFrames.add(sk);
+      // UNCONDITIONAL, because the `#x` above is written unconditionally
+      // and this flag's whole job is to record that. Gating it on
+      // `list.length > 0` to avoid a sweep for an empty array meant
+      // `s.items = []` wrote an index nothing remembered, so the next
+      // `s.items = 5` never retired it and hydrateArray rebuilt `[]`
+      // over the 5. The sweep that gate removed is not waste — it is
+      // the retirement of exactly this index.
+      hadElementFrames.add(sk);
       // ...and retire any whole-array frame from before the promotion,
       // mirroring the index tombstone on the blob path below.
       //
@@ -2056,7 +2078,19 @@ export function createSkalStore(initState, config = {}) {
       // array where only some elements carry an `_id`, `_isColl` is true
       // and a removed element's id then deletes the version signals of
       // the INDEX-addressed element at the same numeric key.
-      const wasColl = (!elInfo && delCount > 0) ? _isIdColl(a) : false;
+      // Two independent conditions, and the last change collapsed them
+      // into one and lost the second:
+      //   `delCount > 0` — nothing is being removed on an append, so the
+      //     scan is skipped entirely. This is the perf half.
+      //   `cached !== false` — collCache latching FALSE means the array
+      //     is INDEX-addressed, whatever its elements look like now. An
+      //     array that degraded and came back can satisfy `_isIdColl`
+      //     while its children are still reached at `sk.<index>`, and
+      //     releasing by id then deletes a LIVE index's signals.
+      // Dropping the second was not needed for the first.
+      const cachedColl = collCache.get(sk);
+      const wasColl = (!elInfo && delCount > 0 && cachedColl !== false)
+        ? _isIdColl(a) : false;
       let ins = items;
       if (!elInfo) {
         seedIds(sk, items);
@@ -2088,6 +2122,11 @@ export function createSkalStore(initState, config = {}) {
           const m = Math.max(ixSlots.length, a.length);
           for (let i = start; i < m; i++) bumpReplaced(_join(sk, i), ixSlots[i], a[i]);
         }
+        // IN THIS BATCH. A second notify() is a second update cycle, so a
+        // subscriber both reach re-ran twice for one mutation — the
+        // defect batching exists to prevent, reintroduced by the commit
+        // that consolidated these four call sites.
+        if (!elInfo) releaseElements(sk, removed, wasColl);
       });
       // Tombstone removed records + drop their memoized proxies. Gated
       // on the PRE-splice collection-ness, not the post-splice state, so
@@ -2102,7 +2141,6 @@ export function createSkalStore(initState, config = {}) {
       // would then have pruned every `items.1.*` signal, silently
       // killing index-1's live subscribers. Same id-vs-index collision
       // the memo key namespace fixed for nodeMemo.
-      if (!elInfo) notify(() => releaseElements(sk, removed, wasColl));
       // What addressing applies GOING FORWARD — a different question
       // from `wasColl` above, and it must be answered on the POST-splice
       // array. `_isColl([])` is true, so an empty array pushed full of
@@ -2185,6 +2223,15 @@ export function createSkalStore(initState, config = {}) {
           const m = Math.max(slots.length, a.length);
           for (let i = 0; i < m; i++) bumpReplaced(_join(sk, i), slots[i], a[i]);
         }
+        // In this batch, for the same reason as splice's.
+        if (goneIds !== null) {
+          const gone = [];
+          for (let i = 0; i < slots.length; i++) {
+            const e = slots[i];
+            if (_isObj(e) && e._id != null && goneIds.has(String(e._id))) gone.push(e);
+          }
+          releaseElements(sk, gone, true);
+        }
         if (byId) {
           const now = new Map();
           for (let i = 0; i < a.length; i++) {
@@ -2204,14 +2251,7 @@ export function createSkalStore(initState, config = {}) {
       // pruned, or they leak exactly as a spliced-out element would.
       // The elements fill / copyWithin destroyed. `slots` holds them as
       // they were, which is what releaseElements needs to notify holders.
-      if (goneIds !== null) {
-        const gone = [];
-        for (let i = 0; i < slots.length; i++) {
-          const e = slots[i];
-          if (_isObj(e) && e._id != null && goneIds.has(String(e._id))) gone.push(e);
-        }
-        notify(() => releaseElements(sk, gone, true));
-      }
+
       // fill / copyWithin can drop a primitive in and DEGRADE the array;
       // sort / reverse cannot. Either way the cached classification is
       // re-derived rather than trusted — this was the one mutator that
@@ -2362,7 +2402,7 @@ export function createSkalStore(initState, config = {}) {
           let removed = null;
           if (!elInfo && newLen < a.length) {
             const cached = collCache.get(sk);
-            const wasColl = _isIdColl(a);
+            const wasColl = cached !== false && _isIdColl(a);
             if (wasColl) removed = a.slice(newLen);
           }
           const oldLen = a.length;
@@ -2380,9 +2420,19 @@ export function createSkalStore(initState, config = {}) {
                 bumpReplaced(_join(sk, i), ixSlots[i], a[i]);
               }
             }
+            if (removed) releaseElements(sk, removed, true);
           });
-          collCache.delete(sk);            // truncate/extend may degrade it
-          if (removed) notify(() => releaseElements(sk, removed, true));
+          // Truncate/extend may DEGRADE the format, so the cache has to
+          // be re-derived — but a plain `delete` also lets it PROMOTE,
+          // and promotion re-keys every element proxy already handed
+          // out (`items.1` -> `items.<id>`). A held proxy then bumps a
+          // signal nobody reads: `s.items[1] !== el` after truncating an
+          // array that had degraded and become all-objects again, and a
+          // write through either one is invisible to the other. Only the
+          // length setter re-derived here; splice leaves the latch
+          // alone, which is why splice never detached anything.
+          // Degrading is forced by the data. Promoting is not.
+          if (collCache.get(sk) !== false) collCache.delete(sk);
           // Truncating drops elements and extending punches holes;
           // either can change the format, and stageArray decides which.
           // But NO surviving element's bytes change — only membership,
@@ -2487,6 +2537,11 @@ export function createSkalStore(initState, config = {}) {
           // true while children are index-addressed, and releasing by
           // id then deletes index-N's signals. This was the last of the
           // four sites still on the addressing predicate.
+          // NOTE the notify block above already bumped this element via
+          // the id diff, so releaseElements must not bump it again — its
+          // notification is skipped here by passing the already-notified
+          // element through `alreadyNotified`. One index assign is one
+          // re-run; a duplicate bump outside the batch made it two.
           if (!elInfo && _isObj(old) && old._id != null) {
             const newId = _isObj(v) && v._id != null ? String(v._id) : null;
             if (String(old._id) !== newId) {
@@ -2502,7 +2557,7 @@ export function createSkalStore(initState, config = {}) {
               // because the other three sites ask the same question
               // this way, and a fourth asking it differently is how
               // every drift in this family has started.
-              releaseElements(sk, [old], _isIdColl(a));
+              releaseElements(sk, [old], coll && _isIdColl(a), true);
             }
           }
           // Only this slot's element can need re-encoding. stageArray
@@ -2844,7 +2899,7 @@ export function createSkalStore(initState, config = {}) {
       // its elements' ids without touching nextIds, so the first push
       // after a reopen reissued one of them. The index-frame branch
       // above gets this from `idx.nextId`; this branch had nothing.
-      if (Array.isArray(arr)) seedIds(sk, arr);
+      if (Array.isArray(arr)) seedIds(sk, arr, false);
       setAt(sp, arr, sk);
       return;
     }

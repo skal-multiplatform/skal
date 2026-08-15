@@ -1746,6 +1746,75 @@ after a reviewer finds the hole.
 
 ---
 
+## 7j. Rounds nine to twelve — the cost of unforced tidying
+
+The finding count did not fall. Reviewing `d3d582d` — the commit whose
+whole subject was *fixing* the previous round — returned **fifteen**,
+and roughly half were defects that commit had introduced. Not
+pre-existing holes it failed to close: new ones.
+
+Every one traced to the same habit. While fixing a verified finding, the
+diff also tightened three things nobody had reported:
+
+- a conjunct dropped from splice's `wasColl` (`cachedColl !== false`),
+  which let a degraded array be pruned by id;
+- `releaseElements` moved into its own `notify()` batch, doubling the
+  re-runs for any consumer both batches reach;
+- `hadElementFrames.add(sk)` gated on `list.length > 0`, which lost data
+  on reopen — a store written as `items: 5` read back `items: []`.
+
+None was requested; all three were regressions. The fix was to **revert
+them rather than patch them**, and only then close the two genuine
+holes. That is the rule this round bought:
+
+> **Fix what reproduced, nothing adjacent.** A tidy-up inside a fix
+> commit gets none of the scrutiny the fix gets, and ships with its
+> authority.
+
+One of the fifteen did not reproduce at all (id minting into a mixed
+array: `[{a:1},{a:2},7]` came back unchanged). Reproducing before
+accepting remains worth the minute it costs.
+
+### A failing test of my own found the bug the review missed
+
+The last two mutants needed tests, and the one written for the length
+setter **failed against correct code**. Chasing why — rather than
+adjusting the assertion until it passed — turned up a defect fifteen
+review findings had not:
+
+`collCache.delete(sk)` in the length setter re-derives the format cache,
+and a re-derive is allowed to **promote**. Truncating an array that had
+degraded to index-addressing and since become all-objects again moved
+every element from `items.<i>` to `items.<id>`, so `s.items[1] !== el`
+for a proxy the caller already held — and a write through either was
+invisible to the other's readers. Only the length setter did this;
+splice leaves the latch alone, which is why splice never detached
+anything. Degrading is forced by the data; promoting is not.
+
+### Where it landed
+
+The mutation matrix for this round's fixes: **11 of 11 killed**, none
+labelled unobservable.
+
+```
+collCache conjunct on splice / on length      no-promote on truncate
+release shares the splice batch / length batch   release runs at all (x2)
+index assign does not double-bump             hadElementFrames records what was written
+stripNP checks array elements                 element frames honour the policy
+hydrate does not claim caller ids
+```
+
+**557 JS tests, 18 native, 17/17 on device** (`RerenderScreen.jsx`,
+Galaxy A14, release, arm asserted in the APK).
+
+The first capture read `status: RUNNING` with no rows — a `pm clear`
+launch still extracting the bundle, not a hang. Warm relaunch and it
+completes. That artifact has now impersonated a product bug twice on
+this branch; the tell is that the title and status render while the
+result list is empty.
+
+---
+
 ## 8. Re-running
 
 Harnesses are byte-identical in both apps (verify with `md5`):
@@ -1797,4 +1866,4 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ANDROID_
 
 ---
 
-*Last updated: 2026-08-02.*
+*Last updated: 2026-08-15.*

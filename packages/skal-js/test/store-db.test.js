@@ -2893,13 +2893,225 @@ describe('splice notifies the holder of a removed element', () => {
   });
 });
 
-describe('an empty array claims no element frames', () => {
-  test('a plain number[] never arms a prefix sweep', async () => {
-    const s = freshStore({ nums: [] });
+describe('an empty array still records the index it wrote', () => {
+  // This replaces a test that asserted `prefixSweeps` was unchanged
+  // after `s.nums = []; s.nums.push(1)`. That assertion was satisfied by
+  // NOT recording the `#x` stageArray had just written — which passes
+  // while losing data, because the unrecorded index is never retired.
+  // The sweep it was trying to avoid IS the retirement.
+  test('a scalar written over an empty array survives a reopen', async () => {
+    const s = freshStore({ items: [] });
     expect(await settle(s)).toBe(true);
-    s.nums = [];                        // _isIdColl([]) is true
-    const p0 = s[STORE].prefixSweeps();
-    s.nums.push(1);
-    expect(s[STORE].prefixSweeps()).toBe(p0);
+    s.items = [];                       // _isIdColl([]) is true -> writes #x
+    await s[STORE].flushNow();
+    s.items = 5;
+    await s[STORE].flushNow();
+    const b = reopenSame({ items: [] });
+    expect(await settle(b)).toBe(true);
+    expect(b.items).toBe(5);
+  });
+
+  test('...and an empty array still round-trips as empty', async () => {
+    const s = freshStore({ items: [] });
+    expect(await settle(s)).toBe(true);
+    s.items.push({ a: 1 });
+    await s[STORE].flushNow();
+    s.items.splice(0, 1);               // now genuinely empty
+    await s[STORE].flushNow();
+    const b = reopenSame({ items: [] });
+    expect(await settle(b)).toBe(true);
+    expect(b.items.length).toBe(0);
+  });
+});
+
+// ── round twelve: what the consolidation broke ───────────────────────
+//
+// Five of these were introduced by the commit that consolidated element
+// release. Four of the five came from tidying nobody asked for — a perf
+// tweak, a flag gate, an extra batch — bolted onto a correct fix. Each
+// is pinned here so the next tidy cannot repeat it.
+describe('an index-addressed array is never pruned by id', () => {
+  test('a degraded-then-restored collection keeps its index subscribers', () => {
+    // All elements carry ids, but collCache latched false when the
+    // primitive went in — so children are still reached at `items.<n>`.
+    // Releasing a removed element by its id then deletes a LIVE index's
+    // signals. The `cached !== false` conjunct is what prevents it, and
+    // a perf rewrite dropped it while keeping the scan it was bundled
+    // with.
+    const s = memStore({ items: [] });
+    s.items.push({ a: 1 }, { a: 2 }, { a: 3 });
+    s.items.push(5);                    // latches collCache false
+    s.items.pop();                      // all-objects again, still by index
+    const el1 = s.items[1];
+    const n = rx(() => el1.a);
+    s.items.splice(0, 1);
+    const mid = n();
+    s.items[1].a = 77;
+    expect(n()).toBeGreaterThan(mid);
+  });
+});
+
+describe('element release shares the mutation’s batch', () => {
+  test('one index assign is one re-run', () => {
+    const s = memStore({ rows: [] });
+    s.rows.push({ v: 1 }, { v: 2 });
+    const el = s.rows[0];
+    const n = rx(() => el.v);
+    const b = n();
+    s.rows[0] = { _id: '9', v: 9 };     // replaces the element wholesale
+    expect(n() - b).toBe(1);
+  });
+
+  test('one splice is one re-run for a consumer BOTH batches reach', () => {
+    // The consumer has to be reachable from the main notify AND from
+    // the release — otherwise a second batch is invisible. Reading the
+    // length puts it in the first; holding the removed element's proxy
+    // puts it in the second.
+    const s = memStore({ rows: [] });
+    s.rows.push({ v: 1 }, { v: 2 }, { v: 3 });
+    const el = s.rows[0];
+    const n = rx(() => { s.rows.length; el.v; });
+    const b = n();
+    s.rows.splice(0, 1);
+    expect(n() - b).toBe(1);
+  });
+
+  test('one truncation is one re-run for a consumer both batches reach', () => {
+    const s = memStore({ rows: [] });
+    s.rows.push({ v: 1 }, { v: 2 }, { v: 3 });
+    const el = s.rows[2];
+    const n = rx(() => { s.rows.length; el.v; });
+    const b = n();
+    s.rows.length = 2;
+    expect(n() - b).toBe(1);
+  });
+});
+
+describe('a truncation is never pruned by id on an index-addressed array', () => {
+  test('a truncation never re-keys the element proxies already handed out', () => {
+    // Truncating re-derives the format cache, and a re-derive that is
+    // allowed to PROMOTE moves every element from `items.<i>` to
+    // `items.<id>`. Any proxy the caller already holds keeps the old
+    // key, so the two stop being the same object and neither one's
+    // writes reach the other's readers.
+    const s = memStore({ items: [] });
+    s.items.push({ a: 1 }, { a: 2 }, { a: 3 }, { a: 4 });
+    s.items.push(9);                    // latches the cache false
+    s.items.pop();                      // all-objects again
+    const el = s.items[1];
+    const n = rx(() => el.a);
+    const before = n();
+    s.items.length = 2;                 // index 1 SURVIVES this
+    expect(s.items[1]).toBe(el);
+    s.items[1].a = 55;
+    expect(n()).toBeGreaterThan(before);
+    expect(el.a).toBe(55);
+  });
+
+  test('a truncation whose removed ids collide with surviving indices', () => {
+    // The collision needs a SURVIVING index equal to a REMOVED
+    // element's id, so ids and indices must be out of step — reverse
+    // does that without re-promoting (sort/reverse are indexOnly and
+    // leave collCache alone).
+    const s = memStore({ items: [] });
+    s.items.push({ a: 1 }, { a: 2 }, { a: 3 }, { a: 4 });   // ids 1..4
+    s.items.push(9);                    // latches collCache false
+    s.items.pop();                      // all-objects, index-addressed
+    s.items.reverse();                  // ids now 4,3,2,1 at indices 0..3
+    const el1 = s.items[1];             // index-addressed at items.1.*
+    const n = rx(() => el1.a);
+    s.items.length = 2;                 // drops the elements with ids 2 and 1
+    const mid = n();
+    el1.a = 55;                         // index 1 is alive and changed
+    expect(n()).toBeGreaterThan(mid);
+  });
+
+  test('the length setter needs the same collCache conjunct as splice', () => {
+    const s = memStore({ items: [] });
+    s.items.push({ a: 1 }, { a: 2 }, { a: 3 });
+    s.items.push(5);                    // latches collCache false
+    s.items.pop();                      // all-objects again, still by index
+    const el1 = s.items[1];
+    const n = rx(() => el1.a);
+    s.items.length = 1;                 // drops indices 1 and 2
+    const mid = n();
+    s.items[1] = { a: 77 };
+    void s.items[1];
+    expect(s[STORE].versions()).toBeGreaterThan(0);
+    // The signal for index 1 must still exist: pruning it by the removed
+    // element's id is the same collision splice guards against.
+    const s2 = memStore({ items: [] });
+    s2.items.push({ a: 1 }, { a: 2 }, { a: 3 });
+    s2.items.push(5); s2.items.pop();
+    const e = s2.items[1];
+    const m = rx(() => e.a);
+    s2.items.length = 1;
+    const mid2 = m();
+    s2.items[1] = { a: 5 };
+    s2.items[1].a = 99;
+    expect(m()).toBeGreaterThan(mid2);
+  });
+});
+
+describe('persist:false holds for array elements too', () => {
+  test('an element of a plain array', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skal-ae-'));
+    globalThis.__skal_data_dir = dir;
+    const s = createSkalStore({ profile: { codes: ['', ''] } },
+      { name: 'ae', paths: { 'profile.codes.0': { persist: false } } });
+    expect(await settle(s)).toBe(true);
+    s.profile.codes[0] = 'ZEBRAKEY';
+    s.profile.codes[1] = 'ok';
+    await s[STORE].flushNow();
+    let found = false;
+    const walk = (p) => {
+      for (const f of fs.readdirSync(p, { withFileTypes: true })) {
+        const q = path.join(p, f.name);
+        if (f.isDirectory()) walk(q);
+        else if (fs.readFileSync(q).includes('ZEBRAKEY')) found = true;
+      }
+    };
+    walk(dir);
+    expect(found).toBe(false);
+    expect(s.profile.codes[0]).toBe('ZEBRAKEY');
+  });
+
+  test('a whole collection ELEMENT frame', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skal-ef-'));
+    globalThis.__skal_data_dir = dir;
+    const s = createSkalStore({ rows: [] },
+      { name: 'ef', paths: { 'rows.1': { persist: false } } });
+    expect(await settle(s)).toBe(true);
+    s.rows.push({ secret: 'ZEBRAKEY' });   // mints _id '1' -> key rows.1
+    await s[STORE].flushNow();
+    let found = false;
+    const walk = (p) => {
+      for (const f of fs.readdirSync(p, { withFileTypes: true })) {
+        const q = path.join(p, f.name);
+        if (f.isDirectory()) walk(q);
+        else if (fs.readFileSync(q).includes('ZEBRAKEY')) found = true;
+      }
+    };
+    walk(dir);
+    expect(found).toBe(false);
+  });
+});
+
+describe('hydration seeds the counter without claiming caller ids', () => {
+  test('a reopened store still prunes its generated ids', async () => {
+    const s = freshStore({ items: [] });
+    expect(await settle(s)).toBe(true);
+    s.items = [{ a: 1 }, { a: 2 }, { a: 3 }, 9];   // mixed -> blob
+    await s[STORE].flushNow();
+
+    const b = reopenSame({ items: [] });
+    expect(await settle(b)).toBe(true);
+    b.items.pop();                                 // drop the primitive
+    for (let i = 0; i < b.items.length; i++) void b.items[i].a;
+    const peak = b[STORE].versions();
+    b.items.splice(0, 1);
+    // Marking hydrated ids as caller-supplied disabled pruning for the
+    // life of the store — the unbounded growth versions() exists to see.
+    expect(b[STORE].versions()).toBeLessThan(peak);
   });
 });

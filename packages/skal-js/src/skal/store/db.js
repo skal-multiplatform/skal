@@ -557,6 +557,49 @@ export function createSkalStore(initState, config = {}) {
     return end < 0 ? key.slice(dotLen) : key.slice(dotLen, end);
   }
 
+  // THE SINGLE OWNER of "these elements are gone".
+  //
+  // Four mutators removed elements and each hand-rolled the same five
+  // steps with a different gate: splice and the length setter on
+  // `_isIdColl`, reorderBy on its own `wasIdColl`, the index setter on
+  // `_isColl` — and reorderBy skipped the emptiness guard while the
+  // index setter skipped the notification entirely. EVERY round of
+  // review on this branch has found a different one of the four out of
+  // step, including a fix that converted three and missed the fourth.
+  //
+  // The five steps, and why each is gated the way it is:
+  //   - NOTIFY holders. A proxy addressed by the removed element's id
+  //     is subscribed to `sk.<id>.field`, which no index bump reaches.
+  //     Without this it serves the dead element's value forever, and
+  //     the prune below then deletes the signal so no later write can
+  //     wake it either.
+  //   - TOMBSTONE the frame. Persistence, so it rides the policy.
+  //   - dropMemo and pruneVersRecords. Memory hygiene, so they do NOT
+  //     ride the policy — gating all three together once leaked 181
+  //     proxies on a persist:false collection.
+  //
+  // `removed` may contain primitives and id-less objects; only
+  // id-carrying ones were ever addressed by id.
+  function releaseElements(sk, removed, isIdColl) {
+    if (!isIdColl || removed.length === 0) return;
+    const persistThis = persists(sk);
+    const prefixes = [];
+    const removedIds = new Set();
+    for (let i = 0; i < removed.length; i++) {
+      const r = removed[i];
+      if (!_isObj(r) || r._id == null) continue;
+      const id = String(r._id);
+      const rSk = _join(sk, id);
+      bumpReplaced(rSk, r, undefined);          // the holder sees it go
+      if (persistThis) dirty.set('k:' + rSk, null);
+      prefixes.push(rSk);
+      removedIds.add(id);
+    }
+    if (prefixes.length === 0) return;
+    dropMemo(prefixes);
+    pruneVersRecords(sk, removedIds);
+  }
+
   function pruneVersRecords(sk, ids) {
     if (ids.size === 0) return;
     // ONLY WHEN IDS CANNOT COME BACK. The safety proof below rests on
@@ -569,14 +612,18 @@ export function createSkalStore(initState, config = {}) {
     // That is the under-notification this function's comment calls the
     // dangerous direction; not pruning merely grows `vers`, which
     // `versions()` reports.
+    // The Set sweeps run FIRST: they are memory hygiene, and the early
+    // return below gates the `vers` prune only. Behind it, a store fed
+    // caller ids never swept them and `proxied()` — added because that
+    // pair leaked for three rounds — climbed without bound.
+    pruneKeyed(elemProxiedById, sk, ids);
+    pruneKeyed(elemProxiedByIx, sk, ids);
     if (sawCallerIds.has(sk)) return;
     // The addressing-scheme sets are keyed by store key too, and a
     // nested array inside a collection element interns
     // `items.<id>.tags` — so element churn grew them without bound, and
     // neither `versions()` nor `memos()` can see it. Swept on the same
     // pass, by the same id match.
-    pruneKeyed(elemProxiedById, sk, ids);
-    pruneKeyed(elemProxiedByIx, sk, ids);
     if (vers.size === 0) return;
     const dot = sk + '.';
     for (const k of vers.keys()) {
@@ -794,7 +841,7 @@ export function createSkalStore(initState, config = {}) {
         // the literal bytes "undefined", which the next open()'s
         // JSON.parse throws on, and the cost of the check is one
         // comparison per dirty key per flush.
-        if (live !== undefined) engine.put(key, encodeFrame(live));
+        if (live !== undefined) engine.put(key, encodeAt(key.slice(2), live));
       } else if (val === INDEX_DIRTY) {
         const sk = key.slice(2, -2);                 // 'k:' + sk + '#x'
         const a = readSolid(sk === '' ? [] : sk.split('.'));
@@ -1069,6 +1116,15 @@ export function createSkalStore(initState, config = {}) {
       // Staged, not encoded — see DeferredFrame. A burst of writes
       // inside one element now costs one encode at flush instead of one
       // per write.
+      // An index-addressed array persists as ONE blob here. If the array
+      // previously wrote per-element frames, its `#x` index is still
+      // authoritative and hydrateArray reads it FIRST — the blob would
+      // never be read. Same retirement stageArray's blob branch does.
+      if (elInfo.arrayFrame && hadElementFrames.has(elInfo.storeKey)) {
+        hadElementFrames.delete(elInfo.storeKey);
+        delPrefixLater(elInfo.storeKey);
+        dirty.set('k:' + elInfo.storeKey + '#x', null);
+      }
       dirty.set('k:' + elInfo.storeKey, new DeferredFrame(elInfo.solidPath));
       return;
     }
@@ -1124,14 +1180,50 @@ export function createSkalStore(initState, config = {}) {
     // degrade case, one shape further out.
     if (hadElementFrames.has(sk)) {
       hadElementFrames.delete(sk);
-      dirty.set('k:' + sk + '#x', null);
+      // delPrefixLater FIRST — it purges staged `sk#*` keys, so setting
+      // the tombstone before it dropped the tombstone it had just been
+      // given. stageArray's blob branch orders these correctly; this
+      // copy did not, leaving retirement dependent on engine.delPrefix,
+      // which silently no-ops without __skal_store_del_prefix.
       delPrefixLater(sk);
+      dirty.set('k:' + sk + '#x', null);
     }
     // Auto-blob: one frame at `sk` encoding the whole value, whether
     // it's a primitive or a deep object. Leaf overrides ride on top
     // (see writeAt's pendingDelPrefix on wholesale assigns).
-    dirty.set('k:' + sk, encodeFrame(value));
+    dirty.set('k:' + sk, encodeAt(sk, value));
   }
+
+  // Encode a value for storage at `sk`, dropping any `persist: false`
+  // descendant.
+  //
+  // stageAt's per-key recursion honours the policy, but it is only
+  // reachable for plain objects: the ARRAY route and the element-frame
+  // route both return before it. So a non-persist leaf beneath an array
+  // was written to disk by any sibling write — `tags[0].label = 'y'`
+  // serialised `tags[0].token` with it. Filtering at the ENCODE covers
+  // every route, including the DeferredFrame flush, which is where the
+  // element case actually lands.
+  //
+  // `nonPersistUnder` is a Set lookup and false for almost every store,
+  // so the recursion below is not on anyone's hot path.
+  function stripNP(sk, v) {
+    if (!_isNode(v)) return v;
+    if (Array.isArray(v)) {
+      const out = new Array(v.length);
+      for (let i = 0; i < v.length; i++) out[i] = stripNP(_join(sk, i), v[i]);
+      return out;
+    }
+    const o = {};
+    for (const k of Object.keys(v)) {
+      const ck = _join(sk, k);
+      if (!persists(ck)) continue;
+      o[k] = stripNP(ck, v[k]);
+    }
+    return o;
+  }
+  const encodeAt = (sk, v) =>
+    encodeFrame(nonPersistUnder(sk) ? stripNP(sk, v) : v);
 
   // THE SINGLE OWNER of how an array is represented on disk.
   //
@@ -1156,15 +1248,26 @@ export function createSkalStore(initState, config = {}) {
   function stageArray(sk, value, changed) {
     if (!persists(sk)) return;
     if (_isIdColl(value)) {
-      const list = changed === undefined ? value : changed;
+      // `changed` NAMES THE ELEMENTS WHOSE BYTES MOVED — meaningful only
+      // when the others already HAVE frames. On a PROMOTION (a blob, or
+      // never persisted, becoming a collection) none of them do, so
+      // honouring it wrote an index listing every id, frames for a
+      // subset, and a tombstone over the blob holding the rest. `pop()`
+      // on a degraded collection lost the whole array: memory
+      // [{a:1}], reopen [].
+      const promoting = !hadElementFrames.has(sk);
+      const list = (changed === undefined || promoting) ? value : changed;
       for (let i = 0; i < list.length; i++) {
         const el = list[i];
         if (_isObj(el) && el._id != null) {
-          dirty.set('k:' + _join(sk, el._id), encodeFrame(el));
+          dirty.set('k:' + _join(sk, el._id), encodeAt(_join(sk, el._id), el));
         }
       }
       dirty.set('k:' + sk + '#x', INDEX_DIRTY);
-      hadElementFrames.add(sk);
+      // ...only if a frame was actually written. `_isIdColl([])` is
+      // true, so `s.nums = []` on a plain number[] otherwise claimed
+      // element frames and armed a full-keydir sweep on the next push.
+      if (list.length > 0) hadElementFrames.add(sk);
       // ...and retire any whole-array frame from before the promotion,
       // mirroring the index tombstone on the blob path below.
       //
@@ -1187,7 +1290,7 @@ export function createSkalStore(initState, config = {}) {
         hadElementFrames.delete(sk);
         delPrefixLater(sk);
       }
-      dirty.set('k:' + sk, encodeFrame(value));
+      dirty.set('k:' + sk, encodeAt(sk, value));
       // RETIRE THE INDEX unconditionally. Staging a tombstone for a key
       // that never existed costs one dirty entry and a `del` of a
       // missing key; tracking "was this ever a collection?" to avoid it
@@ -1229,7 +1332,11 @@ export function createSkalStore(initState, config = {}) {
 
   function writeAt(sp, sk, elInfo, value) {
     let v = value;
-    if (!elInfo && _isColl(value)) {
+    // `Array.isArray`, not `_isColl`: seeding is about the IDS present,
+    // and a mixed array carries them just as well. Gated on all-objects,
+    // `s.items = [5, {_id:'1'}]` never advanced the counter and the next
+    // push reissued '1' onto a live element.
+    if (!elInfo && Array.isArray(value)) {
       // ONE scan for both jobs, and no rebuild when there is nothing to
       // fill in. A server payload usually arrives with every `_id`
       // already set — the old unconditional `.map` allocated a fresh
@@ -1260,13 +1367,20 @@ export function createSkalStore(initState, config = {}) {
       // reached here and threw out of the assignment. The `value.map`
       // this replaced skipped holes and never threw; this is the
       // regression, not the array.
+      // "An OBJECT is missing an id" — not "some element is not an
+      // id-carrying object". Widening the outer gate from `_isColl` to
+      // `Array.isArray` brought primitives in here, and the old test
+      // treated the primitive itself as missing: `{...5}` is `{}`, so a
+      // mixed array's number was rewritten into an empty id-carrying
+      // object. Primitives are left exactly as they are.
       let missing = false;
       for (let i = 0; i < value.length; i++) {
         const el = value[i];
-        if (!_isObj(el) || el._id == null) { missing = true; break; }
+        if (_isObj(el) && el._id == null) { missing = true; break; }
       }
       if (missing) {
-        v = value.map((e) => (e._id != null ? e : { ...e, _id: genId(sk) }));
+        v = value.map((e) => (_isObj(e) && e._id == null
+          ? { ...e, _id: genId(sk) } : e));
       }
     }
     // Fast path: when sp contains only string/number segments (no
@@ -1390,12 +1504,11 @@ export function createSkalStore(initState, config = {}) {
     // Skip the policyFor lookup entirely when neither lazy nor non-
     // persist paths exist — the common case. Default policy is
     // {persist: true, lazy: false}, so we can assume it.
-    let shouldPersist = true;
-    if (hasLazyPaths || hasNonPersistPaths) {
-      const pol = policyFor(sk);
-      if (!elInfo && pol.lazy) touchFaulted(sk);  // the write loaded it
-      shouldPersist = pol.persist;
-    }
+    // policyOf, not a hand-rolled gate — the eleventh copy, and the one
+    // left behind when the helper was introduced to collapse them.
+    const pol = policyOf(sk);
+    if (!elInfo && pol.lazy) touchFaulted(sk);    // the write loaded it
+    const shouldPersist = pol.persist;
     if (shouldPersist) {
       // VIVIFICATION IS A SHAPE CHANGE ON DISK TOO. Staging only the
       // leaf left the clobbered ancestor's old frame in place: after
@@ -1883,7 +1996,12 @@ export function createSkalStore(initState, config = {}) {
     // copy, which is the cost the hoist above exists to prevent.
     const nestedInfo = elInfo === undefined || elInfo === null ? null
       : { solidPath: elInfo.solidPath, storeKey: elInfo.storeKey, allKeys: allChain };
-    const idxInfo = { solidPath: sp, storeKey: sk, allKeys: allChain };
+    // `arrayFrame` marks the ONE elInfo whose storeKey is an ARRAY, not
+    // an element: writes inside an index-addressed element ride the
+    // whole-array frame. stageAt's element route writes that frame
+    // directly, bypassing stageArray — so it is the one place that has
+    // to retire an `#x` index stageArray may have made authoritative.
+    const idxInfo = { solidPath: sp, storeKey: sk, allKeys: allChain, arrayFrame: true };
 
     // ONE persistence entry point for every mutator on this array.
     //
@@ -1928,19 +2046,17 @@ export function createSkalStore(initState, config = {}) {
       // non-collection, and the removed element's frame was then never
       // tombstoned — it orphaned on disk with its version signals
       // leaked, visibly only as `pending()` being 1 instead of 2.
-      let wasColl = false;
-      if (!elInfo) {
-        const cached = collCache.get(sk);
-        // `_isIdColl`, not `_isColl`: this gates ID-ADDRESSED cleanup,
-        // which is a question about the element format, not about
-        // addressing. On a mixed array where only some elements carry an
-        // `_id`, `_isColl` is true and a removed element's id then
-        // deletes the version signals of the INDEX-addressed element at
-        // the same numeric key. reorderBy already uses `_isIdColl` here;
-        // splice, length and index-assign were left on the old one when
-        // the two predicates were split.
-        wasColl = cached === undefined ? _isIdColl(a) : (cached && _isIdColl(a));
-      }
+      // Computed ONLY when something is actually being removed. The
+      // previous form ran `_isIdColl(a)` in BOTH arms of the cache
+      // check, so a push burst — which removes nothing — paid a full
+      // array scan per push: the O(n) rescan collCache exists to avoid.
+      //
+      // `_isIdColl`, not `_isColl`: this gates ID-ADDRESSED cleanup, a
+      // question about the element FORMAT, not about addressing. On an
+      // array where only some elements carry an `_id`, `_isColl` is true
+      // and a removed element's id then deletes the version signals of
+      // the INDEX-addressed element at the same numeric key.
+      const wasColl = (!elInfo && delCount > 0) ? _isIdColl(a) : false;
       let ins = items;
       if (!elInfo) {
         seedIds(sk, items);
@@ -1986,26 +2102,7 @@ export function createSkalStore(initState, config = {}) {
       // would then have pruned every `items.1.*` signal, silently
       // killing index-1's live subscribers. Same id-vs-index collision
       // the memo key namespace fixed for nodeMemo.
-      if (!elInfo && removed.length > 0 && wasColl) {
-        // The TOMBSTONE is persistence and rides the policy; dropMemo
-        // and pruneVersRecords are memory hygiene and must run either
-        // way. Gating all three together leaked 181 proxies on a
-        // persist:false collection — caught by the memo test, which is
-        // the whole reason it asserts a number and not a value.
-        const persistThis = persists(sk);
-        const prefixes = [];
-        const removedIds = new Set();
-        for (const r of removed) {
-          if (r && r._id != null) {
-            const rSk = _join(sk, r._id);
-            if (persistThis) dirty.set('k:' + rSk, null);
-            prefixes.push(rSk);
-            removedIds.add(String(r._id));
-          }
-        }
-        dropMemo(prefixes);
-        if (removedIds.size > 0) pruneVersRecords(sk, removedIds);
-      }
+      if (!elInfo) notify(() => releaseElements(sk, removed, wasColl));
       // What addressing applies GOING FORWARD — a different question
       // from `wasColl` above, and it must be answered on the POST-splice
       // array. `_isColl([])` is true, so an empty array pushed full of
@@ -2105,19 +2202,15 @@ export function createSkalStore(initState, config = {}) {
       // Destroyed elements get the same treatment splice gives its
       // `removed` list: their proxies dropped and their version records
       // pruned, or they leak exactly as a spliced-out element would.
+      // The elements fill / copyWithin destroyed. `slots` holds them as
+      // they were, which is what releaseElements needs to notify holders.
       if (goneIds !== null) {
-        const prefixes = [];
-        const keep = persists(sk);
-        for (const id of goneIds) {
-          const rSk = _join(sk, id);
-          prefixes.push(rSk);
-          // splice and the length setter both tombstone their removed
-          // elements' frames under the same gate; this pruned the memo
-          // and the signals but left the records on disk.
-          if (keep) dirty.set('k:' + rSk, null);
+        const gone = [];
+        for (let i = 0; i < slots.length; i++) {
+          const e = slots[i];
+          if (_isObj(e) && e._id != null && goneIds.has(String(e._id))) gone.push(e);
         }
-        dropMemo(prefixes);
-        pruneVersRecords(sk, goneIds);
+        notify(() => releaseElements(sk, gone, true));
       }
       // fill / copyWithin can drop a primitive in and DEGRADE the array;
       // sort / reverse cannot. Either way the cached classification is
@@ -2269,7 +2362,7 @@ export function createSkalStore(initState, config = {}) {
           let removed = null;
           if (!elInfo && newLen < a.length) {
             const cached = collCache.get(sk);
-            const wasColl = cached === undefined ? _isIdColl(a) : (cached && _isIdColl(a));
+            const wasColl = _isIdColl(a);
             if (wasColl) removed = a.slice(newLen);
           }
           const oldLen = a.length;
@@ -2289,29 +2382,7 @@ export function createSkalStore(initState, config = {}) {
             }
           });
           collCache.delete(sk);            // truncate/extend may degrade it
-          if (removed) {
-            // Symmetric with splice's removal path, which this had
-            // drifted from twice: the TOMBSTONE rides the persistence
-            // policy (truncating a `persist: false` collection was
-            // writing tombstone frames for records never on disk), and
-            // the version records must be PRUNED (they were not, so
-            // `s.items.length = 0` on a 200-element list left 401 live
-            // signals where splice left 202 — the unbounded growth
-            // `versions()` exists to catch).
-            const persistThis = persists(sk);
-            const prefixes = [];
-            const removedIds = new Set();
-            for (const r of removed) {
-              if (r && r._id != null) {
-                const rSk = _join(sk, r._id);
-                if (persistThis) dirty.set('k:' + rSk, null);
-                prefixes.push(rSk);
-                removedIds.add(String(r._id));
-              }
-            }
-            dropMemo(prefixes);
-            if (removedIds.size > 0) pruneVersRecords(sk, removedIds);
-          }
+          if (removed) notify(() => releaseElements(sk, removed, true));
           // Truncating drops elements and extending punches holes;
           // either can change the format, and stageArray decides which.
           // But NO surviving element's bytes change — only membership,
@@ -2409,14 +2480,29 @@ export function createSkalStore(initState, config = {}) {
           // reorderBy all tombstone + drop + prune in that case; this
           // path left the frame, the memo entry and the signals behind.
           // `coll` and both keys are already computed above.
-          if (!elInfo && coll && _isObj(old) && old._id != null) {
-            const oldId = String(old._id);
+          // The slot's previous element is destroyed when the new value
+          // carries a DIFFERENT id (or none). `_isIdColl(a)` — the
+          // FORMAT question — not `coll`, which answers addressing: on
+          // an array where only some elements carry an id, `coll` is
+          // true while children are index-addressed, and releasing by
+          // id then deletes index-N's signals. This was the last of the
+          // four sites still on the addressing predicate.
+          if (!elInfo && _isObj(old) && old._id != null) {
             const newId = _isObj(v) && v._id != null ? String(v._id) : null;
-            if (oldId !== newId) {
-              const rSk = _join(sk, oldId);
-              if (persists(sk)) dirty.set('k:' + rSk, null);
-              dropMemo([rSk]);
-              pruneVersRecords(sk, new Set([oldId]));
+            if (String(old._id) !== newId) {
+              // `_isIdColl`, not `_isColl` — the FORMAT question, as at
+              // the other three release sites.
+              //
+              // NO TEST DISTINGUISHES THIS, and none can: the shape
+              // where the two predicates differ (all objects, not all
+              // id-carrying) requires a caller-supplied id, which sets
+              // `sawCallerIds`, which makes pruneVersRecords early-
+              // return — so only the memo eviction differs and that
+              // changes no value. Checked, not assumed. It stays
+              // because the other three sites ask the same question
+              // this way, and a fourth asking it differently is how
+              // every drift in this family has started.
+              releaseElements(sk, [old], _isIdColl(a));
             }
           }
           // Only this slot's element can need re-encoding. stageArray
@@ -2752,7 +2838,16 @@ export function createSkalStore(initState, config = {}) {
       return;
     }
     const whole = hasWhole ? engine.get(bk) : null;          // whole-frame array
-    if (whole != null) { setAt(sp, decodeFrame(whole), sk); return; }
+    if (whole != null) {
+      const arr = decodeFrame(whole);
+      // SEED FROM WHAT CAME OFF DISK. A blob-persisted array restores
+      // its elements' ids without touching nextIds, so the first push
+      // after a reopen reissued one of them. The index-frame branch
+      // above gets this from `idx.nextId`; this branch had nothing.
+      if (Array.isArray(arr)) seedIds(sk, arr);
+      setAt(sp, arr, sk);
+      return;
+    }
 
     // Nothing persisted for this array at all: it exists only because
     // `initState` declared it. Stage it now, at first open.

@@ -1547,27 +1547,26 @@ describe('mutation x shape x policy matrix', () => {
         // `reverse` moves the element — an ID-addressed proxy follows it
         // and stays quiet, which is what stable ids are FOR, while an
         // INDEX-addressed one sees a different element and must re-run.
-        // Quiet is now ADDRESSING-DEPENDENT, and narrower than it was.
+        // Quiet is ADDRESSING-DEPENDENT, and narrower still than it was.
         //
         // `push` / `splice in` do not touch slot 0 under any scheme.
         //
-        // `splice out` and `truncate` REMOVE an element. Under ID
-        // addressing the holder is deliberately not notified —
-        // pruneVersRecords deletes those signals so a removed id can
-        // never be reused, and the list-level notification is what
-        // unmounts the row. Under INDEX addressing nothing was removed
-        // from the holder's point of view: slot 0 now holds a DIFFERENT
-        // element, and it must see that.
+        // `truncate` here is `length = 1`, so SLOT 0 — the slot this
+        // observer holds — is untouched under every scheme.
         //
         // `sort` / `reverse` MOVE elements; an id-addressed proxy
         // follows its element, which is what stable ids are for. `fill`
         // and `copyWithin` REPLACE them, so every scheme must wake.
+        //
+        // `splice out` USED to be listed quiet for collections, on the
+        // argument that pruneVersRecords deletes the signals anyway so
+        // the holder cannot be woken. That was describing a defect, not
+        // a design: the holder went on serving the removed element's
+        // value forever. releaseElements now notifies before pruning,
+        // and every scheme wakes.
         const quiet = mut === 'push' || mut === 'splice in'
-          // truncate here is `length = 1`, so SLOT 0 — the slot this
-          // observer holds — is untouched under every scheme.
           || mut === 'truncate'
-          || (shape === 'collection'
-              && (mut === 'splice out' || mut === 'reverse' || mut === 'sort'));
+          || (shape === 'collection' && (mut === 'reverse' || mut === 'sort'));
         if (quiet) expect(n() - b).toBe(0);
         else expect(n() - b).toBeGreaterThan(0);
       });
@@ -2780,5 +2779,127 @@ describe('an index assign past the end grows the array', () => {
     s.rows[0] = 1;
     expect(s.rows.length).toBe(2);
     expect(s.rows[0]).toBe(1);
+  });
+});
+
+// ── round eleven: the "one owner" commit, reviewed at last ───────────
+describe('promotion writes every element, not just the changed ones', () => {
+  test('pop() on a degraded collection does not empty it on disk', async () => {
+    // `changed` names the elements whose BYTES moved, which only means
+    // something once the others have frames. On a promotion none do,
+    // so honouring it wrote an index listing every id, frames for a
+    // subset, and a tombstone over the blob holding the rest.
+    const s = freshStore({ items: [] });
+    expect(await settle(s)).toBe(true);
+    s.items.push({ a: 1 });
+    await s[STORE].flushNow();
+    s.items.push(5);                    // degrades to a blob
+    await s[STORE].flushNow();
+    s.items.pop();                      // re-promotes, changed = []
+    await s[STORE].flushNow();
+    const b = reopenSame({ items: [] });
+    expect(await settle(b)).toBe(true);
+    expect(b.items.length).toBe(1);
+    expect(b.items[0].a).toBe(1);
+  });
+});
+
+describe('id seeding covers every array that carries ids', () => {
+  test('a MIXED array still advances the counter', () => {
+    const s = memStore({ items: [] });
+    s.items = [5, { _id: '1', a: 1 }];  // not all-objects: seeding was skipped
+    s.items.push({ b: 2 });
+    const ids = s.items.map((e) => (e && e._id) || null);
+    expect(ids.filter((x) => x === '1').length).toBe(1);
+    expect(s.items[0]).toBe(5);         // the primitive is left alone
+  });
+
+  test('a blob-persisted array seeds from what came off disk', async () => {
+    const s = freshStore({ items: [] });
+    expect(await settle(s)).toBe(true);
+    s.items = [{ _id: '1', a: 1 }, { _id: '2', b: 2 }, 7];
+    await s[STORE].flushNow();
+    const b = reopenSame({ items: [] });
+    expect(await settle(b)).toBe(true);
+    b.items.push({ c: 3 });
+    const ids = b.items.map((e) => (e && e._id) || null).filter(Boolean);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('persist:false holds beneath an array', () => {
+  test('a sibling write does not serialise a non-persist leaf', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skal-npa-'));
+    globalThis.__skal_data_dir = dir;
+    const s = createSkalStore({ profile: { tags: [{ token: '', label: '' }] } },
+      { name: 'npa', paths: { 'profile.tags.0.token': { persist: false } } });
+    expect(await settle(s)).toBe(true);
+    s.profile.tags[0].token = 'ZEBRAKEY';
+    s.profile.tags[0].label = 'y';      // the sibling write is what leaked it
+    await s[STORE].flushNow();
+    let found = false;
+    const walk = (p) => {
+      for (const f of fs.readdirSync(p, { withFileTypes: true })) {
+        const q = path.join(p, f.name);
+        if (f.isDirectory()) walk(q);
+        else if (fs.readFileSync(q).includes('ZEBRAKEY')) found = true;
+      }
+    };
+    walk(dir);
+    expect(found).toBe(false);
+    expect(s.profile.tags[0].token).toBe('ZEBRAKEY');   // still live
+    expect(s.profile.tags[0].label).toBe('y');
+  });
+});
+
+describe('the element-frame route retires an index it supersedes', () => {
+  test('a write through an index-addressed element reaches disk', async () => {
+    const s = freshStore({ rows: [] });
+    expect(await settle(s)).toBe(true);
+    s.rows = [{ a: 1 }, { b: 2 }];
+    await s[STORE].flushNow();
+    s.rows[0] = 5;                      // degrades; collCache latches false
+    await s[STORE].flushNow();
+    s.rows[0] = { c: 3 };               // _isIdColl again -> #x written
+    await s[STORE].flushNow();
+    const el = s.rows[0];
+    el.c = 99;                          // rides the whole-array frame
+    await s[STORE].flushNow();
+    const b = reopenSame({ rows: [] });
+    expect(await settle(b)).toBe(true);
+    expect(b.rows[0].c).toBe(99);
+  });
+});
+
+describe('splice notifies the holder of a removed element', () => {
+  test('a held element proxy sees its element go', () => {
+    const s = memStore({ todos: [] });
+    s.todos.push({ title: 'a' }, { title: 'b' });
+    const el = s.todos[0];
+    const n = rx(() => el.title);
+    const b = n();
+    s.todos.splice(0, 1);
+    expect(n() - b).toBeGreaterThan(0);
+  });
+
+  test('...and so does a truncation that drops it', () => {
+    const s = memStore({ todos: [] });
+    s.todos.push({ title: 'a' }, { title: 'b' });
+    const el = s.todos[1];
+    const n = rx(() => el.title);
+    const b = n();
+    s.todos.length = 1;
+    expect(n() - b).toBeGreaterThan(0);
+  });
+});
+
+describe('an empty array claims no element frames', () => {
+  test('a plain number[] never arms a prefix sweep', async () => {
+    const s = freshStore({ nums: [] });
+    expect(await settle(s)).toBe(true);
+    s.nums = [];                        // _isIdColl([]) is true
+    const p0 = s[STORE].prefixSweeps();
+    s.nums.push(1);
+    expect(s[STORE].prefixSweeps()).toBe(p0);
   });
 });

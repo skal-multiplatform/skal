@@ -14,11 +14,22 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  # The push/PR workflows pin Flutter (see the note in tests.yml). The
+  # nightly deliberately does NOT: it passes '' so flutter-action floats on
+  # stable. That is the whole point of a regression guard — CI went red once
+  # already on a Flutter release rather than on a commit, and with every
+  # workflow pinned that class of break would go unseen until someone
+  # bumped. Nightly failing while push/PR stays green means "upstream moved",
+  # not "someone broke main".
   tests:
     uses: ./.github/workflows/tests.yml
+    with: { unpin-flutter: true }
   android:
     uses: ./.github/workflows/android.yml
+    with: { unpin-flutter: true }
   desktop:
     uses: ./.github/workflows/desktop.yml
+    with: { unpin-flutter: true }
   ios-sim:
     uses: ./.github/workflows/ios-sim.yml
+    with: { unpin-flutter: true }

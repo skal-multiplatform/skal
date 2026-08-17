@@ -19,7 +19,7 @@ universal renderer, the deep-object store, and the runtime primitives
 
 Private workspace package. Consumed locally from `examples/*` via bun
 workspaces. Not published to npm. See top-level
-[`docs/RESTRUCTURE.md`](../../docs/RESTRUCTURE.md) for the framework / app
+[`notes/drafts/RESTRUCTURE.md`](../../notes/drafts/RESTRUCTURE.md) for the framework / app
 boundary and the eventual public-distribution story.
 
 ## What ships with it

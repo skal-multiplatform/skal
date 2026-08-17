@@ -22,7 +22,7 @@ import { skalCodegen } from './vite-plugin-skal-codegen.js';
 const require = createRequire(import.meta.url);
 const skalJsxPlugin = require('./babel-plugin-skal-jsx.cjs');
 
-// ── B.5 plugin host wiring (see docs/WEB_SUPPORT_PLAN.md Phase 3) ───
+// ── B.5 plugin host wiring (see docs/WEB.md Phase 3) ───
 // The hidden Flutter Web plugin host lives at `flutter-web-plugins/`
 // and is built with `flutter build web --release` (aliased as `bun run
 // build:flutter-plugins`). This plugin makes the resulting bundle

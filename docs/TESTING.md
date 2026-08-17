@@ -172,7 +172,7 @@ carrying a ROOT-targeted invoke, which publishes and then rings
 This seam exists because it was missing: the drain path had no coverage
 at all, and a stranded-update bug shipped past a 13-finding review and
 was only found by a 45-second benchmark on a real macOS build. See
-`docs/TODO_OPTIMIZATIONS.md` §2c. **If you touch `pumpOps` / `_drain` /
+the optimization backlog. **If you touch `pumpOps` / `_drain` /
 `_flushTouched`, add a case there** — and check your test actually fails
 against the unfixed code before you trust it.
 

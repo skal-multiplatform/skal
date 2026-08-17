@@ -9,7 +9,7 @@ import io.flutter.plugins.GeneratedPluginRegistrant
 // Android cold-start optimisations for a Skal host.
 //
 // Measured on a Galaxy A14 5G (Android 15, release, arm64-v8a), A/B/A
-// blocks with session drift quantified — see docs/ANDROID_COLD_START.md
+// blocks with session drift quantified — see docs/BENCHMARKS.md
 // for the full protocol and the things that did NOT work.
 //
 // The structural problem: React Native loads its native runtime in

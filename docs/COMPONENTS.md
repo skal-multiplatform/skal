@@ -1,14 +1,12 @@
-# Skal — Flutter components for JS
+# Components — the fast-path layer
 
-The plan for the **fast-path component layer**: the hand-coded core
-primitives (`<column>`, `<row>`, `<text>`, `<listView>` …) that cross
-the bridge as first-class wire ops, distinct from the codegen-wrapped
-pub.dev widgets.
+The hand-coded core primitives (`<Column>`, `<Row>`, `<Text>`,
+`<ListView>` …) that cross the bridge as first-class wire ops, distinct
+from the codegen-wrapped pub.dev widgets.
 
 For the codegen pipeline that wraps third-party packages see
 [`WRAPPING_PUB_PACKAGES.md`](WRAPPING_PUB_PACKAGES.md). For platform
-plumbing see [`TODO_PLATFORMS.md`](TODO_PLATFORMS.md). Open codegen
-items are in [`TODO.md`](TODO.md) § Codegen polish.
+plumbing and open codegen items are tracked outside this repo.
 
 ---
 
@@ -45,7 +43,7 @@ Flutter ships ~250+ public widgets across `widgets` / `material` /
 End state: **~30 fast-path primitives + a few prop systems
 (animation, gestures, styling) + an imperative overlay API.**
 
-## 3. Prerequisite — single-source wire schema
+## 3. The wire-schema drift risk
 
 Adding one fast-path widget today = **6–7 synchronized edits across
 two languages**: `wire.dart`, `bridge.js`, `renderer.js`,
@@ -68,56 +66,40 @@ Before adding the widgets below:
 
 Everything below assumes this is done — that is why "effort" is small.
 
-## 4. Wave 0 — already implemented
+## 4. What exists today
 
-| Tag | Flutter widget | Notes |
-|---|---|---|
-| `box` | `DecoratedBox`+`Padding` | generic container; carries decoration/padding props |
-| `column` | `Column` | |
-| `row` | `Row` | |
-| `text` | `Text` | string only — no inline spans yet |
-| `button` | `ElevatedButton` etc. | |
-| `scrollView` | `SingleChildScrollView` | |
-| `listView` | `ListView.builder` | vertical only |
-| `reorderableListView` | `ReorderableListView.builder` | |
+49 widget types cross the bridge as first-class ops. The wire is the
+source of truth — `packages/skal_flutter/lib/skal/wire.dart`:
 
-## 5. New widgets to implement
+**Layout** `Box` · `Column` · `Row` · `Stack` · `Wrap` · `SafeArea`
+· `BackdropFilter`
 
-Effort: **S** ≈ ½ day · **M** ≈ 1–2 days · **L** ≈ 3+ days
-(post-schema: builder + web styler only).
+**Scrolling** `ScrollView` · `ListView` · `LazyGrid` · `PageView`
+· `ReorderableListView` · `CustomScrollView` · `SliverList`
+· `SliverGrid` · `SliverAppBar`
 
-### Wave 1 — core, on most screens
+**Text and media** `Text` · `RichText` · `Image` · `Canvas`
+· `HtmlEmbed`
 
-| Tag | Flutter widget | Effort | Notes |
-|---|---|---|---|
-| `image` | `Image` | M | src → network/asset/file/memory dispatch; `fit`, sizing; optional `onLoad`/`onError` event-back. Prop tier 0x60–0x61 reserved |
-| `stack` | `Stack` | M | needs a **new prop family**: per-child `top`/`left`/`right`/`bottom` (free layout slots 0x0A–0x0E) + `alignment`/`fit`. Structural — cannot be a prop |
-| `icon` | `Icon` | S | `IconData` by codepoint + font family; accept raw codepoint or a curated name→codepoint map |
-| `textInput` | `TextField` | L | host-pattern: controller lifecycle, focus, keyboard type, `onChange`/`onSubmit` event-back. Input prop tier 0x80–0x83 reserved. Hardest in the set |
+**Input** `Button` · `TextInput` · `Switch` · `Slider` · `Checkbox`
+· `Radio` · `Chip` · `Dropdown` · `SegmentedButton` · `Stepper` · `Step`
 
-### Wave 2 — controls & layout
+**Structure** `ListTile` · `ExpansionTile` · `Drawer` · `BottomSheet`
+· `Tabs` · `Tab` · `Navigator` · `Screen`
 
-| Tag | Flutter widget | Effort | Notes |
-|---|---|---|---|
-| `switch` | `Switch` | S | bool value + `onChange` event-back |
-| `slider` | `Slider` | S | double value, `min`/`max`/`divisions`, `onChange` |
-| `checkbox` | `Checkbox` | S | bool value + `onChange` |
-| `activityIndicator` | `CircularProgressIndicator` | S | `size`/`color` props |
-| `progressBar` | `LinearProgressIndicator` | S | determinate (`value`) or indeterminate |
-| `lazyGrid` | `GridView.builder` | M | 2D — needs `crossAxisCount`/`aspectRatio`; distinct from `listView` |
-| `wrap` | `Wrap` | S | flow layout — distinct from row/column |
+**Feedback** `ActivityIndicator` · `ProgressBar`
 
-### Wave 3 — structure & polish
+**Motion and gesture** `AnimatedList` · `CrossFade` · `Hero`
+· `Dismissible` · `InteractiveViewer` · `DragItem` · `DropZone`
 
-| Tag | Flutter widget | Effort | Notes |
-|---|---|---|---|
-| `safeArea` | `SafeArea` | S | mobile insets |
-| `richText` | `Text.rich` | M | inline styled spans — `<text>` with `<span>` children |
-| `pageView` | `PageView` | M | swipeable pages; controller-ish (host-lite) |
-| `radio` | `Radio` | S | marginal — group semantics add friction |
-| `segmentedControl` | `SegmentedButton` | M | iOS-style multi-toggle |
+**Escape hatch** `Custom` — the codegen-wrapped pub.dev path.
 
-## 6. Props, not widgets
+**Not on the wire:** `icon`. Everything else once queued here has
+shipped. Icons currently come through text glyphs or a wrapped package;
+a first-class `<Icon>` needs a codepoint + font-family prop pair and a
+curated name→codepoint map.
+
+## 5. Props, not widgets
 
 Each of these as a widget = an extra node crossing the bridge per
 use — against the "RN but faster" thesis. Implement as props on
@@ -136,7 +118,7 @@ existing widgets instead.
 | visibility | `visible` prop | `<visibility>` |
 | divider | thin `box` (height + bg) | `<divider>` (optional convenience) |
 
-## 7. Prop systems (one feature each, not many widgets)
+## 6. Prop systems (one feature each, not many widgets)
 
 - **Animation** — the `Animated*` / `*Transition` family (~25
   widgets) collapses to one "animate props on change" system: a
@@ -146,7 +128,7 @@ existing widgets instead.
 - **Styling** — decoration / border / shadow / radius props on `box`
   (mostly landed; `_applyColdVisual` in `root.dart`).
 
-## 8. Not fast-path — leave to codegen / imperative
+## 7. Not fast-path — leave to codegen / imperative
 
 - **Codegen adapters** (`wtCustom`): `video`, `webview`, `map`,
   charts, `camera`, date/time pickers, animation packages.
@@ -156,34 +138,17 @@ existing widgets instead.
   builders, `MediaQuery`, focus / shortcuts / semantics.
 - **Deferred**: `Sliver*` advanced scrolling.
 
-## 9. Build order
+## 8. Design notes
 
-1. **Wire-schema codegen** (§3) — the unlock; every widget after is a
-   2-edit change, and silent cross-language drift dies.
-2. `image` — first real widget through the new pipeline; proves it
-   end to end.
-3. `axis` prop + `onTap` prop family — proves the "expand via prop"
-   path.
-4. `stack` + the positioning prop family.
-5. Wave 2 controls (`switch` / `slider` / `checkbox` /
-   `activityIndicator` / `progressBar`) — all S, same callback-prop
-   shape; batch them.
-6. `lazyGrid`, `wrap`, `safeArea`, `richText`.
-7. `textInput` — last; the L-effort host widget.
-8. Animation prop system — after the widget set is stable.
-
-End state: ~20 fast-path widgets covering essentially every
-RN-core screen, with the prop list keeping the widget count from
-ballooning.
-
----
-
-## 10. Implementation plans
+Kept for the rationale, not as a queue — the dialog API and the
+`animate`-on-change prop system below have both shipped, and Cupertino
+variants are wired (`dialogs.dart`, `root.dart`). Read these for *why*
+each is shaped the way it is.
 
 Three subsystems from §2 that are NOT widget waves — they run in
 parallel with §9.
 
-### 10.1 — Cupertino as a design variant
+### 8.1 — Cupertino as a design variant
 
 **Current state.** App shell is `MaterialApp` + a static
 `ThemeData.light(useMaterial3: true)` (`main.dart:174`). No dark
@@ -222,7 +187,7 @@ Brightness (`light | dark`) rides the same config — free dark mode.
 variant. P2: theme-default fallbacks (unlocks dark mode). P3: web.
 **Effort: M.**
 
-### 10.2 — Imperative dialog / sheet / overlay API
+### 8.2 — Imperative dialog / sheet / overlay API
 
 **Current state.** RPC fully works: `invokeMethod(nodeId, method,
 args)` → `OP_INVOKE_METHOD(nodeId, methodHash, callId)` → the node's
@@ -263,7 +228,7 @@ existing RPC + reply machinery — no new wire op.
 reentrancy.
 **Effort:** P1 = M (machinery exists). P2 = L.
 
-### 10.3 — "Animate props on change" prop system
+### 8.3 — "Animate props on change" prop system
 
 **Current state.** Hot props (`opacity`, `translationX/Y`,
 `scaleX/Y`, `rotationZ`) — 6 plain doubles on `NodeState`, one `hot`

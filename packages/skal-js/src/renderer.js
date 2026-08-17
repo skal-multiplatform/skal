@@ -1131,7 +1131,7 @@ const _renderer = createRenderer({
 
     // Unknown attribute — silently drop. Wire-level openness; renderer-
     // level closedness: the wire format reserves slots for future props,
-    // but each renderer only emits the ones it knows. See PROPS_PLAN.md §6.
+    // but each renderer only emits the ones it knows. See PROPS.md §6.
   },
 
   insertNode(parent, node, anchor) {

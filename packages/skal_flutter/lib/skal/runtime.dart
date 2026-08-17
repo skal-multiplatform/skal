@@ -13,7 +13,7 @@
 // deferred to it, so `setLoading(true); api.fetch()` in one handler took
 // 366 ms to paint (p95 978 ms) instead of 11.5 ms, and often never
 // painted at all. It took a 45-second benchmark on a real macOS build to
-// find. See docs/TODO_OPTIMIZATIONS.md §2c.
+// find. See notes/drafts/TODO_OPTIMIZATIONS.md §2c.
 //
 // This interface is the seam. It is deliberately the MINIMUM the bridge
 // actually calls — not the whole `Skal` class — so a fake stays small
@@ -78,7 +78,7 @@ abstract interface class SkalRuntime {
   void markReplyHeapReset();
 
   /// Arm the doorbell — `callback` runs when JS rings
-  /// `__skal_notifyHost()`. See docs/TODO_OPTIMIZATIONS.md §2b.
+  /// `__skal_notifyHost()`. See notes/drafts/TODO_OPTIMIZATIONS.md §2b.
   ///
   /// **Returns whether it actually armed.** A no-op returning false
   /// where the mechanism does not exist (web, and any libskal predating

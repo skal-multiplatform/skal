@@ -155,7 +155,7 @@ The bridge can fail silently and leave a blank canvas. The host
   log — **unconditional**; this is how you confirm the COOP/COEP headers are set
   (cross-origin isolation is required for the threaded skwasm path). If this says
   `isolated=false`, your server isn't sending the headers — see
-  `examples/kitchen-sink/scripts/serve-isolated.js` and [WEB_SUPPORT_PLAN.md](./WEB_SUPPORT_PLAN.md).
+  `examples/kitchen-sink/scripts/serve-isolated.js` and [WEB.md](./WEB.md).
 
 ---
 

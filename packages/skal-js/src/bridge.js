@@ -104,7 +104,7 @@ export const OP_UNSUBSCRIBE_STREAM  = 0x1F;
 // Hot-prop opcodes — distinct from OP_SET_PROP_F32 so the host's
 // switch on opcode dispatches them directly to their dedicated
 // notifier without going through the cold-prop machinery. See
-// PROPS_PLAN.md §5.
+// PROPS.md §5.
 export const OP_SET_OPACITY       = 0x20;
 export const OP_SET_TRANSLATION_X = 0x21;
 export const OP_SET_TRANSLATION_Y = 0x22;
@@ -320,7 +320,7 @@ const _replyChunks = new Map();
 
 // ───────────────────────────────────────────────────────────────────────
 // Prop key namespace — must match wire.dart's prop* constants.
-// Partitioned by tier; see PROPS_PLAN.md §6.
+// Partitioned by tier; see PROPS.md §6.
 // ───────────────────────────────────────────────────────────────────────
 
 // Layout (u32 unless noted)
@@ -912,7 +912,7 @@ if (HAS_NATIVE_BRIDGE && typeof window === 'undefined') {
 
 let scheduled = false;
 
-// ── Host doorbell — docs/TODO_OPTIMIZATIONS.md §2b ────────────────────
+// ── Host doorbell — notes/drafts/TODO_OPTIMIZATIONS.md §2b ────────────────────
 //
 // The host drains the op ring once per frame from a Ticker, which is
 // free for UI ops (nothing paints before vsync) but costs a full frame
@@ -926,7 +926,7 @@ let scheduled = false;
 // the host drains the ring IN ORDER, so a ring can only ever cause the
 // CREATE_NODE to be applied before the invoke that follows it. There
 // was no race to avoid. The real reason to stay narrow was cost — a
-// port message per commit — which docs/TODO_OPTIMIZATIONS.md §2c
+// port message per commit — which notes/drafts/TODO_OPTIMIZATIONS.md §2c
 // measured and rejected on the grounds that it bought no latency.
 //
 // It buys something else. The host's frame ticker used to run every
@@ -1023,7 +1023,7 @@ export function resetRootSubtree() {
 
 // ───────────────────────────────────────────────────────────────────────
 // Diff cache — flat-array, O(1) lookup, sparse rows allocated per active
-// node. See PROPS_PLAN.md §4.
+// node. See PROPS.md §4.
 //
 // The point of the cache: skip a wire write when the value is unchanged.
 // Most "renders" don't change every prop; for a button being re-emitted
@@ -1502,7 +1502,7 @@ export function listClearRow(listId, index) {
 }
 
 /**
- * Imperative dialog API — FLUTTER_JS_COMPONENTS.md §10.2. Each call
+ * Imperative dialog API — COMPONENTS.md §10.2. Each call
  * crosses the bridge as an RPC on the root node and returns a Promise
  * that resolves with the chosen action's `value` (or null/undefined
  * on a barrier dismiss).

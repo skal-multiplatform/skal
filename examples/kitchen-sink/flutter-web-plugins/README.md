@@ -1,6 +1,6 @@
 # skal_plugin_host
 
-Hidden Flutter Web host that runs Skal's federated plugin Dart code in a 1×1 div, called from JS via JsInterop. See docs/WEB_SUPPORT_PLAN.md.
+Hidden Flutter Web host that runs Skal's federated plugin Dart code in a 1×1 div, called from JS via JsInterop. See docs/WEB.md.
 
 ## Getting Started
 

@@ -1,13 +1,13 @@
-# Skal — Animation
+# Animation
 
-The plan for motion: every animation runs **host-side on Flutter**, JS
-only ever declares the target. Implicit tweens, explicit/looping
-animations, list enter/exit, shared-element (Hero) transitions — all
-with **zero per-frame bridge traffic**.
+Every animation runs **host-side on Flutter**; JS only ever declares the
+target. Implicit tweens, explicit and looping animations, list
+enter/exit, shared-element (Hero) transitions and real spring physics —
+all with **zero per-frame bridge traffic**.
 
-Companion to [`FLUTTER_JS_COMPONENTS.md`](FLUTTER_JS_COMPONENTS.md)
-(the fast-path widget layer) and [`NAVIGATION.md`](NAVIGATION.md)
-(which already gives native push/pop transitions).
+Companion to [`COMPONENTS.md`](COMPONENTS.md) (the fast-path widget
+layer) and [`NAVIGATION.md`](NAVIGATION.md) (native push/pop
+transitions).
 
 ---
 
@@ -38,7 +38,7 @@ per-frame value across the bridge, and no animation may fire
 subtree). Every animation is a dedicated, minimal Dart widget tweening
 in isolation.
 
-## 2. What exists today — the `animate` prop (Phase 0, done)
+## 2. What exists today — the `animate` prop
 
 ```jsx
 <Box animate={{ duration: 450, curve: 'easeInOut', delay: 0 }}
@@ -66,21 +66,21 @@ doc fills those in.
 
 ## 3. The animation matrix
 
-| Animation | Flutter analogue | Mechanism in Skal | Phase |
+| Animation | Flutter analogue | Mechanism in Skal | Status |
 |-----------|------------------|-------------------|-------|
-| Hot-prop tween (opacity/transform) | `AnimatedOpacity`, `*Transition` | `animate` prop → `_AnimatedHotLayer` | 0 — done |
-| Cold-prop tween (color/size/radius/padding/border) | `AnimatedContainer`, `AnimatedPadding` | `animate` prop widened → animated visual wrapper | 1 |
-| Looping / ping-pong (pulse, spin) | `controller.repeat()` | `animate: { repeat, reverse }` | 1 |
-| Text-style tween | `AnimatedDefaultTextStyle` | `animate` on `<text>` → animated style | 1 |
-| List item enter / exit | `SizeTransition` + `FadeTransition` | `<animatedList>` + deferred teardown | 2 |
-| Content cross-fade | `AnimatedSwitcher` | `<crossFade>` — outgoing-element retention | 2 |
-| Shared-element transition | `Hero` | `<hero tag>` (the navigator is a real `Navigator`) | 3 |
-| Staggered | `Interval` / delayed controllers | app pattern over `animate.delay` (+ a helper) | 3 |
-| Physics / spring | spring-like `Curves` | `animate: { spring: 'bouncy' }` | 4 |
-| Custom page transition | `PageRouteBuilder` | `<screen transition>` prop | 4 |
+| Hot-prop tween (opacity/transform) | `AnimatedOpacity`, `*Transition` | `animate` prop → `_AnimatedHotLayer` | shipped |
+| Cold-prop tween (color/size/radius/padding/border) | `AnimatedContainer`, `AnimatedPadding` | `animate` prop widened → animated visual wrapper | shipped |
+| Looping / ping-pong (pulse, spin) | `controller.repeat()` | `animate: { repeat, reverse }` | shipped |
+| Text-style tween | `AnimatedDefaultTextStyle` | `animate` on `<text>` → animated style | shipped |
+| List item enter / exit | `SizeTransition` + `FadeTransition` | `<animatedList>` + deferred teardown | shipped |
+| Content cross-fade | `AnimatedSwitcher` | `<crossFade>` — outgoing-element retention | shipped |
+| Shared-element transition | `Hero` | `<hero tag>` (the navigator is a real `Navigator`) | shipped |
+| Staggered | `Interval` / delayed controllers | app pattern over `animate.delay` (+ a helper) | shipped |
+| Physics / spring | spring-like `Curves` | `animate: { spring: 'bouncy' }` | shipped |
+| Custom page transition | `PageRouteBuilder` | `<screen transition>` prop | shipped |
 | Vector (Lottie / Rive) | `lottie`, `rive` packages | codegen-wrapped custom widget — not core | out of scope |
 
-## 4. Cold-prop tweens (Phase 1)
+## 4. Cold-prop tweens
 
 Today a cold prop change (`background`, `width`, `cornerRadius`,
 `padding`, `borderWidth`, …) fires `cold.notify()` → the node rebuilds
@@ -100,7 +100,7 @@ swap the wrapper widgets for their animated equivalents:
   weight).
 
 Flutter owns the tween; JS still writes the cold prop exactly once.
-**No wire changes** — `animate` already exists; Phase 1 just widens
+**No wire changes** — `animate` already exists; cold-prop tweening widens
 which props it covers.
 
 Performance: `AnimatedContainer` repaints itself each frame, so the
@@ -108,7 +108,7 @@ children subtree it wraps **must** sit behind a `RepaintBoundary` (same
 rule as `_AnimatedHotLayer`). The boundary is added only for animated
 nodes — a static node pays nothing.
 
-## 5. Looping & explicit control (Phase 1)
+## 5. Looping & explicit control
 
 The `animate` prop is implicit (tween once to the target). A pulsing
 dot or an app-drawn spinner needs the controller to **repeat**:
@@ -126,7 +126,7 @@ traffic — JS sets the endpoints once and never touches it again.
 `loop: N` count caps it. Stopping is just `repeat: false` (or removing
 `animate`) — the next drain reconfigures the controller.
 
-## 6. List enter / exit — `<animatedList>` (Phase 2, shipped)
+## 6. List enter / exit — `<animatedList>`
 
 `<animatedList>` is a column whose children animate as the JS `<For>`
 adds **and removes** them — a newly-inserted child fades + expands in;
@@ -163,7 +163,7 @@ node the bridge **defers**:
 `<listView>` (it virtualizes; `<animatedList>` builds every row and
 allocates one `AnimationController` per row).
 
-## 7. Content cross-fade — `<crossFade>` (Phase 2, shipped)
+## 7. Content cross-fade — `<crossFade>`
 
 `<crossFade>` holds one child and cross-fades when that child's node
 id changes (`{cond() ? <A/> : <B/>}`). Host: `AnimatedSwitcher` keyed
@@ -177,7 +177,7 @@ fades out, while the new child fades in over it. The
 outgoing-node-must-survive problem solves itself because the element,
 once built, is frozen (its `cold` notifier never fires again).
 
-## 8. Shared-element (Hero) transitions (Phase 3)
+## 8. Shared-element (Hero) transitions
 
 ```jsx
 <Hero tag="avatar-42"><Image src={…} /></Hero>
@@ -194,7 +194,7 @@ prop) → `Hero(tag: n.getPropStr(propHeroTag), child: SkalNode(child))`.
 The only cost is a one-time build of the hero subtree copy Flutter
 places in the flight overlay.
 
-## 9. Staggered animations (Phase 3)
+## 9. Staggered animations
 
 A staggered reveal is not a new primitive — it is the `animate` prop's
 `delay` applied per item:
@@ -211,7 +211,7 @@ A thin `createStagger(count, step)` runtime helper can hand back the
 per-index delays, but the mechanism is entirely the existing
 per-node controller — no wire or host work.
 
-## 10. Physics / spring (Phase 4, shipped)
+## 10. Physics / spring
 
 `animate: { spring: 'gentle' | 'bouncy' | 'stiff' }` gives physics-feel
 motion. Skal expresses it as a spring-*like* `Curve` on the existing
@@ -228,7 +228,7 @@ additive `spring` mode — see §10b. It earns its extra machinery (an
 unbounded controller) now that gestures exist to feed it a fling's
 velocity.
 
-## 10a. Custom page transitions (Phase 4, shipped)
+## 10a. Custom page transitions
 
 `<screen transition>` overrides a route's push animation: `1` → a
 cross-fade, `2` → none (instant). Implemented by `_FadePage`, a
@@ -237,7 +237,7 @@ a `FadeTransition` (or zero-duration). `0` keeps the platform default
 (Material slide / Cupertino slide). The transitions run host-side on
 the raster thread — see §11 rule 8.
 
-## 10b. Real physics — `spring` mode + release momentum (Phase 5, shipped)
+## 10b. Real physics — `spring` mode + release momentum
 
 Two additive features, both built on real `dart:physics` simulations
 driving an `AnimationController`. They do **not** replace the
@@ -305,10 +305,10 @@ CSS transition (no velocity-aware retargeting — the browser can't).
 
 - Extend the `animate` config: `propAnimRepeat` (u32 bool),
   `propAnimReverse` (u32 bool), `propAnimLoop` (u32 count); a
-  `propAnimPhysics` enum for Phase 4. Cold-prop tweening needs **no**
+  `propAnimPhysics` enum for spring physics. Cold-prop tweening needs **no**
   new keys — it widens which props `_AnimatedHotLayer`'s sibling
   visual wrapper reads.
-- Widget types: `wtAnimatedList`, `wtCrossFade`, `wtHero` (Phases 2–3).
+- Widget types: `wtAnimatedList`, `wtCrossFade`, `wtHero`.
 - `propHeroTag` (string) — or carried on `wtHero`.
 - **No new events, no bridge changes.** `<animatedList>` detects new
   items host-side (it diffs child ids against its own snapshot);
@@ -317,32 +317,26 @@ CSS transition (no velocity-aware retargeting — the browser can't).
   map + `finalizeLeavingNode`) is only needed for animated list
   *removal* — a future pass.
 
-## 13. Phases
+## 13. Status
 
-- **Phase 1** — cold-prop tweens (`animate` widened to color / size /
-  radius / padding / border / text style via `AnimatedContainer` &
-  `AnimatedDefaultTextStyle`); looping / ping-pong (`repeat`,
-  `reverse`, `loop`). Both are extensions of the shipped `animate`
-  prop — small, no new widgets, high value.
-- **Phase 2 — done.** `<animatedList>` — new rows fade + expand in,
-  removed rows collapse + fade out via deferred teardown (the bridge
-  parks a removed child in `node.leavingChildren` until the host's
-  exit animation finishes) — and `<crossFade>` (`AnimatedSwitcher`
-  with outgoing-element retention).
-- **Phase 3 — done.** `<hero>` shared-element transitions (the
-  navigator is a real `Navigator`, so `Hero` works directly); a
-  `createStagger` runtime helper.
-- **Phase 4 — done.** Physics via spring-like curves (`animate.spring`
-  → `easeOutCubic` / `elasticOut` / `easeOutExpo` on the existing
-  bounded controller — no `SpringSimulation` / unbounded controller);
-  custom page transitions (`<screen transition>` → fade / none via a
-  `_FadePage`).
-- **Phase 5 — done.** Real physics (§10b), additive to the curve-based
-  `animate.spring`: a velocity-aware `spring` mode (`_SpringHotLayer`
-  running a `SpringSimulation`) and `draggable` release momentum
-  (`_MomentumDraggable` running `FrictionSimulation` / `SpringSimulation`
-  seeded with the gesture's fling velocity). Unblocked by the gesture
-  system, which now produces the velocity real springs consume.
-- **Out of scope** — Lottie / Rive: vector-animation files belong on
-  the codegen-wrapped custom-widget path (`<Lottie src=…>`), like the
-  camera / QR widgets — not a core animation primitive.
+Everything below is shipped and on the wire — verify against
+`wtAnimatedList`, `wtCrossFade`, `wtHero` and the `propAnim*` keys in
+`packages/skal_flutter/lib/skal/wire.dart`.
+
+| | |
+|---|---|
+| `animate` prop — implicit tweens | hot props, opacity / transform / colour |
+| Cold-prop tweens | colour, size, radius, padding, border, text style |
+| Looping and ping-pong | `repeat`, `reverse`, `loop` |
+| `<animatedList>` | rows fade + expand in; removals collapse via deferred teardown |
+| `<crossFade>` | `AnimatedSwitcher` with outgoing-element retention |
+| `<hero>` | the navigator is a real `Navigator`, so `Hero` works directly |
+| `createStagger` | runtime helper for staggered sequences |
+| Spring curves | `animate.spring` → `easeOutCubic` / `elasticOut` / `easeOutExpo` |
+| Real physics | velocity-aware `spring` mode (`SpringSimulation`) |
+| Release momentum | `draggable` fling → `FrictionSimulation` / `SpringSimulation` |
+| Custom page transitions | `<screen transition>` → fade / none |
+
+**Out of scope.** Lottie and Rive: vector-animation files belong on the
+codegen-wrapped custom-widget path (`<Lottie src=…>`), like the camera
+and QR widgets — not a core animation primitive.

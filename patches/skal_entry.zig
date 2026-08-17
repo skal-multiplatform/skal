@@ -14,7 +14,7 @@
 //! raw pointer + length returned by `skal_acquire_bridge`. Both sides
 //! write/read through their own views of the same memory.
 //!
-//! Layout (see PROPS_PLAN.md § 2 for the full spec):
+//! Layout (see PROPS.md § 2 for the full spec):
 //!
 //!   [ Header 64B ][ Op ring 4 MiB ][ JS string heap 768 KiB ]
 //!   [ Reply heap 256 KiB ][ Event ring ~1 MiB ]
@@ -140,7 +140,7 @@ extern fn Bun__REPL__evaluate(
 // One contiguous 1.5 MiB region pinned for the life of the runtime. JS
 // gets a no-copy ArrayBuffer; the host gets a raw pointer view.
 //
-// Both sides agree on this layout, also documented in PROPS_PLAN.md § 2.
+// Both sides agree on this layout, also documented in PROPS.md § 2.
 // ───────────────────────────────────────────────────────────────────────
 
 const BRIDGE_SIZE: usize = 1024 * 1024 * 6; // 6 MiB total

@@ -4,7 +4,7 @@
 //
 // What these pin is not "the decoder decodes". It is the three-way
 // contract §2b introduced when it made drains happen more than once
-// per frame (docs/TODO_OPTIMIZATIONS.md):
+// per frame (notes/drafts/TODO_OPTIMIZATIONS.md):
 //
 //   • a FRAME drain applies AND notifies
 //   • an OFF-FRAME (doorbell) drain applies and DEFERS notification,
@@ -407,7 +407,7 @@ void main() {
   });
 
   group('hot-reload tree sweep', () {
-    // `docs/TODO.md` carried this as "listeners from the old tree are
+    // `notes/drafts/TODO.md` carried this as "listeners from the old tree are
     // leaked". They are not — but the reason is a deliberate,
     // easy-to-undo decision rather than an accident, so it is pinned
     // here: the sweep drops the generation from `nodes` WITHOUT

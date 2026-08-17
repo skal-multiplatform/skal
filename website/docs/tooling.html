@@ -66,7 +66,7 @@
     </div>
 
     <h2>Benchmarks</h2>
-    <p>The <a href="../#performance">published numbers</a> come from the kitchen-sink demo: boot timing prints on every launch (<code>[skal] init=… boot=…</code>), the JS tab's bench buttons drive prop-write throughput and the 10,000-item feed, and the in-app meter shows per-frame drain cost live. Methodology and budget invariants: <a href="https://github.com/skal-multiplatform/skal/blob/main/docs/PERFORMANCE.md">docs/PERFORMANCE.md</a>. Run it on your own hardware:</p>
+    <p>The <a href="../#performance">published numbers</a> come from the kitchen-sink demo: boot timing prints on every launch (<code>[skal] init=… boot=…</code>), the JS tab's bench buttons drive prop-write throughput and the 10,000-item feed, and the in-app meter shows per-frame drain cost live. Methodology and budget invariants: <a href="https://github.com/skal-multiplatform/skal/blob/main/docs/BENCHMARKS.md">docs/BENCHMARKS.md</a>. Run it on your own hardware:</p>
     <pre class="code"><span class="cm">$</span> git clone https://github.com/skal-multiplatform/skal &amp;&amp; cd skal
 <span class="cm">$</span> SKAL_PREBUILT=1 bun run setup   <span class="cm"># prebuilt libskal — no toolchain needed</span>
 <span class="cm">$</span> bun run dev:android             <span class="cm"># kitchen-sink; watch the boot line + perf meter</span></pre>

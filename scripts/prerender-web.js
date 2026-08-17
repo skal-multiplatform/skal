@@ -8,7 +8,7 @@
 // the resulting markup back into dist/index.html. Crawlers and first
 // paint get real content; on load, an injected inline script clears the
 // root just before the bundle re-renders (prerender + remount — see
-// docs/WEB_SUPPORT_PLAN.md §Shape E; adopt-mode hydration is v2).
+// docs/WEB.md §Shape E; adopt-mode hydration is v2).
 //
 // Routes: v1 prerenders "/" only unless routes are passed; each extra
 // route becomes dist/<route>/index.html rendered with that location.

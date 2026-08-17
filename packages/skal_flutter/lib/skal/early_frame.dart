@@ -15,7 +15,7 @@
 //
 // MEASURED: platform tax 186 -> 173 ms, total cold start 346 -> 320 ms.
 // A/B/A, n=10 per block, 6 ms session drift. See
-// docs/ANDROID_COLD_START.md.
+// docs/BENCHMARKS.md.
 //
 // THE SHAPE MATTERS — THIS IS THE SECOND ATTEMPT
 // ----------------------------------------------

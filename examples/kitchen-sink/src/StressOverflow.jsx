@@ -1,7 +1,7 @@
 // Stress route (web only) — a synchronous big-list mount that overflows
 // the bridge's 768 KiB JS string heap several times mid-mount, exercising
 // the op-ring / string-heap overflow path (`flushAndWaitForDrain` → the
-// web inline-drain hook `__skal_drainOpsSync`). See WEB_SUPPORT_PLAN.md
+// web inline-drain hook `__skal_drainOpsSync`). See WEB.md
 // "Op-ring overflow — inline drain instead of a futile spin (web)".
 //
 // Reached via `?stress=<count>` (wired in index.jsx). Each row writes a

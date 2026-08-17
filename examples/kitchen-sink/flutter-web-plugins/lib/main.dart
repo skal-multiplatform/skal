@@ -1,5 +1,5 @@
 // Skal — hidden Flutter Web plugin host + visible <FlutterEmbed>
-// rendering (Phase 1 + Shape C of WEB_SUPPORT_PLAN.md).
+// rendering (Phase 1 + Shape C of WEB.md).
 //
 // This Dart entry point serves two surfaces over a single Flutter Web
 // engine:

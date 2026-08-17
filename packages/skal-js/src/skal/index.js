@@ -806,7 +806,7 @@ export const InteractiveViewer = makeMissingMacroComponent('InteractiveViewer');
 
 /**
  * Visible Flutter Web view embedded in a DOM region — Shape C of
- * `docs/WEB_SUPPORT_PLAN.md`.
+ * `docs/WEB.md`.
  *
  * On web, the renderer adds a Flutter view at this element via
  * multi-view, then asks the plugin host to render the named widget.

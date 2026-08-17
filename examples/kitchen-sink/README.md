@@ -7,7 +7,7 @@ JS-side runtime probes, and the end-to-end render bench. About 2,100
 lines of JSX in [`src/App.jsx`](src/App.jsx).
 
 Acts as the working reference for the framework / app boundary
-(docs/RESTRUCTURE.md) — anything a dev would do *with* Skal lives in
+(notes/drafts/RESTRUCTURE.md) — anything a dev would do *with* Skal lives in
 this directory, anything that's framework lives in `packages/`.
 
 ## Layout
@@ -94,5 +94,5 @@ bun run new my-app --with-platforms      # scaffold + flutter create + link libs
 bun --filter my-app dev:macos
 ```
 
-See top-level [`README.md`](../../README.md) + [`docs/RESTRUCTURE.md`](../../docs/RESTRUCTURE.md)
+See top-level [`README.md`](../../README.md) + [`notes/drafts/RESTRUCTURE.md`](../../notes/drafts/RESTRUCTURE.md)
 for the full layout philosophy.

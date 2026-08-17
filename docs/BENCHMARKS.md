@@ -1,2076 +1,363 @@
-# Benchmarks — consolidated numbers + the bench code we used
+# Benchmarks — Skal vs React Native
 
-The single place to look up "what does Skal actually measure as?"
-For *why* these numbers look the way they do, the analysis lives in
-[FastStorage.md](FastStorage.md). The bench source itself is
-embedded below — the actual files were removed from the tree to
-keep the production bundle lean, but the code is preserved here as
-the methodology record so any later commit can resurrect the bench
-and reproduce.
+Every performance number Skal claims, in one place.
 
-All numbers are on Android release builds on the same arm64-v8a
-Pixel-class emulator, Skal commit `native-store-engine`.
+**Device:** Samsung Galaxy A14 5G (SM-A146P), Android 15, arm64-v8a.
+Physical hardware, **release builds on both sides**, screen held awake
+and asserted, runs interleaved, `pm clear` between cold starts.
 
-> **Cold start lives in its own doc.**
-> [ANDROID_COLD_START.md](ANDROID_COLD_START.md) has the 2026-07-30
-> numbers, measured on **physical hardware** (Galaxy A14 5G) with a
-> pure-Flutter control arm — which is what shows that roughly half the
-> gap to React Native is Flutter's and not Skal's. It also records the
-> six optimisations that did **not** work, and the measurement traps
-> that produced a confident wrong number first.
+**Opponent:** React Native 0.86 / Expo 57 — Hermes, zustand with
+`subscribeWithSelector`, and MMKV. Brought to true WebCrypto parity with
+`react-native-quick-crypto` where crypto is measured.
 
----
+**Dates:** app-level 2026-07-31 · JS engine and reactivity 2026-08-01 ·
+crypto 2026-08-03 · store 2026-08-04, Skal's column re-measured
+2026-08-05 · store regression check 2026-08-16.
 
-## At a glance — what a typical user would feel
-
-The headline metric for "is the app snappy on first interaction":
-
-| Metric | Skal (Solid + Flutter) | Zustand+MMKV+RN | Ratio |
-|---|---:|---:|---:|
-| Cold mount, 200 reactive cells     | **68 ms**     | 2,612 ms       | **Skal 38×** |
-| 1 mutation → next frame             | **3.8 ms**    | 243 ms         | **Skal 65×** |
-| 1,000 same-cell writes → settle     | **105 ms**    | 6,819 ms       | **Skal 65×** |
-| 200 distinct mutations → settle     | **44 ms**     | 16,801 ms      | **Skal 381×** |
-
-Medians of 5 cold app launches per side. Distributions below.
-
-> One sentence: **Skal's worst-case run beats RN's best-case run on
-> every workload that scales with state size or write count.**
+Checksums match across stacks on every state and storage row — a
+mismatched checksum means the two stacks did different work and the row
+is void.
 
 ---
 
-## Bench 1 — Render bench (end-to-end "what the user sees")
+## The short version
 
-200 visible leaf components subscribed to one key each, programmatic
-mutation, `setTimeout(0)` chain as "frame settled" proxy.
-
-### Setup
-- 5 cold app launches per side (`adb shell pm clear` between each)
-- Bench auto-runs 4 s after first paint
-- 3 warmup writes before each timed sub-bench
-- Output captured via `adb logcat`, parsed to per-run files
-
-### Mount results
-
-| Metric | Skal sorted distribution | Median | RN sorted distribution | Median | Ratio (med) |
-|---|---|---:|---|---:|---:|
-| Total mount, 200 cells | 48.6 / 52.6 / **68.4** / 99.9 / 170.4 ms | 68 ms | 2384.7 / 2609.9 / **2612.2** / 2834.6 / 4093.1 ms | 2,612 ms | **38.2×** |
-| Per cell | 0.24 / 0.26 / **0.34** / 0.50 / 0.85 ms | 0.34 ms | 11.9 / 13.0 / **13.1** / 14.2 / 20.5 ms | 13.06 ms | **38.2×** |
-
-The two distributions do not overlap. Skal's *worst* (170 ms) is
-14× faster than RN's *best* (2,385 ms).
-
-### Mutation results
-
-| Sub-bench | Skal min / **med** / max | RN min / **med** / max | Median ratio |
-|---|---:|---:|---:|
-| 1 mutation                  | 1.1 / **3.8** / 71.1 ms   | 64 / **243** / 321 ms       | **Skal 64.7×** |
-| 1k writes (same cell)       | 78 / **105** / 232 ms     | 1,132 / **6,819** / 8,197 ms | **Skal 65.1×** |
-| 200 distinct mutations      | 11 / **44** / 196 ms      | 6,949 / **16,801** / 24,365 ms | **Skal 381.0×** |
-
-Even worst-case Skal beats best-case RN by 5–35× on the 1k-writes
-and 200-distinct workloads.
-
-### The bench code
-
-The Skal side lived at `packages/skal-js/src/skal/RenderBench.jsx` before
-removal — full source preserved here. The RN counterpart was a
-near-identical file at
-`Skal-RN-Comparison/app/(tabs)/render.tsx` in the sibling repo;
-that one is still on disk there since the sibling repo is a
-dedicated comparison fixture.
-
-```jsx
-// RenderBench — end-to-end render-pipeline benchmark.
-//
-// Mounts 200 actual visible Solid components subscribed to a Skal
-// store, programmatically triggers mutations, and measures the JS-side
-// work needed to commit the new render output through the Skal bridge.
-//
-// What it measures: time from `state.cells[k] = v` to the next
-// microtask / setTimeout chain settling, after which all dependent
-// Solid components have rerun their render functions and pushed ops
-// onto the Skal bridge ring.
-//
-// What it does NOT measure: Dart-side widget rebuild + Flutter layout
-// + Impeller paint.
-
-import { createSignal, For, onMount } from 'solid-js';
-import { Box, Column, Row, Text, Button, ListView } from 'skal';
-import { createSkalStore, STORE } from './store/db.js';
-import { invokeMethod, ROOT_NODE_ID } from '../bridge.js';
-
-const BG = '#FFF2F2F7';
-const CARD = '#FFFFFFFF';
-const INK = '#FF1C1C1E';
-const SUBTLE = '#FF8E8E93';
-
-const N_CELLS = 200;
-const N_WRITES = 1000;
-
-const now = () => (typeof performance !== 'undefined' && performance.now
-  ? performance.now() : Date.now());
-
-// Module-level cell-mount counter — incremented from each Cell's
-// onMount. The bench component records the mount-start timestamp, then
-// reads back the time delta once the counter reaches N_CELLS.
-let _mountStart = 0;
-let _mountedCount = 0;
-let _mountAllAt = 0;
-
-// Approximate "frame committed" — flush pending microtasks then
-// schedule a setTimeout(0). The timeout fires after the current
-// macrotask boundary, by which point Solid's batched updates have
-// settled, the Skal bridge has emitted its ops, and Flutter has
-// scheduled the next frame.
-function waitFrame() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-// One leaf cell. Subscribes to `store.cells[i]` via Solid's fine-
-// grained reactivity. When the leaf changes, only this Text re-emits
-// its op via the Skal bridge — Flutter rebuilds only this widget.
-function Cell(props) {
-  onMount(() => {
-    _mountedCount++;
-    if (_mountedCount === N_CELLS) _mountAllAt = now();
-  });
-  return (
-    <Box background={CARD} padding={6} cornerRadius={6}>
-      <Text label={'cell ' + props.idx + ': ' + props.store.cells[props.idx]}
-        fontSize={11} color={INK} />
-    </Box>
-  );
-}
-
-export default function RenderBench() {
-  // Independent store per mount so reruns of the bench don't fight
-  // with leftover state from a previous run.
-  const initial = { cells: {} };
-  for (let i = 0; i < N_CELLS; i++) initial.cells['c' + i] = 0;
-  const store = createSkalStore(initial, { name: 'render-bench-' + Date.now() });
-
-  // Capture the mount-start timestamp BEFORE the JSX returns — the
-  // first Cell onMount fires after this returns, so this is the
-  // earliest "JS work started for this render" baseline.
-  _mountStart = now();
-  _mountedCount = 0;
-  _mountAllAt = 0;
-
-  const [status, setStatus] = createSignal('idle');
-  const [lastResult, setLastResult] = createSignal('');
-
-  // Bench A: single-mutation propagation.
-  async function runOneMutation() {
-    setStatus('running: 1 mutation');
-    await waitFrame();
-    const t0 = now();
-    store.cells.c100 = Math.floor(Math.random() * 1e9);
-    await waitFrame();
-    return now() - t0;
-  }
-
-  // Bench B: 1k-write throughput — flip the same cell 1000× in a
-  // tight loop. Skal's batched-mount coalesces effects to one rerun
-  // per microtask, so 200 dependent components rerun ONCE despite
-  // 1000 mutations.
-  async function runThousandWrites() {
-    setStatus('running: 1k writes');
-    await waitFrame();
-    const t0 = now();
-    for (let i = 0; i < N_WRITES; i++) store.cells.c100 = i;
-    await waitFrame();
-    return now() - t0;
-  }
-
-  // Bench C: 200 distinct mutations — flip each cell once, every one
-  // observed by exactly one component.
-  async function runDistinctMutations() {
-    setStatus('running: 200 distinct');
-    await waitFrame();
-    const t0 = now();
-    for (let i = 0; i < N_CELLS; i++) store.cells['c' + i] = i + 1;
-    await waitFrame();
-    return now() - t0;
-  }
-
-  async function runAll() {
-    // Warm-up — JIT hot paths.
-    for (let i = 0; i < 3; i++) {
-      store.cells.c100 = i;
-      await waitFrame();
-    }
-    const a = await runOneMutation();
-    const b = await runThousandWrites();
-    const c = await runDistinctMutations();
-    const mountTotal = _mountAllAt > 0 ? _mountAllAt - _mountStart : -1;
-    const mountPerCell = mountTotal > 0 ? mountTotal / N_CELLS : -1;
-    const lines = [
-      'RENDER-BENCH — Skal+Solid+Flutter · ' + new Date().toISOString(),
-      'cells=' + N_CELLS + ' · writes=' + N_WRITES,
-      '',
-      '  initial mount · all ' + N_CELLS + ' cells       : '
-        + (mountTotal >= 0 ? mountTotal.toFixed(2) + ' ms ('
-          + mountPerCell.toFixed(3) + ' ms/cell)' : '— (not captured)'),
-      '  1 mutation · settle               : ' + a.toFixed(2) + ' ms',
-      '  1k writes · settle (coalesced)    : ' + b.toFixed(2) + ' ms',
-      '  200 distinct mutations · settle   : ' + c.toFixed(2) + ' ms',
-    ];
-    const text = lines.join('\n');
-    setLastResult(text);
-    setStatus('done');
-    // Mirror to Dart logcat so we can capture without the UI.
-    try {
-      await invokeMethod(ROOT_NODE_ID, 'benchReport',
-        [JSON.stringify({ text: 'RENDER-' + text.replace(/\n/g, '\nRENDER-') })]);
-    } catch (_) { /* debug-only */ }
-  }
-
-  // Auto-run shortly after mount so we don't need a manual tap.
-  onMount(() => { setTimeout(runAll, 4000); });
-
-  return (
-    <Column background={BG} padding={12} gap={8} height="fill">
-      <Row gap={8}>
-        <Button label="Run again" onClick={runAll} />
-        <Text label={'status: ' + status()} fontSize={13} color={SUBTLE} />
-      </Row>
-      <Text label={lastResult() || '(running on mount)'}
-        fontSize={11} color={INK} />
-      <Text label={'mounted ' + N_CELLS + ' subscribed components below'}
-        fontSize={11} color={SUBTLE} />
-      <ListView height="fill" itemHeight={32}>
-        <For each={Array.from({ length: N_CELLS }, (_, i) => i)}>
-          {(i) => <Cell idx={i} store={store} />}
-        </For>
-      </ListView>
-    </Column>
-  );
-}
-```
-
-To re-run: drop this file at `packages/skal-js/src/skal/RenderBench.jsx`,
-import + add a `<Tab title="Render"><RenderBench /></Tab>` in
-`App.jsx`, restore the `benchReport` RPC case in
-`packages/skal_flutter/lib/skal/dialogs.dart` (it just
-`debugPrint`s each line with a `SKAL-BENCH ` prefix), rebuild the
-JS bundle and the APK.
+**Skal wins what happens continuously — frames, touch, idle, every state
+update. It loses what happens once: cold start, bulk disk load, a single
+crypto call.**
 
 ---
 
-## Bench 2 — Store µs bench (the reactive plumbing in isolation)
+## What a user feels
 
-Measures effect-level cost: write a leaf, fire dependent effects,
-read leaves inside effect. No component, no widget tree, no native
-paint. The right tool for tuning the store; the wrong tool for
-"what the user sees" (use Bench 1 for that).
-
-### Setup
-- 10-run median across cold app launches
-- All numbers µs/op
-- Skal: bun+JSC + Solid + Skal proxy + native log persistence
-- Zustand+MMKV: RN/Hermes + Zustand vanilla + MMKV persistence
-
-### Reads
-
-| Workload | Skal | Zustand+MMKV | Result |
+| | Skal | React Native | |
 |---|---:|---:|---|
-| Bare read same key                       | 19.3 µs | 1.3 µs  | Zustand 15× |
-| Bare read distinct keys                   | 5.5 µs  | 0.63 µs | Zustand 9× |
-| Read 1 tracked leaf (200 subs)            | 4.10 µs | 0.07 µs | Zustand 59× |
-| Read distinct tracked leaves               | 2.39 µs | 0.48 µs | Zustand 5× |
-
-Skal's reads are at the Solid floor (~4 µs is what bare Solid
-costs in the same engine). Zustand reads are plain-object property
-access plus a cheap selector — structurally faster.
-
-### Writes (200-subscriber setup)
-
-| Workload | Skal | Zustand+MMKV | Result |
-|---|---:|---:|---|
-| 1 leaf · 1,000 writes                     | 67.95 µs | 9,796 µs  | **Skal 144×** |
-| 200 distinct mutations · 1 each            | 391.2 µs | 10,096 µs | **Skal 26×** |
-| Set distinct keys (no subs)                | 23.5 µs  | 431 µs    | **Skal 18×** |
-
-The Skal write advantage IS the cost of Solid's read-time tracking
-shifted to the write side; Zustand defers tracking and pays
-200,000 selector evaluations per 1,000 writes × 200 subscribers.
-
-### Realistic frame (200 effects × 10 reads each)
-
-| Workload | Skal | Zustand+MMKV | Result |
-|---|---:|---:|---|
-| Mount per effect                          | 156.5 µs | 65 µs   | Zustand 2.4× |
-| 1 mutation · full propagation             | 349.9 µs | 1,264 µs | **Skal 3.6×** |
-| 1 leaf · 1k writes · propagation          | 535.5 µs | 9,796 µs | **Skal 18×** |
-| 200 distinct mutations · 1 each           | 391.2 µs | 10,096 µs | **Skal 26×** |
-
-### Untracked-write baseline (the most revealing column)
-
-A write to a leaf nothing subscribes to. *Should* be near-free in
-both stacks. In practice:
-
-| Stack | Cost |
-|---|---:|
-| Skal     | ~5 µs    |
-| Zustand+MMKV | ~2,400 µs |
-
-Zustand still runs 200 selectors, allocates 200 arrays, JSON-
-stringifies whole state, writes MMKV — all paid regardless of
-whether anything cares. **~500× difference on writes that "should
-be free."**
-
-### The bench code — harness + the realistic-frame sub-bench
-
-The Skal side lived at `packages/skal-js/src/skal/store/bench.js` (~840
-lines, seven sub-benches sharing one harness). The full file isn't
-inlined here — the harness pattern + one representative sub-bench
-shows the shape; the rest of the file applies the same pattern to
-different store-API operations.
-
-```js
-// bench.js — Skal-vs-MMKV stress benchmark (debug-only, not shipped).
-//
-// Writes results to <dataDir>/_skal_bench.txt and ferries them via
-// the `benchReport` RPC so they land in logcat (release APKs aren't
-// debuggable, so adb run-as can't read the file).
-
-import { createEffect, createRoot } from 'solid-js';
-import { createStore as createSolidStore } from 'solid-js/store';
-import { createStore as createZustand } from 'zustand/vanilla';
-import { subscribeWithSelector } from 'zustand/middleware';
-import { createSkalStore, STORE } from './db.js';
-import { NativeLogStore } from './engine.js';
-import { invokeMethod, ROOT_NODE_ID } from '../../bridge.js';
-
-const now = () => (typeof performance !== 'undefined' && performance.now
-  ? performance.now() : Date.now());
-const RUN = 'mmkv-' + Date.now();
-const N = 1000;
-const VAL = 'hello';
-
-// Wait for a store's native engine to finish opening before timing.
-async function ready(store) {
-  const c = store[STORE];
-  for (let i = 0; i < 2000; i++) {
-    if (c.ready()) return c;
-    await new Promise((r) => setTimeout(r, 5));
-  }
-  return c;
-}
-
-// Parametric deep object — used by the DEEP OBJECT scaling sub-bench
-// to show how MMKV's whole-blob rewrite scales with state size while
-// Skal's leaf-frame writes don't.
-function makeDeepObj(target) {
-  const profileSize = Math.max(2, Math.floor(target * 0.1));
-  const settingsSize = Math.max(4, Math.floor(target * 0.7));
-  const sessionSize = Math.max(2, target - profileSize - settingsSize);
-  const obj = { profile: {}, settings: {}, session: {} };
-  for (let i = 0; i < profileSize; i++) obj.profile['p' + i] = 'profileVal' + i;
-  for (let i = 0; i < settingsSize; i++) obj.settings['s' + i] = (i & 1) === 0;
-  for (let i = 0; i < sessionSize; i++) obj.session['ss' + i] = i * 97;
-  return obj;
-}
-
-// Warmup — exercise every hot path so JIT settles before timing.
-async function warmup() {
-  const w = createSkalStore({ kv: {} }, { name: RUN + '-warm' });
-  await ready(w);
-  for (let r = 0; r < 3; r++) {
-    for (let i = 0; i < 2000; i++) w.kv['w' + i] = VAL;
-    let a = ''; for (let i = 0; i < 2000; i++) a = w.kv['w' + i];
-    for (let i = 0; i < 2000; i++) delete w.kv['w' + i];
-    if (a === ' ') w.kv.x = a;
-  }
-  w[STORE].flushNow();
-}
-
-export async function runBench() {
-  const wall0 = now();
-  const rows = [];
-  const rec = (name, n, ms, note) => {
-    rows.push({
-      name, n, ms,
-      usPerOp: n > 0 && ms >= 0 ? (ms * 1000) / n : 0,
-      note: note || '',
-    });
-  };
-  const sep = (label) => rows.push({ sep: label });
-
-  await warmup();
-
-  // ── 6. REALISTIC FRAME — 200 effects × 10 leaf reads each ────────
-  // Frame-shaped workload: 200 components each subscribed to 10 leaves
-  // via a Solid createEffect. The realistic-frame sub-bench is the
-  // workload whose numbers headline FastStorage.md.
-  sep('REALISTIC FRAME — 200 effects × 10 leaf reads each');
-  {
-    const N_SUBS = 200;
-    const N_PROPS = 10;
-    const initial = { sub: {}, untracked: 0 };
-    for (let i = 0; i < N_SUBS; i++) initial.sub['s' + i] = 0;
-    const s = createSkalStore(initial, { name: RUN + '-frame' });
-    await ready(s);
-
-    let totalReads = 0;
-    let firedEffects = 0;
-    let sink = 0;
-    let dispose;
-
-    // initial mount — 200 effects × 10 reads each
-    {
-      const t = now();
-      createRoot((d) => {
-        dispose = d;
-        for (let i = 0; i < N_SUBS; i++) {
-          const keys = [];
-          for (let j = 0; j < N_PROPS; j++) {
-            keys.push('s' + ((i + j) % N_SUBS));
-          }
-          createEffect(() => {
-            let acc = 0;
-            for (let j = 0; j < N_PROPS; j++) acc += s.sub[keys[j]] | 0;
-            sink = acc;
-            totalReads += N_PROPS;
-            firedEffects++;
-          });
-        }
-      });
-      rec('initial mount · 200 effects × 10 reads', N_SUBS, now() - t,
-        'reads=' + totalReads + ', fired=' + firedEffects);
-    }
-
-    // (A) one mutation — full propagation cost
-    {
-      const r0 = totalReads, f0 = firedEffects;
-      const t = now();
-      s.sub.s100 = 1;
-      rec('1 mutation · propagation (10 effects rerun)', 1, now() - t,
-        'reads=' + (totalReads - r0) + ', fired=' + (firedEffects - f0));
-    }
-
-    // (B) 1,000 mutations to same leaf — throughput
-    {
-      const r0 = totalReads, f0 = firedEffects;
-      const t = now();
-      for (let i = 0; i < N; i++) s.sub.s100 = i + 2;
-      rec('1 leaf · 1,000 writes · propagation', N, now() - t,
-        'reads=' + (totalReads - r0) + ', fired=' + (firedEffects - f0));
-    }
-
-    // (C) 200 distinct mutations · 1 each
-    {
-      const r0 = totalReads, f0 = firedEffects;
-      const t = now();
-      for (let i = 0; i < N_SUBS; i++) s.sub['s' + i] = i + 3000;
-      rec('200 distinct mutations · 1 each', N_SUBS, now() - t,
-        'reads=' + (totalReads - r0) + ', fired=' + (firedEffects - f0));
-    }
-
-    // (D) untracked mutation — baseline (no effects rerun, no reads)
-    {
-      const r0 = totalReads, f0 = firedEffects;
-      const t = now();
-      for (let i = 0; i < N; i++) s.untracked = i + 5000;
-      rec('1 untracked leaf · 1,000 writes (baseline)', N, now() - t,
-        'reads=' + (totalReads - r0) + ', fired=' + (firedEffects - f0));
-    }
-
-    if (dispose) dispose();
-    if (sink === Number.POSITIVE_INFINITY) console.log(sink); // dce
-  }
-
-  // ... (analogous GET, SET, ENGINE DIRECT, DEEP OBJECT, MANY
-  //      SUBSCRIBERS, and PURE LIBRARIES (Solid-vs-Zustand) sub-
-  //      benches followed the same pattern — see git history for the
-  //      full ~840-line file.)
-
-  // Format + ship to Dart logcat via the benchReport RPC.
-  const out = [];
-  out.push('SKAL STORE — STRESS BENCHMARK  ·  ' + new Date().toISOString());
-  out.push('total wall time: ' + (now() - wall0).toFixed(0) + 'ms');
-  for (const r of rows) {
-    if (r.sep) { out.push(''); out.push('• ' + r.sep); continue; }
-    out.push(`  ${r.name.padEnd(46)} ${r.usPerOp.toFixed(3).padStart(10)} us/op  ${r.note}`);
-  }
-  const text = out.join('\n') + '\n';
-  try {
-    await invokeMethod(ROOT_NODE_ID, 'benchReport',
-      [JSON.stringify({ text })]);
-  } catch (_) { /* debug-only */ }
-  return text;
-}
-```
-
-The deleted sub-benches (GET / SET / ENGINE DIRECT / DEEP OBJECT /
-MANY SUBSCRIBERS / PURE LIBRARIES) all followed this same harness
-pattern — `sep('SECTION NAME')`, set up the workload, `const t =
-now()` / loop / `rec(...)` to capture, dispose. The DEEP OBJECT
-sub-bench swept three object sizes (20 / 200 / 2000 leaves) to
-show MMKV's whole-blob rewrite scaling linearly while Skal's
-leaf-frame writes don't.
-
----
-
-## Bench 3 — Pure libraries (same engine, no persistence)
-
-Solid `createStore` against Zustand vanilla, both inside Skal's JSC
-engine. Isolates the libraries from MMKV vs Skal-engine persistence
-costs and from RN-vs-Flutter render-pipeline costs.
-
-### Results
-
-| Workload | Solid | Zustand | Winner |
-|---|---:|---:|---|
-| **Bare reads** | | | |
-| Same key, 1,000×                          | 7.8 µs | 1.3 µs  | Zustand 6× |
-| Distinct keys, 1,000×                      | 5.2 µs | 0.63 µs | Zustand 8× |
-| **Bare writes (no subscribers)** | | | |
-| Same key, 1,000×                          | 8.9 µs | 6.8 µs  | Zustand 1.3× |
-| Distinct keys, 1,000× (state grows 0→1000) | 3.1 µs | 431 µs  | **Solid 141×** |
-| **Many subs (200 · 1 leaf each)** | | | |
-| 1 leaf · 1,000 writes                     | 17.8 µs | 253 µs  | **Solid 14×** |
-| Untracked · 1,000 writes                  | 9.1 µs  | 42.8 µs | **Solid 4.7×** |
-| **Realistic frame (200 × 10 reads)** | | | |
-| Mount per effect/listener                  | 12.7 µs | 11.2 µs | Tied |
-| 1 leaf · 1,000 writes                     | 285 µs  | 457 µs  | **Solid 1.6×** |
-| Untracked · 1,000 writes                  | 5.9 µs  | 296 µs  | **Solid 50×** |
-
-Source: same `bench.js` as Bench 2, in the "PURE LIBRARIES" section.
-The pattern is the same — `createSolidStore` / `createZustand`
-instead of `createSkalStore`, same harness, same workloads. The
-imports at the top of the bench above (`createSolidStore`,
-`createZustand`, `subscribeWithSelector`) are for this section.
-
----
-
-## MMKV side — Dart counterpart (`mmkv_bench.dart`)
-
-The MMKV bench is the Dart-side companion to `bench.js`. Both target
-the same physical device (Android emulator) so the comparison is
-on-device-comparable, not a cross-device estimate. Lived at
-`examples/kitchen-sink/flutter-host/lib/mmkv_bench.dart`:
-
-```dart
-// mmkv_bench.dart — DEBUG-ONLY MMKV stress bench, mirrors bench.js so
-// Skal and MMKV are measured with identical methodology on the same
-// device. Results go to debugPrint (captured in the `flutter run` log).
-
-import 'dart:convert';
-import 'package:flutter/foundation.dart';
-import 'package:mmkv/mmkv.dart';
-
-Map<String, dynamic> _makeDeepObj(int target) {
-  final profileSize = (target * 0.1).floor().clamp(2, target);
-  final settingsSize = (target * 0.7).floor().clamp(4, target);
-  final sessionSize = (target - profileSize - settingsSize).clamp(2, target);
-  final profile = <String, dynamic>{};
-  final settings = <String, dynamic>{};
-  final session = <String, dynamic>{};
-  for (var i = 0; i < profileSize; i++) profile['p$i'] = 'profileVal$i';
-  for (var i = 0; i < settingsSize; i++) settings['s$i'] = (i & 1) == 0;
-  for (var i = 0; i < sessionSize; i++) session['ss$i'] = i * 97;
-  return {'profile': profile, 'settings': settings, 'session': session};
-}
-
-String _settingsLeafKey(Map<String, dynamic> obj) {
-  final keys = (obj['settings'] as Map).keys.toList();
-  return keys[keys.length >> 1] as String;
-}
-
-Future<void> runMmkvBench() async {
-  const int n = 1000;
-  const String val = 'hello';
-
-  try {
-    await MMKV.initialize();
-    final mmkv = MMKV.defaultMMKV();
-
-    // Warmup — match bench.js shape: hammer every path so JIT is hot.
-    for (var r = 0; r < 3; r++) {
-      for (var i = 0; i < 2000; i++) mmkv.encodeString('w$i', val);
-      var a = '';
-      for (var i = 0; i < 2000; i++) a = mmkv.decodeString('w$i') ?? '';
-      for (var i = 0; i < 2000; i++) mmkv.removeValue('w$i');
-      if (a == ' ') mmkv.encodeString('x', a);
-    }
-    for (final size in [20, 200, 2000]) {
-      final obj = _makeDeepObj(size);
-      for (var i = 0; i < 50; i++) {
-        mmkv.encodeString('wb', jsonEncode(obj));
-        jsonDecode(mmkv.decodeString('wb')!);
-      }
-    }
-
-    final rows = <String>[];
-    void rec(String name, int us, [int iterations = n]) {
-      final usPerOp = iterations > 0 ? us / iterations : 0;
-      rows.add('  ${name.padRight(44)}'
-          '${(us / 1000).toStringAsFixed(2).padLeft(11)} ms'
-          '${usPerOp.toStringAsFixed(3).padLeft(10)} us/op');
-    }
-    void sep(String s) { rows.add(''); rows.add('• $s'); }
-
-    final sw = Stopwatch();
-    var acc = '';
-
-    sep('GET — 1,000× (the StorageBenchmark workload)');
-    mmkv.encodeString('key', val);
-    sw.reset(); sw.start();
-    for (var i = 0; i < n; i++) acc = mmkv.decodeString('key') ?? '';
-    sw.stop(); rec('get - same key', sw.elapsedMicroseconds);
-
-    for (var i = 0; i < n; i++) mmkv.encodeString('k$i', val);
-    sw.reset(); sw.start();
-    for (var i = 0; i < n; i++) acc = mmkv.decodeString('k$i') ?? '';
-    sw.stop(); rec('get - distinct keys', sw.elapsedMicroseconds);
-
-    sep('SET / DELETE — 1,000×');
-    sw.reset(); sw.start();
-    for (var i = 0; i < n; i++) mmkv.encodeString('key', val);
-    sw.stop(); rec('set - same key', sw.elapsedMicroseconds);
-
-    sw.reset(); sw.start();
-    for (var i = 0; i < n; i++) mmkv.encodeString('s$i', val);
-    sw.stop(); rec('set - distinct keys', sw.elapsedMicroseconds);
-
-    for (var i = 0; i < n; i++) mmkv.encodeString('d$i', val);
-    sw.reset(); sw.start();
-    for (var i = 0; i < n; i++) mmkv.removeValue('d$i');
-    sw.stop(); rec('delete - distinct keys', sw.elapsedMicroseconds);
-
-    // DEEP OBJECT — scaling: MMKV has no nested types, so the realistic
-    // pattern is a JSON blob under one key. Save / get / update all
-    // touch the WHOLE blob — cost scales with object size.
-    for (final size in [20, 200, 2000]) {
-      sep('DEEP OBJECT — $size leaves  (JSON blob)');
-      final obj = _makeDeepObj(size);
-      final leafKey = _settingsLeafKey(obj);
-
-      sw.reset(); sw.start();
-      for (var i = 0; i < n; i++) {
-        mmkv.encodeString('blob$size', jsonEncode(obj));
-      }
-      sw.stop(); rec('deep save - JSON blob', sw.elapsedMicroseconds);
-
-      sw.reset(); sw.start();
-      for (var i = 0; i < n; i++) {
-        final m = jsonDecode(mmkv.decodeString('blob$size')!) as Map;
-        acc = ((m['settings'] as Map)[leafKey]).toString();
-      }
-      sw.stop(); rec('deep get  - JSON blob (parse whole)', sw.elapsedMicroseconds);
-
-      sw.reset(); sw.start();
-      for (var i = 0; i < n; i++) {
-        final m = jsonDecode(mmkv.decodeString('blob$size')!) as Map;
-        (m['settings'] as Map)[leafKey] = i;
-        mmkv.encodeString('blob$size', jsonEncode(m));
-      }
-      sw.stop(); rec('deep update - JSON blob (rewrite whole)', sw.elapsedMicroseconds);
-    }
-
-    debugPrint('=== MMKV-BENCH START (same device, ${n}x each) ===');
-    for (final r in rows) {
-      debugPrint('MMKV-BENCH$r');
-    }
-    debugPrint('=== MMKV-BENCH END ===');
-    if (acc == ' ') debugPrint(acc);
-  } catch (e, st) {
-    debugPrint('=== MMKV-BENCH ERROR: $e\n$st');
-  }
-}
-```
-
-To re-run: drop this file at `examples/kitchen-sink/flutter-host/lib/mmkv_bench.dart`,
-add `mmkv: ^2.4.0` to `pubspec.yaml`, run `flutter pub get`, then
-hook it from `main.dart` with `Future.delayed(const Duration(seconds: 8), runMmkvBench);`.
-
----
-
-## Skal optimization history (µs reads/mount, from Bench 2)
-
-| Workload | Baseline | **Final (shipped)** | Δ |
-|---|---:|---:|---|
-| **Reads** | | | |
-| Bare read same key                       | 20.4 | **19.3** | ↓ 5% |
-| Bare read distinct keys                  | 79.3 | **5.5**  | ↓ 93% |
-| Read 1 tracked leaf (200 subs)           | 8.85 | **4.10** | ↓ 54% |
-| Read distinct tracked leaves              | 13.35 | **2.39** | ↓ 82% |
-| **Writes** | | | |
-| 1 leaf · 1,000 writes (200 subs)         | 139.3 | **67.95** | ↓ 51% |
-| 200 distinct mutations                    | 1057.9 | **391.2** | ↓ 63% |
-| Set distinct keys                          | 83.9  | **23.5**  | ↓ 72% |
-| **Realistic frame** | | | |
-| Mount per effect                          | 317.3 | **156.5** | ↓ 51% |
-| 1 mutation · propagation                  | 549.7 | **349.9** | ↓ 36% |
-| 1 leaf · 1k writes · propagation          | 1090.5 | **535.5** | ↓ 51% |
-| 200 distinct mutations                    | 1057.9 | **391.2** | ↓ 63% |
-
-The Phase 1+2 changes (all in [`packages/skal-js/src/skal/store/db.js`](packages/skal-js/src/skal/store/db.js))
-are zero-memory and have no API change. Each named optimization is
-documented in [FastStorage.md § What we built](FastStorage.md).
-
----
-
-## Bench 4 — Bridge RPC (the numbers `docs/NATIVE_SUPPORT.md` required)
-
-> **PRE-DOORBELL — historical.** Everything in this section was measured
-> when the host drained the op ring only once per frame, so every
-> round-trip below carries a full vsync of scheduling. The off-frame
-> doorbell landed 2026-07-25 and took a one-shot RPC from **16.67 ms to
-> 0.03 ms p50**. These numbers are kept because they are what the
-> pre-doorbell transport actually cost, and because the win is only
-> legible against them — but do NOT quote them as current latency. See
-> [`TODO_OPTIMIZATIONS.md`](TODO_OPTIMIZATIONS.md) §2b.
-
-The five measurements that had to exist before `skal_codegen` starts
-emitting service methods on top of the RPC path. Unlike Benches 1–3,
-**the harness is still in the tree** — `examples/virt-bench` — so this
-one is reproducible with one command.
-
-- Host: macOS **debug** build, Apple silicon, 60 Hz display.
-- `examples/virt-bench/src/rpc-bench.js` (JS) +
-  `examples/virt-bench/flutter-host/lib/bench_service.dart` (Dart).
-- Warmed up before every sub-bench; distributions, not means (the
-  reason is the headline finding below).
-
-```bash
-cd examples/virt-bench && bun run build:js-only
-cd flutter-host && flutter run -d macos --debug   # grep for `[rpcbench]`
-```
-
-### 1. Round-trip latency — **the headline**
-
-| Measurement | Result |
-|---|---:|
-| Sequential `await`, n=200 | min 8.47 / **p50 16.67** / p95 19.53 / max 24.77 ms |
-| 200 calls via `Promise.all` | **16.74 ms total — 0.084 ms amortized** |
-| 10 chained `await`s | **163.35 ms** |
-
-**A one-shot RPC costs exactly one frame — 16.67 ms at 60 Hz — and the
-payload is irrelevant.** 0.084 ms amortized proves the transport itself
-is nearly free; the entire 16.67 ms is waiting for the next drain.
-
-Mechanism: `root.dart` pumps the op ring once per frame from a Ticker
-(`SchedulerBinding.handleBeginFrame`). A reply is written during that
-pump and wakes JS; JS resolves the Promise and writes its next op
-*after* the frame's pump has already run, so that op waits a full frame.
-Hence a median of exactly one vsync period, with min/max spread by
-where the call lands in the frame.
-
-`NATIVE_SUPPORT.md` predicted "ten chained awaits ≈ 160 ms" from
-first principles. Measured: **163.35 ms**.
-
-### 2. JSON cost by payload size
-
-| Payload | `String` reply | JSON reply | JSON round-trip (arg + reply) |
-|---:|---:|---:|---:|
-| 128 B / 191 B | p50 16.66 | p50 16.65 | p50 16.67 |
-| 1 KB / 1.3 KB | p50 16.80 | p50 16.68 | p50 16.66 |
-| 8 KB / 9.7 KB | p50 16.66 | p50 16.54 | p50 16.67 |
-| 64 KB / 77 KB | p50 16.72 | p50 16.62 | p50 16.71 (p95 33.33) |
-| 200 KB / 241 KB | p50 16.69 | p50 16.78 | **p50 33.35** |
-
-**JSON is free up to ~64 KB** — the frame quantum swallows it entirely.
-The first size where encoding is visible is a 241 KB round-trip, and it
-shows up as *exactly one extra frame*: the work no longer fits in the
-slack, so the reply misses a drain.
-
-Practical reading: at realistic service-payload sizes, choosing
-"binary" over JSON buys nothing. Choosing *fewer calls* buys everything.
-
-### 3. Stream throughput
-
-| Event shape | Sent | Received | Elapsed | Rate |
+| Dropped frames, scrolling an image feed | **0** | 13 | — |
+| Scroll p95, image feed | **6 ms** | 12 ms | 2× |
+| Input-latency events while scrolling | **0** | 631 | — |
+| Tap → render, median | **3.53 ms** | 7.30 ms | 2.07× |
+| Tap → render, p95 | **4.87 ms** | 10.24 ms | 2.10× |
+| Idle CPU | **1.20%** | 6.93% | 5.8× |
+| Background → resume, median | 60 ms | 62 ms | tie |
+
+**Input responsiveness has three independent instruments agreeing** —
+tap→render 2.07×, scroll input-latency 0 vs 631, and reactivity 18 vs 429
+(below). That makes it the best-evidenced claim in this file.
+
+### Scroll under JS load
+
+500-row feed, identical gestures via `adb shell input swipe`, frame data
+from `dumpsys gfxinfo`, one run per condition.
+
+| JS load | Skal p95 | RN p95 | Skal input-latency frames | RN |
 |---|---:|---:|---:|---:|
-| bare int | 20,000 | 20,000 | 41.93 ms | **477,008/s** |
-| 256 B JSON | 5,000 | 5,000 | 38.08 ms | **131,307/s** |
-| 4 KB JSON | 1,000 | 1,000 | 70.38 ms | **14,208/s** |
+| none | 5 ms | 16 ms | **0** | 470 |
+| 16 ms stall / 1 s | 5 ms | 14 ms | **0** | 312 |
+| 300 ms stall / 1 s | 5 ms | 11 ms | **0** | 431 |
+| 5 s stall / 6 s | 5 ms | 10 ms | **0** | 127 |
 
-Streams do **not** pay the per-call frame cost — a burst rides one
-drain. That is a ~5,700× throughput difference versus sequential
-`await` for the same event count, and it inverts a design assumption:
-**streams are the fast path, one-shot RPC is the slow one.**
+Skal's percentiles are identical across a **300× range** of JS load.
 
-### 4. Reply heap
-
-Capacity confirmed at **262,144 B (256 KiB)**, matching `kReplyHeapSize`.
-
-| Requested | Received | |
-|---:|---:|---|
-| 258,048 B | 258,048 B | exact |
-| 262,144 B | 262,144 B | exact (at capacity) |
-| 270,336 B | 262,144 B | **truncated** |
-| 524,288 B | 262,144 B | **truncated** |
-
-> **Superseded (2026-07-29).** Oversize replies are no longer truncated.
-> `eventArgStrChunk` (0x08) splits anything over the heap into parts
-> that JS reassembles, so a reply of any size arrives whole. The table
-> above records the behaviour this replaced.
->
-> Re-measured on macOS **release**, 5 samples per size, app otherwise
-> idle: 262144 B (no chunking) **2.9 ms**, 262145 B (first size that
-> chunks) **16.7 ms**, 1 MiB **50.2 ms**, 4 MiB **265.7 ms** —
-> ~0.05-0.065 ms/KB, flat across a 16x range.
->
-> Earlier debug-simulator figures for this path (40 / 688 / 10769 ms)
-> are withdrawn: they were measuring a wake bug, not encode cost. See
-> CLAUDE.md on debug-build numbers.
-
-Wraparound is cheap: 1,600 KiB pushed through the 256 KiB heap
-(≈6 wraps) delivered all 400 events in 38.58 ms. The documented 50 ms
-spin-wait never fired.
-
-### 5. Backpressure
-
-3,000 events into a JS handler burning real CPU per event: **3,000
-received, 52.16 ms, lossless.**
-
-Policy is **queue, then shed** — nothing coalesces, and nothing drops
-until retained payloads pass `_kReplyOverflowMaxBytes` (4 MiB), past
-which further payloads are refused with one debug diagnostic. (This
-section originally read "unbounded queue"; the ceiling was added after
-a wedged JS worker turned "hold rather than clobber" into an OOM.) Any
-coalescing a service needs must still be implemented on the Dart side,
-before the value enters the stream.
-
-### What these numbers changed
-
-They rewrote the rate-class contract in `NATIVE_SUPPORT.md`. The
-pre-measurement worry was JSON on high-frequency streams; measurement
-says JSON is free at realistic sizes and streams are the fast path. The
-actual cliff is **call count on the one-shot path** — a generated
-service that encourages `await a(); await b(); await c();` spends three
-frames where a batched call spends one.
+> ⚠️ Two caveats. This ran on a **different Skal app**
+> (`com.skal.benchv2.skal`) — do not merge it with the table above. And
+> RN's percentiles *improve* as load rises because it renders fewer
+> frames, and a percentile over a shrinking population flatters the app:
+> at the 5 s stall it is **Skal 387 frames vs RN 260** for the same
+> gesture. At that magnitude frame count is the honest metric.
 
 ---
 
-## Bench 5 — Component off-frame drain (the §2c question)
-
-§2b shipped an off-frame drain for **logic** calls: JS rings
-`__skal_notifyHost()` after a batch containing a ROOT-targeted invoke,
-and the host drains immediately instead of at the next vsync. RPC
-round-trip went 16.67 ms → 0.03 ms.
-
-The obvious follow-up — *do the same for component ops* — is what this
-bench answers. Harness: `examples/virt-bench`, run with
-`--dart-define=SKAL_UIBENCH=true`
-(`src/ui-bench.js` + `flutter-host/lib/ui_bench.dart`).
-
-### Setup
-
-macOS, Apple Silicon, 60 Hz, `virt_bench.app` launched from the
-terminal and foregrounded. Three arms, all in one process so the clock
-calibration and machine state are shared, run twice interleaved:
-
-| arm | doorbell rings for | off-frame drain notifies |
-|---|---|---|
-| 0 | ROOT-targeted invokes only (shipping) | no — deferred to the frame drain |
-| 1 | every committed batch | no |
-| 2 | every committed batch | yes |
-
-Three workloads: **w1** one prop on one node every 10 ms; **w2** 100
-text labels rewritten together every 8 ms; **w3** a prop write issued in
-the *same tick* as a service call, every 10 ms — the
-`setLoading(true); api.fetch()` shape, which goes off-frame **in arm 0
-too** because the doorbell drains the whole ring.
-
-Two numbers are reported separately, and conflating them is how this
-question gets answered wrong:
-
-- **apply** — JS commit → host finished decoding. What the doorbell
-  actually shortens.
-- **paint** — JS commit → those pixels finished rasterizing. What a
-  user experiences.
-
-JS `performance.now()` and the Dart isolate's `Stopwatch` are tied
-together by an NTP-style min-RTT sandwich around a synchronous
-`skal.evaluate`; residual bracket was 21–25 µs.
-
-### Results — p50 ms, median of two rounds
-
-| | | debug apply | debug paint | release apply | release paint |
-|---|---|---|---|---|---|
-| **w1** one prop | arm 0 | 8.53 | **11.07** | 8.36 | **9.80** |
-| | arm 1 | 0.16 | 11.63 | 0.12 | 9.88 |
-| | arm 2 | 0.18 | 11.81 | 0.13 | 9.71 |
-| **w2** 100 labels | arm 0 | 8.49 | **15.60** | 8.64 | **15.34** |
-| | arm 1 | 0.15 | 15.47 | 0.14 | 14.54 |
-| | arm 2 | 0.17 | 13.70 | 0.15 | 11.51 |
-| **w3** prop + RPC | arm 0 | 0.24 | **12.08** | 0.15 | **9.65** |
-| | arm 1 | 0.20 | 11.41 | 0.13 | 9.29 |
-| | arm 2 | 0.22 | 11.07 | 0.16 | 9.47 |
-
-Zero janky frames (span > 25 ms) in every cell, both modes.
-
-### Reading it
-
-**The mechanism works and buys nothing.** Decode latency collapses by
-~55× exactly as it did for RPC — and time to pixels does not move,
-because paint is vsync-locked. Arm 2 draining at t+0.15 ms and arm 0
-draining at the start of the next frame both land in the same frame:
-the drain runs from a Ticker in `handleBeginFrame`, *before* Flutter
-walks the dirty element list.
-
-**Frame build time is identical in every arm** — 3.65 / 3.93 / 4.01 ms
-for w2 in release. The decode being moved is ~0.05 ms per frame against
-a ~4 ms build. That is the true size of the prize: about 1%.
-
-The one non-noise delta is w2/arm 2, 2–4 ms of p50, inconsistent between
-rounds and absent from p95 in one of them. The plausible cause is
-`AUTO_COMMIT_OPS`: a 100-op batch can publish mid-batch, so arm 0
-occasionally splits one update across two frames where the doorbell
-drains it whole. Buying that means building the widget tree from a
-possibly half-applied ring — a correctness hazard, not a perf tradeoff.
-
-### What this bench found by accident
-
-w3 on **arm 0 — shipping config, no experimental flag** — measured, in
-debug, before the fix: paint p50 **366 ms**, p95 **978 ms**, and in one
-of the two rounds not one of the 150 samples painted inside the window
-at all. The same run's w1/arm 0 — the identical prop write, just not
-batched with a service call — was **11.5 ms**.
-
-(Those two figures are from the pre-fix run, so they will not be found
-in the table above, which is the post-fix run. Post-fix, w3/arm 0 is
-12.08 ms in debug — one frame, same as w1.)
-
-`_pumpOpsBody` returned on `seq == _lastOpSeq` before flushing the
-`touched` set an off-frame drain had deliberately deferred. With a
-steady stream of doorbell batches the frame drain never saw new ops, so
-it never flushed, and the update was stranded until unrelated traffic
-happened to wake it.
-
-§2b's design note asserted this could not happen — "logic dispatch never
-touches `NodeState`, so the touched set stays empty". True of the
-dispatch; false of the drain, which consumes the *whole ring* including
-any UI op batched alongside. Fixed by `_flushTouched()`, and pinned by
-`packages/skal_flutter/test/bridge_drain_test.dart`.
-
-> **Instrument trap, if you re-run this.** The first post-fix run
-> reported w3/arm 0 at 756 ms — *worse* than before — and the fix looked
-> like it had done nothing. It had: the harness logged only pumps that
-> advanced `hLastDrainedSeq`, and the whole point of the fix is a frame
-> pump that flushes **without** consuming ops, so the drain that
-> delivered the notification was invisible to the log and the
-> correlation matched a much later one. The published `ui_bench.dart`
-> has this corrected — `DrainRec` carries `consumed` and `notified`
-> separately. The tell that it was instrumentation and not the fix:
-> `frame build` p50 went 0.10 ms → 0.89 ms, i.e. widgets had started
-> rebuilding again.
-
-### Bench 10 — Seeded collections were silently unpersistable
-
-Found while building Bench 9's harness, and worse than the thing that
-harness was for.
-
-Initial state is deliberately never written: it lives in the app's code,
-so a scalar that is never changed hydrates to the same value either way.
-For a COLLECTION that reasoning broke.
-
-Editing one element stages that element's frame. The collection INDEX
-(`k:<c>#x`, the id list) is only staged when membership changes. So a
-collection that existed only in `initState` ended up on disk as element
-bytes with no index to reach them by. `hydrateArray` needs the index to
-rebuild the array, found none, and left the live array at its initState
-value — the edit was gone after a restart, and its frame was orphaned on
-disk permanently.
-
-Persisted keys after seeding two elements and editing one:
-
-| | keys written |
-|---|---|
-| seeded in `initState` (before) | `k:#meta`, `k:todos.1` |
-| built by `push` | `k:#meta`, `k:todos#x`, `k:todos.1`, `k:todos.2` |
-| seeded in `initState` (after) | `k:#meta`, `k:todos#x`, `k:todos.1`, `k:todos.2` |
-
-`hydrateArray` now seeds an unpersisted collection at first open —
-elements and index together — so the very first open leaves it fully
-addressable. Runs once per collection ever; every later open takes the
-index path.
-
-Silent, and it survived because the two paths that matter (seed vs push)
-were never compared. Both key sets are now identical by construction.
-
-## How to re-run
-
-**Not in the tree.** The harness needs two default-off switches in
-shipping code, and a flag no product code sets is a liability — so it
-lives here instead, the same way benches 1-3 do. Five steps:
-
-**1. `packages/skal-js/src/bridge.js`** — next to `let _logicPending = false;`:
-
-```js
-// EXPERIMENT - docs/TODO_OPTIMIZATIONS.md 2c. Ring for UI ops too, not
-// just logic. A module-local, not a `globalThis` read, so arm 0 pays
-// exactly what it pays today.
-let _uiDoorbell = 0;
-globalThis.__skal_setUiDoorbell = (on) => { _uiDoorbell = on ? 1 : 0; };
-```
-
-and in `commit()`, hoist the publish test so the ring can see it:
-
-```js
-  const hadOps = opWritePos32 !== lastCommittedPos32;
-  if (hadOps) {
-    publishProgress();
-  }
-  if (_logicPending || (_uiDoorbell && hadOps)) {
-```
-
-**2. `packages/skal_flutter/lib/skal/bridge.dart`** — a field beside
-`_offFrameDrain`:
-
-```dart
-  /// When true, an off-frame drain also runs the notify pass instead of
-  /// deferring it to the next frame drain.
-  bool offFrameNotify = false;
-```
-
-and widen the deferral test in `_drain`'s tail from
-`if (_offFrameDrain)` to `if (_offFrameDrain && !offFrameNotify)`.
-
-**3.** Drop the two files below back at
-`examples/virt-bench/flutter-host/lib/ui_bench.dart` and
-`examples/virt-bench/src/ui-bench.js`.
-
-**4. Wire them up.** In `examples/virt-bench/flutter-host/lib/main.dart`:
-`import 'ui_bench.dart';` plus
-`const bool kUiBench = bool.fromEnvironment('SKAL_UIBENCH');`; seed the
-flag *before* the bundle evaluates with
-`if (kUiBench) skal.evaluate('globalThis.__SKAL_UIBENCH = 1;');`; swap
-`SkalBridge(skal)` for `BenchBridge(skal)`; and add
-`if (kUiBench) registerUiBenchService(bridge, skal);` next to
-`registerBenchService()`.
-
-In `examples/virt-bench/src/App.jsx`, read
-`const UIBENCH = !!globalThis.__SKAL_UIBENCH;` at module scope and
-`return <UiBenchApp />` from `App()` when set — the 100k-row ListView
-and the RPC suite would otherwise load the frame pipeline this bench is
-measuring. `UiBenchApp` holds a `width` signal plus 100 label signals
-laid out **10x10** (a 100-tall Column overflows, and an overflowing
-RenderFlex paints the debug stripe every frame — unrelated per-frame
-cost that lands on whichever arm is running), and after a 1.2 s settle
-calls:
-
-```jsx
-runUiBench({
-  setWidth: (i) => setW(60 + (i % 120)),
-  setLabels: (i) => { for (let k = 0; k < 100; k++) labels[k][1](`r${k}.${i}`); },
-  // the ordinary event handler: UI + service call in one tick, so they
-  // share a commit batch
-  setWidthAndCall: (i) => { setW(60 + (i % 120)); skalBench.nop(); },
-});
-```
-
-**5. Run.** `bun run build`, then
-`flutter build macos --debug --dart-define=SKAL_UIBENCH=true`, then
-launch the binary directly (not `open` — you want stdout) and
-foreground it; an unforegrounded macOS window stalls the whole app.
-The report lands at `$HOME/uibench-report.txt`, which inside the sandbox
-is `~/Library/Containers/com.example.virtBench/Data/`.
-
-> Check the embedded libskal before trusting a number:
-> `nm -gU examples/virt-bench/flutter-host/macos/Frameworks/libskal.dylib | wc -l`
-> must be **10**. The dylib is gitignored, so each example carries its
-> own copy and they rot independently — virt-bench's was eight days
-> stale on the first run of this bench, missing `skal_set_host_port`
-> entirely, and `enableHostNotify` fails silently when the symbol is
-> absent. Every arm measured identically until that was spotted.
-
-### The bench code — Dart half (`ui_bench.dart`)
-
-```dart
-// ui-bench — the Dart half of the "should the doorbell fire for UI ops
-// too?" experiment. See docs/TODO_OPTIMIZATIONS.md §2b (shipped, logic
-// only) and §2c (this question).
-//
-// §2b gave logic RPC an off-frame drain: JS rings `__skal_notifyHost()`
-// after committing a batch containing a ROOT-targeted invoke, and the
-// host drains immediately instead of waiting for the next vsync. That
-// took RPC round-trip from 16.67 ms to 0.03 ms.
-//
-// The obvious follow-up is "do the same for component ops". This file
-// measures whether that is worth anything. The claim under test:
-//
-//   Draining UI ops early cannot make them appear earlier, because
-//   paint is vsync-locked. It can only move the DECODE work out of the
-//   frame budget — and it buys that by adding a port message per commit
-//   and by letting the widget tree be built from a half-applied ring.
-//
-// The instrument, therefore, has to separate three things that a naive
-// benchmark conflates:
-//
-//   applyLatency — JS commit → host finished decoding the ops.
-//                  This is what the doorbell actually shortens.
-//   paintLatency — JS commit → those pixels finished rasterizing.
-//                  This is what a user experiences.
-//   drainCpu     — total decode time, split in-frame vs off-frame.
-//                  This is what the doorbell MOVES rather than saves.
-//
-// Everything is timed on ONE clock. The JS side reports commit times
-// from `performance.now()`; `_calibrate` measures the offset between
-// that and this isolate's Stopwatch with an NTP-style min-RTT sandwich,
-// so the two series can be subtracted.
-//
-// No production code is instrumented for this: the drain log comes from
-// overriding the two public pump entry points on a SkalBridge subclass,
-// and the frame log from SchedulerBinding's public timings callback.
-// The only framework changes the experiment needs are the two arm
-// switches (`__skal_setUiDoorbell` in bridge.js, `offFrameNotify` in
-// bridge.dart), both default-off.
-
-import 'dart:convert';
-import 'dart:io';
-import 'dart:typed_data';
-import 'dart:ui' show FramePhase, FrameTiming;
-
-import 'package:flutter/scheduler.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
-
-import 'package:skal_flutter/skal/bridge.dart';
-import 'package:skal_flutter/skal/services.dart';
-import 'package:skal_flutter/skal/wire.dart' show hLastDrainedSeq;
-import 'package:skal_flutter/skal_ffi.dart';
-
-/// One drain, frame-triggered or doorbell-triggered.
-class DrainRec {
-  DrainRec(this.tStart, this.tEnd, this.offFrame, this.consumed, this.notified);
-
-  /// Milliseconds on [_UiBench._clock]. `tStart` is what decides whether
-  /// a drain could have SEEN a commit at t0 (it must have started after
-  /// it); `tEnd` is when the ops were applied.
-  final double tStart;
-  final double tEnd;
-  final bool offFrame;
-
-  /// Whether this pump actually took ops out of the ring.
-  final bool consumed;
-
-  /// Whether this pump ran the notify pass. EVERY frame pump does —
-  /// including one that found an empty ring, which is precisely the
-  /// case that flushes an earlier off-frame drain's deferred notify.
-  /// An off-frame pump notifies only in arm 2 (`offFrameNotify`).
-  final bool notified;
-
-  double get durMs => tEnd - tStart;
-}
-
-class _Frame {
-  _Frame(this.buildStart, this.buildFinish, this.rasterFinish, this.totalSpan);
-  final double buildStart;
-  final double buildFinish;
-  final double rasterFinish;
-  final double totalSpan;
-}
-
-/// SkalBridge with a drain log. Overriding the pumps rather than adding
-/// a hook to the framework keeps the shipping hot path byte-identical
-/// between the arms — the only thing that differs is the flag.
-class BenchBridge extends SkalBridge {
-  BenchBridge(super.skal) : _hdr = ByteData.sublistView(skal.bridge);
-
-  final ByteData _hdr;
-  final List<DrainRec> drains = <DrainRec>[];
-  bool logging = false;
-
-  /// EVERY pump entry, drained or not. `drains` only records pumps that
-  /// actually consumed ops, so it cannot distinguish "the Ticker stopped
-  /// firing" from "the Ticker fired and found an empty ring" — and those
-  /// two have opposite meanings for this experiment.
-  int pumpCalls = 0;
-  int offFramePumps = 0;
-
-  /// Set for the duration of a doorbell drain so the [pumpOps] override
-  /// (which `pumpOffFrame` calls through) attributes it correctly and
-  /// logs it exactly once.
-  bool _inOffFrame = false;
-
-  final Stopwatch clock = Stopwatch()..start();
-  double get nowMs => clock.elapsedMicroseconds / 1000.0;
-
-  int _drainedSeq() {
-    final lo = _hdr.getUint32(hLastDrainedSeq, Endian.little);
-    final hi = _hdr.getUint32(hLastDrainedSeq + 4, Endian.little);
-    return lo + hi * 0x100000000;
-  }
-
-  @override
-  void pumpOffFrame() {
-    _inOffFrame = true;
-    try {
-      super.pumpOffFrame();
-    } finally {
-      _inOffFrame = false;
-    }
-  }
-
-  @override
-  void pumpOps() {
-    pumpCalls++;
-    if (_inOffFrame) offFramePumps++;
-    if (!logging) {
-      super.pumpOps();
-      return;
-    }
-    // hLastDrainedSeq only advances when a pump really consumed ops.
-    // That is NOT the same as "this pump did something": a frame pump
-    // that finds an empty ring still flushes any notification an
-    // off-frame drain deferred to it. Logging only the ops-consuming
-    // pumps hides exactly those flushes and makes the paint latency of
-    // arms 1/2 look like hundreds of milliseconds.
-    final before = _drainedSeq();
-    final t0 = nowMs;
-    super.pumpOps();
-    final t1 = nowMs;
-    final consumed = _drainedSeq() != before;
-    // An off-frame pump that consumed nothing did nothing at all.
-    if (_inOffFrame && !consumed) return;
-    drains.add(DrainRec(t0, t1, _inOffFrame, consumed,
-        !_inOffFrame || offFrameNotify));
-  }
-}
-
-class _UiBench {
-  _UiBench(this.bridge, this.skal);
-
-  final BenchBridge bridge;
-  final Skal skal;
-
-  final List<_Frame> frames = <_Frame>[];
-
-  /// jsClockMs - dartClockMs. Added to a Dart timestamp to express it in
-  /// the JS `performance.now()` domain, subtracted to go the other way.
-  double offsetMs = 0;
-
-  // Bridge counters snapshotted at startLog, so a window reports deltas
-  // rather than since-boot totals.
-  int _snapOffFrameDrains = 0;
-
-  bool _timingsHooked = false;
-
-  /// Frames the SCHEDULER actually ran, counted independently of the
-  /// timings callback. If this advances while `frames` stays empty the
-  /// engine is producing frames that never reach raster; if neither
-  /// advances the vsync stream itself has stopped.
-  int _rawFrames = 0;
-  int _snapRawFrames = 0;
-  int _snapPumpCalls = 0;
-  int _snapOffFramePumps = 0;
-
-  double get _now => bridge.nowMs;
-
-  /// NTP-style min-RTT clock sync. `skal.evaluate` runs synchronously on
-  /// the JS thread, so sandwiching it between two Dart reads brackets the
-  /// JS timestamp; the sample with the smallest bracket has the least
-  /// uncertainty, and its midpoint is the best offset estimate. Typical
-  /// residual on macOS is a few microseconds — three orders below the
-  /// millisecond effects being measured.
-  void calibrate({int samples = 60}) {
-    var bestSpan = double.infinity;
-    var best = 0.0;
-    for (var i = 0; i < samples; i++) {
-      final d0 = _now;
-      final r = skal.evaluate('String(performance.now())', url: 'skal:clock');
-      final d1 = _now;
-      if (r.isError) continue;
-      final js = double.tryParse(r.value.trim());
-      if (js == null) continue;
-      final span = d1 - d0;
-      if (span < bestSpan) {
-        bestSpan = span;
-        best = js - (d0 + d1) / 2;
-      }
-    }
-    offsetMs = best;
-    debugPrint('[uibench] clock offset=${best.toStringAsFixed(3)}ms '
-        'bracket=${bestSpan.toStringAsFixed(4)}ms');
-  }
-
-  void _hookTimings() {
-    if (_timingsHooked) return;
-    _timingsHooked = true;
-    SchedulerBinding.instance.addPersistentFrameCallback((_) => _rawFrames++);
-    SchedulerBinding.instance.addTimingsCallback((List<FrameTiming> batch) {
-      if (!bridge.logging || batch.isEmpty) return;
-      // FrameTiming timestamps are on the engine's clock, not this
-      // isolate's Stopwatch. They ARE mutually consistent, so anchor the
-      // batch's last rasterFinish to "now" (the callback fires right
-      // after it) and carry every other phase across by its delta. Any
-      // residual is a constant dispatch delay, identical in every arm,
-      // so it cancels in the arm-to-arm comparison this bench exists for.
-      final now = _now;
-      final anchor =
-          batch.last.timestampInMicroseconds(FramePhase.rasterFinish);
-      for (final t in batch) {
-        double at(FramePhase p) =>
-            now + (t.timestampInMicroseconds(p) - anchor) / 1000.0;
-        frames.add(_Frame(
-          at(FramePhase.buildStart),
-          at(FramePhase.buildFinish),
-          at(FramePhase.rasterFinish),
-          t.totalSpan.inMicroseconds / 1000.0,
-        ));
-      }
-    });
-  }
-
-  void startLog() {
-    _hookTimings();
-    bridge.drains.clear();
-    frames.clear();
-    _snapOffFrameDrains = bridge.offFrameDrains;
-    _snapRawFrames = _rawFrames;
-    _snapPumpCalls = bridge.pumpCalls;
-    _snapOffFramePumps = bridge.offFramePumps;
-    bridge.pumpAvgNs = 0;
-    bridge.pumpPeakNs = 0;
-    bridge.offFrameAvgNs = 0;
-    bridge.logging = true;
-  }
-
-  Map<String, Object?> report(List<double> t0sJs) {
-    bridge.logging = false;
-
-    final drains = bridge.drains;
-    final apply = <double>[];
-    final paint = <double>[];
-    var unresolved = 0;
-
-    for (final t0js in t0sJs) {
-      final t0 = t0js - offsetMs; // → Dart clock
-
-      // A drain can only have seen this commit if it STARTED after it.
-      DrainRec? applied;
-      DrainRec? notifying;
-      for (final d in drains) {
-        if (d.tStart < t0) continue;
-        // Nothing can be notified before it has been applied, so ignore
-        // any pump that ran between the commit and the drain that
-        // consumed it.
-        if (applied == null && !d.consumed) continue;
-        applied ??= d;
-        if (d.notified) {
-          notifying = d;
-          break;
-        }
-      }
-      if (applied == null || notifying == null) {
-        unresolved++;
-        continue;
-      }
-      apply.add(applied.tEnd - t0);
-
-      // Which frame shows it. Two cases, and getting this wrong is how a
-      // benchmark "proves" an off-frame notify paints in 0 ms:
-      //
-      //   • The notify happened INSIDE a frame's build window. Only a
-      //     frame drain can do that, and the Ticker runs before Flutter
-      //     walks the dirty list, so THAT frame shows it.
-      //   • The notify happened between frames (arm 2's doorbell). The
-      //     next frame to START building shows it — a frame already
-      //     mid-build has passed the elements it would have rebuilt.
-      final tN = notifying.tEnd;
-      _Frame? shown;
-      for (final f in frames) {
-        if (f.buildStart <= tN && tN <= f.buildFinish) {
-          shown = f;
-          break;
-        }
-        if (f.buildStart > tN) {
-          shown = f;
-          break;
-        }
-      }
-      if (shown == null) {
-        unresolved++;
-        continue;
-      }
-      paint.add(shown.rasterFinish - t0);
-    }
-
-    var inFrameCpu = 0.0, offFrameCpu = 0.0;
-    var inFrameN = 0, offFrameN = 0;
-    for (final d in drains) {
-      if (d.offFrame) {
-        offFrameCpu += d.durMs;
-        offFrameN++;
-      } else {
-        inFrameCpu += d.durMs;
-        inFrameN++;
-      }
-    }
-
-    final builds = frames.map((f) => f.buildFinish - f.buildStart).toList();
-    final spans = frames.map((f) => f.totalSpan).toList();
-    // 60 Hz is 16.67 ms; anything past 1.5 vsyncs missed its slot.
-    final janky = spans.where((s) => s > 25.0).length;
-
-    return {
-      'samples': t0sJs.length,
-      'unresolved': unresolved,
-      'applyLatencyMs': _stats(apply),
-      'paintLatencyMs': _stats(paint),
-      'drains': {
-        'inFrame': inFrameN,
-        'offFrame': offFrameN,
-        'offFrameCounter': bridge.offFrameDrains - _snapOffFrameDrains,
-        'inFrameCpuMs': _r(inFrameCpu),
-        'offFrameCpuMs': _r(offFrameCpu),
-        'totalCpuMs': _r(inFrameCpu + offFrameCpu),
-        'pumpAvgNs': bridge.pumpAvgNs,
-        'pumpPeakNs': bridge.pumpPeakNs,
-        'offFrameAvgNs': bridge.offFrameAvgNs,
-      },
-      'sched': {
-        'rawFrames': _rawFrames - _snapRawFrames,
-        'pumpCalls': bridge.pumpCalls - _snapPumpCalls,
-        'framePumps': (bridge.pumpCalls - _snapPumpCalls) -
-            (bridge.offFramePumps - _snapOffFramePumps),
-        'framesEnabled': SchedulerBinding.instance.framesEnabled,
-        'lifecycle': '${SchedulerBinding.instance.lifecycleState}',
-      },
-      'frames': {
-        'count': frames.length,
-        'buildMs': _stats(builds),
-        'totalSpanMs': _stats(spans),
-        'janky': janky,
-      },
-    };
-  }
-
-  String writeReport(String text) {
-    final dir = Directory('${Platform.environment['HOME']}');
-    // App Support inside the sandbox container — the app is sandboxed on
-    // macOS, so /tmp is not writable.
-    final out = File('${dir.path}/uibench-report.txt');
-    try {
-      out.writeAsStringSync(text);
-      return out.path;
-    } catch (e) {
-      return 'ERR $e';
-    }
-  }
-}
-
-double _r(double v) => (v * 1000).roundToDouble() / 1000;
-
-Map<String, Object?> _stats(List<double> xs) {
-  if (xs.isEmpty) return {'n': 0};
-  final s = List<double>.from(xs)..sort();
-  double q(double p) => s[(p * (s.length - 1)).round()];
-  return {
-    'n': s.length,
-    'min': _r(s.first),
-    'p50': _r(q(0.5)),
-    'p95': _r(q(0.95)),
-    'max': _r(s.last),
-    'mean': _r(s.reduce((a, b) => a + b) / s.length),
-  };
-}
-
-/// Register the `uibench` service. Must be handed the [BenchBridge] the
-/// host mounted, so the drain log and the tree under test are the same
-/// bridge.
-void registerUiBenchService(BenchBridge bridge, Skal skal) {
-  final bench = _UiBench(bridge, skal);
-
-  registerService('uibench', (String method, List<Object?> args) {
-    switch (method) {
-      case 'calibrate':
-        bench.calibrate();
-        return bench.offsetMs;
-
-      // arm 0 = shipping (logic-only doorbell)
-      // arm 1 = doorbell on every committed batch, notify still deferred
-      // arm 2 = arm 1 + the off-frame drain notifies immediately
-      case 'arm':
-        final arm = args.isEmpty ? 0 : (args[0] as num).toInt();
-        bridge.offFrameNotify = arm >= 2;
-        return arm;
-
-      case 'startLog':
-        bench.startLog();
-        return 1;
-
-      case 'report':
-        final raw = args.isEmpty ? const <Object?>[] : args[0] as List<Object?>;
-        return bench.report(
-            raw.map((e) => (e as num).toDouble()).toList(growable: false));
-
-      case 'writeReport':
-        return bench.writeReport(args.isEmpty ? '' : '${args[0]}');
-
-      case 'emit':
-        // Long reports exceed a single log op comfortably; the JS side
-        // chunks and this just forwards, so the transcript survives even
-        // if the file write is blocked.
-        debugPrint('[uibench] ${args.isEmpty ? '' : args[0]}');
-        return 1;
-    }
-    throw 'uibench: unknown method "$method"';
-  });
-}
-
-/// Pretty-print helper used by the runner script when reading the file
-/// back; kept here so the JSON shape has exactly one definition.
-String encodeReport(Object? o) => const JsonEncoder.withIndent('  ').convert(o);
-```
-
-### The bench code — JS half (`ui-bench.js`)
-
-```js
-// ui-bench — is the §2b doorbell worth extending from logic RPC to
-// component ops? See examples/virt-bench/flutter-host/lib/ui_bench.dart
-// for the methodology and the Dart-side instrument.
-//
-// Three arms, all in one process so the clock calibration and the
-// machine state are shared:
-//
-//   arm 0  shipping. The doorbell rings only for ROOT-targeted invokes.
-//   arm 1  the doorbell rings for EVERY committed batch. The off-frame
-//          drain still defers widget notification to the next frame
-//          drain, so this arm moves decode work only.
-//   arm 2  arm 1, plus the off-frame drain notifies immediately —
-//          the "don't wait for a frame" version people actually mean.
-//
-// Two workloads:
-//
-//   w1  one prop on one node, 10 ms apart. The cheapest possible UI
-//       update, and the one where a per-frame drain looks worst. Pacing
-//       is deliberately NOT a multiple of 16.67 ms so the samples land
-//       uniformly across the vsync interval instead of piling up at one
-//       phase.
-//   w2  100 text labels rewritten together, 8 ms apart. Real churn —
-//       this is where moving decode out of the frame budget could
-//       plausibly pay for itself.
-//   w3  a UI update issued in the SAME tick as a service call —
-//       `setLoading(true); api.fetch()`, the most ordinary event
-//       handler there is. This one is not an experiment: the doorbell
-//       drains the whole ring, so w3 goes off-frame even in arm 0.
-//       It is here because it is the shipping path, and running it
-//       against arm 0 says whether shipping is correct.
-//
-// Arms run twice, interleaved (0,1,2,0,1,2), so thermal drift and
-// JSC tier-up show up as a round-to-round difference rather than being
-// silently attributed to whichever arm ran first.
-
-import { createSkalService } from 'skal/runtime';
-
-const uib = createSkalService('uibench');
-const bench = createSkalService('bench');
-
-const now = () =>
-  (typeof performance !== 'undefined' && performance.now
-    ? performance.now()
-    : Date.now());
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const log = (...a) => console.log('[uibench]', ...a);
-
-const ARMS = [
-  [0, 'shipping (logic-only doorbell)'],
-  [1, 'UI doorbell, deferred notify'],
-  [2, 'UI doorbell, immediate notify'],
-];
-
-async function setArm(arm) {
-  await uib.arm(arm);
-  // The JS half. Guarded: an older libskal/bridge without the switch
-  // leaves every arm equal to arm 0, which the report would show as
-  // three identical rows rather than as a silent no-op.
-  if (typeof globalThis.__skal_setUiDoorbell === 'function') {
-    globalThis.__skal_setUiDoorbell(arm >= 1);
-  } else {
-    log('!! __skal_setUiDoorbell missing — arms 1/2 are not actually armed');
-  }
-  await sleep(300); // let the tree settle before logging
-}
-
-/**
- * @param mutate  (i) => void — writes ops synchronously. Must NOT make
- *                an RPC: a root-targeted invoke rings the doorbell in
- *                EVERY arm and would erase the difference under test.
- */
-async function runWorkload(mutate, n, paceMs) {
-  for (let i = 0; i < 20; i++) {
-    mutate(i);
-    await sleep(paceMs);
-  }
-
-  await uib.startLog();
-
-  const t0s = new Array(n);
-  for (let i = 0; i < n; i++) {
-    // Ops are written synchronously inside mutate(); commit() runs on
-    // the microtask that the await below yields to. So t0 is the commit
-    // time to within a microtask.
-    const t0 = now();
-    mutate(i);
-    t0s[i] = t0;
-    await sleep(paceMs);
-  }
-
-  // Let the last update's frame rasterize and reach the timings callback
-  // before asking for the report.
-  await sleep(300);
-  return uib.report(t0s);
-}
-
-// ── formatting ───────────────────────────────────────────────────────
-const ms = (v) => (v === undefined ? '  —  ' : `${v.toFixed(2)}`);
-const pad = (s, w) => String(s).padStart(w);
-
-function statRow(label, st) {
-  if (!st || !st.n) return `${label.padEnd(22)} (no samples)`;
-  return `${label.padEnd(22)} n=${pad(st.n, 4)} `
-    + `p50=${pad(ms(st.p50), 7)} p95=${pad(ms(st.p95), 7)} `
-    + `max=${pad(ms(st.max), 7)} mean=${pad(ms(st.mean), 7)}`;
-}
-
-function describe(name, arm, r, out) {
-  out.push(`── ${name} · arm ${arm} ─────────────────────────────`);
-  out.push(statRow('  apply latency (ms)', r.applyLatencyMs));
-  out.push(statRow('  PAINT latency (ms)', r.paintLatencyMs));
-  const d = r.drains;
-  out.push(`  drains                 inFrame=${pad(d.inFrame, 4)} `
-    + `offFrame=${pad(d.offFrame, 4)}   `
-    + `cpu inFrame=${ms(d.inFrameCpuMs)}ms offFrame=${ms(d.offFrameCpuMs)}ms `
-    + `total=${ms(d.totalCpuMs)}ms`);
-  out.push(`  bridge counters        pumpAvg=${(d.pumpAvgNs / 1e6).toFixed(3)}ms `
-    + `pumpPeak=${(d.pumpPeakNs / 1e6).toFixed(3)}ms `
-    + `offFrameAvg=${(d.offFrameAvgNs / 1e6).toFixed(3)}ms`);
-  const s = r.sched;
-  out.push(`  scheduler              rawFrames=${pad(s.rawFrames, 4)} `
-    + `framePumps=${pad(s.framePumps, 4)} pumpCalls=${pad(s.pumpCalls, 4)} `
-    + `framesEnabled=${s.framesEnabled} ${s.lifecycle}`);
-  const f = r.frames;
-  out.push(statRow('  frame build (ms)', f.buildMs));
-  out.push(statRow('  frame span (ms)', f.totalSpanMs));
-  out.push(`  frames=${f.count} janky(>25ms)=${f.janky} `
-    + `unresolved samples=${r.unresolved}`);
-}
-
-function summary(all, out) {
-  out.push('');
-  out.push('══ SUMMARY — p50, median of the two rounds ══════════════');
-  out.push('workload  arm  applyP50  PAINTp50  inFrameCPU  offFrameCPU  janky');
-  for (const wl of ['w1', 'w2', 'w3']) {
-    for (const [arm, name] of ARMS) {
-      const rs = [0, 1].map((r) => all[`${wl}/${arm}/${r}`]).filter(Boolean);
-      if (!rs.length) continue;
-      const med = (f) => {
-        const v = rs.map(f).sort((a, b) => a - b);
-        return v.length === 2 ? (v[0] + v[1]) / 2 : v[0];
-      };
-      out.push(
-        `${wl.padEnd(9)} ${arm}    `
-        + `${pad(ms(med((r) => r.applyLatencyMs.p50 ?? 0)), 8)}  `
-        + `${pad(ms(med((r) => r.paintLatencyMs.p50 ?? 0)), 8)}  `
-        + `${pad(ms(med((r) => r.drains.inFrameCpuMs)), 10)}  `
-        + `${pad(ms(med((r) => r.drains.offFrameCpuMs)), 11)}  `
-        + `${pad(Math.round(med((r) => r.frames.janky)), 5)}   ${name}`);
-    }
-  }
-}
-
-/**
- * @param hooks.setWidth  (i) => void  — w1 mutation
- * @param hooks.setLabels (i) => void  — w2 mutation (100 nodes)
- */
-export async function runUiBench(hooks) {
-  log('start — 3 arms x 2 workloads x 2 rounds');
-  const offset = await uib.calibrate();
-  log(`clock offset js-dart = ${offset.toFixed(3)}ms`);
-
-  const all = {};
-  const out = [];
-  const t0 = now();
-
-  for (let round = 0; round < 2; round++) {
-    for (const [arm] of ARMS) {
-      await setArm(arm);
-      all[`w1/${arm}/${round}`] =
-        await runWorkload(hooks.setWidth, 200, 10);
-      all[`w2/${arm}/${round}`] =
-        await runWorkload(hooks.setLabels, 150, 8);
-      all[`w3/${arm}/${round}`] =
-        await runWorkload(hooks.setWidthAndCall, 150, 10);
-      log(`round ${round} arm ${arm} done`);
-    }
-  }
-
-  // Back to shipping behaviour before anything else runs.
-  await setArm(0);
-
-  for (let round = 0; round < 2; round++) {
-    out.push('');
-    out.push(`########## ROUND ${round} ##########`);
-    for (const [arm, name] of ARMS) {
-      describe(`w1 single prop  · ${name}`, arm, all[`w1/${arm}/${round}`], out);
-      describe(`w2 100 labels   · ${name}`, arm, all[`w2/${arm}/${round}`], out);
-      describe(`w3 prop+RPC     · ${name}`, arm, all[`w3/${arm}/${round}`], out);
-    }
-  }
-  summary(all, out);
-  out.push('');
-  out.push(`total ${((now() - t0) / 1000).toFixed(1)}s`);
-
-  for (const line of out) log(line);
-  const path = await uib.writeReport(out.join('\n'));
-  log(`report written to ${path}`);
-  return all;
-}
-```
+## State
+
+The **realistic frame** is the row to read first: 200 components each
+reading 10 leaves, then one mutation propagated to completion. It is the
+only unit where the work is provably identical on both stacks.
+
+| ms per op | Skal | React Native | |
+|---|---:|---:|---|
+| **Realistic frame** — 200 × 10 reads + 1 update | **0.05** | 0.797–0.847 | Skal 16× |
+| 1 leaf, 0 subscribers | **0.0012–0.0016** | 0.1081 | Skal 79× |
+| 1 leaf, 50 subscribers | **0.0356–0.0369** | 0.1851 | Skal 5.7× |
+| 1 leaf, 200 subscribers | **0.1425–0.1447** | 0.2119 | Skal 1.5× |
+| 200 leaves, 1 subscriber each | **0.63–0.66** | 38.15 | Skal 61× |
+| No-op write (same value) | **0.0008–0.0009** | 0.0016 | Skal 1.9× |
+| Array push + splice, length stable | 0.0235–0.0271 | **0.0058** | RN 4.4× |
+| Wholesale replace, 1 of 3 changed | 0.0043–0.0071 | **0.0013** | RN 4.2× |
+
+Immutable stores copy the whole state object per write, so the gap
+**widens with store size and narrows with subscriber count** — both ends
+are in the table. RN's 38 ms on the 200-leaf sweep is
+`{...st.cells, [k]: v}` making 200 writes O(n²); that is inherent to
+immutable state management, not imposed by the harness.
+
+> ⚠️ Do not quote a delta from **wholesale replace**. Its own
+> round-to-round spread is 0.0043 → 0.0071, about 65% — wider than any
+> effect worth arguing about.
+
+### Reads — React Native wins every shape
+
+| ms per 100 reads | Skal | React Native | |
+|---|---:|---:|---|
+| Leaf, full literal path | 0.0319–0.0322 | **0.0090** | RN 3.5× |
+| Leaf, parent hoisted | 0.0086–0.0087 | **0.0037** | RN 2.3× |
+| Whole object `s.user` | 0.0092–0.0102 | **0.0070** | RN 1.3× |
+| `const u = s.user` + 6 fields | 0.0742–0.0743 | **0.0191** | RN 4.0× |
+| Deep path `a.b.c.d` (4 levels) | 0.0419–0.0453 | **0.0086** | RN 4.8× |
+| Collection sweep, 200 rows | 0.0504–0.0506 | **0.0308** | RN 1.7× |
+| *floor: plain array, int index* | *0.0002* | *0.0031* | *JSC 15×* |
+| *floor: bare reactive read* | *0.0023* | *none exists* | |
+
+zustand's `getState()` hands back a plain object, so every access after
+it is a bare property load. Skal pays one proxy trap and one signal read
+**per level** — which is why the 4-level path is the worst row. Against a
+0.0023 bare-signal floor, the trap is irreducible while `state.a.b` is
+the API.
+
+**No arm builds a key string.** Every path is a literal, which is what
+components write. An earlier version indexed with `key(i)`, and since
+Hermes pays ~3.8× more than JSC for the same concat, that cost sat inside
+both stacks' numbers and flattered RN by roughly an order of magnitude.
+
+### Re-render precision
+
+200 subscribers, one per distinct leaf, one leaf written.
+
+| | Skal | React Native |
+|---|---:|---:|
+| Subscribers actually woken | **1 of 200** | **1 of 200** |
+| Cost of that write | **0.0024–0.0025 ms** | 0.1500 ms |
+
+**Both stacks are exactly precise.** The difference is what precision
+costs: zustand must evaluate all 200 selectors to discover which changed;
+Skal's signal graph routes straight to the one subscriber. That is
+**50×**, and it is invisible to every read benchmark and to any write
+benchmark that does not count subscribers.
+
+Verified case-by-case on device, **17/17** — sibling leaves independent,
+no-op writes silent, splices waking only shifted indices plus length, one
+index assign costing one re-run, held element proxies surviving
+re-insertion under both addressing schemes.
+
+One deliberate exception, Skal's only coarse path: a consumer that
+**iterates** an array (`map` / `filter` / `for..of` / spread) is woken by
+any write beneath that array, because the callback receives raw objects
+and registers no per-element dependency. Index and leaf readers keep
+exact per-key precision.
 
 ---
 
-## Bench 6 — Prop-clear rework (correctness change, measured for cost)
+## Reactivity under render pressure
 
-Turning a prop back off (`color={active ? RED : null}`) needed a real
-removal path on both targets. Two of those changes touch hot code, so
-both were measured rather than assumed.
+288 independent leaf cells. App counters and `dumpsys gfxinfo` agree
+independently.
 
-**Web set path — 2x faster.** The first attempt LEARNED each prop's
-declarations by diffing the element's style across the prop's first
-write. It was wrong three ways (value-dependent, blind to the eleven
-DOM-property cases, mis-attributed shared declarations) and it was not
-free: a `Map` per element plus two `O(declarations)` scans per
-(element, prop). Replacing it with an explicit table removed all of that
-from the set path.
+| | Skal | React Native | |
+|---|---:|---:|---|
+| 1 cell / batch | **384/s** | 68/s | 5.6× |
+| 16 cells / batch | **7 621/s** | 893/s | 8.5× |
+| **all 288 / batch** | **103 846/s** | 4 901/s | **21.2×** |
+| Janky frames | **4.60%** (18) | 50.38% (265) | — |
+| p95 frame time | **9 ms** | 150 ms | — |
+| High-input-latency frames | **18** | 429 | — |
 
-| path | per prop write |
-|---|---|
-| learn by diffing styles (removed) | 12 496 ns |
-| explicit clear table (shipped)    |  6 076 ns |
+> ⚠️ **Quote the 21×, not a per-cell figure.** At low pressure both
+> numbers are scheduler-bound: 384 batches/s is a `setTimeout(0)` floor,
+> and RN's 14.8 ms floor is one 60 Hz frame because React schedules for
+> the next frame. Subtracting each stack's own floor gives ~260× per
+> cell, but the two floors are different mechanisms, so that is
+> indicative only.
 
-40 000 prop writes over 4 000 elements under happy-dom. The learner was
-**106% overhead on top of the actual work** — so the correctness fix is
-also the faster one.
+**One shape of update.** Independent leaf cells with no derived state is
+the case fine-grained reactivity is built for. Deep dependency chains,
+list reorders and cross-cutting derived values are untested.
 
-**Bridge dedup check — no measurable change.** `clearProp` could not ask
-"was anything ever sent for this slot" without a sentinel, and the F32
-lane's sentinel is NaN — a value `setPropF32` can legitimately store, so
-a NaN height read as "never set" and was never cleared. The fix gives
-each lane a bit in the byte that already existed, turning the u32 dedup
-check from `has[slot] !== 0` / `= 1` into `& 1` / `|= 1`.
+---
 
-| variant | median | ns/op |
-|---|---|---|
-| `= 1` / `!== 0` (old) | 17.9 ms | 0.893 |
-| `|= 1` / `& 1` (new)  | 17.9 ms | 0.896 |
+## JavaScript engine — JSC + bytecode vs Hermes
 
-7 interleaved A/B rounds of 20 M iterations, medians. Delta 0.4%, inside
-a per-round spread of 0.8-1.0 ms.
+**Warm, JSC wins 8 of 8, median 7.3×. Cold, it is a tie** — RN takes 4 of
+7 and JSC overtakes within about 10 iterations.
 
-**Do not read that 0.4% as a result.** The first attempt at this bench
-ran A-then-B once and reported +99.5%, then -6.7%, then +0.1% on
-successive runs, because whichever side ran second inherited the warm
-JIT and cache. Interleaving and taking medians is what made it stable.
-At ~0.9 ns/op the honest statement is that one extra ALU op on a byte
-already in L1 is below what this harness resolves — no allocation, no
-new array, no extra memory traffic.
+| ms per iteration, steady state | Skal (JSC) | RN (Hermes) | | stresses |
+|---|---:|---:|---|---|
+| Pure-JS SHA-256 | **0.0261** | 1.1712 | 44.9× | tight int32 loop |
+| Closure calls 3k | **0.0124** | 0.2141 | 17.3× | megamorphic call sites |
+| Array pipeline | **0.0225** | 0.2463 | 10.9× | JS callbacks, hot loop |
+| Sort 500 | **0.0948** | 0.7520 | 7.9× | comparison callbacks |
+| Megamorphic access | **0.0175** | 0.1167 | 6.7× | polymorphic loads |
+| String + regex | **0.2520** | 1.6528 | 6.6× | JS + native regex |
+| Alloc churn 2k | **0.0294** | 0.1811 | 6.2× | short-lived objects, GC |
+| JSON.parse 500 posts | **1.1755** | 1.9915 | 1.7× | mostly native C++ both |
 
-Both harnesses were throwaway; neither is in the tree. The web one
-imports `renderer-web.js` under happy-dom and re-implements the removed
-learner alongside it; the slot one is a standalone A/B over a
-`Uint8Array` + `Int32Array` pair.
+Warm-up is the whole story — same SHA-256 loop, by run index:
 
+| ms/iter | 1st | 2–10 | 11–100 | 101–1k |
+|---|---:|---:|---:|---:|
+| Skal (JSC) | 0.916 | 0.298 | 0.071 | **0.034** |
+| RN (Hermes) | 1.181 | 1.161 | 1.162 | **1.163** |
 
-## Bench 7 — Idle frames, Row chrome, and one non-finding
+JSC drops **27×** as it tiers up; Hermes ships pre-compiled bytecode and
+is flat. So RN starts faster and JSC overtakes almost immediately.
 
-Three items from a performance review. Two were real and large; one was
-not, which is why they were measured before being "fixed".
+> ⚠️ Always ship the "warm" qualifier. A reader who runs one iteration
+> sees no difference at all.
 
-### The idle ticker — a frame every vsync, forever
+### Bytecode cache
 
-`SkalRoot` started a Ticker in `initState` and never stopped it. An
-active Ticker asks the engine for a frame every vsync, so a completely
-static screen woke it 60-120 times a second to discover there was
-nothing to do. Every idle app paid this.
+| | plain evaluate | with bytecode cache |
+|---|---:|---:|
+| First launch (cache cold) eval | 109–252 ms | **40 ms** |
+| Subsequent eval (warm) | 109–252 ms | **34 ms** |
 
-It now stops on a frame that positively reports idle (nothing applied,
-nothing owed, nothing queued) and JS's doorbell restarts it. Idle frame
-requests go from **every vsync to zero**.
+---
 
-Two things had to change with it:
+## Storage and persistence — React Native's clearest win
 
-- The doorbell used to ring only for ROOT-targeted invokes. It now rings
-  on every publish, because the host needs waking for ANY work. The old
-  restriction rested on a race that does not exist — the host drains the
-  ring in order, so a ring can only apply a CREATE_NODE *before* the
-  invoke that follows it.
-- The ring moved inside `publishProgress`, not its call sites. There are
-  three publish paths, and the third is `flushAndWaitForDrain`, which
-  publishes and then SPINS up to 5 seconds waiting for a drain. Against
-  a host allowed to sleep, a ring-overflow without a ring there is a
-  five-second freeze.
+| | Skal | RN (MMKV) | |
+|---|---:|---:|---|
+| Cold open + read 500 records | 6.2 ms (eager) | **0.662 ms** | RN 9.4× |
+| Cold open + read 5 of 500 | 2.08 ms (lazy) | **0.259 ms** | RN 8× |
+| Lazy bulk 500, improvement to date | 69 → **9.16 ms** | — | 7.5× |
+| Granular flush, 1 of 200 changed | **0.043 ms** | — | 27× cheaper than 200 |
+| 4 500-leaf store, added to cold start | +33.5 ms | — | 67% is the eager init walk |
 
-Safety is one-sided by construction: `enableHostNotify` now reports
-whether it armed, and the ticker only stops when it did. Web has no
-JS->Dart wake primitive at all and an old libskal lacks the exports —
-both keep the old always-on behaviour, because a wasted frame is cheap
-and a missed wake is a frozen app.
+A real trade, not a defect. MMKV parses the whole file into an in-memory
+dictionary at `createMMKV()` and returns typed values across the
+boundary, so its memory scales with **bytes stored** and it supports only
+`boolean | string | number | ArrayBuffer`. Skal's keydir holds
+**offsets**, so every record is a read plus a JS-side `JSON.parse` —
+memory scales with **key count** and it stores arbitrary nested values.
 
-### Every `<row>` was a scroll container
+> ⚠️ Persistence **writes** vs RN remain confounded and should not be
+> quoted in either direction. The +33.5 ms init walk is the largest
+> unaddressed number in the store.
 
-`_buildRow` wrapped every Row in a horizontal `SingleChildScrollView`
-"so wide rows don't clip". That is a Scrollable, a viewport, a
-ScrollPosition and a gesture recognizer on the most common container in
-the framework, whether or not anything ever scrolled.
+---
 
-400 rows of 6 children:
+## WebCrypto — the one Skal loses badly
 
-| | elements | per build |
-|---|---|---|
-| wrapped | 4156 | 62.6 ms |
-| plain   | 1895 | 11.6 ms |
-| delta   | +119% | **+437%** |
+**Status: measured, root-caused in the source, not yet fixed.**
 
-It cost correctness too: nested horizontal scrollables fight the parent
-for pan gestures, and a row that overflowed silently became scrollable
-instead of reporting the layout bug. `<scrollView axis={1}>` produces
-the old shape exactly, and always did.
+| SHA-256, ms per digest | Skal | RN (quick-crypto) | |
+|---|---:|---:|---|
+| 1 byte | **0.0145** | 0.0371 | Skal 2.6× |
+| 1 KB | 0.1793 | **0.0378** | RN 4.7× |
+| 64 KB | 0.3459 | **0.0901** | RN 3.8× |
+| 1 MB | 2.1778 | **0.8557** | RN 2.5× |
+| `getRandomValues` | **0.0004** | 0.016 | Skal 37× |
 
-### `ChunkedFor`'s prefix re-slice — NOT worth fixing
+Skal wins the 1-byte digest and loses everything with a payload, which
+rules out per-call overhead. The cause is **a thread-pool dispatch per
+call**, found in the source: bun's `CryptoAlgorithmSHA256::digest` hashes
+inline only below **64 bytes** and dispatches everything larger to a work
+queue (~0.165 ms round trip). The non-digest algorithms have no inline
+path at all.
 
-The review flagged `slice(0, visible())` per chunk as O(N^2). The shape
-is right and the constant makes it irrelevant: chunk size grows 1.5x per
-step, so a 5000-item mount takes **9 chunks**, not ~100.
+Four other hypotheses were tested and eliminated: per-`await` promise
+overhead (batching 50 digests behind one await made Skal *worse*),
+missing ARMv8 SHA instructions (the binary has 56 `sha256h`/`sha256su`
+instructions and CPU feature detection), LITTLE-core scheduling (85% of
+the hot thread ran on the 2.2 GHz A75 pair), and a slow bun worker pool
+(those threads were nearly idle — 57 ticks against the main thread's 988).
+
+---
+
+## Memory and size
+
+| | Skal | React Native | |
+|---|---:|---:|---|
+| PSS, feed + images | 437 MB | **368 MB** | RN 19% lower |
+| Peak RSS (VmHWM) | 469 MB | **433 MB** | RN 8% lower |
+| APK, no images | **40.7 MiB** | 45.7 MiB | Skal 11% smaller |
+| APK, with images | **51.6 MiB** | 56.5 MiB | Skal 9% smaller |
+| **APK at full WebCrypto parity** | **51.6 MiB** | 67.2 MiB | **Skal 23% smaller** |
+
+Images cost both stacks about the same (+155 MB vs +149 MB), so the
+memory gap is **entirely runtime baseline**, not asset handling.
+
+---
+
+## Cold start — unresolved, do not quote
+
+Two experiments disagree, and the winner flips. The cause is the
+opponent: one RN build is **24.9 MiB**, the other **45.7 MiB** — nearly
+twice the app.
+
+| source | Skal | RN | RN APK | says |
+|---|---:|---:|---:|---|
+| app benchmark, 2026-07-31, stock host | **406 ms** | 553 ms | 45.7 MiB | Skal 148 ms faster |
+| four-app control, 2026-07-30, + host wins | 333 ms | **278 ms** | 24.9 MiB | RN 56 ms faster |
+
+**One interleaved run against a single named RN build would settle it.**
+Until then no cold-start number belongs on a marketing page.
+
+The four-app control is still the better experiment for *attribution*,
+because it separates Skal's cost from Flutter's — same 27-node static
+screen, interleaved n=10, all launches confirmed `COLD`:
+
+| | time to content | time to window | APK |
+|---|---:|---:|---:|
+| React Native 0.86 | **278 ms** | 222 ms | 24.9 MiB |
+| **Skal**, scaffolded + host wins | **333 ms** | 324 ms | 40.7 MiB |
+| Pure Flutter, stock (no Skal) | 362 ms | 362 ms | 14.1 MiB |
+| Skal in a kitchen-sink host, stock | 428 ms | 428 ms | 41.7 MiB |
+
+**A properly configured Skal app is 29 ms faster than a bare Flutter
+app.** The Flutter tax is not inherent — nearly all of it is what a stock
+`FlutterActivity` does on the critical path. The 95 ms between the two
+Skal rows is four changes at once (host wins, fewer plugins, smaller
+bundle, early frame); do not attribute it to any one of them.
+
+Host optimisations, A/B/A blocks with drift quantified per run:
+
+| change | moved | result | verdict |
+|---|---|---:|---|
+| TextureView render mode | tax 167→89 | **−65 ms** | proven, drift 8 |
+| FlutterEngine pre-create | js_done 264→238 | **−23 ms** | proven, drift 8 |
+| Flutter loader pre-warm | activity_done 114→106 | **−8 ms** | proven |
+| Early placeholder frame | tax 163→170 | +13 ms | regression, off |
+| Splash view removal | tax 92→88 | 1 ms | no effect, off |
+
+---
+
+## Not measured — do not infer
+
+The list exists so that silence is never read as a result.
 
 | | |
 |---|---|
-| chunks per mount | 9 |
-| element copies per mount | 15 240 |
-| total slice cost per mount | **0.010 ms** |
-
-Ten microseconds against a mount that takes hundreds of milliseconds.
-Left alone. Worth recording precisely because it looked like the obvious
-win and measured as noise — the asymptotic argument was correct and
-still did not matter.
-
-
-## Bench 8 — NodeState allocation, and a Zig store audit
-
-### Lazy NodeState — faster on every axis, including the hot path
-
-Every node eagerly built three prop maps, two notifiers and a child
-backing before a single prop reached it. Most nodes are leaves that
-never insert a child, and most touch exactly one of the three prop
-lanes, so the common node held six live sub-objects to store one map's
-worth of data.
-
-All of it is now lazy. Measured over 200 000 nodes:
-
-| | eager | lazy | |
-|---|---|---|---|
-| construct only | 373.6 ms | **60.8 ms** | −84% |
-| construct + 3 cold props | 645.6 ms | **258.8 ms** | −60% |
-| 4 M warm `setPropU32` (drain hot path) | 355.4 ms | **270.9 ms** | **−24%** |
-
-The third row is the one worth reading twice. The expectation going in
-was that laziness would *cost* on the drain — `(_props ??= {})[k] = v`
-adds a null check to the hottest write in the framework, and the whole
-point of the eager `final` fields was to avoid it.
-
-It is 24% faster instead. A null check on a field that is already
-non-null is close to free, while the eager object kept six live
-sub-objects alive per node for the collector to trace and scattered the
-node's data across six allocations. Locality and GC pressure cost more
-than the branch saved.
-
-Notifiers are now created by the SUBSCRIBER, not the producer:
-`notifyCold()` / `notifyHot()` skip entirely when no widget has ever
-listened.
-
-**Read the notifier row with a caveat.** This bench constructs
-`NodeState`s in isolation, so it measures the never-built case. In the
-real tree `_hotLayer()` is called for every node that BUILDS and always
-subscribes to `node.hot`, so a built node allocates both notifiers
-regardless. The saving is therefore proportional to how much of the tree
-goes unbuilt — large in a windowed list where ~20 of 5000 rows build,
-and limited to the three prop maps plus the child backing in a
-fully-built tree. See TODO.md § 6c.
-
-### The Zig store does NOT have the JS store's aliasing bug
-
-Audited after fixing the JS `LogStore`, because native is what actually
-runs on device — the kitchen-sink reports "Backend: native · schema v1",
-so the P0 fix and `test/store.test.js` cover the fallback path only.
-
-The bug cannot occur there, structurally: `SkalStore.open()` has no hint
-file at all. It enumerates `seg-NNNNN.log`, sorts ids ascending, appends
-in that order, and `activeSeg()` returns the last element — always the
-highest id. `compact()` skips the active segment explicitly and removes
-with `orderedRemove`, which preserves the ordering that guarantee rests
-on. There is no stale cursor to trust, so there is nothing to get wrong.
-
-It did have the double startup scan: `mapSegment` walks every frame with
-CRC verification to derive the write cursor, and `replayInto` then walked
-the same bytes with verification again. The second pass now skips
-verification — the first has just checked every byte below `cursor`, on
-a mapping nothing else can touch during `open()`. Halves startup CRC
-work. **Requires a libskal rebuild to take effect.**
-
-
-## Bench 9 — Store write staging
-
-A write inside a collection element re-encoded the WHOLE element, on
-every mutation. `dirty` is a Map keyed by store key, so only the last
-staging of a key ever reaches the engine — every earlier encode was
-thrown away before it could be written.
-
-200 mutations inside one element, one debounce window:
-
-| | before | after |
-|---|---|---|
-| `JSON.stringify` calls | 200 | **0** (all deferred to flush) |
-| bytes serialized | 278 600 | **0** before flush; one 463-byte frame at it |
-| discarded | 278 137 (99.8%) | none |
-
-Encoding now happens at flush from live state, which is exactly how
-`INDEX_DIRTY` has always handled the collection index.
-
-**Why this is safe, and what had to be checked.** Deferring the READ
-means resolving a path later than the write that staged it. That is only
-sound because a collection element's solid path is id-addressed
-(`{__id, hint}`) rather than index-addressed — a splice shifts indices,
-and an index-addressed deferred path would then resolve to a DIFFERENT
-element and persist its body under the original's key.
-
-### The measurement that was nearly wrong
-
-The first version of these tests asserted live Solid state after the
-flush. All seven passed, and **both** mutations of the fix — index-
-addressing the deferred path, and dropping the removed-element guard —
-passed too. The tests were vacuous: the in-memory tree is correct either
-way, because the bug is in the BYTES.
-
-They now flush, reopen the store from the same directory, and assert on
-what hydrates. Index-addressing the path fails the splice test; reverting
-the deferral fails the encode-count test.
-
-Two things surfaced while building that harness, neither of them fixed
-here:
-
-- **A collection seeded in `initState` did not come back on reopen**,
-  while one built by `push` did. Scalars round-trip either way. That was
-  a bigger deal than the perf win and is now fixed — see below.
-- **The JS engine path ignores `cfg.name`.** `openBackend(dataDir)`
-  gets no store name — only the native path appends it — so two stores
-  sharing a data directory share one segment directory. Each test
-  hydrated the previous test's data until every store got its own
-  directory.
-
-
-## How to re-run
-
-To resurrect the bench:
-
-1. Drop the source files above back into the tree at the indicated
-   paths (`bench.js`, `RenderBench.jsx`, `mmkv_bench.dart`).
-2. Restore deps: `zustand: ^5.0.13` in `packages/skal-js/package.json` (for
-   the pure-libraries section of `bench.js`); `mmkv: ^2.4.0` in
-   `examples/kitchen-sink/flutter-host/pubspec.yaml` (for the MMKV bench).
-3. Re-wire entry points: `runBench()` from `App.jsx`'s root
-   `onMount` (delay ~2.5 s); `<RenderBench />` as a Tab; the
-   `benchReport` case in `dialogs.dart`; `runMmkvBench` from
-   `main.dart` with `Future.delayed(8 seconds, ...)`.
-4. Restore native bindings (MMKV adds entries to the macOS
-   `GeneratedPluginRegistrant.swift`, `Podfile.lock`, and the
-   Xcode `project.pbxproj` — `flutter pub get` regenerates the
-   first two; the third needs an Xcode build to refresh).
-5. `bun run build` (rebuilds `skal-app.cjs/.jsc/.js`),
-   `flutter build apk --release`, `adb install -r ...`.
-
-### APK builds (still applicable)
-
-```bash
-# Skal APK
-cd js-app
-bun run build                                  # rebuilds skal-app.cjs + .jsc
-
-cd ../flutter/skal_flutter
-export JAVA_HOME=$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home
-export ANDROID_HOME=$HOME/Library/Android/sdk
-flutter build apk --release
-adb install -r build/app/outputs/flutter-apk/app-release.apk
-
-# RN comparison APK (sibling repo, bench-fixture still on disk there)
-cd /Users/andrepimenta/Documents/coding/explore/Skal-RN-Comparison/android
-./gradlew assembleRelease
-adb install -r app/build/outputs/apk/release/app-release.apk
-```
-
-### Capture loops (after bench code is restored)
-
-```bash
-# Render bench — 5 cold launches per side
-mkdir -p /tmp/render_bench
-for n in 1 2 3 4 5; do
-  adb shell am force-stop com.skal.skal_flutter
-  adb shell pm clear com.skal.skal_flutter > /dev/null
-  adb logcat -c
-  adb shell am start -n com.skal.skal_flutter/.MainActivity > /dev/null
-  until adb logcat -d | grep -q "RENDER-  200 distinct mutations · settle"; do
-    sleep 3
-  done
-  adb logcat -d | grep "SKAL-BENCH RENDER-" > /tmp/render_bench/skal_run${n}.txt
-done
-for n in 1 2 3 4 5; do
-  adb shell am force-stop com.anonymous.SkalRNComparison
-  adb shell pm clear com.anonymous.SkalRNComparison > /dev/null
-  adb logcat -c
-  adb shell am start -n com.anonymous.SkalRNComparison/.MainActivity > /dev/null
-  until adb logcat -d | grep -q "RENDER-BENCH END"; do
-    sleep 5
-  done
-  adb logcat -d | grep "RENDER-BENCH" > /tmp/render_bench/rn_run${n}.txt
-done
-
-# µs bench — 10 cold launches Skal side, 3 RN side
-for n in 1 2 3 4 5 6 7 8 9 10; do
-  adb shell am force-stop com.skal.skal_flutter
-  adb shell pm clear com.skal.skal_flutter > /dev/null
-  adb logcat -c
-  adb shell am start -n com.skal.skal_flutter/.MainActivity > /dev/null
-  until adb logcat -d -t 8000 | grep -q "SKAL-BENCH total wall time"; do
-    sleep 3
-  done
-  adb logcat -d -t 8000 | grep "SKAL-BENCH" > /tmp/skal_run${n}.txt
-done
-```
-
-Then parse the per-run `.txt` files with a Python script that
-extracts the µs/op column (second numeric value per row) and
-reports min / median / max + the full sorted distribution.
+| Any second device | single device throughout, every number here |
+| Deep dependency chains, list reorders, derived values | the reactivity result covers independent leaf cells only |
+| Navigation between screens | — |
+| Network | deliberately excluded, bundled fixture |
+| First launch after install | known: Skal pays ~150 ms more for bundle extraction |
+| Persistence writes vs RN | confounded, not quotable either way |
+| Cold start vs a single named RN build | see above |
 
 ---
 
-## A note on noise
+## How these were produced
 
-Both stacks show bimodal run-to-run variance — this is JIT/GC
-behavior on the emulator, not a measurement bug. Two clusters:
+Rules this benchmark had to learn the hard way, kept because each one
+cost a wrong answer:
 
-- Fast cluster: hot JIT, no GC pause during the timed window
-- Slow cluster: cold JIT or one GC pause during the timed window
+- **`pm clear` before every Skal run**, or you measure the previously
+  extracted bundle.
+- **Hold the screen awake and assert it** in the same pass. A dozing
+  screen inflated Skal's crypto numbers ~2× and left RN's untouched.
+- **Match the access shape across arms.** No arm may build a key string
+  if the others don't.
+- **Give each arm its own store, and discard the warm-up.** A new
+  persisting store stages its entire initial state.
+- **A/B/A with the drift quantified** when two builds can't interleave
+  per-run. A change smaller than the drift is not proven.
+- **Prove the workload ran** — assert the iteration count and the
+  checksum. A "39% faster" list benchmark was once timing 10 virtualized
+  rows, not 2000.
+- **Medians, never a single sample.** A second run of identical code once
+  gave 695 ms → 8 ms for the same payload.
 
-3-run medians can be misleading (Lesson 6 in
-[FastStorage.md](FastStorage.md) documents a case where 3 runs
-suggested ~12 µs and 10 runs revealed ~50–80 µs). Read the
-sorted distribution, not just the median.
-
-Skal's slow tail is bounded — even on a bad run, mount stays
-under 200 ms and propagation under 250 ms. RN's slow tail is not
-bounded — bad runs on 200-distinct went past 24 seconds. The
-qualitative shape of "how bad does it get when JIT is cold and
-GC pauses" differs structurally between the stacks.
-
----
-
-*Last updated: 2026-05-21. Numbers from `native-store-engine`
-branch with Phase 1+2 optimizations. Render bench captured at 5
-cold launches per side; µs bench at 10 cold launches per side.
-Bench source files embedded above; the production tree no longer
-contains them.*
+A note on effect size and sample count: a 25-pair interleaved A/B of the
+store's last seven commits reported two arms regressing at n=9, both with
+a mechanism that could be named, and **both evaporated by n=25**. An
+effect that shrinks as n grows is noise.

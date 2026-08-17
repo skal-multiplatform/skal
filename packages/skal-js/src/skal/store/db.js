@@ -1578,7 +1578,7 @@ export function createSkalStore(initState, config = {}) {
   //   - Exact-path notify: O(1) Map.get
   //   - Wholesale-write notify (includeDescendants): O(_skalEffectMap.size)
   //     — a flat scan checking `path.startsWith(sk + '.')`. Acceptable
-  //     for typical stores (10s–100s of paths); see TODO.md for the
+  //     for typical stores (10s–100s of paths); see notes/drafts/TODO.md for the
   //     considered-and-rejected trie alternative.
   //
   // Trade-off vs Solid effects: the dep set is static — the user must
@@ -1588,7 +1588,7 @@ export function createSkalStore(initState, config = {}) {
   // History: a native (Zig) backing for the dep graph was attempted
   // and removed — the per-write JS↔native crossing on `_skalNotify`
   // cost more than the JS Map operations it replaced, causing a 14×
-  // regression on 1k-write propagation. See FastStorage.md Lesson 5.
+  // regression on 1k-write propagation. See BENCHMARKS.md Lesson 5.
   const _skalEffectMap = new Map();   // storeKey → Set<SkalEffect>
   let _skalDirty = new Set();
   let _skalFlushPending = false;

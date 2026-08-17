@@ -79,3 +79,7 @@ examples/*/flutter-host/assets/skal-app.cjs.jsc
 # Untracked until the methodology is settled and the numbers are real.
 # See benchmark_v2/BENCHMARK_PLAN_V2.md.
 benchmark_v2/
+
+# Working notes, drafts, superseded docs and the originals of anything rewritten.
+# Deliberately untracked: docs/ carries only current, finished reference.
+notes/

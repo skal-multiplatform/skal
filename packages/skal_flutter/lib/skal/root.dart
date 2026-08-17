@@ -1387,7 +1387,7 @@ Curve _resolveCurve(NodeState n) {
   return _curveFor(n.getPropU32(propAnimCurve, 0));
 }
 
-/// The animated hot layer — FLUTTER_JS_COMPONENTS.md §10.3, Phase 1.
+/// The animated hot layer — COMPONENTS.md §10.3, Phase 1.
 ///
 /// When the node carries an `animate` spec, a hot-prop change tweens
 /// instead of snapping. The tween runs entirely Dart-side on a single
@@ -1828,7 +1828,7 @@ class _SkalTextFieldState extends State<_SkalTextField> {
 }
 
 /// Stateful host for `<slider>` — the perf fix for controlled-slider
-/// drag latency (FLUTTER_JS_COMPONENTS.md performance note).
+/// drag latency (COMPONENTS.md performance note).
 ///
 /// A controlled slider that round-trips every drag delta to JS and
 /// back would make the thumb lag the finger by a frame and flood the

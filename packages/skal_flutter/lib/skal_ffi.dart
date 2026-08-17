@@ -5,7 +5,7 @@
 // JavaScriptCore. The Dart side talks to it via `dart:ffi`. That code
 // lives in `skal_ffi_io.dart`.
 //
-// On Flutter Web (Shape D of docs/WEB_SUPPORT_PLAN.md) there is no
+// On Flutter Web (Shape D of docs/WEB.md) there is no
 // libskal, no JSC, no bun. The JS bundle runs in the browser's own JS
 // engine, and the Dart side (compiled to JS via dart2js) talks to it
 // across a shared `Uint8Array` ArrayBuffer using `dart:js_interop`.

@@ -97,7 +97,7 @@ const TAG_TO_HTML = {
   pageView:             'div',
   dismissible:          'div',
   // <flutterEmbed widget="counter" props={...} /> — Shape C of
-  // WEB_SUPPORT_PLAN.md. A plain DOM div on web that's used as a
+  // WEB.md. A plain DOM div on web that's used as a
   // hostElement for a real Flutter Web view (multi-view). The bound
   // Dart widget renders inside; setProperty hooks below drive the
   // view lifecycle (addView on mount, embed.setSpec on prop change,
@@ -1259,7 +1259,7 @@ function applyProp(node, name, value) {
 // (<greeting>, <qrImageView>, <camera>) the babel macro emitted. They
 // can't render natively in a browser; under the B.5 plan they'll be
 // served by a hidden Flutter Web instance. Until that lands (Phases
-// 1–5 of WEB_SUPPORT_PLAN.md), we render a visible placeholder so the
+// 1–5 of WEB.md), we render a visible placeholder so the
 // surrounding layout still works instead of throwing and blanking the
 // page.
 const _warnedUnknownTags = new Set();
@@ -1267,7 +1267,7 @@ function warnOnce(tag) {
   if (_warnedUnknownTags.has(tag)) return;
   _warnedUnknownTags.add(tag);
   console.warn(`Skal web: unknown intrinsic <${tag}> — rendering placeholder. ` +
-    `Custom widgets / Flutter plugins need the B.5 plugin host (WEB_SUPPORT_PLAN.md Phases 1–5).`);
+    `Custom widgets / Flutter plugins need the B.5 plugin host (WEB.md Phases 1–5).`);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1714,7 +1714,7 @@ const _renderer = createRenderer({
           `and attached, so every mutation reconciles the whole list and ` +
           `building N of them is O(N^2). Use builder mode — ` +
           `<listView count={n} renderItem={(i) => …}> — which mounts ` +
-          `only the visible window. See docs/TODO.md § 4.`);
+          `only the visible window. See notes/drafts/TODO.md § 4.`);
       }
     }
 

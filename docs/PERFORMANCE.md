@@ -1,8 +1,10 @@
-# Skal — performance decision log
+# Performance rules
 
-Per-decision tracker for everything perf-relevant. Records what
-we've done, what we've decided NOT to do (and why), and what's
-pending.
+The invariants a change has to respect, what is already optimal, and
+what has been rejected and why. **Numbers live in
+[BENCHMARKS.md](BENCHMARKS.md)** — this doc is the reasoning around them.
+
+
 
 Status legend: ✓ landed · ⚠ bug · ◇ pending · ✗ rejected · ⊖ deferred
 
@@ -71,7 +73,7 @@ it will come from the generator, per method, with tests.
 
 **Superseded 2026-07-25 — a one-shot RPC no longer costs a frame.**
 The off-frame doorbell landed (see
-[`TODO_OPTIMIZATIONS.md`](TODO_OPTIMIZATIONS.md) §2b): JS rings
+measured, not yet scheduled): JS rings
 `__skal_notifyHost()` after committing a batch containing a
 root-targeted (logic) invoke, and the host drains immediately instead
 of at the next vsync. Measured on macOS, debug and release:
@@ -162,112 +164,6 @@ host-side animation are for (same doctrine as ANIMATION.md).
 | ✓ | `Uint8List.sublistView` (zero-copy) for string decoding | `bridge.dart _readString` | No per-string allocation in the op decoder. |
 | ✓ | `Stopwatch` (monotonic) for pump timing | `bridge.dart` | Wall-clock `DateTime.now()` can jump backward; would corrupt the EMA / window peak. |
 | ✓ | `DecoratedBox` instead of `Container` for box decoration | `root.dart _applyColdVisual` | Container composes 5 unused widgets; DecoratedBox is exactly what's needed. |
-
----
-
-## Pending — high impact
-
-### 1. Background-isolate the asset extraction (cold-launch only)
-- **Status:** ⊖ deferred — naive `Isolate.run` copies the 290 KB
-  payload across the isolate boundary, negating the win. Proper
-  implementation needs `TransferableTypedData` for zero-copy
-  transfer plus a parallelization design that overlaps extraction
-  with `skal_create_runtime`.
-- **Impact:** Medium. Saves 2.7 s on emulator first install
-  (one-time), ~300 ms on real-device first install.
-- **Cost:** ~50 LOC.
-- **Trigger to land:** when a real-device first-install benchmark
-  shows > 500 ms.
-
-### 1b. Decouple RPC reply latency from the frame Ticker
-- **Status:** ✓ LANDED 2026-07-25 — the off-frame doorbell. Kept here
-  for the reasoning; the design and measurements live in
-  [`TODO_OPTIMIZATIONS.md`](TODO_OPTIMIZATIONS.md) §2b.
-- **Problem:** `root.dart` drains the op ring once per frame. A JS
-  method call written just after a pump waits a full vsync, so every
-  one-shot RPC round-trip costs p50 **16.67 ms** and ten chained
-  `await`s cost 163 ms. The transport itself is 0.084 ms amortized —
-  the latency is 99.5% scheduling.
-- **Confirmed live 2026-07-25** (macOS + iPhone 17 Pro, debug): ten
-  chained `await`s of a zero-OS-work Dart method measured **166.4 ms**,
-  per-hop `[16.7, 16.4, 16.6, 16.6, 16.7, 16.7, 16.7, 16.6, 16.7,
-  16.7]`; the same ten via `Promise.all` cost **16.7 ms**. Host pump
-  was 0.268 ms, so ~16.3 ms of every hop is vsync wait.
-  **Model correction:** pure-Dart hops cost exactly one frame, but real
-  *plugin-channel* hops cost two to four — the documented geolocator
-  flow spends **99.6 ms cold** before the GPS is asked for anything,
-  not the ~50 ms a one-frame-per-hop model predicts. Full numbers and
-  the API-shape mitigation:
-  [`TODO_OPTIMIZATIONS.md`](TODO_OPTIMIZATIONS.md) §2.
-- **Impact:** High for Roadmap A (native services). Batching via
-  `Promise.all` is the current mitigation and it works, but it is a
-  workaround the API shouldn't need.
-- **Cost:** Unknown, and the reason this is pending rather than done.
-  Draining on JS's wake signal instead of (or in addition to) vsync
-  means mutating `NodeState` outside `handleBeginFrame`, which is
-  exactly the ordering the current design depends on for
-  same-frame rebuilds. Needs a design, not a patch.
-- **Do not** "fix" this by pumping on a short timer — that trades a
-  latency win for continuous CPU and reintroduces the mid-frame
-  notify hazard.
-- **Trigger to land:** a real service workload where batching is not
-  expressible (a genuine request → response → request chain).
-
-### 2. Defer-mount the tweet feed tail
-- **Status:** ⊖ deferred (made largely redundant by `<lazyColumn>`).
-- **Note:** `<lazyColumn>` solves the rendering side. The JS side
-  still synchronously creates all 5000 NodeStates inside the
-  evaluate call, which adds ~hundreds of ms to first-eval. A
-  separate Solid-side change (mount first 50 sync, append rest in
-  microtasks) would also help, but lazy rendering dominates the
-  user-visible win.
-- **Trigger:** if first-eval time on the tweet feed crosses 500 ms.
-
----
-
-## Pending — medium impact
-
-### 3. Bytecode version-check at runtime
-- **Status:** ◇ pending
-- **Impact:** Medium correctness. The "silent invalidation" footgun
-  documented in `examples/kitchen-sink/scripts/find-vendored-bun.sh` is real. A
-  version-mismatched .jsc falls back to parsing — no error, just a
-  cold-launch regression.
-- **Cost:** Medium. Emit a marker file alongside the bytecode
-  containing the bun build commit hash; at runtime, log a warning
-  if the marker disagrees with libskal's expected version.
-
-### 4. Tree-shake `babel-preset-solid` runtime
-- **Status:** ◇ pending
-- **Impact:** Low. Drops 5-8 KB of unused server-rendering / SSR /
-  hydration code from the bundle. One-time parse cost.
-- **Cost:** Trivial — config flag in `vite.config.js`.
-
----
-
-## Pending — lower priority / future
-
-### 5. Interned key table for hot prop names
-- **Status:** ⊖ deferred
-- **Note:** Our flat typed-opcode design already encodes prop keys
-  as 1-byte enums (`PROP_PADDING` = 0x00 etc.). This optimization
-  doesn't apply — we already did it implicitly.
-
-### 6. Style diff → setProps op
-- **Status:** ✗ rejected
-- **Rationale:** Style is not a single op in our design; each
-  style property is its own typed opcode (PROP_BG_COLOR,
-  PROP_PADDING etc.). The diff cache in `bridge.js` already skips
-  equal-value writes per-prop. There is no compound
-  `setProp("style", {...})` op to diff.
-
-### 7. Mega-fused `mountNode` op
-- **Status:** ✗ rejected
-- **Rationale:** Fusing CREATE_NODE + SET_PROP_* + INSERT_BEFORE
-  into one op would save ~9 bytes per mount and 2 decoder
-  iterations. The complexity tax (deferred-emit buffer, subtree-
-  flush invariants for nested JSX) exceeded the win. Per-microtask
-  FFI batching already groups mounts into single FFI hops.
 
 ---
 

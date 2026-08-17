@@ -221,7 +221,7 @@ registerHtmlView('solid-counter', (el) => {
 import { EmbedSkalCounter } from './EmbedSkalCounter.dom.jsx';
 
 // B.5 plugin shim — geolocation. On web routes through the hidden
-// Flutter Web plugin host (docs/WEB_SUPPORT_PLAN.md). On native the
+// Flutter Web plugin host (docs/WEB.md). On native the
 // plugin bridge isn't wired yet so calls fail with "no DOM"; that's
 // the expected pending state until TODO_PLATFORMS.md §2 lands.
 import { getCurrentPosition } from 'skal-plugin-geolocator';

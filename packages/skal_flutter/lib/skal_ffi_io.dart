@@ -128,7 +128,7 @@ typedef _PrewarmStore = void Function(int, Pointer<Uint8>, int);
 final _PrewarmStore _prewarmStore = _lib
     .lookupFunction<_NPrewarmStore, _PrewarmStore>('skal_prewarm_store');
 
-// The host doorbell (docs/TODO_OPTIMIZATIONS.md §2b). Looked up lazily
+// The host doorbell (notes/drafts/TODO_OPTIMIZATIONS.md §2b). Looked up lazily
 // and tolerantly: a libskal built before these exports exists is a
 // perfectly good runtime, it just can't wake us off-frame. Resolving to
 // null there keeps old-binary/new-Dart combinations working instead of

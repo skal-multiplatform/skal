@@ -59,6 +59,6 @@ Bionic on Android) provides everything.
 ## Status
 
 Private workspace package. No external distribution today. If Phase 3
-of [RESTRUCTURE.md](../../docs/RESTRUCTURE.md) ever happens, the
+of [RESTRUCTURE.md](../../notes/drafts/RESTRUCTURE.md) ever happens, the
 header here is what would ship as a public C SDK — likely a CocoaPod
 + Swift Package + a Conan/vcpkg recipe for non-Apple platforms.

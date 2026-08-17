@@ -346,7 +346,7 @@ class SkalBridge {
     enableOffFrameDrain();
   }
 
-  // ── Off-frame drain — docs/TODO_OPTIMIZATIONS.md §2b ────────────────
+  // ── Off-frame drain — notes/drafts/TODO_OPTIMIZATIONS.md §2b ────────────────
   //
   // The Ticker drain at handleBeginFrame is kept exactly as-is: it runs
   // before the build phase, so UI ops mark their nodes dirty in time to
@@ -570,7 +570,7 @@ class SkalBridge {
     // off-frame with it and then sat there while further doorbell
     // batches kept the ring empty at every vsync. Measured 366 ms to
     // first paint, p95 978 ms, frequently no paint at all. See
-    // docs/TODO_OPTIMIZATIONS.md §2c.
+    // notes/drafts/TODO_OPTIMIZATIONS.md §2c.
     //
     // So the flush is NOT attached to a particular return path. `_drain`
     // is pure apply; the settle happens here, unconditionally, on the

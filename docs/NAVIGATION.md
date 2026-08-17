@@ -1,10 +1,10 @@
-# Skal — Navigation
+# Navigation
 
-The plan for screen navigation: a stack of screens with native push/pop
-transitions, native back-gesture, and — the point — **keep-alive**, so
-going back is instant and never re-mounts a screen.
+A stack of screens with native push/pop transitions, the native
+back-gesture, and — the point — **keep-alive**, so going back is instant
+and never re-mounts a screen.
 
-Companion to [`FLUTTER_JS_COMPONENTS.md`](FLUTTER_JS_COMPONENTS.md)
+Companion to [`COMPONENTS.md`](COMPONENTS.md)
 (the fast-path widget layer this builds on).
 
 ---
@@ -42,7 +42,7 @@ reorder subsystems:
    `MaterialApp.router`: the OS route-info bridge (deep links, web
    URLs, restoration). Additive — `RouterDelegate.build()` just
    returns a `Navigator(pages:)` derived from the same JS stack.
-   **Deferred to Phase 2** — not needed for in-app push/pop.
+   **Not built** — not needed for in-app push/pop.
 
 **The performance-critical invariant:** the router decides the
 *stack*; `<navigator>` does the keep-alive *render*. A web router
@@ -73,7 +73,7 @@ const [stack, setStack] = createSignal([{ name: 'home' }]);
 </Navigator>
 ```
 
-`createRouter` (Phase 1, JS) wraps this — a route table replaces the
+`createRouter` (JS) wraps this — a route table replaces the
 `route.name === …` switch, and exposes `navigate` / `back` / params.
 
 ## 4. Push / pop flows
@@ -120,7 +120,7 @@ list still contains the popped screen.
   caught up" count and build `pages` minus that count until
   `childCount` catches up.
 
-Programmatic pop has no gap (JS removes first), so a Phase-1 demo
+Programmatic pop has no gap (JS removes first), so a JS-driven demo
 driven by explicit Back buttons exercises the clean path.
 
 ## 7. Back-button arbitration (vs. dialogs)
@@ -131,7 +131,7 @@ Scaffold → SkalRoot`). The Android system back goes to `MaterialApp`'s
 pushes. Correct order: dialog open → dismiss dialog; else → pop
 `<navigator>`.
 
-**Done (Phase 2).** `_buildNavigator` wraps its `Navigator` in a
+**How it works.** `_buildNavigator` wraps its `Navigator` in a
 `PopScope` registered on the root route: `canPop` is false while the
 navigator holds more than one screen, so the system back is
 intercepted and forwarded to JS as `evNavPop` (JS drops the top
@@ -145,8 +145,7 @@ and needs no extra wiring.
 
 ## 8. Wire additions
 
-- Widget types: `wtNavigator`, `wtScreen` (Phase 1); `wtTabs`,
-  `wtTab` (Phase 3).
+- Widget types: `wtNavigator`, `wtScreen`, `wtTabs`, `wtTab`.
 - Event kind: `evNavPop` — gesture / system pop → `onPop` handler.
   `<tabs>` reuses `evChange` for the destination-tap callback.
 - Props: `propPresentation` (u32 — 0 push, 1 modal) on `<screen>`;
@@ -163,29 +162,19 @@ and needs no extra wiring.
 - `createRouter` in the `skal` runtime (per-route `title`,
   `{ linking }` for web URLs).
 
-## 9. Phases
+## 9. Status
 
-- **Phase 1 — done.** `<navigator>` + `<screen>`, push + pop
-  (programmatic + gesture), native transitions + variant, keep-alive,
-  `createRouter`, a demo section.
-- **Phase 2 — done.** System-back arbitration via `PopScope` (§7); an
-  `AppBar` / `CupertinoNavigationBar` from `<screen title>` (a
-  non-empty `propTitle` wraps the screen content in a `Scaffold` /
-  `CupertinoPageScaffold` — the back button is automatic). The
-  pop-sync fallback (§6) was not needed: `onDidRemovePage` tolerates
-  the one-round-trip list lag without a re-add glitch.
-- **Phase 3 — `<tabs>` done.** `<tabs>` + `<tab>` →
-  `IndexedStack` (every tab subtree kept alive) above a
-  `NavigationBar` / `CupertinoTabBar`. Controlled `activeTab` +
-  `onChange(index)`. `<tab>` carries `title` + `icon` (a name
-  resolved by a host-side icon table).
+All of it is shipped and on the wire — `wtNavigator`, `wtScreen`,
+`wtTabs` and `wtTab` in `packages/skal_flutter/lib/skal/wire.dart`.
 
-  **Remaining:** Flutter `Router` / `RouterDelegate` for *native*
-  deep links. `createRouter({ linking: true })` already does the
-  web slice — the launch URL `#/route` hash picks the initial route
-  and the top route is mirrored back into the hash (shareable URLs).
-  Still open: browser back/forward history integration, and the
-  native `MaterialApp.router` + `RouteInformationParser` plumbing
-  (which also needs OS config — Android intent filters, iOS
-  associated domains). Additive — `RouterDelegate.build()` would just
-  return a `Navigator(pages:)` derived from the same JS stack.
+| | |
+|---|---|
+| `<navigator>` + `<screen>` | push and pop with native transitions, keep-alive |
+| `createRouter` | route table over the raw stack |
+| System-back arbitration | via `PopScope` (§7) |
+| `<tabs>` + `<tab>` | native tab bar, each tab keeping its own stack |
+| `<hero>` | works directly, because the navigator is a real `Navigator` |
+| `<drawer>` | side navigation |
+
+**Not built:** deep-link / URL routing into the stack from outside the
+app (§2). Nothing in-app depends on it.

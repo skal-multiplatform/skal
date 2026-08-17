@@ -122,7 +122,7 @@ const int opSubscribeStream   = 0x1E;
 const int opUnsubscribeStream = 0x1F;
 // Hot props — own opcodes so the drain dispatches them directly to
 // dedicated ValueNotifiers without the propsVersion bump. See
-// PROPS_PLAN.md §5.
+// PROPS.md §5.
 const int opSetOpacity      = 0x20;
 const int opSetTranslationX = 0x21;
 const int opSetTranslationY = 0x22;
@@ -576,7 +576,7 @@ const int eventArgStrChunk = 0x08;
 
 // ── Prop key namespace ────────────────────────────────────────────────
 // Partitioned by tier so apps + future expansions don't collide. See
-// PROPS_PLAN.md §6.
+// PROPS.md §6.
 //
 // 0x00–0x1F layout    0x20–0x3F visual    0x40–0x5F text
 // 0x60–0x7F image     0x80–0x9F input     0xA0–0xBF behavior
@@ -678,7 +678,7 @@ const int propActiveTab       = 0x89;
 const int propEnabled         = 0xA0;
 const int propFocusable       = 0xA1;
 const int propVisible         = 0xA2;
-// Animation — see FLUTTER_JS_COMPONENTS.md §10.3. A non-zero
+// Animation — see COMPONENTS.md §10.3. A non-zero
 // propAnimDuration turns on implicit animation of the node's hot
 // props (opacity / transform): a change tweens instead of snapping.
 const int propAnimDuration    = 0xA3;   // ms; 0 = no animation

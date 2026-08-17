@@ -1,4 +1,4 @@
-// Skal runtime — Flutter Web target (Shape D of WEB_SUPPORT_PLAN.md).
+// Skal runtime — Flutter Web target (Shape D of WEB.md).
 //
 // No libskal. No JavaScriptCore. No bun. The Solid/Skal JS bundle runs
 // in the browser's own JS engine; the Dart side (compiled to JS via

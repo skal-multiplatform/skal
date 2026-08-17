@@ -63,7 +63,7 @@
   notification to the next frame drain, which returned early on an empty
   ring and never flushed. Measured 366 ms to first paint (p95 978 ms)
   against 11.5 ms for the same prop written alone. See
-  `docs/TODO_OPTIMIZATIONS.md` §2c.
+  `notes/drafts/TODO_OPTIMIZATIONS.md` §2c.
 - Cupertino design crashed on any `<screen title>` containing a Material
   widget that needs an ink host: `_screenChrome`'s Cupertino branch
   returned a bare `CupertinoPageScaffold`, which hosts no `Material`, so

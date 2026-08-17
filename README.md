@@ -23,33 +23,37 @@ platform; a state layer you assemble yourself from Redux + AsyncStorage + a
 storage lib; navigation from a third-party dependency matrix; and UI composed
 of platform views, so it renders — and breaks — differently on every OS.
 
-Skal is the same promise with the seams removed, designed for performance
-from the first commit:
+That's really two complaints, and Skal is built around both.
 
-- **Multiplatform by default.** `npm create skal my-app` and the same codebase runs on
-  iPhone, Android, and desktop — and the web, as plain DOM or real Flutter compiled to
-  wasm. Not "mobile now, desktop via a fork later."
-- **One renderer, every platform.** Your UI is painted by Flutter's GPU renderer — the OS
-  is never asked for a widget. Pixel-identical everywhere, 120fps lists, no
-  "works on iOS, broken on Android 16" class of bug.
+**"I was tired of fighting the framework"**
+
+- **Batteries actually included.** Navigation (Hero transitions, deep links) and a
+  persistent reactive store are first-party. Zero dependency matrix before your first screen.
+- **No native-module cliff.** Any pub.dev package becomes a JSX component, and any plugin
+  API an awaitable JS call, from one yaml file — static-API plugins like geolocator need
+  zero hand-written Dart ([`docs/WRAPPING_PUB_PACKAGES.md`](docs/WRAPPING_PUB_PACKAGES.md)).
+- **A real JavaScript runtime.** bun + JSC with the web platform built in — `crypto`,
+  `fetch`, `TextEncoder`, `Buffer`. No mobile-subset gaps, no polyfill graveyard.
+- **Multiplatform by default.** One codebase on iPhone, Android, desktop and the web.
+  Not "mobile now, desktop via a fork later."
+- **Nothing to eject from.** The scaffold hands you the real Android/iOS/macOS projects.
+- **Upgrades that don't rewrite your app.** Non-breaking changes are a commitment, not a hope.
+
+**"I wanted it to actually be fast"**
+
+- **Cost scales with what changed, not how big you've grown.** One state change wakes
+  1 of 200 subscribers, and the write costs the same at 3 keys or 3,000. Persistence is
+  leaf-granular: change 1 record of 200, flush 1 record.
 - **Components run once.** Solid's signals update exactly the nodes that changed — no
   virtual DOM, no reconciliation, no re-render tax. The work simply never happens.
+- **One renderer, every platform.** Flutter's GPU compositor paints every pixel; the OS is
+  never asked for a widget. No "works on iOS, broken on Android 16."
 - **A zero-copy bridge.** UI updates cross one shared-memory boundary as binary ops —
-  nothing serialized, nothing copied, minimal by construction.
-- **A real JavaScript runtime.** bun + JSC with the web platform built in — `crypto`,
-  `fetch`, `TextEncoder`, `Buffer` — no mobile-subset gaps, no polyfill graveyard.
-  Precompiled bytecode boots it in ~50 ms.
-- **Two ecosystems, one app.** npm for your logic, pub.dev for UI and native capabilities —
-  wrap any Flutter package into a JSX component, and any plugin API into an awaitable
-  JS call (`createSkalService`), all from one yaml file. Static-API plugins like
-  geolocator need **zero hand-written Dart**; when codegen can't map something, the
-  skip report names the fix and a six-rung escape-hatch ladder (yaml overrides → a
-  ~15-line forwarder → raw registry) covers the rest
-  ([`docs/WRAPPING_PUB_PACKAGES.md`](docs/WRAPPING_PUB_PACKAGES.md)).
-- **Batteries actually included.** Navigation (Hero transitions, deep links) and storage
-  (a reactive store both worlds read directly — no Redux, no AsyncStorage round-trips) are
-  first-party, designed around the same shared-memory model. Zero third-party dependency
-  matrix before you write your first screen.
+  nothing serialized, nothing copied.
+- **Measured, not marketed.** Every performance claim here is a measurement on real
+  hardware, and the ones that didn't survive a control were deleted.
+
+**Fast at your first screen. Still fast at your hundredth.**
 
 See [`docs/ENGINE_CHOICE.md`](docs/ENGINE_CHOICE.md) for the full decision matrix.
 
@@ -64,7 +68,22 @@ See [`docs/ENGINE_CHOICE.md`](docs/ENGINE_CHOICE.md) for the full decision matri
 | **Linux / Windows Desktop** | ⏳ pending | Flutter Desktop supports them; per-platform libskal linkers not written |
 | **Web** | ✅ working | three shapes: Solid→DOM directly, full Flutter Web (wasm), and static prerender (SSG) for SEO |
 
-See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the perf decision log and budget invariants.
+## Measured against React Native
+
+| | Skal | React Native |
+|---|---:|---:|
+| Dropped frames, scrolling an image feed | **0** | 13 |
+| Tap → render (median) | **3.53 ms** | 7.30 ms |
+| Idle CPU | **1.20%** | 6.93% |
+| One frame of work — 200 components × 10 reads + 1 update | **0.05 ms** | 0.80 ms |
+| State updates per second, 288 live cells | **103,846** | 4,901 |
+| App size at full WebCrypto parity | **51.6 MiB** | 67.2 MiB |
+
+Samsung Galaxy A14 5G · Android 15 · release builds both sides · interleaved runs ·
+RN 0.86 / Expo 57 with Hermes, zustand and MMKV.
+
+See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the full store comparison and
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the perf decision log and budget invariants.
 
 ## What it looks like
 
@@ -216,22 +235,22 @@ skal/
 
 ## Documentation
 
+Index: [`docs/README.md`](docs/README.md).
+
 | Doc | What's in it |
 |---|---|
-| [`docs/RESTRUCTURE.md`](docs/RESTRUCTURE.md) | Framework / app boundary; monorepo layout |
-| [`docs/ENGINE_CHOICE.md`](docs/ENGINE_CHOICE.md) | Why bun+JSC, why Flutter, alternatives considered |
-| [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) | Perf decision log + budget invariants |
-| [`docs/PROPS_PLAN.md`](docs/PROPS_PLAN.md) | Wire-format prop architecture (renderer-agnostic) |
-| [`docs/FastStorage.md`](docs/FastStorage.md) | Store engine — design, optimizations, native port |
-| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Bench numbers + methodology |
-| [`docs/FLUTTER_JS_COMPONENTS.md`](docs/FLUTTER_JS_COMPONENTS.md) | Fast-path widget layer |
-| [`docs/WRAPPING_PUB_PACKAGES.md`](docs/WRAPPING_PUB_PACKAGES.md) | Custom widget codegen for pub.dev packages |
-| [`docs/NATIVE_SUPPORT.md`](docs/NATIVE_SUPPORT.md) | Native capability status (camera, maps, GPS, …) + roadmap to "any package" |
-| [`docs/ANIMATION.md`](docs/ANIMATION.md) / [`docs/NAVIGATION.md`](docs/NAVIGATION.md) | Animation + navigation subsystems |
-| [`docs/WEB_SUPPORT_PLAN.md`](docs/WEB_SUPPORT_PLAN.md) | Web target plan — DOM renderer + hidden Flutter Web for plugins (B.5) |
+| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Every performance claim, measured against React Native — and what has *not* been measured |
+| [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) | The invariants a change has to respect; what's already optimal; what's been rejected and why |
+| [`docs/COMPONENTS.md`](docs/COMPONENTS.md) | The fast-path widget layer — 49 primitives on the wire |
+| [`docs/PROPS.md`](docs/PROPS.md) | How a prop travels from JSX to a Flutter widget; hot vs cold |
+| [`docs/ANIMATION.md`](docs/ANIMATION.md) / [`docs/NAVIGATION.md`](docs/NAVIGATION.md) | Motion and the screen stack — both host-side |
+| [`docs/WEB.md`](docs/WEB.md) | The web target — DOM renderer + hidden Flutter Web for plugins |
+| [`docs/NATIVE_SUPPORT.md`](docs/NATIVE_SUPPORT.md) | What a Skal app can reach natively today |
+| [`docs/WRAPPING_PUB_PACKAGES.md`](docs/WRAPPING_PUB_PACKAGES.md) | Expose any pub.dev widget or plugin API to JSX |
+| [`docs/TESTING.md`](docs/TESTING.md) / [`docs/DEBUGGING.md`](docs/DEBUGGING.md) | Three runtimes, three test layers; and how to debug across them |
 | [`docs/bytecode-cache.md`](docs/bytecode-cache.md) | Why `.cjs.jsc` exists; JSC version coupling |
 | [`docs/crash-symbolication.md`](docs/crash-symbolication.md) | Symbolicating libskal crashes from device logs |
-| [`docs/TODO.md`](docs/TODO.md) / [`docs/TODO_PLATFORMS.md`](docs/TODO_PLATFORMS.md) | Open work |
+| [`docs/ENGINE_CHOICE.md`](docs/ENGINE_CHOICE.md) | Why bun+JSC, why Flutter, alternatives considered |
 
 ## What's next
 

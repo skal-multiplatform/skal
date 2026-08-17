@@ -1,5 +1,5 @@
 // Skal — JS-side lazy loader for the B.5 hidden Flutter Web plugin
-// host (Phase 2 of WEB_SUPPORT_PLAN.md).
+// host (Phase 2 of WEB.md).
 //
 // On native, Skal apps reach platform plugins (camera, geolocator,
 // biometric, file picker, …) through the eventual native plugin

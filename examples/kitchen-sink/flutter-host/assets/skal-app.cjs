@@ -2182,7 +2182,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
   }
   var Zi = new Set;
   function Ms(e) {
-    Zi.has(e) || (Zi.add(e), console.warn(`Skal web: unknown intrinsic <${e}> \u2014 rendering placeholder. Custom widgets / Flutter plugins need the B.5 plugin host (WEB_SUPPORT_PLAN.md Phases 1\u20135).`));
+    Zi.has(e) || (Zi.add(e), console.warn(`Skal web: unknown intrinsic <${e}> \u2014 rendering placeholder. Custom widgets / Flutter plugins need the B.5 plugin host (WEB.md Phases 1\u20135).`));
   }
   var Qi = 6, Ns = 48, Bs = 20, Ws = 200, Hs = { 0: { extent: "clientHeight", scroll: "scrollTop", size: "offsetHeight", dim: "height" }, 1: { extent: "clientWidth", scroll: "scrollLeft", size: "offsetWidth", dim: "width" } }, $n = (e) => Hs[e._skalListAxis === 1 ? 1 : 0];
   function eo(e) {
@@ -2405,7 +2405,7 @@ globalThis.__SKAL_BUILDER_PROPS__ = {};
   }, insertNode(e, r, n) {
     if (e._skalTag === "listView" && !e._skalRenderItem) {
       const i = e._skalJsxKids = (e._skalJsxKids | 0) + 1;
-      i === Ws && !e._skalWarnedJsxKids && (e._skalWarnedJsxKids = true, console.warn(`Skal: <listView> has ${i}+ JSX children. They are all built and attached, so every mutation reconciles the whole list and building N of them is O(N^2). Use builder mode \u2014 <listView count={n} renderItem={(i) => \u2026}> \u2014 which mounts only the visible window. See docs/TODO.md \xA7 4.`));
+      i === Ws && !e._skalWarnedJsxKids && (e._skalWarnedJsxKids = true, console.warn(`Skal: <listView> has ${i}+ JSX children. They are all built and attached, so every mutation reconciles the whole list and building N of them is O(N^2). Use builder mode \u2014 <listView count={n} renderItem={(i) => \u2026}> \u2014 which mounts only the visible window. See notes/drafts/TODO.md \xA7 4.`));
     }
     e._skalTag === "tabs" && e._skalBar && !n ? e.insertBefore(r, e._skalBar) : e.insertBefore(r, n || null), e._skalTag === "pageView" && r.style && (r.style.flex = "0 0 100%", r.style.scrollSnapAlign = "start"), e._skalTag === "tabs" && r._skalTag === "tab" && Ar(e), r._skalTag === "flutterEmbed" && Tn(r);
   }, removeNode(e, r) {

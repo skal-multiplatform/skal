@@ -29,7 +29,7 @@ dependencies:
     path: ../../../packages/skal_flutter
 ```
 
-See [`docs/RESTRUCTURE.md`](https://github.com/skal-multiplatform/skal/blob/main/docs/RESTRUCTURE.md) for the boundary
+See [`notes/drafts/RESTRUCTURE.md`](https://github.com/skal-multiplatform/skal/blob/main/notes/drafts/RESTRUCTURE.md) for the boundary
 plan and the eventual public-distribution story.
 
 ## Native side

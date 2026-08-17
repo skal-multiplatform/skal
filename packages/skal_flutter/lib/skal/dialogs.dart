@@ -1,4 +1,4 @@
-// Imperative dialog / sheet / snackbar API — FLUTTER_JS_COMPONENTS.md
+// Imperative dialog / sheet / snackbar API — COMPONENTS.md
 // §10.2.
 //
 // Dialogs are not tree nodes — they are an imperative surface. JS

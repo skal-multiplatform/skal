@@ -247,7 +247,7 @@ class SkalApp extends StatelessWidget {
   Widget build(BuildContext context) {
     // Rebuilds whenever JS calls `setDesign` — the MaterialApp theme
     // and the CupertinoTheme below both re-derive from the bridge's
-    // design mode + brightness. See FLUTTER_JS_COMPONENTS.md §10.1.
+    // design mode + brightness. See COMPONENTS.md §10.1.
     return ListenableBuilder(
       listenable: bridge.designChanged,
       builder: (context, _) {

@@ -180,8 +180,7 @@ Our IIFE doesn't actually use any of those parameters — Vite's bundle is
 self-contained. The wrapper is essentially invisible to our code; it just
 makes the source addressable via the module loader's CJS path.
 
-A more detailed CJS-vs-ESM comparison lives in `docs/cjs-vs-esm.md` (TODO if
-ever needed).
+
 
 ## Risks and limitations
 

@@ -1,5 +1,5 @@
 name: skal_plugin_host
-description: "Hidden Flutter Web host that runs Skal's federated plugin Dart code in a 1×1 div, called from JS via JsInterop. See docs/WEB_SUPPORT_PLAN.md."
+description: "Hidden Flutter Web host that runs Skal's federated plugin Dart code in a 1×1 div, called from JS via JsInterop. See docs/WEB.md."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

@@ -1,4 +1,4 @@
-// Skal — Flutter Web app entry point (Shape D of WEB_SUPPORT_PLAN.md).
+// Skal — Flutter Web app entry point (Shape D of WEB.md).
 //
 // Native main.dart relies on libskal (bun + JavaScriptCore inside a
 // dynamic library) for the JS runtime + on dart:io for APK bytecode
@@ -77,7 +77,7 @@ void _recordError(String stage, Object error, StackTrace st) {
 /// ~1 ns each as Wasm load instructions vs ~10-30 ns each as JS
 /// interop calls). This probe is purely about raster, plus helping
 /// users diagnose "why isn't my deploy faster" issues. See
-/// `docs/WEB_SUPPORT_PLAN.md` §Shape D-skwasm for deploy snippets
+/// `docs/WEB.md` §Shape D-skwasm for deploy snippets
 /// (Vercel / Netlify / Firebase / nginx headers).
 ///
 /// Logged unconditionally — useful in production for verifying the
@@ -112,7 +112,7 @@ void _logIsolationState() {
       // ignore: avoid_print
       print('[skal] threading: isolated=$isolated, sab=$hasSAB, cores=$cores '
           '— single-threaded raster '
-          '(set COOP/COEP headers to enable; see docs/WEB_SUPPORT_PLAN.md)');
+          '(set COOP/COEP headers to enable; see docs/WEB.md)');
     }
   } catch (e) {
     // ignore: avoid_print

@@ -19,7 +19,7 @@
 //     built yet.
 //
 // Ring too eagerly and you get that race, plus a port message per commit
-// (measured, rejected — docs/TODO_OPTIMIZATIONS.md §2c). Ring too rarely
+// (measured, rejected — notes/drafts/TODO_OPTIMIZATIONS.md §2c). Ring too rarely
 // and every service call costs a frame again, silently, because the Dart
 // side degrades rather than failing.
 //

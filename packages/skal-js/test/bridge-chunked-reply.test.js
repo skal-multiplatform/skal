@@ -322,6 +322,28 @@ describe('hot reload', () => {
     // in _replyChunks would then be prepended to a payload from the NEW
     // generation — a silently short value, and short JSON that still
     // parses is the bad case, because it fails nowhere near the bridge.
+    // PRECONDITION, asserted rather than assumed. bridge.js only registers
+    // the cleanup that clears `_replyChunks` when, at ITS module eval,
+    // HAS_NATIVE_BRIDGE is true AND `window` is undefined AND __skalRelease
+    // is unset. bun shares the module registry across test files, so which
+    // file evaluated bridge.js first decides that — and it is not the same
+    // on every platform. This test failed on Linux CI (556/1) while passing
+    // on macOS in isolation, in the full suite, and in CI's exact file
+    // order. Without this check the symptom is a bare value mismatch that
+    // says nothing about why.
+    const cfg = globalThis.__skalHot && globalThis.__skalHot._cfg;
+    expect({
+      cleanupRegistered: !!(cfg && typeof cfg.cleanup === 'function'),
+      hasNativeBridge: typeof globalThis.__skal_acquireBridge === 'function',
+      windowDefined: typeof window !== 'undefined',
+      releaseFlag: !!globalThis.__skalRelease,
+    }).toEqual({
+      cleanupRegistered: true,
+      hasNativeBridge: true,
+      windowDefined: false,
+      releaseFlag: false,
+    });
+
     const h = capturingHandler();
     hostPlaceEvent(EV_CLICK, ARG_STR_CHUNK, h.id,
                    hostWriteReply(0, 'GEN1-ORPHAN'), 0);

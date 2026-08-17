@@ -126,6 +126,57 @@ class PropEncoding {
 /// as it appeared in the source ("'Hello'", "14.0", "const Color(0xFF000000)").
 /// If the parameter has no default, pass null and we'll synthesize a
 /// type-appropriate fallback ("''", "0", "0.0", "false", "0xFF000000").
+/// Microseconds from a `Duration` default, without trusting a private SDK
+/// field name.
+///
+/// `Duration` keeps its microseconds in a private field and analyzer's
+/// `DartObject` has no `toDurationValue()` — that is reserved for the types
+/// it special-cases. So the value has to be read out of the field directly,
+/// and the field's name is NOT API: reading only `_duration` silently
+/// produced `0` on a Dart SDK where it is called something else, which
+/// turned `Duration(milliseconds: 250)` into `Duration(milliseconds: 0)` in
+/// generated code. It failed on Linux CI and passed on macOS purely because
+/// the two had different SDKs, and nothing in the output looked wrong.
+///
+/// Try the known names, then fall back to reading the source text, which is
+/// what the developer actually wrote.
+int durationMicrosFromDefault(DartObject? constant, String? literal) {
+  for (final name in const ['_duration', '_microseconds', 'inMicroseconds']) {
+    final v = constant?.getField(name)?.toIntValue();
+    if (v != null) return v;
+  }
+  return durationMicrosFromLiteral(literal);
+}
+
+/// Microseconds from source text such as `const Duration(milliseconds: 250)`.
+/// Returns 0 for anything not expressible as plain named-integer arguments —
+/// a computed or referenced constant reaches us as a `DartObject`, not text.
+int durationMicrosFromLiteral(String? literal) {
+  if (literal == null || !literal.contains('Duration')) return 0;
+  const unitMicros = <String, int>{
+    'days': 86400000000,
+    'hours': 3600000000,
+    'minutes': 60000000,
+    'seconds': 1000000,
+    'milliseconds': 1000,
+    'microseconds': 1,
+  };
+  var total = 0;
+  var sawAny = false;
+  for (final entry in unitMicros.entries) {
+    // \b matters: without it `seconds` also matches inside
+    // `milliseconds` and `microseconds`, and the units all add up.
+    final m =
+        RegExp('\\b${entry.key}\\s*:\\s*(-?[0-9_]+)').firstMatch(literal);
+    if (m == null) continue;
+    final n = int.tryParse(m.group(1)!.replaceAll('_', ''));
+    if (n == null) continue;
+    total += n * entry.value;
+    sawAny = true;
+  }
+  return sawAny ? total : 0;
+}
+
 PropEncoding? encodingFor({
   required DartType type,
   required String paramName,
@@ -275,8 +326,7 @@ PropEncoding? encodingFor({
   // Duration we read the field directly. Divide by 1000 to get
   // milliseconds for the wire.
   if (_isDuration(type)) {
-    final micros =
-        defaultConstant?.getField('_duration')?.toIntValue() ?? 0;
+    final micros = durationMicrosFromDefault(defaultConstant, defaultLiteral);
     final defaultMs = micros ~/ 1000;
     // Nullable `Duration?` — a missing JSX prop reads as `null`, not
     // `Duration(milliseconds: 0)`. Same nullable-coercion gap as the

@@ -51,6 +51,20 @@ afterEach(() => {
   delete globalThis.cancelAnimationFrame;
 });
 
+// Restore the globals this file installed. bun shares one process across
+// test files, so a leaked `globalThis.window` changes how a LATER file's
+// modules evaluate: bridge.js only registers its hot-reload cleanup when
+// `typeof window === 'undefined'` at ITS eval, and it is imported lazily
+// elsewhere. Leaking window here made a hot-reload test fail on Linux CI
+// and pass on macOS, purely on file order.
+afterEach(() => {
+  delete globalThis.window;
+  delete globalThis.document;
+  delete globalThis.requestAnimationFrame;
+  delete globalThis.cancelAnimationFrame;
+});
+
+
 /// Run pending macrotasks until `done()` or the budget expires. Returns
 /// whether it finished — a hang becomes a failed assertion instead of a
 /// timed-out suite.

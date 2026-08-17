@@ -18,7 +18,7 @@
 // test here exists to remove: it parses the renderer and fails if any
 // `case` in `applyProp` has no clear entry.
 
-import { test, expect, describe, beforeAll } from 'bun:test';
+import { test, expect, describe, beforeAll, afterAll } from 'bun:test';
 import { Window } from 'happy-dom';
 import { readFileSync } from 'node:fs';
 
@@ -306,4 +306,15 @@ describe('the DOM-property entries', () => {
     R.setProp(n, 'progress', null);
     expect(n.getAttribute('value')).toBeNull();
   });
+});
+
+// Restore the globals this file installed. bun shares one process across
+// test files, so a leaked `globalThis.window` changes how a LATER file's
+// modules evaluate: bridge.js only registers its hot-reload cleanup when
+// `typeof window === 'undefined'` at ITS eval, and it is imported lazily
+// elsewhere. Leaking window here made a hot-reload test fail on Linux CI
+// and pass on macOS, purely on file order.
+afterAll(() => {
+  delete globalThis.window;
+  delete globalThis.document;
 });

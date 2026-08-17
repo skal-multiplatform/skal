@@ -13,7 +13,7 @@
 // empty list, so the headless fallback below is load-bearing rather than
 // a test convenience. Both paths are covered.
 
-import { test, expect, describe, beforeAll, beforeEach } from 'bun:test';
+import { test, expect, describe, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { Window } from 'happy-dom';
 
 let R;
@@ -237,4 +237,15 @@ describe('JSX-children listView warning', () => {
       console.warn = orig;
     }
   });
+});
+
+// Restore the globals this file installed. bun shares one process across
+// test files, so a leaked `globalThis.window` changes how a LATER file's
+// modules evaluate: bridge.js only registers its hot-reload cleanup when
+// `typeof window === 'undefined'` at ITS eval, and it is imported lazily
+// elsewhere. Leaking window here made a hot-reload test fail on Linux CI
+// and pass on macOS, purely on file order.
+afterAll(() => {
+  delete globalThis.window;
+  delete globalThis.document;
 });

@@ -24,6 +24,9 @@
 
 import { test, expect, describe, beforeAll, beforeEach } from 'bun:test';
 
+const WINDOW_BEFORE = typeof globalThis.window;
+const DOCUMENT_BEFORE = typeof globalThis.document;
+
 const BRIDGE_SIZE = 6 * 1024 * 1024;
 const HEADER_SIZE = 64;
 
@@ -70,7 +73,26 @@ beforeAll(async () => {
   u32 = new Uint32Array(buf);
   u8 = new Uint8Array(buf);
   seq64 = new BigInt64Array(buf);
-  B = await import('../src/bridge.js');
+  // bridge.js decides at MODULE EVAL whether to register its hot-reload
+  // cleanup, and one of the conditions is `typeof window === 'undefined'`.
+  // This import is lazy, so whatever else has run in this process by now
+  // decides that for us — a happy-dom file leaves a `window` behind, and
+  // bun does not run test files in a fixed order across platforms. That is
+  // the whole reason the reload test below passed on macOS and failed on
+  // Linux CI. Evaluate bridge.js in the environment it is specified
+  // against, then put the globals back for whoever else wants them.
+  const hadWindow = 'window' in globalThis;
+  const hadDocument = 'document' in globalThis;
+  const savedWindow = globalThis.window;
+  const savedDocument = globalThis.document;
+  delete globalThis.window;
+  delete globalThis.document;
+  try {
+    B = await import('../src/bridge.js');
+  } finally {
+    if (hadWindow) globalThis.window = savedWindow;
+    if (hadDocument) globalThis.document = savedDocument;
+  }
 });
 
 // The module's `lastEventSeq` and the ring cursors persist across tests
@@ -314,6 +336,15 @@ describe('chunk ownership', () => {
 // LAST in the file on purpose: beginReload() disposes the reactive root
 // and resets the host tree for the whole module instance, which every
 // other test here shares.
+// beforeAll deletes `window` so bridge.js evaluates against the
+// environment it is specified for. Whatever was there has to come back —
+// this file runs in a shared process, and a later happy-dom test that
+// finds its window missing fails for a reason nothing points at.
+test('the bridge import puts back the globals it borrowed', () => {
+  expect(typeof globalThis.window).toBe(WINDOW_BEFORE);
+  expect(typeof globalThis.document).toBe(DOCUMENT_BEFORE);
+});
+
 describe('hot reload', () => {
   test('a transfer in flight does not survive into the next generation', () => {
     // Ids are deliberately carried across generations (bridge.js hands
@@ -331,16 +362,17 @@ describe('hot reload', () => {
     // on macOS in isolation, in the full suite, and in CI's exact file
     // order. Without this check the symptom is a bare value mismatch that
     // says nothing about why.
+    // `window` at THIS moment is irrelevant — beforeAll restores it after
+    // importing bridge.js. What matters is that the import saw it absent,
+    // and the only observable of that is whether the cleanup got wired.
     const cfg = globalThis.__skalHot && globalThis.__skalHot._cfg;
     expect({
       cleanupRegistered: !!(cfg && typeof cfg.cleanup === 'function'),
       hasNativeBridge: typeof globalThis.__skal_acquireBridge === 'function',
-      windowDefined: typeof window !== 'undefined',
       releaseFlag: !!globalThis.__skalRelease,
     }).toEqual({
       cleanupRegistered: true,
       hasNativeBridge: true,
-      windowDefined: false,
       releaseFlag: false,
     });
 

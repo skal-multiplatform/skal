@@ -80,10 +80,19 @@ jobs:
 
       - uses: actions/cache@v4
         with:
+          # Cache the SOURCES, not the build outputs. vendor/bun/build is
+          # ~19 GB uncompressed; including it pushed this cache to 4.68 GiB,
+          # and three of these (desktop/android/ios-sim) cannot coexist in
+          # GitHub's 10 GB per-repo budget — so they evicted each other,
+          # every eviction meant a cold build, and a cold build re-fetches
+          # ~758 MB of dependency tarballs from github.com unauthenticated.
+          # That is what produced the HTTP 429s. Compilation is still cached
+          # by ~/.bun/build-cache, which is content-addressed.
           path: |
             vendor
+            !vendor/bun/build
             ~/.bun/build-cache
-          key: ios-sim-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt', 'patches/skal_entry.zig') }}
+          key: ios-sim-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
           # Prefix fallback: a pin bump restores the previous vendor/ and
           # setup.sh reconciles it to the new pin (fetch + checkout).
           restore-keys: |

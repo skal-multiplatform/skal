@@ -41,6 +41,11 @@ trap "kill $SRV 2>/dev/null" EXIT
 
 DEFINES="--dart-define=SKAL_HOT=1"
 [[ -n "$HOST" ]] && DEFINES="$DEFINES --dart-define=SKAL_HOT_HOST=$HOST"
+# The client reads the port as a COMPILE-TIME define
+# (int.fromEnvironment in _hot_reload_client_io.dart). Without forwarding
+# it, SKAL_HOT_PORT moved the server only and the app kept dialling 8765
+# — so the documented way around a port clash silently did nothing.
+[[ -n "$SKAL_HOT_PORT" ]] && DEFINES="$DEFINES --dart-define=SKAL_HOT_PORT=$SKAL_HOT_PORT"
 
 # `flutter run -d android` doesn't match a booted emulator's id (it's
 # `emulator-5554`) — resolve the real id, booting an AVD if none is attached.

@@ -1,6 +1,6 @@
 {
   "name": "@skal/cli",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "license": "Apache-2.0",
   "type": "module",
   "description": "Skal CLI — create and run Skal apps anywhere on disk, no monorepo clone needed.",

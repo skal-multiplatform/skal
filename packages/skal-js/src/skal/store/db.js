@@ -865,6 +865,18 @@ export function createSkalStore(initState, config = {}) {
     engine.flush();
     flushCount++;
   }
+  // A reload tears this generation down while a debounced flush may still
+  // be pending (FLUSH_DEBOUNCE_MS). Nothing used to clear that timer, so a
+  // write made within ~60 ms of a save could fire after beginReload().
+  // Land it synchronously instead, then the incoming generation hydrates
+  // from a file that already has it.
+  if (typeof globalThis.__skalHot === 'object' && globalThis.__skalHot &&
+      typeof globalThis.__skalHot.addCleanup === 'function') {
+    globalThis.__skalHot.addCleanup('store:' + cfg.name, () => {
+      try { flushNow(); } catch (_) { /* a failed flush must not block teardown */ }
+    });
+  }
+
   function flushNow() {
     if (flushTimer != null) { clearTimeout(flushTimer); flushTimer = null; }
     doFlush();
@@ -2937,15 +2949,37 @@ export function createSkalStore(initState, config = {}) {
     try {
       const dataDir = await fetchDataDir();
       tDir = _now();
+      const cacheKey = dataDir + '/' + cfg.name;
       if (typeof globalThis.__skal_store_open === 'function' && dataDir) {
         // Native open can fail (disk full, sandbox denied us write, the
         // dir path is bogus). Don't let that pin us to memory-only —
         // fall through to the JS LogStore so we still get real
         // persistence (memory-only is a LAST resort, not the first
         // non-native fallback).
+        // REUSE the handle across hot-reload generations.
+        //
+        // A reload re-evaluates the bundle, so this init() runs again and
+        // opens the SAME directory again. `__skal_store_open` does no
+        // dedup and there is no store_close in the native layer, so every
+        // reload used to strand another SkalStore — mmap and keydir — for
+        // the life of the process. Measured on device: 8 bundle evals ->
+        // 8 createSkalStore calls, 1:1, none of them releasable.
+        //
+        // The engine is stateless with respect to the JS tree (the proxies
+        // and signals are rebuilt per generation regardless), so handing
+        // the new generation the existing handle is both correct and the
+        // only way to avoid the leak without a native free. It also
+        // removes the second hazard: two live handles on one directory,
+        // where the outgoing generation's debounced flush could write
+        // through a keydir the incoming one knows nothing about.
+        const reg = (globalThis.__skalStoreEngines ||= new Map());
         try {
-          const ns = new NativeLogStore(dataDir + '/' + cfg.name);
-          ns.open();
+          let ns = reg.get(cacheKey);
+          if (!ns) {
+            ns = new NativeLogStore(cacheKey);
+            ns.open();
+            reg.set(cacheKey, ns);
+          }
           engine = ns;
           setBackendKind('native');
         } catch (_) {
@@ -2963,11 +2997,22 @@ export function createSkalStore(initState, config = {}) {
         // stores in one run (`RUN + '-warm'`, `RUN + '-frame'`) and
         // relies on it for isolation, which held on native and silently
         // did not here.
-        const backend = await openBackend(dataDir + '/' + cfg.name);
-        const ls = new LogStore(backend);
-        ls.open();
+        // Same generation-reuse as the native branch above. This is the
+        // path the iOS simulator actually takes, so a fix applied only to
+        // the native branch would have looked right and changed nothing —
+        // the probe reported `engine handles alive: n/a` because the
+        // registry was never reached.
+        const reg = (globalThis.__skalStoreEngines ||= new Map());
+        let ls = reg.get(cacheKey);
+        if (!ls) {
+          const backend = await openBackend(cacheKey);
+          ls = new LogStore(backend);
+          ls.open();
+          ls._skalBackendKind = backend.kind;
+          reg.set(cacheKey, ls);
+        }
         engine = ls;
-        setBackendKind(backend.kind);
+        setBackendKind(ls._skalBackendKind);
       }
 
       tOpen = _now();

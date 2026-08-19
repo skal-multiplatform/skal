@@ -54,24 +54,54 @@ const vite = Bun.spawn({
 
 // ── 2. WebSocket server — one text frame per reload, body = bundle source.
 const clients = new Set();
-const server = Bun.serve({
-  port: PORT,
-  fetch(req, srv) {
-    if (srv.upgrade(req)) return; // upgraded to WebSocket
-    return new Response('skal hot-reload server\n', { status: 200 });
-  },
-  websocket: {
-    open(ws) {
-      clients.add(ws);
-      console.log(`[skal-hot] app connected (${clients.size} total)`);
+
+// Bind, and say something USEFUL if the port is taken.
+//
+// This used to be a bare Bun.serve({ port: PORT }): an EADDRINUSE threw,
+// the server died, and nothing else noticed. `flutter run` carried on,
+// vite kept printing "built in 57ms", the app launched fine — and every
+// save silently failed to reach the device, with the only evidence a
+// stack trace scrolled off the top of the log. An unrelated process
+// holding 8765 (a stray python -m http.server, say) made hot reload look
+// broken with no way to tell why.
+function serveOrDie(port) {
+  const opts = {
+    port,
+    fetch(req, srv) {
+      if (srv.upgrade(req)) return; // upgraded to WebSocket
+      return new Response('skal hot-reload server\n', { status: 200 });
     },
-    close(ws) {
-      clients.delete(ws);
-      console.log(`[skal-hot] app disconnected (${clients.size} total)`);
+    websocket: {
+      open(ws) {
+        clients.add(ws);
+        console.log(`[skal-hot] app connected (${clients.size} total)`);
+      },
+      close(ws) {
+        clients.delete(ws);
+        console.log(`[skal-hot] app disconnected (${clients.size} total)`);
+      },
+      message() { /* clients don't send anything */ },
     },
-    message() { /* clients don't send anything */ },
-  },
-});
+  };
+  try {
+    return Bun.serve(opts);
+  } catch (e) {
+    if (e && e.code === 'EADDRINUSE') return null;
+    throw e;
+  }
+}
+
+const server = serveOrDie(PORT);
+if (!server) {
+  // The client dials a COMPILE-TIME port (int.fromEnvironment in
+  // _hot_reload_client_io.dart), so moving to a free port silently would
+  // leave the app dialling the old one. Fail loudly instead.
+  console.error(
+    `[skal-hot] port ${PORT} is already in use — hot reload cannot start.\n` +
+    `[skal-hot]   who has it:  lsof -nP -iTCP:${PORT} -sTCP:LISTEN\n` +
+    `[skal-hot]   or pick another: SKAL_HOT_PORT=8799 bun run dev:<target>`);
+  process.exit(1);
+}
 
 console.log(`[skal-hot] watching ${APP}  ·  ws://localhost:${PORT}`);
 console.log('[skal-hot] waiting for the app to connect — edit a src/*.jsx to push a live reload');
@@ -98,16 +128,27 @@ function scheduleBroadcast() {
   timer = setTimeout(broadcast, 120);
 }
 
-// Watch the assets dir and filter, so a vite rename/replace of the file
-// doesn't drop the watch (watching the file inode directly would).
+// Watch the assets dir (not the file: a rename/replace would drop an
+// inode watch) and broadcast on ANY event in it.
+//
+// Do NOT filter by filename. macOS coalesces directory events, so a build
+// that writes several files in the same tick can surface as a SINGLE
+// event carrying a sibling's name — vite rewrites `favicon.png` on every
+// build, and an observed sequence went:
+//
+//     built in 75ms                        <- skal-app.js written
+//     event change file="favicon.png"      <- the only event delivered
+//
+// A `filename === 'skal-app.js'` test discards that, and the save never
+// reaches the device. The bug is invisible: vite keeps printing
+// "built in Nms", the socket stays connected, and nothing happens.
+//
+// Over-broadcasting is free by design — broadcast() re-reads the bundle
+// and the client ignores a byte-identical source (SkalBridge.hotReload
+// dedupes) — so the filter only ever bought a skipped file read, at the
+// cost of the whole feature.
 const assetsDir = dirname(BUNDLE);
-watch(assetsDir, (_event, filename) => {
-  // `filename` can be null on some platforms/events; fall back to scheduling
-  // a broadcast rather than silently missing the change. An over-broadcast is
-  // harmless — broadcast() re-reads the bundle and the app's client ignores a
-  // byte-identical source (SkalBridge.hotReload dedupes).
-  if (filename == null || filename === 'skal-app.js') scheduleBroadcast();
-});
+watch(assetsDir, () => scheduleBroadcast());
 
 let shuttingDown = false;
 function shutdown() {

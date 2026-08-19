@@ -16,6 +16,7 @@ import { createSignal, createMemo, createEffect, onCleanup, For } from 'solid-js
 import * as B from './bridge.js';
 import { createChunkScheduler } from './chunk-scheduler.js';
 import { Navigator, Screen } from 'skal';
+import { hotSignal } from './hot-state.js';
 
 /**
  * Create a JSX-side handle for invoking imperative methods on a
@@ -514,40 +515,12 @@ export function ChunkedFor(props) {
 // web/release, where __skalHot is absent (web restores nav via the URL hash).
 // ───────────────────────────────────────────────────────────────────────
 
-let _hotStateSeq = 0;
 let _routerInstanceSeq = 0;
 
-// Back a [get, set] signal with the reload stash under `key`: restore the
-// stashed value on (re)mount and mirror every set back into it. Falls back to a
-// plain createSignal when the coordinator is absent (web/release). Shared by
-// createHotState and createRouter so the stash protocol lives in one place.
-function hotSignal(key, initial) {
-  const stash = globalThis.__skalHot && globalThis.__skalHot.stash;
-  if (!stash) return createSignal(initial);
-  const [get, _set] = createSignal(stash.has(key) ? stash.get(key) : initial);
-  return [get, (v) => { const r = _set(v); stash.set(key, get()); return r; }];
-}
-
-/**
- * createHotState(initial, key?) — a [get, set] tuple like `createSignal`,
- * except its value survives a JS hot reload (native dev). Use it for the small
- * bits of navigation state you don't want to lose on every edit — e.g. a tab:
- *
- *   const [tab, setTab] = createHotState(0);             // call-order keyed
- *   const [tab, setTab] = createHotState(0, 'appTab');   // explicit key
- *
- * Pass an explicit `key` (any string) for state created in a conditional/lazy
- * spot: without it, the value is keyed by CALL ORDER, so adding another
- * `createHotState` above this one would shift the index and restore the wrong
- * value on the next reload. Store only primitives / plain data — like any Solid
- * signal, a function value is treated as an updater (wrap it: `setX(() => fn)`).
- *
- * On web/release it's exactly `createSignal`. The reload only resets state that
- * uses a plain `createSignal`.
- */
-export function createHotState(initial, key) {
-  return hotSignal('hotstate:' + (key != null ? key : _hotStateSeq++), initial);
-}
+// createHotState / hotSignal moved to hot-state.js so `skal` can
+// re-export them without an import cycle. Re-exported here for the
+// existing 'skal/runtime' import path.
+export { hotSignal, createHotState } from './hot-state.js';
 
 /**
  * createRouter — a screen-stack router over `<Navigator>` / `<Screen>`.

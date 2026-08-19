@@ -63,6 +63,23 @@ export function installHotCoordinator() {
     _cfg: null,
     configure(cfg) { this._cfg = Object.assign({}, this._cfg, cfg); },
 
+    // Additive teardown hooks, for subsystems that are not the ONE owner of
+    // `_cfg.cleanup`. configure() merges by key, so a second caller passing
+    // `cleanup` silently replaces the first — bridge.js owns that slot, and
+    // the store needs its own without clobbering it. Registered once per
+    // process (this coordinator outlives every generation), so callers must
+    // guard against double-registration across reloads.
+    // KEYED, because this coordinator outlives every generation and each
+    // reload re-runs the registering module: an append-only list would grow
+    // one stale closure per save. A key makes re-registration replace, and
+    // that is safe because the Dart trigger is a single
+    // `beginReload();<new bundle>` — the outgoing hook has already fired by
+    // the time the incoming generation registers its own.
+    _cleanups: new Map(),
+    addCleanup(key, fn) {
+      if (typeof fn === 'function') this._cleanups.set(key, fn);
+    },
+
     _mounted: false,
     _dispose: null,
 
@@ -94,6 +111,9 @@ export function installHotCoordinator() {
       this._dispose = null;
       this._mounted = false;
       try { if (cfg && cfg.cleanup) cfg.cleanup(); } catch (_) { /* keep going */ }
+      for (const fn of this._cleanups.values()) {
+        try { fn(); } catch (_) { /* one bad hook must not strand the rest */ }
+      }
       // Always reset the host tree (idempotent) — clears a fully-mounted prior
       // generation OR the orphan nodes left by a broken save's partial mount.
       try { if (cfg && cfg.reset) cfg.reset(); } catch (_) { /* keep going */ }

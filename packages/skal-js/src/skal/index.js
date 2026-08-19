@@ -937,3 +937,10 @@ if (typeof globalThis !== 'undefined') {
     return el;
   };
 }
+
+// Reload-surviving state. Re-exported here so the natural
+// `import { createHotState } from 'skal'` works — it previously lived only
+// behind 'skal/runtime', so the obvious import failed with MISSING_EXPORT
+// on the one API whose whole job is surviving a hot reload. hot-state.js
+// deliberately has no Skal imports, so this is not a cycle.
+export { createHotState } from '../hot-state.js';

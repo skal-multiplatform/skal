@@ -6,7 +6,15 @@ description: >-
   SkalRegistry — automating the hand-written shape from
   `flutter/skal_flutter/lib/adapters/greeting.dart`.
 version: 0.1.0
+# NOT published. A scaffolded app gets this package inside its vendored
+# .skal-runtime and depends on it by path (see packages/skal-cli/lib/create.js,
+# which rewrites the template's path dep), so there is nothing for a version on
+# pub.dev to solve today. Remove this line and bump the version to publish.
 publish_to: 'none'
+
+repository: https://github.com/skal-multiplatform/skal
+homepage: https://github.com/skal-multiplatform/skal/tree/main/packages/skal_codegen
+issue_tracker: https://github.com/skal-multiplatform/skal/issues
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

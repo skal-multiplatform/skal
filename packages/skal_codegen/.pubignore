@@ -1,0 +1,13 @@
+# Test fixtures are DATA, not sources.
+#
+# test/fixtures/*.expected.dart are golden files — the exact adapter text the
+# generator is asserted to emit — so they import `flutter` and `skal_flutter`,
+# which this pure-Dart package deliberately does not depend on. Pub analyses
+# every .dart file in the archive and reported ~85 "does not have flutter in
+# dependencies" warnings against them, drowning the real ones.
+#
+# Adding those to dev_dependencies to silence it would pull Flutter into a
+# package that does not need it. Excluding the goldens from the ARCHIVE costs
+# nothing: they are only meaningful next to the tests that read them, and a
+# consumer never runs those.
+test/fixtures/

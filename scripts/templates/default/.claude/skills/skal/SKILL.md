@@ -139,8 +139,12 @@ before picking components or guessing a prop name; do not invent props.
 
   `initState` is the schema; arrays of objects become stable-id
   collections with per-record persistence.
-- **Survive dev hot-reload:** `createHotState(initial, key?)` from
-  `'skal/runtime'` — a signal whose value survives a JS hot reload
+- **Survive dev hot-reload:** `createHotState(initial, key?)` from `'skal'`
+  (also re-exported from `'skal/runtime'`). Pass an explicit `key` for any
+  call in a conditional or lazy position — unkeyed ones are indexed by CALL
+  ORDER, so inserting another `createHotState` above an existing one restores
+  the wrong value on the next reload. A signal whose value survives a JS hot
+  reload
   (tab index, current route). Plain `createSignal` resets on reload.
 
 ## Navigation
@@ -229,6 +233,8 @@ bun run build:js-only   # fastest compile check of src/ (vite, native bundle)
 bun run build:web       # compile check via the web bundle
 bun run dev:web         # run in a browser → http://localhost:5173
 bun run dev:macos       # run the native app with JS hot reload (also dev:ios / dev:android)
+# reload socket is 8765; if it is taken the server exits with a message.
+# SKAL_HOT_PORT=8799 bun run dev:ios   # moves BOTH server and client
 bun run test:e2e        # Maestro flows in .maestro/ (targets testIDs)
 ```
 

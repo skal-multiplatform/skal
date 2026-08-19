@@ -55,7 +55,7 @@ Common layout / visual props every Skal widget accepts. Hot props (opacity/trans
 - `onHover: (over: boolean) => void` — pointer enter / exit (desktop / web) — `true` on enter, `false` on exit.
 - `onKey: (combo: string) => void` — a key pressed while the widget is focused — arg is a normalized combo string, e.g. `"meta+s"`, `"escape"`, `"arrow up"`. The widget takes focus on mount and on click; put `onKey` on a top-level container for app shortcuts.
 - `semanticLabel: string` — accessibility label — wraps the widget in a Semantics node so screen readers announce it.
-- `testID: string` — stable E2E test handle — sets the Semantics `identifier` so test tools (Maestro `tapOn: { id }`, integration_test) can target this widget without relying on visible text. See docs/TESTING.md.
+- `testID: string` — stable E2E test handle — sets the Semantics `identifier` so test tools (Maestro `tapOn: { id }`, integration_test) can target this widget without relying on visible text. See https://github.com/skal-multiplatform/skal/blob/main/docs/TESTING.md.
 
 ## `TextProps`
 
@@ -84,15 +84,22 @@ reads better in your code; both compile to the same intrinsic.
 
 Vertical flex layout. Flutter `Column`.
 
-Children stack top-to-bottom. Cross-axis (horizontal) alignment via
-`alignment` prop; gap between children via `gap`. For scrolling,
-prefer `<ScrollView>` (eager) or `<ListView>` (virtualized).
+Children stack top-to-bottom. `alignment` sets the MAIN axis — vertical
+here (root.dart routes it to `mainAxisAlignment`). The cross axis is
+always `start`, so `alignment` will NOT centre children horizontally;
+wrap in a `<Row alignment={1} width="fill">` for that. The `width` is
+load-bearing: a Row is built `MainAxisSize.min`, so without it the Row
+shrink-wraps its children and `alignment` has nothing to distribute —
+the content stays hard left. Gap between children via `gap`. For
+scrolling, prefer `<ScrollView>` (eager) or `<ListView>`
+(virtualized).
 
 **Props:** `BaseProps`
 
 ## <Row>
 
-Horizontal flex layout. Flutter `Row`.
+Horizontal flex layout. Flutter `Row`. `alignment` sets the MAIN axis —
+horizontal here; the cross axis is always `center`.
 
 Children stack left-to-right.
 
@@ -595,7 +602,7 @@ raw scale gestures (photos, maps, diagrams).
 ## <FlutterEmbed>
 
 Visible Flutter Web view embedded in a DOM region — Shape C of
-`docs/WEB.md`.
+`https://github.com/skal-multiplatform/skal/blob/main/docs/WEB.md`.
 
 On web, the renderer adds a Flutter view at this element via
 multi-view, then asks the plugin host to render the named widget.

@@ -129,7 +129,7 @@
  *   widget in a Semantics node so screen readers announce it.
  * @property {string} [testID]  stable E2E test handle — sets the Semantics
  *   `identifier` so test tools (Maestro `tapOn: { id }`, integration_test)
- *   can target this widget without relying on visible text. See docs/TESTING.md.
+ *   can target this widget without relying on visible text. See https://github.com/skal-multiplatform/skal/blob/main/docs/TESTING.md.
  */
 
 /**
@@ -196,16 +196,23 @@ export const Container = makeMissingMacroComponent('Container');
 /**
  * Vertical flex layout. Flutter `Column`.
  *
- * Children stack top-to-bottom. Cross-axis (horizontal) alignment via
- * `alignment` prop; gap between children via `gap`. For scrolling,
- * prefer {@link ScrollView} (eager) or {@link ListView} (virtualized).
+ * Children stack top-to-bottom. `alignment` sets the MAIN axis — vertical
+ * here (root.dart routes it to `mainAxisAlignment`). The cross axis is
+ * always `start`, so `alignment` will NOT centre children horizontally;
+ * wrap in a `<Row alignment={1} width="fill">` for that. The `width` is
+ * load-bearing: a Row is built `MainAxisSize.min`, so without it the Row
+ * shrink-wraps its children and `alignment` has nothing to distribute —
+ * the content stays hard left. Gap between children via `gap`. For
+ * scrolling, prefer {@link ScrollView} (eager) or {@link ListView}
+ * (virtualized).
  *
  * @type {Component<BaseProps>}
  */
 export const Column = makeMissingMacroComponent('Column');
 
 /**
- * Horizontal flex layout. Flutter `Row`.
+ * Horizontal flex layout. Flutter `Row`. `alignment` sets the MAIN axis —
+ * horizontal here; the cross axis is always `center`.
  *
  * Children stack left-to-right.
  *
@@ -806,7 +813,7 @@ export const InteractiveViewer = makeMissingMacroComponent('InteractiveViewer');
 
 /**
  * Visible Flutter Web view embedded in a DOM region — Shape C of
- * `docs/WEB.md`.
+ * `https://github.com/skal-multiplatform/skal/blob/main/docs/WEB.md`.
  *
  * On web, the renderer adds a Flutter view at this element via
  * multi-view, then asks the plugin host to render the named widget.

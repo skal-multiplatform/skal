@@ -131,8 +131,8 @@ jobs:
           # That is what produced the HTTP 429s. Compilation is still cached
           # by ~/.bun/build-cache, which is content-addressed.
           path: |
-            vendor
-            !vendor/bun/build
+            vendor/**
+            !vendor/bun/build/**
             ~/.bun/build-cache
             build/icu-android
             build/jsc-android
@@ -178,6 +178,21 @@ jobs:
         working-directory: examples/kitchen-sink/flutter-host
         run: flutter build apk --release --target-platform android-arm64
 
+
+      # Report what the cache actually holds. The previous attempt at
+      # trimming this shipped a broken exclusion and looked identical in
+      # the log — 4.68 GiB before and after. Print the number so the next
+      # run answers the question instead of us inferring it.
+      - name: Cache footprint
+        if: always()
+        run: |
+          echo "vendor total:        $(du -sh vendor 2>/dev/null | cut -f1)"
+          echo "  vendor/bun/build:  $(du -sh vendor/bun/build 2>/dev/null | cut -f1)  (EXCLUDED)"
+          # BSD du (macOS runners) has no --exclude; subtract in awk instead.
+          tot=$(du -sk vendor 2>/dev/null | cut -f1)
+          bld=$(du -sk vendor/bun/build 2>/dev/null | cut -f1 || echo 0)
+          echo "  cached portion:    $(awk -v a="${tot:-0}" -v b="${bld:-0}" 'BEGIN{printf "%.1f GiB", (a-b)/1048576}')"
+          echo "  ~/.bun/build-cache: $(du -sh ~/.bun/build-cache 2>/dev/null | cut -f1)"
       - name: flutter build apk --debug
         working-directory: examples/kitchen-sink/flutter-host
         run: flutter build apk --debug --target-platform android-arm64

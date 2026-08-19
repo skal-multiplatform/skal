@@ -280,3 +280,42 @@ Every fast-path widget needs its `renderer-web.js` side too
 (`TAG_TO_HTML` + `applyDefaults` CSS + `applyProp`). The schema
 codegen generates the tag mapping; the CSS baseline stays
 hand-written. Forgetting it is a silent web-only bug.
+
+## The analyzer constraint
+
+`skal_codegen` pins `analyzer: ^7.0.0` while the current release is 14.x.
+That is not neglect — the two ends are pinned against each other:
+
+| | |
+|---|---|
+| Flutter 3.41.9 + analyzer ^7 | works — what ships today |
+| Flutter 3.47.0 + analyzer ^7 | fails — `Missing implementation of visitDotShorthandPropertyAccess`; the new Dart emits AST nodes analyzer 7 cannot serialize |
+| Flutter 3.41.9 + analyzer ^14 | fails — analyzer ≥13.1 needs `meta ^1.18.3`, `flutter_test` pins `meta 1.17.0` |
+| Flutter 3.47.0 + analyzer ^14 | untested — needs the Flutter bump to verify |
+
+So the migration cannot land on its own. It has to move with the Flutter
+pin in `.github/workflows/*` (see the `unpin-flutter` note in tests.yml).
+
+**The migration itself is small** — measured, not estimated. It is a
+rename, because analyzer 7 carried a transitional element model and v14
+simply dropped the suffixes:
+
+    element2.dart -> element.dart        .element3      -> .element
+    ClassElement2 -> ClassElement        .libraryElement2 -> .libraryElement
+    ConstructorElement2 -> ConstructorElement            .name3 -> .name
+    ExecutableElement2  -> ExecutableElement
+    LibraryElement2     -> LibraryElement
+    .methods2 / .fields2 / .getters2 / .constants2 / .constructors2 /
+    .typeParameters2 / .library2 / .libraryImports2 /
+    .redirectedConstructor2 / .importedLibrary2   -> drop the 2
+
+One real semantic change, not a rename: `FieldElement.isSynthetic` is
+gone. Its replacement is `!isOriginDeclaration` — v14 splits a property's
+origin into `isOriginDeclaration` (an explicit `FieldDeclaration`) and
+`isOriginGetterSetter` (induced by a getter/setter).
+
+A trial run took 124 lib/ errors to 0 and left all 42 tests passing. The
+snapshot fixtures shift, but only because `build ^4` pulls a newer
+`dart_style`: blank lines between imports and one rewrapped expression.
+Stripped of whitespace the generated output is byte-identical, so
+regenerate with `SKAL_UPDATE_SNAPSHOTS=1` rather than hand-editing.

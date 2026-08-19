@@ -195,6 +195,34 @@ jobs:
           bld=$(du -sk vendor/bun/build 2>/dev/null | cut -f1 || echo 0)
           echo "  cached portion:    $(awk -v a="${tot:-0}" -v b="${bld:-0}" 'BEGIN{printf "%.1f GiB", (a-b)/1048576}')"
           echo "  ~/.bun/build-cache: $(du -sh ~/.bun/build-cache 2>/dev/null | cut -f1)"
+
+          # Fingerprint EXACTLY what actions/cache is about to store, so the
+          # "these three caches hold the same thing" claim is a measurement
+          # rather than an inference from three du totals agreeing.
+          #
+          # Runs at the END of the job on purpose: the question is not whether
+          # the SOURCES match after bootstrap (they are a checkout of one
+          # pinned commit, so of course they do) but whether anything the
+          # build writes back into vendor/ makes the SAVED trees diverge.
+          #
+          # .git is excluded. Two clones of one commit produce different
+          # packfiles — object order and timestamps differ — so including it
+          # would report a mismatch that means nothing. setup.sh reconciles
+          # whatever .git it finds via clone_pinned_fork (fetch + checkout),
+          # so its bytes are inert here.
+          echo "  --- content fingerprint (mirrors the cache's own paths) ---"
+          fp() {
+            find "$1" -type f -not -path '*/.git/*' -not -path 'vendor/bun/build/*' \
+              -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 shasum -a 256 2>/dev/null \
+              | shasum -a 256 | cut -d' ' -f1
+          }
+          n=$(find vendor -type f -not -path '*/.git/*' -not -path 'vendor/bun/build/*' 2>/dev/null | wc -l | tr -d ' ')
+          echo "  files:      $n"
+          echo "  vendor:     $(fp vendor)"
+          for d in vendor/*/; do
+            [ -d "$d" ] || continue
+            echo "  $(basename "$d"):  $(fp "$d")"
+          done
       - name: Install + launch + screenshot
         run: |
           xcrun simctl install "$DEVICE_ID" \

@@ -20,7 +20,7 @@ no NDK, no GitHub auth.
 | Command | What it does |
 |---|---|
 | `skal create <name>` | Scaffold a standalone app in `./<name>` (`--platforms macos,ios` / `--no-platforms`) |
-| `skal dev [platform]` | Run it — `macos` (default), `ios`, `android`, `web`; `--hot` for JS hot reload |
+| `skal dev [platform]` | Run it with JS hot reload — `macos` (default), `ios`, `android`, `web` |
 | `skal build [platform]` | JS bundle + bytecode; with a platform, a release build |
 | `skal doctor [--fix]` | Check toolchain, runtime, and app wiring; `--fix` repairs the runtime link |
 | `skal upgrade` | Install the latest runtime; inside an app, repoint + relink it |

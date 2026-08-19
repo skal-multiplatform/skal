@@ -22,7 +22,20 @@ export function doctor(opts = {}) {
 
   add('bun', which('bun'), capture('bun', ['--version']) || 'not on PATH — https://bun.sh');
   const flutterV = capture('/bin/sh', ['-c', 'flutter --version 2>/dev/null | head -1']);
-  add('flutter', !!flutterV, flutterV || 'not on PATH — https://flutter.dev');
+  // Gate the VERSION, not just presence. skal_codegen uses analyzer ^14,
+  // which needs meta >=1.18.3; Flutter 3.41 and older pin meta 1.17.0, and
+  // the only symptom is an opaque pub solver conflict at the user's first
+  // `bun run codegen`. Catch it here where the message can say why.
+  const FLUTTER_MIN = [3, 47];
+  const vm = /(\d+)\.(\d+)\.(\d+)/.exec(flutterV || '');
+  const tooOld = vm && (
+    +vm[1] < FLUTTER_MIN[0] || (+vm[1] === FLUTTER_MIN[0] && +vm[2] < FLUTTER_MIN[1]));
+  add('flutter', !!flutterV && !tooOld,
+      !flutterV ? 'not on PATH — https://flutter.dev'
+      : tooOld ? `${vm[0]} is too old — Skal needs ${FLUTTER_MIN.join('.')}+ `
+                 + '(analyzer ^14 needs meta >=1.18.3; older Flutters pin '
+                 + '1.17.0 and pub get will not resolve). Run: flutter upgrade'
+      : flutterV);
 
   const appRoot = findAppRoot();
   let runtime = null;

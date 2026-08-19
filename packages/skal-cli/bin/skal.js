@@ -2,7 +2,7 @@
 // skal — create and run Skal apps anywhere on disk.
 //
 //   skal create my-app            scaffold a standalone app in ./my-app
-//   skal dev [platform] [--hot]   run it (macos | ios | android | web)
+//   skal dev [platform]           run it, with hot reload (macos | ios | android | web)
 //   skal build [platform]         JS bundle, or a release platform build
 //   skal doctor [--fix]           check toolchain + runtime + app wiring
 //   skal upgrade                  install the latest runtime / repoint app
@@ -24,7 +24,7 @@ const USAGE = `skal ${VERSION} — Solid in JS, Flutter rendering. https://githu
 
 usage:
   skal create <name> [--platforms macos,ios,android | --no-platforms]
-  skal dev [macos|ios|android|web] [--hot]
+  skal dev [macos|ios|android|web]
   skal build [macos|ios|android]
   skal doctor [--fix]
   skal upgrade

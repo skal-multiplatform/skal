@@ -30,8 +30,16 @@ export function dev(platform = 'macos', opts = {}) {
   if (!PLATFORMS.has(platform)) {
     die(`unknown platform: ${platform} (macos | ios | android | web)`);
   }
-  if (opts.hot && platform === 'web') die('--hot is for native targets; dev:web is already live');
-  const script = opts.hot ? `dev:hot:${platform}` : `dev:${platform}`;
+  // `dev:<platform>` IS the hot script — it runs scripts/dev-hot.sh. There has
+  // never been a `dev:hot:<platform>`, so `skal dev macos --hot` used to fail
+  // with "Script not found". Hot reload is now simply what `skal dev` does on
+  // every target, web included; `dev:flutter` is the plain, non-hot run.
+  //
+  // --hot is accepted and ignored, for the muscle memory. It is NOT an error
+  // anywhere — `skal dev web --hot` used to exit non-zero telling the user the
+  // flag was for native targets, which was rejecting a flag that by then
+  // selected nothing on any target.
+  const script = `dev:${platform}`;
   run('bun', ['run', script], { cwd: requireApp() });
 }
 

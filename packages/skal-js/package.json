@@ -4,7 +4,10 @@
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "description": "Skal JS framework — bridge, Solid universal renderer, store, runtime primitives.",
+  "description": "Skal JS framework \u2014 bridge, Solid universal renderer, store, runtime primitives.",
+  "scripts": {
+    "test": "bun test --conditions=browser"
+  },
   "exports": {
     ".": "./src/skal/index.js",
     "./renderer": "./src/renderer.js",

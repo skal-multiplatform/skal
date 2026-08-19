@@ -1,0 +1,4 @@
+[test]
+# See test/preload-conditions.js — this cannot set the resolution condition,
+# only report that it is missing.
+preload = ["./test/preload-conditions.js"]

@@ -1060,10 +1060,24 @@ export class NativeLogStore {
 
   // Reclaim one dead-heavy segment in the native engine; returns whether
   // anything was compacted (so the store can refresh its stats).
-  compact() { return !!globalThis.__skal_store_compact(this._h); }
+  // GUARDED like allKeys/delPrefix/getMany, and for the same reason: a JS
+  // bundle newer than the dylib. All nine hooks install together in
+  // installStoreGlobals (patches/skal_entry.zig), so a MATCHED pair always
+  // has them — the skew case is the one the siblings already defend, and
+  // these two were the only readers reaching for a hook bare.
+  //
+  // stats() is the one that bit: db.js calls it on every init, so an absent
+  // hook threw the store dead during initialization instead of taking the
+  // zeroed-stats branch three lines down, which existed the whole time and
+  // was simply unreachable.
+  compact() {
+    const fn = globalThis.__skal_store_compact;
+    return (typeof fn === 'function') ? !!fn(this._h) : false;
+  }
 
   stats() {
-    const ab = this._h ? globalThis.__skal_store_stats(this._h) : null;
+    const fn = globalThis.__skal_store_stats;
+    const ab = (this._h && typeof fn === 'function') ? fn(this._h) : null;
     if (!ab) {
       return { backend: 'native', records: 0, segments: 0, deadBytes: 0, seq: 0 };
     }

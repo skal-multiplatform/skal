@@ -71,16 +71,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
-        # PINNED, deliberately. `channel: stable` moved to Flutter 3.47.0
-        # and its Dart emits dot-shorthand AST that skal_codegen's
-        # analyzer ^7 cannot serialize — CI went red on a Flutter release
-        # rather than on a commit. 3.41.9 is what the suite is verified
-        # against locally and matches the README's documented minimum.
-        # nightly.yml stays on floating stable as the canary, so a future
-        # break still surfaces within 24 hours instead of at the next bump.
-        # Remove this pin once skal_codegen is migrated off analyzer 7.
+        # OPT-IN, and off by default — `channel: stable` is what normally
+        # runs. This exists to reproduce a green build against a known Flutter
+        # when stable breaks us, which it did once: 3.47.0's Dart emitted
+        # dot-shorthand AST that skal_codegen's analyzer ^7 could not serialize,
+        # and CI went red on a Flutter release rather than on a commit.
+        #
+        # That is fixed — skal_codegen is on analyzer ^14 — and the pin moved
+        # WITH it. 3.41.9 is now BELOW the floor: analyzer ^14 needs
+        # meta >=1.18.3, which Flutter ships only from 3.47, so pinning the old
+        # value would have failed to resolve for anyone who set the input. The
+        # value here must stay >= the README minimum and skal doctor's
+        # FLUTTER_MIN (packages/skal-cli/lib/doctor.js).
+        #
+        # nightly.yml stays on floating stable as the canary, so a future break
+        # still surfaces within 24 hours instead of at the next bump.
           channel: stable
-          flutter-version: ${{ inputs.pin-flutter && '3.41.9' || '' }}
+          flutter-version: ${{ inputs.pin-flutter && '3.47.0' || '' }}
           cache: true
 
       - name: flutter pub get

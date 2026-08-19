@@ -105,25 +105,42 @@ jobs:
           ln -sf "$LLD" /opt/homebrew/bin/ld.lld
           /opt/homebrew/bin/ld.lld --version
 
+      # ── shared vendor sources ────────────────────────────────────────
+      # ONE entry for all three platform workflows, not one each.
+      #
+      # vendor/** is a checkout of two pinned commits, so it is the same bytes
+      # on every runner — measured, not assumed: desktop and ios-sim both
+      # fingerprinted 20819a36 over 517830 files (see the Cache footprint
+      # step). Three copies of it did not fit. At ~4.8 GiB stored against a
+      # 10 GB per-repo budget, alongside Flutter's ~3.7 GiB, the three
+      # evicted each other continuously — on the run that measured this,
+      # android and desktop both missed and ios-sim's entry was gone by the
+      # end. A miss re-fetches ~758 MB of tarballs unauthenticated, which is
+      # what produced the HTTP 429s.
+      #
+      # vendor/bun/build (~19 GB) stays excluded; compilation is cached
+      # separately below by ~/.bun/build-cache, which is content-addressed.
       - uses: actions/cache@v4
         with:
-          # Cache the SOURCES, not the build outputs. vendor/bun/build is
-          # ~19 GB uncompressed; including it pushed this cache to 4.68 GiB,
-          # and three of these (desktop/android/ios-sim) cannot coexist in
-          # GitHub's 10 GB per-repo budget — so they evicted each other,
-          # every eviction meant a cold build, and a cold build re-fetches
-          # ~758 MB of dependency tarballs from github.com unauthenticated.
-          # That is what produced the HTTP 429s. Compilation is still cached
-          # by ~/.bun/build-cache, which is content-addressed.
           path: |
             vendor/**
             !vendor/bun/build/**
-            ~/.bun/build-cache
-          key: ios-sim-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
+          key: vendor-src-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
           # Prefix fallback: a pin bump restores the previous vendor/ and
-          # setup.sh reconciles it to the new pin (fetch + checkout).
+          # setup.sh reconciles it to the new pin (fetch + checkout) —
+          # minutes instead of a from-scratch clone + 60-90 min rebuild.
           restore-keys: |
-            ios-sim-vendor-
+            vendor-src-
+
+      # ── per-platform build cache ─────────────────────────────────────
+      # Genuinely platform-specific and small, so it stays split three ways.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/build-cache
+          key: ios-sim-build-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
+          restore-keys: |
+            ios-sim-build-
 
       - name: Bootstrap (clone skal forks + copy skal_entry.zig)
         run: scripts/setup.sh

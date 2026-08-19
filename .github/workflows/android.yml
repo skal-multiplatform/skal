@@ -126,28 +126,47 @@ jobs:
 
       # Cached: vendored bun+WebKit clones, bun's incremental build
       # cache, ICU + JSC for Android (these are 30-60 min cold).
-      - uses: actions/cache@v4
+      # ── shared vendor sources — RESTORE ONLY ─────────────────────────
+      # Same entry as desktop/ios-sim, but this job never writes it.
+      #
+      # Android is the one platform that BUILDS from vendor/WebKit:
+      # build-jsc-android.sh points CMake at it as the source dir. That
+      # leaves gitignored artifacts behind, and the fingerprint caught them —
+      # android hashed 03de78e3 over 517858 files where desktop and ios-sim
+      # both hashed b86d4251 over 517830. Twenty-eight extra files, all in
+      # WebKit; vendor/bun matched on all three.
+      #
+      # Letting android save would make the shared entry's contents depend on
+      # which job finished last, and stale generated headers surviving a pin
+      # bump is a bad failure to debug. So the two byte-identical platforms
+      # are the only writers and this one is a reader.
+      #
+      # The cost is honest: a change touching only android's paths finds
+      # whatever desktop/ios-sim last wrote, or misses. That is still better
+      # than today, where android missed two runs in three.
+      #
+      # Remove this asymmetry by excluding the 28 files the way
+      # vendor/bun/build is excluded — the diagnostic below names them.
+      - uses: actions/cache/restore@v4
         with:
-          # Cache the SOURCES, not the build outputs. vendor/bun/build is
-          # ~19 GB uncompressed; including it pushed this cache to 4.68 GiB,
-          # and three of these (desktop/android/ios-sim) cannot coexist in
-          # GitHub's 10 GB per-repo budget — so they evicted each other,
-          # every eviction meant a cold build, and a cold build re-fetches
-          # ~758 MB of dependency tarballs from github.com unauthenticated.
-          # That is what produced the HTTP 429s. Compilation is still cached
-          # by ~/.bun/build-cache, which is content-addressed.
           path: |
             vendor/**
             !vendor/bun/build/**
+          key: vendor-src-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
+          restore-keys: |
+            vendor-src-
+
+      # ── per-platform build cache ─────────────────────────────────────
+      # Genuinely platform-specific and small, so it stays split three ways.
+      - uses: actions/cache@v4
+        with:
+          path: |
             ~/.bun/build-cache
             build/icu-android
             build/jsc-android
-          key: android-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
-          # Prefix fallback: a pin bump restores the previous vendor/ and
-          # setup.sh reconciles it to the new pin (fetch + checkout) —
-          # minutes instead of a from-scratch clone + 60-90 min rebuild.
+          key: android-build-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
           restore-keys: |
-            android-vendor-
+            android-build-
 
       - name: Bootstrap (clone skal forks + copy skal_entry.zig)
         run: scripts/setup.sh
@@ -214,6 +233,23 @@ jobs:
           # would report a mismatch that means nothing. setup.sh reconciles
           # whatever .git it finds via clone_pinned_fork (fetch + checkout),
           # so its bytes are inert here.
+          # RIDE-ALONG DIAGNOSTIC for the shared-cache split.
+          #
+          # Android fingerprints 28 files more than desktop/ios-sim, all in
+          # WebKit, because build-jsc-android.sh points CMake at vendor/WebKit
+          # as its source dir. They are invisible to `git status` (WebKit's own
+          # .gitignore covers them) but actions/cache would ship them, which is
+          # why this job is restore-only.
+          #
+          # Naming them is what lets the exclusion be written, after which
+          # android can save the shared entry like everyone else. --ignored
+          # is the whole point: without it this prints nothing.
+          echo "  --- vendor/WebKit: files the build leaves behind ---"
+          git -C vendor/WebKit status --porcelain --ignored 2>/dev/null \
+            | head -60 | sed 's/^/    /' || echo "    (git status unavailable)"
+          echo "  (count: $(git -C vendor/WebKit status --porcelain --ignored 2>/dev/null | wc -l | tr -d ' '))"
+          echo "  build/icu-android:  $(du -sh build/icu-android 2>/dev/null | cut -f1)"
+          echo "  build/jsc-android:  $(du -sh build/jsc-android 2>/dev/null | cut -f1)"
           echo "  --- content fingerprint (mirrors the cache's own paths) ---"
           fp() {
             find "$1" -type f -not -path '*/.git/*' -not -path 'vendor/bun/build/*' \

@@ -14,7 +14,7 @@ export default function App() {
   return (
     <Column padding={24} gap={16} background="#FFF2F2F7">
       {/* testID -> Semantics(identifier) -> the Android resource-id Maestro
-          matches via `id:` in .maestro/smoke.yaml. See docs/TESTING.md. */}
+          matches via `id:` in .maestro/smoke.yaml. See https://github.com/skal-multiplatform/skal/blob/main/docs/TESTING.md. */}
       <Text label="Hello, Skal" testID="home-title" fontSize={28} fontWeight={800} color="#FF1C1C1E" />
       <Text label="Edit src/App.jsx to start building." fontSize={14} color="#FF8E8E93" />
       <Row gap={12}>

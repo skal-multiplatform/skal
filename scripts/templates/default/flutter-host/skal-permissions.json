@@ -18,7 +18,7 @@
   "//16": "",
   "//17": "Declaring a permission does NOT request it — the OS prompt",
   "//18": "fires when your code first uses the capability. This file only",
-  "//19": "makes that prompt legal and legible. See docs/NATIVE_SUPPORT.md.",
+  "//19": "makes that prompt legal and legible. See https://github.com/skal-multiplatform/skal/blob/main/docs/NATIVE_SUPPORT.md.",
   "//20": "",
   "//21": "Example:",
   "//22": "  \"camera\": \"Scan QR codes and take profile photos\",",

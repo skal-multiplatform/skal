@@ -49,7 +49,7 @@ void main() async {
   // active, and Maestro's UIAutomator query doesn't reliably trigger that, so
   // without this the tree is invisible to it. Debug builds (where dev:android
   // E2E runs) plus an explicit `--dart-define=SKAL_E2E=true` for release E2E;
-  // release otherwise never pays the always-on cost. See docs/TESTING.md.
+  // release otherwise never pays the always-on cost. See https://github.com/skal-multiplatform/skal/blob/main/docs/TESTING.md.
   if (kDebugMode || const bool.fromEnvironment('SKAL_E2E')) {
     WidgetsBinding.instance.ensureSemantics();
   }
@@ -58,7 +58,7 @@ void main() async {
   } catch (e, st) {
     // Surface the failure instead of leaving a black screen. Common cause on
     // a fresh app: libskal.dylib not embedded in the .app (dlopen throws) —
-    // see scripts/skal-link.sh / docs/DEBUGGING.md.
+    // see scripts/skal-link.sh / https://github.com/skal-multiplatform/skal/blob/main/docs/DEBUGGING.md.
     debugPrint('[skal] BOOT FAILED: $e\n$st');
     early.reveal(_BootError(message: '$e', detail: '$st'));
   }

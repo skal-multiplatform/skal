@@ -6,7 +6,7 @@
 # Plain-string text assertions do NOT match Skal widgets (their label lands in
 # the accessibility content-desc, while Maestro's plain-string matcher checks
 # the `text` field, which Skal leaves empty). So assert by `id:`, and give any
-# widget you assert/tap a `testID`. See docs/TESTING.md.
+# widget you assert/tap a `testID`. See https://github.com/skal-multiplatform/skal/blob/main/docs/TESTING.md.
 #
 # Run (needs the maestro CLI + a connected emulator/simulator with the app
 # installed — `bun run dev:android` once first):

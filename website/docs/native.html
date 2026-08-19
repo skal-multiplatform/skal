@@ -51,7 +51,7 @@ packages:
     <p>The builder introspects each package's public widgets with Dart's analyzer — constructors, named constructors, parameter types — and emits adapters plus a manifest. On the JS side, typed components appear under <code>skal-flutter</code>:</p>
     <pre class="code"><span class="kw">import</span> { QrImageView, FlutterMap, TileLayer } <span class="kw">from</span> <span class="st">'skal-flutter'</span>;
 
-&lt;<span class="fn">QrImageView</span> data=<span class="st">"https://skal.dev"</span> size={<span class="nm">220</span>} /&gt;</pre>
+&lt;<span class="fn">QrImageView</span> data=<span class="st">"https://skal.run"</span> size={<span class="nm">220</span>} /&gt;</pre>
     <div class="callout">Named constructors surface as their own components — shimmer's <code>Shimmer.fromColors</code> becomes <code>&lt;ShimmerFromColors&gt;</code>. Prop types round-trip: enums, colors, durations, edge insets, gradients, text styles, value classes, even <code>List&lt;Marker&gt;</code>-style value children as JSX children.</div>
 
     <h2>Headless capabilities — services</h2>

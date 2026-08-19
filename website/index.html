@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Skal — the modern alternative to React Native</title>
-<meta name="description" content="Skal is the modern alternative to React Native — one codebase, every platform, real native performance, batteries included. SolidJS rendered by Flutter through a zero-copy shared-memory bridge.">
+<meta name="description" content="Performance-first, batteries included, every platform. SolidJS rendered by Flutter over a zero-copy shared-memory bridge — the modern alternative to React Native.">
 <link rel="stylesheet" href="assets/style.css">
 <link rel="icon" type="image/png" href="assets/favicon.png">
 </head>
@@ -13,7 +13,7 @@
 <nav class="top">
   <div class="wrap">
     <a class="logo" href="./"><img class="mark" src="assets/skal-logo.png" alt="Skal" style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em">skal<span class="dot">.</span></a>
-    <span class="pill">v0.1.0</span>
+    <span class="pill">v0.1.3</span>
     <div class="links">
       <a href="docs/">Docs</a>
       <a href="#components">Components</a>
@@ -29,7 +29,7 @@
   <div class="grid-bg"></div>
   <div class="wrap">
     <h1 class="headline rv in">The modern alternative<br><span class="a">to React&nbsp;Native.</span></h1>
-    <p class="sub rv in d1">One codebase, every platform, real native performance — and batteries included, so your first screen doesn't start with ten libraries.</p>
+    <p class="sub rv in d1">Performance-first, batteries included, every platform. Fast at your first screen. Still fast at your hundredth.</p>
     <div class="hero-cta rv in d2">
       <a class="btn primary" href="docs/">Get started →</a>
       <div class="cmd"><span class="p">$</span> <span class="c">npm create skal</span> my-app <button data-copy="npm create skal my-app">copy</button></div>
@@ -88,9 +88,9 @@
     </div>
 
     <div class="stats rv">
-      <div class="stat"><b><span data-count="56">0</span><span class="u">&nbsp;ms</span></b><span>cold boot to first frame, bytecode cache</span></div>
-      <div class="stat"><b><span data-count="0.151">0</span><span class="u">&nbsp;ms</span></b><span>avg bridge drain per frame, steady state</span></div>
-      <div class="stat"><b><span data-count="60">0</span><span class="u">&nbsp;fps</span></b><span>through a 10,000-item virtualized feed</span></div>
+      <div class="stat"><b><span data-count="0">0</span></b><span>dropped frames scrolling an image feed</span></div>
+      <div class="stat"><b><span data-count="3.53">0</span><span class="u">&nbsp;ms</span></b><span>tap to render, median — RN 7.30 ms</span></div>
+      <div class="stat"><b><span data-count="1.2">0</span><span class="u">%</span></b><span>idle CPU — RN uses 5.8&times; more</span></div>
       <div class="stat"><b><span data-count="4">0</span><span class="u">&nbsp;targets</span></b><span>Android · iOS · macOS · Web — one bundle</span></div>
     </div>
   </div>
@@ -194,18 +194,43 @@
   <div class="wrap">
     <div class="kicker rv">Performance</div>
     <h2 class="sec rv">Measured, not marketed.</h2>
-    <p class="sec-sub rv d1">Numbers from the kitchen-sink demo on a mid-range Android emulator — methodology and budget invariants in <a href="https://github.com/skal-multiplatform/skal/blob/main/docs/BENCHMARKS.md">docs/BENCHMARKS.md</a>. If your hardware disagrees, that's a bug and we want the issue.</p>
+    <p class="sec-sub rv d1">Head-to-head against React Native on a <b>Samsung Galaxy A14 5G</b>, Android 15, arm64 — release builds on both sides, runs interleaved, screen held awake. React Native 0.86 / Expo 57 with Hermes, zustand and MMKV. Method and raw data in <a href="https://github.com/skal-multiplatform/skal/blob/main/docs/BENCHMARKS.md">docs/BENCHMARKS.md</a>. If your hardware disagrees, that's a bug and we want the issue.</p>
     <div class="table-scroll rv">
       <table>
-        <tr><th>Metric</th><th>Skal</th><th>What it means</th></tr>
-        <tr><td>Runtime init</td><td class="hl">20 ms</td><td>bun worker + JSC up, bridge memory mapped</td></tr>
-        <tr><td>First eval</td><td class="hl">36 ms</td><td>bundle loads as pre-compiled JSC bytecode — the parser never runs</td></tr>
-        <tr><td>Cold boot → first frame</td><td class="hl">56 ms</td><td>full tree mounted and painted</td></tr>
-        <tr><td>Bridge drain, steady state</td><td class="hl">0.151 ms avg</td><td>per-frame cost of consuming JS ops on the Dart side</td></tr>
-        <tr><td>10,000-item feed</td><td class="hl">60 fps</td><td>virtualized list scrolling with live per-row signals</td></tr>
-        <tr><td>Store write → disk</td><td class="hl">sub-ms</td><td>log-structured native engine, per-leaf delta frames</td></tr>
+        <tr><th>What you feel</th><th>Skal</th><th>React Native</th></tr>
+        <tr><td>Dropped frames, scrolling an image feed</td><td class="hl">0</td><td>13</td></tr>
+        <tr><td>Scroll p95, image feed</td><td class="hl">6 ms</td><td>12 ms</td></tr>
+        <tr><td>Input-latency events while scrolling</td><td class="hl">0</td><td>631</td></tr>
+        <tr><td>Tap &rarr; render, median</td><td class="hl">3.53 ms</td><td>7.30 ms</td></tr>
+        <tr><td>Tap &rarr; render, p95</td><td class="hl">4.87 ms</td><td>10.24 ms</td></tr>
+        <tr><td>Idle CPU</td><td class="hl">1.20%</td><td>6.93%</td></tr>
+        <tr><td>App size at full WebCrypto parity</td><td class="hl">51.6 MiB</td><td>67.2 MiB</td></tr>
       </table>
     </div>
+    <div class="table-scroll rv" style="margin-top: 28px;">
+      <table>
+        <tr><th>State updates</th><th>Skal</th><th>React Native</th></tr>
+        <tr><td>One frame of work &mdash; 200 components &times; 10 reads + 1 update</td><td class="hl">0.05 ms</td><td>0.80 ms</td></tr>
+        <tr><td>One update, 200-key store, no subscribers</td><td class="hl">0.0012 ms</td><td>0.1081 ms</td></tr>
+        <tr><td>One update, 200 subscribers</td><td class="hl">0.1425 ms</td><td>0.2119 ms</td></tr>
+        <tr><td>200 updates, one subscriber each</td><td class="hl">0.63 ms</td><td>38.15 ms</td></tr>
+        <tr><td>Update throughput, 288 live cells</td><td class="hl">103,846/s</td><td>4,901/s</td></tr>
+        <tr><td>Dropped frames under that pressure</td><td class="hl">4.6%</td><td>50.4%</td></tr>
+        <tr><td>Components woken by one change</td><td class="hl">1 of 200</td><td>1 of 200</td></tr>
+        <tr><td>&mdash; cost of that update</td><td class="hl">0.0024 ms</td><td>0.150 ms</td></tr>
+      </table>
+    </div>
+    <p class="rv d1" style="color: var(--faint); font-size: 13px; margin-top: 14px;">Immutable stores copy the whole state object on every write, so the gap widens with store size and narrows with subscriber count. Both ends are shown.</p>
+    <div class="table-scroll rv" style="margin-top: 28px;">
+      <table>
+        <tr><th>JavaScript engine</th><th>Skal (JSC)</th><th>React Native (Hermes)</th></tr>
+        <tr><td>8 JS workloads, warm</td><td class="hl" colspan="2">JSC 7.3&times; faster median, wins 8/8</td></tr>
+        <tr><td>&mdash; closure calls, 3k</td><td class="hl">0.0124 ms</td><td>0.2141 ms</td></tr>
+        <tr><td>&mdash; worst case, <code>JSON.parse</code></td><td class="hl">1.1755 ms</td><td>1.9915 ms</td></tr>
+        <tr><td>&mdash; first execution, cold</td><td colspan="2">tie &mdash; JSC overtakes within ~10 runs</td></tr>
+      </table>
+    </div>
+    <p class="rv d1" style="color: var(--faint); font-size: 13px; margin-top: 14px;">JS engine measured warm. Hermes ships pre-compiled bytecode and stays flat; JSC compiles hot code and overtakes within about ten iterations.</p>
   </div>
 </section>
 
@@ -373,7 +398,7 @@
       <a href="#performance">Performance</a>
       <a href="#architecture">Architecture</a>
       <a href="docs/testing.html">Testing</a>
-      <a href="docs/tooling.html">Benchmarks</a>
+      <a href="#performance">Benchmarks</a>
     </div>
     <div class="col">
       <h4>Ecosystem</h4>
@@ -384,8 +409,7 @@
     </div>
     <div class="col">
       <h4>Community</h4>
-      <a href="https://github.com/skal-multiplatform/skal/discussions">GitHub Discussions</a>
-      <a href="https://github.com/skal-multiplatform/skal/issues">Issues</a>
+      <a href="https://github.com/skal-multiplatform/skal/issues">GitHub Issues</a>
       <a href="https://github.com/skal-multiplatform/skal/releases">Releases</a>
     </div>
     <div class="bottom">

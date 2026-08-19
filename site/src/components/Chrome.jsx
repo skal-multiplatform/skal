@@ -12,7 +12,7 @@ export function TopNav(props) {
                style="height:1.5em;width:auto;vertical-align:-.35em;border-radius:5px;margin-right:.05em" />
           skal<span class="dot">.</span>
         </a>
-        <span class="pill">{props.docs ? 'docs' : 'v0.1.0'}</span>
+        <span class="pill">{props.docs ? 'docs' : 'v0.1.3'}</span>
         <div class="links">
           {props.docs ? (
             <>

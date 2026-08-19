@@ -66,13 +66,13 @@
       <li>You tap a <code>&lt;Button&gt;</code>. Flutter's gesture arena resolves the tap and writes one small event (handler id + kind) into the event ring, then wakes the JS thread.</li>
       <li>Skal's dispatcher reads the event and invokes your <code>onClick</code>. A signal updates.</li>
       <li>Solid's reactivity re-runs only the computations that read that signal. Each affected prop becomes one op in the op ring — a 5,000-row list where one label changed emits exactly one op.</li>
-      <li>On the next frame tick, Dart drains the ring (measured at <b>0.151 ms</b> per frame, steady state), patches its node table, and marks precisely the touched widgets dirty via per-node notifiers.</li>
+      <li>On the next frame tick, Dart drains the ring once, patches its node table, and marks precisely the touched widgets dirty via per-node notifiers.</li>
       <li>Flutter rebuilds those widgets — and only those — and composites the frame.</li>
     </ol>
     <p>Hot props (opacity, transforms) take an even shorter path: the host tweens them on its own animation ticker, so a 60 fps animation costs <b>zero</b> bridge traffic per frame.</p>
 
     <h2>Cold start &amp; bytecode</h2>
-    <p>Release builds ship the bundle twice: as source (<code>.cjs</code>) and as pre-compiled JavaScriptCore bytecode (<code>.jsc</code>). On launch, JSC attaches the bytecode directly — the parser never runs. That turns a several-hundred-millisecond parse into a <b>36 ms</b> eval, and a <b>56 ms</b> cold boot to first frame.</p>
+    <p>Release builds ship the bundle twice: as source (<code>.cjs</code>) and as pre-compiled JavaScriptCore bytecode (<code>.jsc</code>). On launch, JSC attaches the bytecode directly — the parser never runs. That turns a 109–252 ms parse into a <b>40 ms</b> eval on first launch, <b>34 ms</b> once warm.</p>
     <div class="callout">The bytecode is keyed to the exact JSC version inside libskal — the toolchain builds both from the same pinned runtime, so they can never skew.</div>
 
     <h2>Why not a virtual DOM? Why not Flutter alone? Why not RN?</h2>

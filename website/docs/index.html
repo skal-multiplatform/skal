@@ -43,7 +43,7 @@
     <h2>Prerequisites</h2>
     <ul>
       <li><a href="https://bun.sh">bun</a> 1.2+ — runs the CLI, the bundler, and your tests</li>
-      <li><a href="https://flutter.dev">Flutter</a> 3.41+ — the rendering host (<code>flutter doctor</code> should be green for your targets)</li>
+      <li><a href="https://flutter.dev">Flutter</a> 3.47+ — the rendering host (older releases pin <code>meta 1.17.0</code> and cannot resolve <code>skal_codegen</code>) (<code>flutter doctor</code> should be green for your targets)</li>
       <li>Xcode for iOS/macOS, or an Android SDK + emulator for Android</li>
     </ul>
 
@@ -66,7 +66,7 @@
 <span class="cm">$</span> skal dev android     <span class="cm"># boots an emulator automatically if none is attached</span>
 <span class="cm">$</span> skal dev ios         <span class="cm"># iOS Simulator</span>
 <span class="cm">$</span> skal dev web         <span class="cm"># Solid → DOM at localhost:5173</span></pre>
-    <p><code>skal dev</code> builds the JS bundle and launches the platform host. Add <code>--hot</code> and the hot-reload server pushes every save under <code>src/</code> straight into the running app — <a href="tooling.html">navigation and hot state survive</a>.</p>
+    <p><code>skal dev</code> builds the JS bundle and launches the platform host. The hot-reload server pushes every save under <code>src/</code> straight into the running app — <a href="tooling.html">navigation and hot state survive</a>.</p>
 
     <div class="callout">🍻 <b>First run is slower.</b> The platform host compiles once per target (normal Flutter behavior). Every run after that is seconds.</div>
 
@@ -91,7 +91,7 @@
 <span class="cm">$</span> skal build ios       <span class="cm"># release build for TestFlight</span>
 <span class="cm">$</span> skal build macos
 <span class="cm">$</span> skal build web       <span class="cm"># static site bundle</span></pre>
-    <p>Release builds compile your bundle to JavaScriptCore bytecode, so production cold starts skip the JS parser entirely — that's the <a href="../#performance">36 ms first-eval</a>.</p>
+    <p>Release builds compile your bundle to JavaScriptCore bytecode, so production cold starts skip the JS parser entirely — that's the <a href="architecture.html">40 ms first-eval</a>.</p>
 
     <h2>Where next</h2>
     <ul>

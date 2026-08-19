@@ -150,6 +150,29 @@ jobs:
         working-directory: examples/kitchen-sink/flutter-host
         run: flutter pub get
 
+      # Shape D — Flutter Web under dart2wasm.
+      #
+      # The web target has three shapes and only two were guarded: Solid to
+      # DOM, and the prerendered SSG the site is built from. This one was
+      # verified by hand — it compiles, boots, and renders the kitchen-sink
+      # tree — and then had nothing stopping it regressing.
+      #
+      # It belongs in this job rather than a platform workflow because no
+      # native library is involved: the JS runs in the browser and Flutter Web
+      # renders it, so libskal never enters the build. `flutter pub get` for
+      # this project has already run above.
+      #
+      # The artifact check is the point. `flutter build web --wasm` can exit 0
+      # having fallen back to the JS compiler, and a green step that silently
+      # stopped testing wasm is the failure this step exists to prevent.
+      - name: Flutter Web wasm build (Shape D)
+        working-directory: examples/kitchen-sink
+        run: |
+          bun run build:web-flutter
+          f=flutter-host/build/web/main.dart.wasm
+          test -f "$f" || { echo "::error::no dart2wasm artifact at $f"; exit 1; }
+          echo "main.dart.wasm: $(du -h "$f" | cut -f1)"
+
       - name: dart test (skal_codegen — integration, compiles generated output)
         working-directory: packages/skal_codegen
         env:

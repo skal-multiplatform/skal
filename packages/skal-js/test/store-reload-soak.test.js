@@ -25,6 +25,7 @@
 import { test, expect, describe, afterEach } from 'bun:test';
 import { createSkalStore, STORE } from '../src/skal/store/db.js';
 import { NativeLogStore } from '../src/skal/store/engine.js';
+import { installHotCoordinator } from '../src/hot.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -321,4 +322,60 @@ describe('NativeLogStore tolerates a host that predates a hook', () => {
       else globalThis.__skal_store_compact = saved.compact;
     }
   });
+});
+
+
+// ---------------------------------------------------------------------
+// The OTHER half of the reload hazard: teardown ordering.
+//
+// The tests above pin handle identity across 60 generations. They say
+// nothing about the flush, and cannot: because the engine is reused, a
+// later generation reads the SAME in-memory keydir, so "the data is
+// still there" is true whether or not anything reached the disk. That
+// makes data-survival the wrong observable here, and the flush itself
+// the right one.
+//
+// The hazard db.js:869 describes: a reload tears a generation down while
+// a debounced flush is still pending (FLUSH_DEBOUNCE_MS = 60), so a write
+// made within ~60 ms of a save used to fire AFTER beginReload(). The fix
+// registers a cleanup that lands it synchronously instead.
+//
+// Driven through the real coordinator, not a stand-in — installHotCoordinator
+// has no imports and manages globals only, so there is no reason to model it.
+//
+// Mutation-checked: deleting the addCleanup block in db.js leaves
+// pending() at 1 and flushes() unmoved, and this fails on both.
+// ---------------------------------------------------------------------
+describe('a reload lands a pending write before tearing the generation down', () => {
+  let box, savedHot;
+
+  afterEach(() => {
+    box?.cleanup(); box = null;
+    if (savedHot === undefined) delete globalThis.__skalHot;
+    else globalThis.__skalHot = savedHot;
+  });
+
+  test('beginReload() flushes synchronously instead of leaving a timer armed', async () => {
+    savedHot = globalThis.__skalHot;
+    delete globalThis.__skalHot;          // a fresh coordinator, not a leftover
+    const hot = installHotCoordinator();
+
+    box = sandbox('skal-teardown-');
+    const s = await generation({ todos: [] });
+
+    const before = s[STORE].flushes();
+    s.todos.push({ _id: 1, text: 'written 1 ms before the save' });
+
+    // The precondition the whole test rests on. If the write had already
+    // been flushed there would be no pending timer to race, and this
+    // would pass against any implementation.
+    expect(s[STORE].pending()).toBeGreaterThan(0);
+    expect(s[STORE].flushes()).toBe(before);
+
+    // No await. The point is that teardown does not wait for the debounce.
+    hot.beginReload();
+
+    expect(s[STORE].pending(), 'a write was still staged after teardown').toBe(0);
+    expect(s[STORE].flushes(), 'teardown did not flush').toBe(before + 1);
+  }, 60_000);
 });

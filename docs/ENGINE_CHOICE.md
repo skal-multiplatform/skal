@@ -1,5 +1,11 @@
 # Engine choice — JS runtime + host renderer
 
+> **Written while this was being built, and not re-verified since.** Design
+> docs here record intent at the time of implementation — some claims have
+> been overtaken by the code. Where this file and the source disagree, the
+> source wins. Numbers live in [BENCHMARKS.md](BENCHMARKS.md); it is dated
+> and sourced per block and is the exception to this notice.
+
 Decision record. Captures **why** Skal is bun + JSC + Flutter rather
 than any of the obvious alternatives, so future re-evaluation has a
 starting point.

@@ -1,12 +1,18 @@
 # Components — the fast-path layer
 
+> **Written while this was being built, and not re-verified since.** Design
+> docs here record intent at the time of implementation — some claims have
+> been overtaken by the code. Where this file and the source disagree, the
+> source wins. Numbers live in [BENCHMARKS.md](BENCHMARKS.md); it is dated
+> and sourced per block and is the exception to this notice.
+
 The hand-coded core primitives (`<Column>`, `<Row>`, `<Text>`,
 `<ListView>` …) that cross the bridge as first-class wire ops, distinct
 from the codegen-wrapped pub.dev widgets.
 
 For the codegen pipeline that wraps third-party packages see
-[`WRAPPING_PUB_PACKAGES.md`](WRAPPING_PUB_PACKAGES.md). For platform
-plumbing and open codegen items are tracked outside this repo.
+[`WRAPPING_PUB_PACKAGES.md`](WRAPPING_PUB_PACKAGES.md). Platform plumbing
+and open codegen items are tracked outside this repo.
 
 ---
 
@@ -36,9 +42,9 @@ Flutter ships ~250+ public widgets across `widgets` / `material` /
   → framework plumbing the renderer handles internally. Not
   "components" in the JSX sense.
 - **~20** Cupertino → mostly duplicates Material; a theme/variant
-  decision, not separate widgets → implementation plan in §10.1.
+  decision, not separate widgets → implementation plan in §8.1.
 - Dialogs / sheets / overlays → imperative layer, not tree nodes →
-  implementation plan in §10.2.
+  implementation plan in §8.2.
 
 End state: **~30 fast-path primitives + a few prop systems
 (animation, gestures, styling) + an imperative overlay API.**
@@ -123,7 +129,7 @@ existing widgets instead.
 - **Animation** — the `Animated*` / `*Transition` family (~25
   widgets) collapses to one "animate props on change" system: a
   per-widget `animate` prop + duration/curve → implementation plan
-  in §10.3.
+  in §8.3.
 - **Gestures** — the `onTap*` behavior props above.
 - **Styling** — decoration / border / shadow / radius props on `box`
   (mostly landed; `_applyColdVisual` in `root.dart`).
@@ -212,7 +218,7 @@ existing RPC + reply machinery — no new wire op.
 3. **Phase 1 — declarative content.** JS passes a spec
    `{title, message, actions: [{label, value, style}]}`. Dart builds
    a stock `AlertDialog` / `CupertinoAlertDialog` (variant from
-   §10.1). Promise resolves with the chosen action's `value`;
+   §8.1). Promise resolves with the chosen action's `value`;
    barrier-dismiss resolves `null`. Covers ~90% (alert / confirm /
    action sheet). Free extras: `showDatePicker` / `showTimePicker`
    (imperative in Flutter anyway).

@@ -3,6 +3,12 @@
 Current reference only. Working notes, plans and superseded write-ups
 live in `notes/`, which is untracked.
 
+Docs carrying a **"written while this was being built"** banner are design
+records from the time of implementation. They are kept because the rationale
+in them is still worth reading, but individual claims may have been overtaken
+by the code — where they disagree with the source, the source wins. The files
+without a banner were verified against the code on 2026-08-19.
+
 ## Numbers
 
 | | |
@@ -18,6 +24,7 @@ live in `notes/`, which is untracked.
 | [NAVIGATION.md](NAVIGATION.md) | Screen stack, native transitions, back-gesture arbitration, and keep-alive. |
 | [ANIMATION.md](ANIMATION.md) | Motion runs host-side; JS declares the target. Tweens, list enter/exit, Hero, spring physics — zero per-frame bridge traffic. |
 | [NATIVE_SUPPORT.md](NATIVE_SUPPORT.md) | What a Skal app can reach natively today, and what it can't. |
+| [WEB.md](WEB.md) | The web target — DOM renderer, the hidden Flutter Web instance that serves plugins, and the prerendered SSG shape this site is built on. |
 | [bytecode-cache.md](bytecode-cache.md) | Why cold start skips the parser, and how the cache is built and invalidated. |
 
 ## Doing things
@@ -33,4 +40,5 @@ live in `notes/`, which is untracked.
 
 | | |
 |---|---|
+| [PERFORMANCE.md](PERFORMANCE.md) | The invariants a change has to respect, what is already optimal, and what has been rejected and why. Numbers live in BENCHMARKS.md. |
 | [ENGINE_CHOICE.md](ENGINE_CHOICE.md) | Decision record — why bun + JSC + Flutter rather than the obvious alternatives. |

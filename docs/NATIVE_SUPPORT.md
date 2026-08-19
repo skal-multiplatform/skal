@@ -1,5 +1,11 @@
 # Native capability support — status and roadmap
 
+> **Written while this was being built, and not re-verified since.** Design
+> docs here record intent at the time of implementation — some claims have
+> been overtaken by the code. Where this file and the source disagree, the
+> source wins. Numbers live in [BENCHMARKS.md](BENCHMARKS.md); it is dated
+> and sourced per block and is the exception to this notice.
+
 What a Skal app can reach natively **today**, what it can't, and the
 shortest path to "any Flutter package, with little or no glue."
 
@@ -292,7 +298,7 @@ on top of it.
 **Done.** Harness lives in `examples/virt-bench` (`src/rpc-bench.js` +
 `flutter-host/lib/bench_service.dart`) and is reproducible with
 `bun run build:js-only && cd flutter-host && flutter run -d macos`.
-Full distributions: [BENCHMARKS.md § Bench 4](BENCHMARKS.md). macOS
+Full distributions: [BENCHMARKS.md](BENCHMARKS.md). macOS
 debug build, 60 Hz.
 
 | # | Question | Answer |
@@ -419,7 +425,7 @@ clipboard + haptics — capabilities #10 and #11, zero pub dependencies.
 Verified on macOS: `copy` → `paste` round-trips through the real system
 clipboard, an unknown method rejects with a legible error, and two
 batched calls cost 17.6 ms against 43.8 ms for three sequential ones —
-independently reproducing [Bench 4](BENCHMARKS.md).
+independently reproducing [BENCHMARKS.md](BENCHMARKS.md).
 
 **Web (S1) is wired:** `registerWebService(name, impl)` lets a browser
 target answer with `navigator.clipboard` / `navigator.geolocation`
@@ -834,7 +840,7 @@ Still genuinely open.
    re-attaches, so `kRootNodeId` never surfaces in app code.
 3. ✅ **The five benchmarks** + the perf contract folded into
    [PERFORMANCE.md](PERFORMANCE.md) and
-   [BENCHMARKS.md § Bench 4](BENCHMARKS.md). Reproducible from
+   [BENCHMARKS.md](BENCHMARKS.md). Reproducible from
    `examples/virt-bench`.
 4. ✅ **A1 + A2 + S2** — service registry, `createSkalService`,
    `services:` codegen, JSON method args, web shims (S1). Verified on

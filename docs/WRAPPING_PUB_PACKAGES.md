@@ -1,5 +1,11 @@
 # Wrapping pub.dev packages for Skal
 
+> **Written while this was being built, and not re-verified since.** Design
+> docs here record intent at the time of implementation — some claims have
+> been overtaken by the code. Where this file and the source disagree, the
+> source wins. Numbers live in [BENCHMARKS.md](BENCHMARKS.md); it is dated
+> and sourced per block and is the exception to this notice.
+
 End-to-end DX rundown for the codegen pipeline. Cold-read this if you
 want to expose a Flutter package's widget to JSX.
 
@@ -294,7 +300,7 @@ const camera = createSkalRef();
 ```
 
 No additional setup — Pattern C already gave you everything. The
-codegen walks the controller's `methods2` (its own non-inherited
+codegen walks the controller's `methods` (its own non-inherited
 methods), filters to those with encodable args + return types, and
 auto-emits a dispatcher switch on the host's State that routes
 `OP_INVOKE_METHOD` ops to the controller.
@@ -302,7 +308,7 @@ auto-emits a dispatcher switch on the host's State that routes
 **JSX ref API:**
 
 ```jsx
-import { createSkalRef } from './skal-runtime.jsx';
+import { createSkalRef } from 'skal/runtime';
 
 const ref = createSkalRef();
 <Ticker ref={ref} intervalMs={500} />

@@ -1,5 +1,11 @@
 # Navigation
 
+> **Written while this was being built, and not re-verified since.** Design
+> docs here record intent at the time of implementation — some claims have
+> been overtaken by the code. Where this file and the source disagree, the
+> source wins. Numbers live in [BENCHMARKS.md](BENCHMARKS.md); it is dated
+> and sourced per block and is the exception to this notice.
+
 A stack of screens with native push/pop transitions, the native
 back-gesture, and — the point — **keep-alive**, so going back is instant
 and never re-mounts a screen.
@@ -55,7 +61,7 @@ router must keep the two jobs split, or keep-alive is lost.
   Children are `<screen>` nodes (the current stack). `onPop` handler
   fires when Flutter pops a route via gesture / system back.
 - **`<screen>`** (`wtScreen`) → one `MaterialPage` / `CupertinoPage`
-  (variant per the design system, §10.1). Its single child is the
+  (variant per the design system, §8.1). Its single child is the
   screen content. `presentation` prop: `0` push (default) / `1` modal
   (`fullscreenDialog` — bottom-up transition).
 
@@ -127,7 +133,7 @@ driven by explicit Back buttons exercises the clean path.
 
 `<navigator>` is a *nested* Navigator (the tree is `MaterialApp →
 Scaffold → SkalRoot`). The Android system back goes to `MaterialApp`'s
-*root* Navigator first — which is also where `showDialog` (§10.2)
+*root* Navigator first — which is also where `showDialog` (§8.2)
 pushes. Correct order: dialog open → dismiss dialog; else → pop
 `<navigator>`.
 

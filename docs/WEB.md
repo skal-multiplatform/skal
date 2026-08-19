@@ -1,5 +1,11 @@
 # Web support
 
+> **Written while this was being built, and not re-verified since.** Design
+> docs here record intent at the time of implementation — some claims have
+> been overtaken by the code. Where this file and the source disagree, the
+> source wins. Numbers live in [BENCHMARKS.md](BENCHMARKS.md); it is dated
+> and sourced per block and is the exception to this notice.
+
 How Skal's web target renders: the DOM renderer, the hidden Flutter Web
 instance that serves plugins (Option B.5), and the shapes that exist
 alongside it — `<FlutterEmbed>`, dart2wasm + skwasm, and prerendered
@@ -21,25 +27,24 @@ the `moduleName` Solid is configured with.
 | JSX → | `bridge.js` encoder | `renderer-web.js` |
 | Buffer → | shared memory in libskal | DOM mutations |
 | Renderer | Flutter (Skia/Impeller) | browser DOM + CSS |
-| Bundle | 123 kB JS + 1.34 MB JSC bytecode + 62 MB libskal | 137 kB JS (currently broken, see below) |
+| Bundle | 123 kB JS + 1.34 MB JSC bytecode + 62 MB libskal | 137 kB JS |
 
 The babel plugin recognizes **49 widget intrinsics**;
 `renderer-web.js` has **79 case branches** covering them and their
 variants. Coverage is broad — slivers, custom-scroll, page-view, hero,
 dismissible all render to DOM equivalents.
 
-### What's broken
+### The bootstrap problem, and how it was solved
 
-Web is currently **non-functional**. `packages/skal-js/src/bridge.js`
-line 408 calls `globalThis.__skal_acquireBridge()` at module load.
-That hook is installed by libskal on native; on web nothing installs
-it → `TypeError` at script start → blank page.
+`bridge.js` used to call `globalThis.__skal_acquireBridge()` unguarded at
+module load. That hook is installed by libskal on native; on web nothing
+installed it, so the page died with a `TypeError` before rendering.
 
-This is a pre-existing bug, not introduced by the restructure (verified
-by stashing the restructure changes and reproducing on the OLD layout).
-Phase 0 below fixes it.
+Fixed: the call is feature-detected and falls back to a stub buffer
+(`bridge.js` — search `acquireSharedBridge`). Web builds, renders and
+responds to input; verified against a scaffolded app.
 
-### What works (once Phase 0 lands)
+### What works
 
 - Layout / box / column / row / text / button / list — full coverage
 - Sliver-based widgets, page view, hero, dismissible
@@ -166,14 +171,14 @@ Result → JSON → dart:js_interop → JS Promise resolves
 
 ```jsx
 // kitchen-sink/src/App.jsx (JS tab)
-import { useGeolocation } from '@skal/geolocator';
+import { getCurrentPosition } from 'skal-plugin-geolocator';
 
 function GeoButton() {
   const [pos, setPos] = createSignal(null);
   return (
     <Column gap={8}>
       <Button label="Where am I?" onClick={async () => {
-        const p = await useGeolocation();
+        const p = await getCurrentPosition();
         setPos(p);
       }} />
       {pos() && <Text label={`${pos().lat}, ${pos().lon}`} />}
@@ -205,7 +210,7 @@ Dart side has a widget registry (`_widgetFor` in `flutter-web-plugins/lib/main.d
 
 **Known issue (open)**: when `<FlutterEmbed>` is mounted deep inside a flex layout (the kitchen-sink Libs tab is nested `Tabs > Tab > ScrollView > Section > Column`), the `flt-glass-pane`'s shadow-DOM `flt-scene-host` stays at `width:auto height:auto` after `addView`. The embed div, Flutter view container, and CSS sizing are all correct — only the internal scene-host bounds fail to update. Dispatching `window.resize` after addView doesn't recover. The same widget renders fine when added at `document.body` level with explicit pixel dimensions.
 
-Best guess: Flutter Web 3.41's multi-view `ResizeObserver` on per-view scene-host doesn't fire when the host is inside a flex column with computed (rather than declared) dimensions. Needs more investigation — possibly an explicit `flutterApp.resizeView(...)` call or a `physicalSize` config field on `addView`.
+Best guess: Flutter Web 3.47's multi-view `ResizeObserver` on per-view scene-host doesn't fire when the host is inside a flex column with computed (rather than declared) dimensions. Needs more investigation — possibly an explicit `flutterApp.resizeView(...)` call or a `physicalSize` config field on `addView`.
 
 For now the architecture is in place + a single-instance hand-mounted view works. Apps that need this can use `addFlutterView` directly with a position:fixed mount as a workaround.
 
@@ -590,7 +595,7 @@ The fake-DOM snapshot sidesteps that whole problem.
 ### The four workstreams
 
 1. **Prerenderer** (`scripts/prerender-web.js`, run by
-   `bun run build:web --prerender`): happy-dom harness, route loop,
+   `bun scripts/prerender-web.js <app>/dist [route ...]`): happy-dom harness, route loop,
    settle heuristic, HTML emit. Guards: `globalThis.__skalPrerender`
    flag so effects can skip browser-only work; `HtmlEmbed`/
    `FlutterEmbed` render a placeholder shell.

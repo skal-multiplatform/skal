@@ -1,5 +1,11 @@
 # Bytecode caching in Skal
 
+> **Written while this was being built, and not re-verified since.** Design
+> docs here record intent at the time of implementation — some claims have
+> been overtaken by the code. Where this file and the source disagree, the
+> source wins. Numbers live in [BENCHMARKS.md](BENCHMARKS.md); it is dated
+> and sourced per block and is the exception to this notice.
+
 Goal: eliminate per-launch JS parse cost in release builds. Skal ships ~18 KB
 of Vite-bundled Solid app code; without caching, JSC parses + bytecode-generates
 that on every cold start (~80–250 ms in release). With caching, that work

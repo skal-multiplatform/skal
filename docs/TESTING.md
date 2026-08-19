@@ -5,7 +5,7 @@ narrowest to slowest / broadest:
 
 | Layer | Runner | Language | What it covers |
 |---|---|---|---|
-| JS unit | `bun test` | JS | framework, store, renderers (`*.test.js`) |
+| JS unit | `bun test --conditions=browser` | JS | framework, store, renderers (`*.test.js`) |
 | Native store | `zig test` | Zig | the on-device log store (`bun run test:native`) |
 | Codegen | `dart test` | Dart | the build_runner codegen pipeline |
 | Host | `flutter test` | Dart | the bridge decoder, wire format, widget builders |
@@ -13,7 +13,10 @@ narrowest to slowest / broadest:
 
 ```bash
 bun run test                              # JS + native store + codegen + host
-cd packages/skal-js && bun test           # the JS framework: encoder, diff cache, doorbell
+# --conditions=browser is REQUIRED. Without it bun resolves solid-js to its
+# SSR build, where createEffect runs once and never reacts: 430 pass / 128
+# fail, all of them false. With it: 558 pass / 0 fail.
+cd packages/skal-js && bun test --conditions=browser   # encoder, diff cache, doorbell, store
 cd examples/kitchen-sink && bun test      # an app's own JS unit tests (bun:test)
 bun --filter kitchen-sink test:e2e        # E2E (Maestro) — needs the maestro CLI + a device
 ```
@@ -208,7 +211,7 @@ see the note on tombstone accounting.
 
 ### The JS side
 
-`bun test` in `packages/skal-js` covers the bridge's encoder, diff cache
+`bun test --conditions=browser` in `packages/skal-js` covers the bridge's encoder, diff cache
 and the §2b doorbell — the ringing rule (ROOT-targeted invokes only) and
 the coalescing gate. `test/bridge.test.js` installs
 `globalThis.__skal_acquireBridge` + `__skal_notifyHost` over a plain

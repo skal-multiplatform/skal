@@ -228,14 +228,26 @@ Two ways to trigger it — same underlying mechanism, different transport:
 
 | | Command | How to apply an edit |
 |---|---|---|
-| **Automatic** | `bun run dev:hot:macos` (`:ios` / `:android`) | Just save — the dev server rebuilds and pushes; the app updates itself |
+| **Automatic** | `bun run dev:macos` (`:ios` / `:android`) | Just save — the dev server rebuilds and pushes; the app updates itself |
 | **Manual** | `bun run dev` in one shell + `flutter run` in another | Press **`r`** in the `flutter run` terminal |
 
-`dev:hot:*` runs `scripts/hot-reload-server.js` (a `vite build --watch` + a
+`dev:*` runs `scripts/hot-reload-server.js` (a `vite build --watch` + a
 WebSocket on `:8765`) alongside `flutter run --dart-define=SKAL_HOT=1`; the
 app's debug-only Dart client connects and re-evals each pushed bundle. The
 manual route leans on Flutter's asset-sync: pressing `r` re-syncs the
 vite-rebuilt `skal-app.js` and `SkalRoot.reassemble()` re-evals it.
+
+**Port clash.** The reload socket is `8765`. If something else holds it the
+server now says so and exits — it cannot silently move, because the app dials
+a COMPILE-TIME port. Pick another for both halves at once:
+
+```bash
+SKAL_HOT_PORT=8799 bun run dev:ios
+```
+
+`dev-hot.sh` forwards it to the client as a `--dart-define`, so the app and
+the server agree. Find the squatter with
+`lsof -nP -iTCP:8765 -sTCP:LISTEN`.
 
 **What survives a reload:**
 - **Store-backed state** (`createSkalStore` persists through the native store).
@@ -264,7 +276,7 @@ keyed by call order, so use `createHotState`/`createRouter` in a stable spot
 - **Don't use `R` (hot restart)** with a native Skal app — it re-runs `main()`
   over the already-live VM and drops the connection. Use JS reload (`r` /
   socket) for JS edits; for Dart edits, `r` (hot reload) is fine.
-- **Android:** the client reaches the host via `10.0.2.2` (the `dev:hot:android`
+- **Android:** the client reaches the host via `10.0.2.2` (the `dev:android`
   script sets `--dart-define=SKAL_HOT_HOST=10.0.2.2`).
 
 **Did it work?** You'll see `Performing hot reload…` (manual) or a
@@ -276,7 +288,7 @@ Mechanism: `packages/skal-js/src/hot.js` (the `__skalHot` coordinator) +
 
 | Command | Target | Notes |
 |---|---|---|
-| `bun run dev:hot:macos` | native | **JS hot reload** — save a `.jsx`, app updates live (see above) |
+| `bun run dev:macos` | native | **JS hot reload** — save a `.jsx`, app updates live (see above) |
 | `bun run dev:web` | DOM preview | vite dev server with **HMR** — fastest loop |
 | `bun run dev:web-flutter` | Flutter Web (skwasm) | `flutter run -d chrome --wasm` |
 | `bun run dev:macos` / `dev:ios` / `dev:android` | native | `flutter run` → Flutter DevTools, hot reload, widget inspector |

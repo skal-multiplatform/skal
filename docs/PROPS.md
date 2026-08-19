@@ -1,7 +1,13 @@
 # Props pipeline — architecture
 
+> **Written while this was being built, and not re-verified since.** Design
+> docs here record intent at the time of implementation — some claims have
+> been overtaken by the code. Where this file and the source disagree, the
+> source wins. Numbers live in [BENCHMARKS.md](BENCHMARKS.md); it is dated
+> and sourced per block and is the exception to this notice.
+
 How props flow from JSX, through the JS-side bridge encoder, across
-the shared 2 MiB region, into Flutter widgets — end to end. This is
+the shared 6 MiB region, into Flutter widgets — end to end. This is
 an architecture overview; the source of truth for the wire format is
 `packages/skal_flutter/lib/skal/wire.dart` and `packages/skal-js/src/bridge.js`,
 which are kept in sync.
@@ -28,7 +34,7 @@ For the runtime/host choice see [`ENGINE_CHOICE.md`](ENGINE_CHOICE.md).
 ## 1. Lifecycle
 
 ```
-   JSX                Solid effect     bridge.js               2 MiB ring        bridge.dart                Flutter
+   JSX                Solid effect     bridge.js               4 MiB ring        bridge.dart                Flutter
  ─────             ─────────────    ─────────────────────    ──────────────    ──────────────────────    ──────────────
  <button           signal write  →  setPropU32(id,        →  16-byte op    →   pumpOps decode → mutate  → setState
    bg={...}                         key, value)              record          NodeState + flag dirty +
@@ -67,7 +73,7 @@ Header (64 bytes):
 - u32 event_read_pos
 - 28 bytes reserved
 
-Op ring (1 MiB) — fixed 16-byte records:
+Op ring (4 MiB) — fixed 16-byte records:
 
 ```
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -97,11 +103,14 @@ Op ring (1 MiB) — fixed 16-byte records:
 | OP_SET_SCALE_Y | node id | — | f32 bits |
 | OP_SET_ROTATION_Z | node id | — | f32 bits |
 
-String heap (512 KiB) — UTF-8 bytes for SET_TEXT / SET_PROP_STR.
+String heap (768 KiB) — UTF-8 bytes for SET_TEXT / SET_PROP_STR.
 The op carries an offset + length; the host decodes via
 `Uint8List.sublistView` (zero-copy view) + `utf8.decode`.
 
-Event ring (~448 KiB) — Host → JS direction. 16-byte records with
+Reply heap (256 KiB) — RPC return values and error strings, written by
+Dart and read by JS.
+
+Event ring (~1 MiB) — Host → JS direction. 16-byte records with
 event kind (byte 0) + handler id (bytes 4-7). On dispatch the host
 bumps `event_seq` and calls `skal_wake_js` to nudge the JS worker.
 
@@ -257,7 +266,7 @@ u32 slot as regular dp counts.
    inserting it into the new one.
 
 3. **String ops use a 24-bit offset packed into the opcode `b`
-   field.** 16 MiB addressable, way more than the 512 KiB string
+   field.** 16 MiB addressable, way more than the 768 KiB string
    heap. The high byte of `b` holds the prop key (string ops
    cover ALL string-typed props through one opcode).
 

@@ -1,5 +1,11 @@
 # Animation
 
+> **Written while this was being built, and not re-verified since.** Design
+> docs here record intent at the time of implementation — some claims have
+> been overtaken by the code. Where this file and the source disagree, the
+> source wins. Numbers live in [BENCHMARKS.md](BENCHMARKS.md); it is dated
+> and sourced per block and is the exception to this notice.
+
 Every animation runs **host-side on Flutter**; JS only ever declares the
 target. Implicit tweens, explicit and looping animations, list
 enter/exit, shared-element (Hero) transitions and real spring physics —
@@ -207,7 +213,7 @@ A staggered reveal is not a new primitive — it is the `animate` prop's
 </For>
 ```
 
-A thin `createStagger(count, step)` runtime helper can hand back the
+A thin `createStagger(step = 50)` runtime helper can hand back the
 per-index delays, but the mechanism is entirely the existing
 per-node controller — no wire or host work.
 

@@ -1,5 +1,11 @@
 # Performance rules
 
+> **Written while this was being built, and not re-verified since.** Design
+> docs here record intent at the time of implementation — some claims have
+> been overtaken by the code. Where this file and the source disagree, the
+> source wins. Numbers live in [BENCHMARKS.md](BENCHMARKS.md); it is dated
+> and sourced per block and is the exception to this notice.
+
 The invariants a change has to respect, what is already optimal, and
 what has been rejected and why. **Numbers live in
 [BENCHMARKS.md](BENCHMARKS.md)** — this doc is the reasoning around them.
@@ -64,7 +70,7 @@ buffers**. Exceeding them is silent, not an error:
 ## Bridge RPC — rate classes
 
 Measured 2026-07-21 on a macOS debug build, 60 Hz. Full distributions
-in [BENCHMARKS.md § Bench 4](BENCHMARKS.md); this is the contract those
+in [BENCHMARKS.md](BENCHMARKS.md); this is the contract those
 numbers imply. It is a DOCUMENTED contract, not a mechanically enforced
 one — the registry cannot observe call rates, and an earlier
 `assertRateClass` shim claimed enforcement while nothing called it,
@@ -73,7 +79,7 @@ it will come from the generator, per method, with tests.
 
 **Superseded 2026-07-25 — a one-shot RPC no longer costs a frame.**
 The off-frame doorbell landed (see
-measured, not yet scheduled): JS rings
+measured but not yet scheduled): JS rings
 `__skal_notifyHost()` after committing a batch containing a
 root-targeted (logic) invoke, and the host drains immediately instead
 of at the next vsync. Measured on macOS, debug and release:

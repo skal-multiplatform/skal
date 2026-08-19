@@ -16,7 +16,9 @@ import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
 import 'package:skal_flutter/skal/services.dart';
+
 import 'dart:convert';
+
 import 'package:camera/camera.dart';
 import 'package:kitchen_sink/adapters/camera_factory.dart';
 import 'package:kitchen_sink/adapters/device_service.dart';
@@ -260,9 +262,9 @@ Widget _build_QrImageView(NodeState n, SkalBridge bridge) {
       ),
       constrainErrorBounds: n.getCustomPropU32('constrainErrorBounds', 1) != 0,
       gapless: n.getCustomPropU32('gapless', 1) != 0,
-      embeddedImage:
-          (imageProviderFromSrc(n.getCustomPropStr('embeddedImage') ?? '')
-              as ImageProvider?),
+      embeddedImage: (imageProviderFromSrc(
+        n.getCustomPropStr('embeddedImage') ?? '',
+      ) as ImageProvider?),
       embeddedImageStyle: _skalParseQrEmbeddedImageStyle(
         n.getCustomPropStr('embeddedImageStyle'),
       ),

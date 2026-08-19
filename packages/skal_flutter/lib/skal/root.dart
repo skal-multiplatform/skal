@@ -2342,19 +2342,19 @@ Widget _buildReorderableListView(NodeState n, SkalBridge bridge) {
         child: child,
       );
     },
-    onReorder: (oldIndex, newIndex) {
-      // Flutter reports newIndex as the slot the dragged item would
-      // occupy with itself still present — for a downward move that's
-      // one past the real target. Normalize so the JS handler gets
-      // clean "move item from `from` to `to`" semantics.
-      final to = newIndex > oldIndex ? newIndex - 1 : newIndex;
+    // onReorderItem, not the deprecated onReorder: Flutter now applies
+    // the `newIndex -= 1` shift for the removed item itself, so the
+    // hand-rolled normalisation this used to do is gone. It also only
+    // fires when oldIndex != newIndex, which drops a no-op reorder that
+    // previously crossed the bridge for nothing.
+    onReorderItem: (oldIndex, newIndex) {
       // The JS app owns the list — it reorders its source array and
       // the next <For> diff re-emits the children in the new order.
       // No `onReorder` handler bound → dispatchEventTuple is a no-op,
       // and the item snaps back (the old safe default).
       bridge.dispatchEventTuple(
         n.onReorderHandlerId,
-        [oldIndex, to],
+        [oldIndex, newIndex],
         eventKind: evReorder,
       );
     },
@@ -4363,7 +4363,13 @@ class _AnimatedListEntryState extends State<_AnimatedListEntry>
   Widget build(BuildContext context) {
     return SizeTransition(
       sizeFactor: _curved,
-      axisAlignment: -1.0,
+      // Was `axisAlignment: -1.0`, deprecated in Flutter 3.47. The exact
+      // equivalent for the default vertical axis is what SizeTransition
+      // itself substitutes internally:
+      //     Axis.vertical => AlignmentDirectional(-1.0, axisAlignment ?? 0.0)
+      // AlignmentDirectional, not Alignment — the internal path is
+      // direction-aware and swapping to Alignment would change RTL layout.
+      alignment: const AlignmentDirectional(-1.0, -1.0),
       child: FadeTransition(
         opacity: _curved,
         child: Padding(

@@ -125,6 +125,12 @@ jobs:
           path: |
             vendor/**
             !vendor/bun/build/**
+            # WebKit's codegen scripts are Python; running them leaves
+            # bytecode caches in the SOURCE tree. Three directories, 28
+            # files, and the only reason android's copy of vendor/ ever
+            # differed from desktop's and ios-sim's. Excluded like
+            # vendor/bun/build, so all three now cache identical bytes.
+            !vendor/WebKit/**/__pycache__/**
           key: vendor-src-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
           # Prefix fallback: a pin bump restores the previous vendor/ and
           # setup.sh reconciles it to the new pin (fetch + checkout) —
@@ -228,12 +234,20 @@ jobs:
           # whatever .git it finds via clone_pinned_fork (fetch + checkout),
           # so its bytes are inert here.
           echo "  --- content fingerprint (mirrors the cache's own paths) ---"
+          # Mirrors the cache's exclusions exactly — including __pycache__,
+          # added after the first run of this step showed android carrying 28
+          # files the others did not. If these three hashes now agree, the
+          # shared entry is identical whoever writes it; if they still differ,
+          # something else is leaking into vendor/ and the exclusion list is
+          # incomplete. Either way the answer is here rather than assumed.
           fp() {
             find "$1" -type f -not -path '*/.git/*' -not -path 'vendor/bun/build/*' \
+              -not -path '*/__pycache__/*' \
               -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 shasum -a 256 2>/dev/null \
               | shasum -a 256 | cut -d' ' -f1
           }
-          n=$(find vendor -type f -not -path '*/.git/*' -not -path 'vendor/bun/build/*' 2>/dev/null | wc -l | tr -d ' ')
+          n=$(find vendor -type f -not -path '*/.git/*' -not -path 'vendor/bun/build/*' \
+                -not -path '*/__pycache__/*' 2>/dev/null | wc -l | tr -d ' ')
           echo "  files:      $n"
           echo "  vendor:     $(fp vendor)"
           for d in vendor/*/; do

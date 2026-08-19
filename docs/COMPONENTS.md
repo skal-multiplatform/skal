@@ -281,41 +281,48 @@ Every fast-path widget needs its `renderer-web.js` side too
 codegen generates the tag mapping; the CSS baseline stays
 hand-written. Forgetting it is a silent web-only bug.
 
-## The analyzer constraint
+## The analyzer version, and the Flutter floor it sets
 
-`skal_codegen` pins `analyzer: ^7.0.0` while the current release is 14.x.
-That is not neglect — the two ends are pinned against each other:
+`skal_codegen` runs on `analyzer ^14` / `build ^4`. Getting there meant
+moving the Flutter floor with it, because the two ends constrain each
+other:
 
 | | |
 |---|---|
-| Flutter 3.41.9 + analyzer ^7 | works — what ships today |
-| Flutter 3.47.0 + analyzer ^7 | fails — `Missing implementation of visitDotShorthandPropertyAccess`; the new Dart emits AST nodes analyzer 7 cannot serialize |
+| Flutter 3.41.9 + analyzer ^7 | the old combination |
+| Flutter 3.47.0 + analyzer ^7 | fails — `Missing implementation of visitDotShorthandPropertyAccess`; new Dart emits AST nodes analyzer 7 cannot serialize |
 | Flutter 3.41.9 + analyzer ^14 | fails — analyzer ≥13.1 needs `meta ^1.18.3`, `flutter_test` pins `meta 1.17.0` |
-| Flutter 3.47.0 + analyzer ^14 | untested — needs the Flutter bump to verify |
+| **Flutter ≥3.47 + analyzer ^14** | **what we run now** |
 
-So the migration cannot land on its own. It has to move with the Flutter
-pin in `.github/workflows/*` (see the `unpin-flutter` note in tests.yml).
+So **Skal now requires a Flutter new enough to ship `meta ≥1.18.3`.**
+3.41.9 no longer resolves: every scaffolded app carries both
+`flutter_test` and `skal_codegen`, and pub cannot satisfy both. CI floats
+on stable again — the pin only ever existed to dodge the analyzer 7
+crash. `.github/workflows/*` keep a `pin-flutter` input as an opt-in
+escape hatch if a future release breaks the build.
 
-**The migration itself is small** — measured, not estimated. It is a
-rename, because analyzer 7 carried a transitional element model and v14
-simply dropped the suffixes:
+### What the migration was
 
-    element2.dart -> element.dart        .element3      -> .element
-    ClassElement2 -> ClassElement        .libraryElement2 -> .libraryElement
-    ConstructorElement2 -> ConstructorElement            .name3 -> .name
+Much smaller than the version jump suggests. analyzer 7 carried a
+*transitional* element model — the new API published alongside the old
+under `2`/`3` suffixes — and v14 simply dropped them:
+
+    element2.dart -> element.dart          .element3        -> .element
+    ClassElement2 -> ClassElement          .libraryElement2 -> .libraryElement
+    ConstructorElement2 -> ConstructorElement                .name3 -> .name
     ExecutableElement2  -> ExecutableElement
     LibraryElement2     -> LibraryElement
     .methods2 / .fields2 / .getters2 / .constants2 / .constructors2 /
     .typeParameters2 / .library2 / .libraryImports2 /
-    .redirectedConstructor2 / .importedLibrary2   -> drop the 2
+    .redirectedConstructor2 / .importedLibrary2     -> drop the 2
 
 One real semantic change, not a rename: `FieldElement.isSynthetic` is
-gone. Its replacement is `!isOriginDeclaration` — v14 splits a property's
-origin into `isOriginDeclaration` (an explicit `FieldDeclaration`) and
-`isOriginGetterSetter` (induced by a getter/setter).
+gone. v14 splits a property's origin into `isOriginDeclaration` (an
+explicit `FieldDeclaration`) and `isOriginGetterSetter` (induced by a
+getter/setter), so the old check becomes `!isOriginDeclaration`.
 
-A trial run took 124 lib/ errors to 0 and left all 42 tests passing. The
-snapshot fixtures shift, but only because `build ^4` pulls a newer
-`dart_style`: blank lines between imports and one rewrapped expression.
-Stripped of whitespace the generated output is byte-identical, so
-regenerate with `SKAL_UPDATE_SNAPSHOTS=1` rather than hand-editing.
+124 `lib/` errors to 0. The snapshot fixtures shifted, but only because
+`build ^4` pulls a newer `dart_style`: blank lines between imports and
+one rewrapped expression. Strip whitespace and the generated output is
+identical, so regenerate with `SKAL_UPDATE_SNAPSHOTS=1` rather than
+hand-editing.

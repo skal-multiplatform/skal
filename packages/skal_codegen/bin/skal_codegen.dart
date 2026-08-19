@@ -47,7 +47,7 @@
 //     • Slider → slider
 //     • Toggle → toggle
 
-// `libraryElement2` is marked @experimental until the analyzer's new
+// `libraryElement` is marked @experimental until the analyzer's new
 // element model stabilizes. See packages/skal_codegen/lib/src/type_mapper.dart
 // for the full rationale.
 // ignore_for_file: experimental_member_use
@@ -324,7 +324,7 @@ Future<int> _runCodegen({
     if (isLocal) {
       relImports.add(p.relative(inputAbs, from: p.dirname(absOutput)));
     } else {
-      final srcUri = unitResult.libraryElement2.uri;
+      final srcUri = unitResult.libraryElement.uri;
       if (srcUri.scheme == 'package' && srcUri.pathSegments.isNotEmpty) {
         final pkg = srcUri.pathSegments.first;
         relImports.add('package:$pkg/$pkg.dart');

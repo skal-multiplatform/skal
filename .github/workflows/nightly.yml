@@ -23,13 +23,13 @@ jobs:
   # not "someone broke main".
   tests:
     uses: ./.github/workflows/tests.yml
-    with: { unpin-flutter: true }
+    
   android:
     uses: ./.github/workflows/android.yml
-    with: { unpin-flutter: true }
+    
   desktop:
     uses: ./.github/workflows/desktop.yml
-    with: { unpin-flutter: true }
+    
   ios-sim:
     uses: ./.github/workflows/ios-sim.yml
-    with: { unpin-flutter: true }
+    

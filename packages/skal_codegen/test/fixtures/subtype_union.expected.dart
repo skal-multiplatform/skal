@@ -15,7 +15,9 @@ import 'package:flutter/material.dart';
 import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
+
 import 'dart:convert';
+
 import 'package:skal_flutter/skal/root.dart';
 
 import 'subtype_union.dart';

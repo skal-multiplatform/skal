@@ -65,7 +65,7 @@
 // ignore_for_file: experimental_member_use
 
 import 'package:analyzer/dart/analysis/results.dart';
-import 'package:analyzer/dart/element/element2.dart';
+import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/nullability_suffix.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:dart_style/dart_style.dart';
@@ -106,7 +106,7 @@ class HostConfig {
   /// The dev's factory function (returns the controller). Either a
   /// plain `Foo` or a `Future<Foo>` — codegen detects which and
   /// emits `await` accordingly.
-  final ExecutableElement2 factoryFn;
+  final ExecutableElement factoryFn;
 
   /// Import URI for the factory function — emitted as an `import`
   /// in the generated file so the synthesized `_CameraHost` can call
@@ -265,7 +265,7 @@ class ServiceConfig {
   final String name;
 
   /// The class whose static methods are wrapped.
-  final ClassElement2 cls;
+  final ClassElement cls;
 
   /// Import for [cls]'s library, as it should appear in the output.
   final String importUri;
@@ -384,16 +384,16 @@ GenerationResult generate({
   // every call, so a previous run's universe can never leak into this
   // one even if that run threw.
   // Dedupe by LIBRARY before spreading: part files share one
-  // libraryElement2, and every part-file unit reports the same
+  // libraryElement, and every part-file unit reports the same
   // library-scoped class set. Without this, each class in a k-part
   // library lands k times in the universe — inflating every union scan
   // and, worse, tripping the subtype-union ambiguity guard
   // (nameCounts == 1), which silently excluded every such class from
   // B1 for exactly the multi-part layout flutter_map uses.
   final seenLibs = <int>{};
-  final universe = <ClassElement2>[];
+  final universe = <ClassElement>[];
   for (final unit in units) {
-    final lib = unit.libraryElement2;
+    final lib = unit.libraryElement;
     if (!seenLibs.add(identityHashCode(lib))) continue;
     universe.addAll(lib.classes);
   }
@@ -409,7 +409,7 @@ GenerationResult generate({
   // that's surfaced by multiple input units (the `part of` case in
   // packages like flutter_map, where retina_mode.dart, wms_tile_layer_
   // options.dart, etc. all `part of 'tile_layer.dart'`) doesn't get a
-  // duplicate `_build_TileLayer` per part-file. `libraryElement2.classes`
+  // duplicate `_build_TileLayer` per part-file. `libraryElement.classes`
   // returns library-scoped classes, and every part-file in the same
   // library reports the same set — without this dedup, walking N
   // part-files emits N copies of every class in that library.
@@ -422,7 +422,7 @@ GenerationResult generate({
       // Host targets bypass the regular emission. See [hosts] in
       // generate()'s contract: the synthesized host below replaces
       // any auto-generated adapter for the same class.
-      if (hostedWidgetNames.contains(cls.name3)) continue;
+      if (hostedWidgetNames.contains(cls.name)) continue;
       // Skip if another unit (e.g. a part-file in the same library)
       // already produced an adapter for this exact class element.
       if (!emittedClassIds.add(identityHashCode(cls))) continue;
@@ -432,8 +432,8 @@ GenerationResult generate({
         // no constructors at all). Record a skip so the dev sees the
         // class was considered but produced nothing.
         widgets.add(GeneratedWidget(
-          cls.name3 ?? '',
-          _camelCase(cls.name3 ?? ''),
+          cls.name ?? '',
+          _camelCase(cls.name ?? ''),
           skipReason: 'no public constructors',
         ));
         continue;
@@ -474,7 +474,7 @@ GenerationResult generate({
   // For each declared HostConfig, emit a private StatefulWidget that
   // owns a controller-typed object, plus the `_build_<JsxName>`
   // function the registry calls. The host wraps the underlying widget
-  // (cls.name3 == h.wrappedWidgetName) without trying to encode the
+  // (cls.name == h.wrappedWidgetName) without trying to encode the
   // controller across the bridge.
   //
   // Each host config contributes TWO imports to the generated file:
@@ -510,7 +510,7 @@ GenerationResult generate({
   final emittedValueNames = <String>{};
   while (pendingValues.isNotEmpty) {
     for (final cls in pendingValues) {
-      final name = cls.name3 ?? '';
+      final name = cls.name ?? '';
       if (name.isEmpty || !emittedValueNames.add(name)) continue;
       final result = _emitValueBuilder(cls);
       if (result.body != null) {
@@ -729,7 +729,7 @@ class _ServiceResult {
 /// failure mode is the exact thing B4 exists to prevent, and there is
 /// no reason to reproduce it here.
 _ServiceResult _emitService(ServiceConfig svc) {
-  final className = svc.cls.name3 ?? '';
+  final className = svc.cls.name ?? '';
   final imports = <String>{svc.importUri};
   final helpers = <String, String>{};
   final arms = <String>[];
@@ -737,11 +737,11 @@ _ServiceResult _emitService(ServiceConfig svc) {
   final skipped = <String, String>{};
   final omittedParams = <String, List<String>>{};
 
-  final methods = svc.cls.methods2.where((m) => m.isStatic).toList()
-    ..sort((a, b) => (a.name3 ?? '').compareTo(b.name3 ?? ''));
+  final methods = svc.cls.methods.where((m) => m.isStatic).toList()
+    ..sort((a, b) => (a.name ?? '').compareTo(b.name ?? ''));
 
   for (final m in methods) {
-    final name = m.name3;
+    final name = m.name;
     if (name == null || name.isEmpty || name.startsWith('_')) continue;
     if (m.isOperator) continue;
 
@@ -751,7 +751,7 @@ _ServiceResult _emitService(ServiceConfig svc) {
     var inner = rt;
     var shape = _ReturnShape.value;
     if (rt is InterfaceType) {
-      final n = rt.element3.name3;
+      final n = rt.element.name;
       if (n == 'Future' && rt.typeArguments.length == 1) {
         inner = rt.typeArguments.first;
         shape = _ReturnShape.future;
@@ -802,7 +802,7 @@ _ServiceResult _emitService(ServiceConfig svc) {
     var argIndex = -1;
     for (final p in m.formalParameters) {
       argIndex++;
-      final pName = p.name3 ?? '';
+      final pName = p.name ?? '';
       // `args.isNotEmpty` for slot 0 rather than `args.length > 0` —
       // the latter is correct but trips prefer_is_empty, and generated
       // code that lints is generated code developers stop reading.
@@ -954,13 +954,13 @@ _ServiceResult _emitService(ServiceConfig svc) {
 /// subtree by and is refused.
 int? _indexedBuilderArity(DartType t) {
   if (t is! FunctionType) return null;
-  final ret = t.returnType.element3?.name3;
+  final ret = t.returnType.element?.name;
   if (ret != 'Widget') return null;
   final ps = t.formalParameters;
   if (ps.any((p) => p.isNamed)) return null;
   if (ps.length == 1 && ps.first.type.isDartCoreInt) return 1;
   if (ps.length == 2 &&
-      ps[0].type.element3?.name3 == 'BuildContext' &&
+      ps[0].type.element?.name == 'BuildContext' &&
       ps[1].type.isDartCoreInt) {
     return 2;
   }
@@ -978,9 +978,9 @@ int? _indexedBuilderArity(DartType t) {
 /// pinned to, plus any class in the analyzed set. `Object` covers the
 /// flutter_map case (`PolygonLayer<R>` where R is an unconstrained
 /// payload type) and is the answer most of the time.
-List<DartType>? _resolveTypeArgs(ClassElement2 cls, List<String> names) {
-  if (names.length != cls.typeParameters2.length) return null;
-  final tp = cls.library2.typeProvider;
+List<DartType>? _resolveTypeArgs(ClassElement cls, List<String> names) {
+  if (names.length != cls.typeParameters.length) return null;
+  final tp = cls.library.typeProvider;
   final out = <DartType>[];
   for (final raw in names) {
     final name = raw.trim();
@@ -1005,7 +1005,7 @@ List<DartType>? _resolveTypeArgs(ClassElement2 cls, List<String> names) {
 /// package as the widget.
 DartType? _namedTypeFromUniverse(String name) {
   for (final c in subtypeUniverse) {
-    if (c.name3 == name && c.typeParameters2.isEmpty) return c.thisType;
+    if (c.name == name && c.typeParameters.isEmpty) return c.thisType;
   }
   return null;
 }
@@ -1037,11 +1037,11 @@ class _AdapterResult {
   });
 }
 
-_AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctorIn,
+_AdapterResult _emitAdapter(ClassElement cls, ConstructorElement ctorIn,
     [Map<String, WidgetOverride> overrides = const {}]) {
   var ctor = ctorIn;
-  final className = cls.name3 ?? '';
-  final ctorName = ctorIn.name3 ?? '';
+  final className = cls.name ?? '';
+  final ctorName = ctorIn.name ?? '';
   final isDefaultCtor = ctorName.isEmpty || ctorName == 'new';
 
   // JSX-facing symbol. Default ctor: keep the class name (`Shimmer`).
@@ -1082,12 +1082,12 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctorIn,
   // Declared here because the typeArgs block runs before the param
   // walk that owns requiredImports; merged into it below.
   final typeArgImports = <String>{};
-  if (cls.typeParameters2.isNotEmpty) {
+  if (cls.typeParameters.isNotEmpty) {
     final wanted = override?.typeArgs ?? const <String>[];
     final resolved = _resolveTypeArgs(cls, wanted);
     if (resolved == null) {
       final typeParamNames =
-          cls.typeParameters2.map((t) => t.name3 ?? '?').join(', ');
+          cls.typeParameters.map((t) => t.name ?? '?').join(', ');
       return _AdapterResult(GeneratedWidget(
         synthesizedName,
         registryKey,
@@ -1103,15 +1103,15 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctorIn,
     // library, or `Chip<MyPayload>(` refers to an unimported symbol
     // whenever MyPayload's own library contributes no adapter.
     for (final t in resolved) {
-      final tEl = t.element3;
+      final tEl = t.element;
       if (tEl != null) addCanonicalImport(tEl, typeArgImports);
     }
     final instantiated = cls.instantiate(
       typeArguments: resolved,
       nullabilitySuffix: NullabilitySuffix.none,
     );
-    final substituted = instantiated.constructors2.where(
-        (c) => (c.name3 ?? '') == (ctor.name3 ?? ''));
+    final substituted = instantiated.constructors.where(
+        (c) => (c.name ?? '') == (ctor.name ?? ''));
     if (substituted.isNotEmpty) ctorToWalk = substituted.first;
     typeArgSuffix = '<${wanted.join(', ')}>';
   }
@@ -1145,7 +1145,7 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctorIn,
   if (override != null) requiredImports.addAll(override.imports);
 
   for (final param in ctor.formalParameters) {
-    final name = param.name3;
+    final name = param.name;
     if (name == null || name.isEmpty) continue;
     if (name == 'key') continue; // skip Flutter's universal `Key? key`
 
@@ -1192,9 +1192,9 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctorIn,
         continue;
       }
       if (po.handle) {
-        final el = param.type.element3;
-        final tName = el is ClassElement2 ? el.name3 : null;
-        if (el is! ClassElement2 ||
+        final el = param.type.element;
+        final tName = el is ClassElement ? el.name : null;
+        if (el is! ClassElement ||
             tName == null ||
             extendsWidgetTransitively(el)) {
           skipReason = "override marks '$name' as a handle, but its type "
@@ -1326,9 +1326,9 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctorIn,
   // ownership — the exact silent-drop this wrapper exists to kill.
   final ownedBaseProps = {
     for (final p in ctor.formalParameters)
-      if (_kBaseProps.contains(p.name3) &&
+      if (_kBaseProps.contains(p.name) &&
           (_isBareNumberEncoding(p.type)))
-        p.name3!,
+        p.name!,
   };
   requiredHelpers['_skalApplyBaseProps'] = _basePropsHelperSource;
   // The helper constructs SkalFill, declared in the framework's
@@ -1366,8 +1366,8 @@ _AdapterResult _emitAdapter(ClassElement2 cls, ConstructorElement2 ctorIn,
 /// Widget: same `encodingFor` per constructor param, same optional-omit
 /// / required-skip rules. It does NOT get BaseProps (a `Marker` has no
 /// layout) and it does not accept children.
-_AdapterResult _emitValueBuilder(ClassElement2 cls) {
-  final className = cls.name3 ?? '';
+_AdapterResult _emitValueBuilder(ClassElement cls) {
+  final className = cls.name ?? '';
   final registryKey = _camelCase(className);
   final ctor = pickValueClassCtor(cls);
   if (ctor == null) {
@@ -1385,7 +1385,7 @@ _AdapterResult _emitValueBuilder(ClassElement2 cls) {
   String? skipReason;
 
   for (final param in ctor.formalParameters) {
-    final name = param.name3;
+    final name = param.name;
     if (name == null || name.isEmpty) continue;
     // Skip `key` only when it is Flutter's `Key` — a widget-tree
     // concern with no place on a data record. A value class with its
@@ -1393,7 +1393,7 @@ _AdapterResult _emitValueBuilder(ClassElement2 cls) {
     // it; skipping by NAME alone made such a field silently unsettable
     // and, when required, produced an uncompilable builder with no
     // skip reason.
-    if (name == 'key' && param.type.element3?.name3 == 'Key') continue;
+    if (name == 'key' && param.type.element?.name == 'Key') continue;
     final encoding = encodingFor(
       type: param.type,
       paramName: name,
@@ -1428,7 +1428,7 @@ _AdapterResult _emitValueBuilder(ClassElement2 cls) {
         isValue: true, skipReason: skipReason));
   }
 
-  final ctorName = ctor.name3 ?? '';
+  final ctorName = ctor.name ?? '';
   final invocation =
       (ctorName.isEmpty || ctorName == 'new') ? className : '$className.$ctorName';
   final body = StringBuffer()
@@ -1461,7 +1461,7 @@ const Set<String> _kBaseProps = {'width', 'height', 'padding'};
 /// genuinely consumes what the BaseProps wrapper would otherwise read.
 /// Composite encodings (EdgeInsets → four sub-props) do not qualify.
 bool _isBareNumberEncoding(DartType t) {
-  final name = t.element3?.name3;
+  final name = t.element?.name;
   return name == 'double' || name == 'int' || name == 'num';
 }
 
@@ -1591,7 +1591,7 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
 
   for (final param in host.factoryFn.formalParameters) {
     if (param.isPositional) continue;
-    final name = param.name3;
+    final name = param.name;
     if (name == null || name.isEmpty) continue;
 
     final defaultLiteral = param.defaultValueCode;
@@ -1628,7 +1628,7 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
   // awaits the factory; if sync, it just calls it directly. Both
   // paths set the controller field via setState in mounted-check.
   final isAsync = _isFuture(host.factoryFn.returnType);
-  final factoryName = host.factoryFn.name3 ?? '';
+  final factoryName = host.factoryFn.name ?? '';
 
   // Walk the controller's class methods to build the JS → Dart RPC
   // dispatch switch. The controller's type is the factory's return
@@ -1637,7 +1637,7 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
   final controllerType = isAsync
       ? (host.factoryFn.returnType as InterfaceType).typeArguments.first
       : host.factoryFn.returnType;
-  final controllerName = controllerType.element3?.name3 ?? 'Object';
+  final controllerName = controllerType.element?.name ?? 'Object';
   // The dispatcher names the controller type (`_ctl as $controllerName`),
   // so its declaring library must be imported explicitly. The widget
   // import and the factory import don't guarantee it: a factory file
@@ -1645,8 +1645,8 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
   // (WebShell adapting webview_flutter's WebViewController). Camera and
   // Ticker only worked without this because their controllers happen to
   // live in the wrapped widget's own barrel / the factory file itself.
-  final controllerEl = controllerType.element3;
-  if (controllerEl is ClassElement2) {
+  final controllerEl = controllerType.element;
+  if (controllerEl is ClassElement) {
     addCanonicalImport(controllerEl, hostRequiredImports);
   }
   final dispatchCases = _collectControllerMethods(controllerType);
@@ -1778,12 +1778,12 @@ _AdapterResult _emitHostAdapter(HostConfig host) {
 /// they care about; not every controller method needs JSX exposure.
 List<String> _collectControllerMethods(DartType controllerType) {
   if (controllerType is! InterfaceType) return const [];
-  final el = controllerType.element3;
-  if (el is! ClassElement2) return const [];
+  final el = controllerType.element;
+  if (el is! ClassElement) return const [];
   final out = <String>[];
-  for (final m in el.methods2) {
+  for (final m in el.methods) {
     if (m.isStatic) continue;
-    final name = m.name3 ?? '';
+    final name = m.name ?? '';
     if (name.isEmpty || name.startsWith('_')) continue;
     if (name == 'dispose') continue;
     // Args must all be encodable as i32 / f32 / bool. Positional only
@@ -1903,19 +1903,19 @@ _RpcReturnInfo? _classifyRpcReturn(DartType t) {
 }
 
 bool _isRpcInt(DartType t) =>
-    t.element3?.name3 == 'int' && t.element3?.library2?.isDartCore == true;
+    t.element?.name == 'int' && t.element?.library?.isDartCore == true;
 bool _isRpcDouble(DartType t) =>
-    t.element3?.name3 == 'double' && t.element3?.library2?.isDartCore == true;
+    t.element?.name == 'double' && t.element?.library?.isDartCore == true;
 bool _isRpcBool(DartType t) =>
-    t.element3?.name3 == 'bool' && t.element3?.library2?.isDartCore == true;
+    t.element?.name == 'bool' && t.element?.library?.isDartCore == true;
 bool _isRpcString(DartType t) =>
-    t.element3?.name3 == 'String' && t.element3?.library2?.isDartCore == true;
+    t.element?.name == 'String' && t.element?.library?.isDartCore == true;
 
 /// True when [t] is `Future<X>` for any X.
 bool _isFuture(DartType t) {
   if (t is! InterfaceType) return false;
-  if (t.element3.name3 != 'Future') return false;
-  final lib = t.element3.library2;
+  if (t.element.name != 'Future') return false;
+  final lib = t.element.library;
   return lib.isDartAsync;
 }
 
@@ -1927,11 +1927,11 @@ bool _isFuture(DartType t) {
 /// (or indirect) subclasses of Widget. Skips abstract classes since
 /// they can't be constructed.
 ///
-/// Element2 model note: `libraryElement2.classes` flat-returns every
+/// Element model note: `libraryElement.classes` flat-returns every
 /// class declared in the library (across all its fragments / `part`
 /// files). No more two-level `units.first.classes` walk — the new
 /// API exposes the library-level view directly.
-List<ClassElement2> _topLevelWidgetClasses(ResolvedUnitResult unit) {
+List<ClassElement> _topLevelWidgetClasses(ResolvedUnitResult unit) {
   // Skip "example-app" files: ones with a top-level `void main()`
   // function. Some packages bundle example apps inside `lib/` (e.g.
   // shimmer's `lib/main.dart`) — those files contain MyApp /
@@ -1939,19 +1939,19 @@ List<ClassElement2> _topLevelWidgetClasses(ResolvedUnitResult unit) {
   // widget API. Wrapping them is always a mistake. The void-main
   // check is a precise filter: real library files don't declare a
   // `main` function.
-  for (final fn in unit.libraryElement2.topLevelFunctions) {
-    if (fn.name3 == 'main') return const [];
+  for (final fn in unit.libraryElement.topLevelFunctions) {
+    if (fn.name == 'main') return const [];
   }
 
-  final found = <ClassElement2>[];
-  for (final cls in unit.libraryElement2.classes) {
+  final found = <ClassElement>[];
+  for (final cls in unit.libraryElement.classes) {
     if (cls.isAbstract) continue;
     // Skip Dart-private classes (leading underscore). These are
     // implementation details — they can't be constructed from
     // outside their library, and codegen-emitted adapters live in
     // a separate library so they couldn't reference them anyway.
     // qr_flutter's `_QrContentView` is the motivating case.
-    final name = cls.name3;
+    final name = cls.name;
     if (name == null || name.startsWith('_')) continue;
     if (!_extendsWidget(cls)) continue;
     // Generic widget classes pass through here; _emitAdapter sets a
@@ -1962,20 +1962,20 @@ List<ClassElement2> _topLevelWidgetClasses(ResolvedUnitResult unit) {
   return found;
 }
 
-bool _extendsWidget(ClassElement2 cls) {
+bool _extendsWidget(ClassElement cls) {
   // Walk the supertype chain looking for Widget / StatelessWidget /
   // StatefulWidget. `allSupertypes` would also work (returns the
   // complete transitive supertype set), but a direct walk via
   // `.supertype` is cheaper and matches the chain order we care
   // about (this class's parent, then grandparent, etc.).
   //
-  // In the Element2 model, `InterfaceType.element3` returns an
-  // InterfaceElement2 (non-nullable) — no `is` check needed to
+  // In the Element model, `InterfaceType.element` returns an
+  // InterfaceElement (non-nullable) — no `is` check needed to
   // navigate to the next supertype.
   var t = cls.supertype;
   while (t != null) {
-    final el = t.element3;
-    final name = el.name3;
+    final el = t.element;
+    final name = el.name;
     if (name == 'Widget' ||
         name == 'StatelessWidget' ||
         name == 'StatefulWidget') {
@@ -2007,11 +2007,11 @@ String _pascalCase(String camelCase) {
 /// double-walking the same parameter list). Returns the default
 /// (unnamed) ctor first if present, then named ctors in declaration
 /// order — keeps the generated file's ordering stable and predictable.
-List<ConstructorElement2> _eligibleConstructors(ClassElement2 cls) {
-  final result = <ConstructorElement2>[];
+List<ConstructorElement> _eligibleConstructors(ClassElement cls) {
+  final result = <ConstructorElement>[];
   // Default ctor first.
-  for (final c in cls.constructors2) {
-    final n = c.name3 ?? '';
+  for (final c in cls.constructors) {
+    final n = c.name ?? '';
     if (n.isEmpty || n == 'new') {
       if (!_isCtorEligible(c)) continue;
       result.add(c);
@@ -2019,8 +2019,8 @@ List<ConstructorElement2> _eligibleConstructors(ClassElement2 cls) {
     }
   }
   // Then named ctors in source order.
-  for (final c in cls.constructors2) {
-    final n = c.name3 ?? '';
+  for (final c in cls.constructors) {
+    final n = c.name ?? '';
     if (n.isEmpty || n == 'new') continue;
     if (n.startsWith('_')) continue; // private named ctor
     if (!_isCtorEligible(c)) continue;
@@ -2029,11 +2029,11 @@ List<ConstructorElement2> _eligibleConstructors(ClassElement2 cls) {
   return result;
 }
 
-bool _isCtorEligible(ConstructorElement2 c) {
+bool _isCtorEligible(ConstructorElement c) {
   // Skip redirecting generative constructors — they delegate to
   // another ctor and re-encoding the param list twice would emit two
   // adapters that build the same widget. The target ctor (which we
   // also visit) is the canonical entry point.
-  if (c.redirectedConstructor2 != null) return false;
+  if (c.redirectedConstructor != null) return false;
   return true;
 }

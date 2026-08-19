@@ -57,7 +57,7 @@
 //   • Every build regenerates from scratch — no incremental.
 //     Acceptable: an analyzer pass over a single package takes ~1s.
 
-// `libraryElement2` is marked @experimental until the analyzer's new
+// `libraryElement` is marked @experimental until the analyzer's new
 // element model stabilizes. See packages/skal_codegen/lib/src/type_mapper.dart
 // for the full rationale.
 // ignore_for_file: experimental_member_use
@@ -68,7 +68,7 @@ import 'dart:convert';
 
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
-import 'package:analyzer/dart/element/element2.dart';
+import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/file_system/physical_file_system.dart';
 import 'package:build/build.dart';
 import 'package:path/path.dart' as p;
@@ -176,10 +176,10 @@ class _SkalAdapterBuilder implements Builder {
     final outputAbsPath = p.join(pkgRoot, outputAsset.path);
     final relImports = [
       for (final unit in allUnits)
-        if (unit.libraryElement2.uri.scheme == 'package' &&
-            unit.libraryElement2.uri.pathSegments.isNotEmpty)
-          'package:${unit.libraryElement2.uri.pathSegments.first}/'
-              '${unit.libraryElement2.uri.pathSegments.first}.dart'
+        if (unit.libraryElement.uri.scheme == 'package' &&
+            unit.libraryElement.uri.pathSegments.isNotEmpty)
+          'package:${unit.libraryElement.uri.pathSegments.first}/'
+              '${unit.libraryElement.uri.pathSegments.first}.dart'
         else
           p.relative(unit.path, from: p.dirname(outputAbsPath))
     ];
@@ -488,7 +488,7 @@ Future<List<ServiceConfig>> _resolveServices(
     // Search every library in the package, not just the entry point:
     // a plugin's capability class often lives in `src/` and is only
     // re-exported.
-    ClassElement2? found;
+    ClassElement? found;
     String? foundUri;
     final wanted = e.className ?? _pascalCaseFromPackageName(pkg);
     // Fallback candidates when the PascalCase guess misses. PUBLIC
@@ -497,25 +497,25 @@ Future<List<ServiceConfig>> _resolveServices(
     // method' over that ordering plausibly lands on a private helper —
     // a private name pasted into the generated file doesn't compile,
     // and a wrong public internal silently wraps the wrong API.
-    ClassElement2? fallbackPublic;
+    ClassElement? fallbackPublic;
     String? fallbackPublicUri;
-    ClassElement2? fallbackSrc;
+    ClassElement? fallbackSrc;
     String? fallbackSrcUri;
     for (final file in walkDartFiles(libDir).toList()..sort()) {
       final unit = await ctx.currentSession.getResolvedUnit(file);
       if (unit is! ResolvedUnitResult) continue;
-      final lib = unit.libraryElement2;
+      final lib = unit.libraryElement;
       final uri = lib.uri.toString();
       final isSrc = uri.contains('/src/');
       for (final cls in lib.classes) {
-        final clsName = cls.name3 ?? '';
+        final clsName = cls.name ?? '';
         if (clsName == wanted) {
           found = cls;
           foundUri = uri;
           break;
         }
         if (clsName.isEmpty || clsName.startsWith('_')) continue;
-        if (!cls.methods2.any((m) => m.isStatic)) continue;
+        if (!cls.methods.any((m) => m.isStatic)) continue;
         if (!isSrc) {
           fallbackPublic ??= cls;
           fallbackPublicUri ??= uri;
@@ -539,7 +539,7 @@ Future<List<ServiceConfig>> _resolveServices(
       // A guessed class is a guess — say so at WARNING level so it
       // shows in the colored build output, not the info spam.
       log.warning('skal_codegen: service "${e.name}" — no class named '
-          '"$wanted"; using "${cls.name3}" (first public class with '
+          '"$wanted"; using "${cls.name}" (first public class with '
           'static methods). Set `class:` explicitly if this is wrong.');
     }
     out.add(ServiceConfig(name: e.name, cls: cls, importUri: uri));
@@ -657,9 +657,9 @@ Future<List<HostConfig>> _resolveHosts(
       continue;
     }
     // Find the top-level function with the declared name.
-    ExecutableElement2? factoryFn;
-    for (final fn in unit.libraryElement2.topLevelFunctions) {
-      if (fn.name3 == e.factoryFnName) {
+    ExecutableElement? factoryFn;
+    for (final fn in unit.libraryElement.topLevelFunctions) {
+      if (fn.name == e.factoryFnName) {
         factoryFn = fn;
         break;
       }
@@ -729,15 +729,15 @@ String? _findWidgetImport(
   ResolvedUnitResult factoryUnit,
   String wrappedWidgetName,
 ) {
-  final factoryLib = factoryUnit.libraryElement2;
+  final factoryLib = factoryUnit.libraryElement;
   // Check the factory's own library first — handles "controller +
   // widget + factory in one file" (local-package case).
   if (_libraryExposes(factoryLib, wrappedWidgetName)) {
     return factoryLib.uri.toString();
   }
   // Otherwise walk each imported library's export namespace.
-  for (final imp in factoryLib.firstFragment.libraryImports2) {
-    final lib = imp.importedLibrary2;
+  for (final imp in factoryLib.firstFragment.libraryImports) {
+    final lib = imp.importedLibrary;
     if (lib == null) continue;
     if (_libraryExposes(lib, wrappedWidgetName)) {
       return lib.uri.toString();
@@ -750,10 +750,10 @@ String? _findWidgetImport(
 /// Covers both directly-declared classes AND `export 'other.dart'`
 /// re-exports — the latter is the camera case: `package:camera/camera.dart`
 /// declares no classes itself, just `export 'src/...'` statements.
-bool _libraryExposes(LibraryElement2 lib, String name) {
+bool _libraryExposes(LibraryElement lib, String name) {
   // Direct classes (cheap check first).
   for (final cls in lib.classes) {
-    if (cls.name3 == name) return true;
+    if (cls.name == name) return true;
   }
   // exportNamespace covers re-exports. Returns a Namespace whose
   // `definedNames` map (in the new API: getter on the namespace) keys
@@ -761,6 +761,6 @@ bool _libraryExposes(LibraryElement2 lib, String name) {
   // name is present + resolves to a class.
   final exported = lib.exportNamespace.definedNames2;
   final el = exported[name];
-  return el is ClassElement2;
+  return el is ClassElement;
 }
 

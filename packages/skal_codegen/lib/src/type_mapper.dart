@@ -62,7 +62,7 @@
 // fall back to a hand-written adapter, or use the host pattern for
 // controller-driven widgets). Each new type is a ~30 min branch here.
 
-// The new Element2 model is marked @experimental until the analyzer
+// The new Element model is marked @experimental until the analyzer
 // team stabilizes it. The OLD Element API is deprecated. Either side
 // produces analyzer warnings; we prefer the new API (it's the future,
 // and stabilization is just dropping the @experimental marker, not a
@@ -71,7 +71,7 @@
 // ignore_for_file: experimental_member_use
 
 import 'package:analyzer/dart/constant/value.dart';
-import 'package:analyzer/dart/element/element2.dart';
+import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/nullability_suffix.dart';
 import 'package:analyzer/dart/element/type.dart';
 
@@ -294,7 +294,7 @@ PropEncoding? encodingFor({
     // wrapped package's own import; a value-class builder for a type
     // from another library (dart:ui's ColorSpace) does not.
     final enumImports = <String>{};
-    final enumEl = type.element3;
+    final enumEl = type.element;
     if (enumEl != null) _addCanonicalImport(enumEl, enumImports);
     if (typeName.endsWith('?')) {
       return PropEncoding(
@@ -726,7 +726,7 @@ PropEncoding? encodingFor({
   if (_isMultiArgCallback(type)) {
     final ft = type as FunctionType;
     final paramNames =
-        ft.formalParameters.map((p) => p.name3 ?? '_').join(', ');
+        ft.formalParameters.map((p) => p.name ?? '_').join(', ');
     return PropEncoding(
       readerExpression: '($paramNames) => bridge.dispatchEventTuple('
           "n.getCustomHandler('$paramName'), [$paramNames])",
@@ -930,8 +930,8 @@ PropEncoding? _tryValueClassEncoding({
     // null-assertion crash deep in generated code. Refuse instead:
     // the caller skips the widget at build time with a reason naming
     // the param and type, which is what happened before B1 existed.
-    final el = type.element3;
-    if (el is ClassElement2 && el.isAbstract) return null;
+    final el = type.element;
+    if (el is ClassElement && el.isAbstract) return null;
     reader = "$helperName(n.getCustomPropStr('$paramName'))!";
   }
 
@@ -958,9 +958,9 @@ String? _buildValueClassHelper({
 }) {
   if (depth > _kValueClassMaxDepth) return null;
 
-  final el = type.element3;
-  if (el is! ClassElement2) return null;
-  final className = el.name3;
+  final el = type.element;
+  if (el is! ClassElement) return null;
+  final className = el.name;
   if (className == null || className.isEmpty) return null;
 
   // Eligibility heuristics — fast-rejects first.
@@ -1027,7 +1027,7 @@ String? _buildValueClassHelper({
     // silently for optional.
     final fieldExprs = <String>[];
     for (final param in ctor.formalParameters) {
-      final name = param.name3;
+      final name = param.name;
       if (name == null || name.isEmpty) return null;
       final reader = _emitJsonReaderForField(
         type: param.type,
@@ -1084,7 +1084,7 @@ String? _buildValueClassHelper({
     // default is uncommon but flutter_map's LatLngBounds is one such
     // case — its default ctor is a `factory` we reject, leaving the
     // `.unsafe` named ctor as the first viable choice.)
-    final ctorName = ctor.name3 ?? '';
+    final ctorName = ctor.name ?? '';
     final ctorInvocation =
         (ctorName.isEmpty || ctorName == 'new') ? className : '$className.$ctorName';
 
@@ -1172,16 +1172,16 @@ Duration? _skalParseDuration(Object? raw) {
   // Enum by name OR by index. Emit an inline switch on `.name`,
   // fall back to `values[index]` if the JSON has an int.
   if (_isEnum(type)) {
-    final el = type.element3;
-    if (el is EnumElement2) {
-      final enumName = el.name3 ?? '';
+    final el = type.element;
+    if (el is EnumElement) {
+      final enumName = el.name ?? '';
       _addCanonicalImport(el, imports);
       // Build a tiny per-enum decoder. Keys: 'EnumX' → byName lookup.
       final helperName = '_skalParseEnum$enumName';
       if (!helpers.containsKey(helperName)) {
         final cases = <String>[];
-        for (final v in el.constants2) {
-          final n = v.name3;
+        for (final v in el.constants) {
+          final n = v.name;
           if (n == null) continue;
           cases.add("    case '$n': return $enumName.$n;");
         }
@@ -1248,13 +1248,13 @@ Offset? _skalParseOffset(Object? raw) {
 /// Same library-private-state rationale as [_subtypeUniverse]: threading
 /// an accumulator through the whole encoder tree for one feature is a
 /// worse trade than a variable `generate()` owns.
-final Map<String, ClassElement2> _pendingValueBuilders = {};
+final Map<String, ClassElement> _pendingValueBuilders = {};
 
 /// Element classes requiring a `registerValue` builder from the last
 /// encoding pass, in deterministic order. Consumed by `generate()`.
-List<ClassElement2> takePendingValueBuilders() {
+List<ClassElement> takePendingValueBuilders() {
   final out = _pendingValueBuilders.values.toList()
-    ..sort((a, b) => (a.name3 ?? '').compareTo(b.name3 ?? ''));
+    ..sort((a, b) => (a.name ?? '').compareTo(b.name ?? ''));
   _pendingValueBuilders.clear();
   return out;
 }
@@ -1278,9 +1278,9 @@ PropEncoding? _tryValueClassListEncoding({required DartType type}) {
   if (!type.isDartCoreList) return null;
   if (type is! InterfaceType || type.typeArguments.length != 1) return null;
   final element = type.typeArguments.first;
-  final el = element.element3;
-  if (el is! ClassElement2) return null;
-  final name = el.name3;
+  final el = element.element;
+  if (el is! ClassElement) return null;
+  final name = el.name;
   if (name == null || name.isEmpty) return null;
 
   // The element must be something we could build from props. Widgets
@@ -1339,21 +1339,21 @@ PropEncoding? _tryValueClassListEncoding({required DartType type}) {
 /// Used by the child-node builder path, which constructs objects rather
 /// than reconstructing them, so mutable or memoized FIELDS are none of
 /// its business — only lifecycle is.
-bool _ownsResources(ClassElement2 cls) {
-  for (final m in cls.methods2) {
-    if (m.name3 == 'dispose' || m.name3 == 'close') return true;
+bool _ownsResources(ClassElement cls) {
+  for (final m in cls.methods) {
+    if (m.name == 'dispose' || m.name == 'close') return true;
   }
   for (final mx in cls.mixins) {
-    if (_kStatefulMixinNames.contains(mx.element3.name3)) return true;
+    if (_kStatefulMixinNames.contains(mx.element.name)) return true;
   }
   var sup = cls.supertype;
   while (sup != null) {
-    if (_kStatefulMixinNames.contains(sup.element3.name3)) return true;
-    sup = sup.element3.supertype;
+    if (_kStatefulMixinNames.contains(sup.element.name)) return true;
+    sup = sup.element.supertype;
   }
-  for (final f in cls.fields2) {
-    if (f.isStatic || f.isSynthetic) continue;
-    final n = f.type.element3?.name3;
+  for (final f in cls.fields) {
+    if (f.isStatic || !f.isOriginDeclaration) continue;
+    final n = f.type.element?.name;
     if (n == 'Stream' || n == 'Future' || n == 'StreamController') return true;
   }
   return false;
@@ -1386,7 +1386,7 @@ List<T> _skalChildValues<T>(NodeState n, SkalBridge bridge) {
 /// because the encoder is a tree of top-level functions and threading
 /// it would touch every one of them. `generate()` owns the lifecycle
 /// and the codegen is single-threaded per invocation.
-List<ClassElement2> _subtypeUniverse = const [];
+List<ClassElement> _subtypeUniverse = const [];
 
 /// Class-name occurrence counts over [_subtypeUniverse]. Depends only
 /// on the universe, so it is computed ONCE per `generate()` run here
@@ -1397,15 +1397,15 @@ Map<String, int> _universeNameCounts = const {};
 
 /// Read-only view for the generator, which needs the same set to
 /// resolve `typeArgs:` names (B6).
-List<ClassElement2> get subtypeUniverse => _subtypeUniverse;
+List<ClassElement> get subtypeUniverse => _subtypeUniverse;
 
 /// Set the classes the subtype-union encoder may dispatch to. Called by
 /// `generate()` at the start of a run; pass an empty list to disable.
-void setSubtypeUniverse(List<ClassElement2> classes) {
+void setSubtypeUniverse(List<ClassElement> classes) {
   _subtypeUniverse = classes;
   final counts = <String, int>{};
   for (final c in classes) {
-    final n = c.name3;
+    final n = c.name;
     if (n != null && n.isNotEmpty) counts[n] = (counts[n] ?? 0) + 1;
   }
   _universeNameCounts = counts;
@@ -1459,14 +1459,14 @@ const int _kMaxUnionSubtypes = 16;
 /// wrong shape, and a wrong shape that renders is far harder to debug
 /// than a default that renders.
 String? _buildSubtypeUnionHelper({
-  required ClassElement2 base,
+  required ClassElement base,
   required Map<String, String> helpers,
   required Set<int> visiting,
   required Set<String> imports,
   required int depth,
 }) {
   if (depth > _kValueClassMaxDepth) return null;
-  final baseName = base.name3;
+  final baseName = base.name;
   if (baseName == null || baseName.isEmpty) return null;
   if (_extendsWidgetTransitively(base)) return null;
   if (_subtypeUniverse.isEmpty) return null;
@@ -1492,16 +1492,16 @@ String? _buildSubtypeUnionHelper({
   // is a string, so it could not express the difference anyway.
   // (Counts precomputed in setSubtypeUniverse — they depend only on
   // the universe, not on this base type.)
-  final concrete = <ClassElement2>[
+  final concrete = <ClassElement>[
     for (final c in _subtypeUniverse)
       if (!c.isAbstract &&
           !identical(c, base) &&
-          (_universeNameCounts[c.name3] ?? 0) == 1 &&
+          (_universeNameCounts[c.name] ?? 0) == 1 &&
           _isSubtypeOf(c, base) &&
           !_extendsWidgetTransitively(c) &&
           !_looksStateful(c))
         c,
-  ]..sort((a, b) => (a.name3 ?? '').compareTo(b.name3 ?? ''));
+  ]..sort((a, b) => (a.name ?? '').compareTo(b.name ?? ''));
 
   if (concrete.isEmpty || concrete.length > _kMaxUnionSubtypes) return null;
 
@@ -1524,7 +1524,7 @@ String? _buildSubtypeUnionHelper({
         depth: depth + 1,
       );
       if (sub == null) continue;
-      cases.add("    case '${c.name3}':\n      return $sub(j);");
+      cases.add("    case '${c.name}':\n      return $sub(j);");
     }
     if (cases.isEmpty) {
       helpers.remove(helperName);
@@ -1566,9 +1566,9 @@ String? _buildSubtypeUnionHelper({
 }
 
 /// True if [cls] transitively extends, implements, or mixes in [base].
-bool _isSubtypeOf(ClassElement2 cls, ClassElement2 base) {
+bool _isSubtypeOf(ClassElement cls, ClassElement base) {
   for (final t in cls.allSupertypes) {
-    if (identical(t.element3, base)) return true;
+    if (identical(t.element, base)) return true;
   }
   return false;
 }
@@ -1649,9 +1649,9 @@ ServiceArgEncoding? serviceArgEncoding({
   // declared default. Emitted as one helper per enum per file rather
   // than a re-inlined quadruple interpolation per call site.
   if (_isEnum(type)) {
-    final name = type.element3?.name3;
+    final name = type.element?.name;
     if (name == null) return null;
-    final el = type.element3;
+    final el = type.element;
     if (el != null) _addCanonicalImport(el, imports);
     final helperName = '_skalEnumArg$name';
     helpers[helperName] = '$name? $helperName(Object? raw) {\n'
@@ -1685,7 +1685,7 @@ ServiceArgEncoding? serviceArgEncoding({
       type is InterfaceType &&
       type.typeArguments.length == 1) {
     final elementType = type.typeArguments.first;
-    final elName = elementType.element3?.name3;
+    final elName = elementType.element?.name;
     final nullable = type.nullabilitySuffix == NullabilitySuffix.question;
     String? listExpr;
     if (_isCoreString(elementType) ||
@@ -1742,9 +1742,9 @@ ServiceArgEncoding? serviceArgEncoding({
         type.isDartCoreIterable) {
       return null;
     }
-    final el = type.element3;
-    if (el is ClassElement2) {
-      final name = el.name3;
+    final el = type.element;
+    if (el is ClassElement) {
+      final name = el.name;
       if (name != null && name.isNotEmpty && !_extendsWidgetTransitively(el)) {
         _addCanonicalImport(el, imports);
         imports.add('package:skal_flutter/skal/handles.dart');
@@ -1803,7 +1803,7 @@ ServiceReturnEncoding? serviceReturnEncoding(DartType type) {
   // Enums serialize as their name — stable across reorderings of the
   // Dart enum, which an index is not.
   if (_isEnum(type)) {
-    final el = type.element3;
+    final el = type.element;
     if (el != null) _addCanonicalImport(el, imports);
     return ServiceReturnEncoding('($display v) => v$q.name', imports, helpers);
   }
@@ -1843,13 +1843,13 @@ ServiceReturnEncoding? serviceReturnEncoding(DartType type) {
         imports, helpers);
   }
 
-  final el = type.element3;
-  if (el is! ClassElement2) return null;
+  final el = type.element;
+  if (el is! ClassElement) return null;
 
   // A `toJson()` means the plugin author already answered this question.
   // jsonEncode calls it automatically, so nothing to emit.
-  for (final m in el.methods2) {
-    if (m.name3 == 'toJson' && !m.isStatic && m.formalParameters.isEmpty) {
+  for (final m in el.methods) {
+    if (m.name == 'toJson' && !m.isStatic && m.formalParameters.isEmpty) {
       return ServiceReturnEncoding(null, imports, helpers);
     }
   }
@@ -1888,14 +1888,14 @@ ServiceReturnEncoding? serviceReturnEncoding(DartType type) {
 /// `Position` missing its `floor` field is still useful, whereas no
 /// `Position` at all is not.
 String? _buildValueEncoder({
-  required ClassElement2 el,
+  required ClassElement el,
   required Map<String, String> helpers,
   required Set<String> imports,
   required Set<int> visiting,
   required int depth,
 }) {
   if (depth > _kValueClassMaxDepth) return null;
-  final className = el.name3;
+  final className = el.name;
   if (className == null || className.isEmpty) return null;
   if (_extendsWidgetTransitively(el)) return null;
   if (_kStatefulDenylist.contains(className)) return null;
@@ -1914,9 +1914,9 @@ String? _buildValueEncoder({
     helpers[helperName] = '';
 
     final fields = <String>[];
-    for (final g in el.getters2) {
+    for (final g in el.getters) {
       if (g.isStatic) continue;
-      final name = g.name3;
+      final name = g.name;
       if (name == null || name.isEmpty || name.startsWith('_')) continue;
       if (name == 'hashCode' || name == 'runtimeType') continue;
       final rt = g.returnType;
@@ -1980,11 +1980,11 @@ String? _buildValueEncoder({
 /// Public alias so the generator's emission paths route through the
 /// same canonicalization (and future normalization) as the encoders,
 /// instead of re-deriving `lib.uri.scheme == 'package'` inline.
-void addCanonicalImport(Element2 el, Set<String> imports) =>
+void addCanonicalImport(Element el, Set<String> imports) =>
     _addCanonicalImport(el, imports);
 
-void _addCanonicalImport(Element2 el, Set<String> imports) {
-  final lib = el.library2;
+void _addCanonicalImport(Element el, Set<String> imports) {
+  final lib = el.library;
   if (lib == null) return;
   final chosen = canonicalImportUriFor(lib.uri, _barrelResolver);
   if (chosen != null) imports.add(chosen);
@@ -2022,16 +2022,16 @@ String? canonicalImportUriFor(
 /// Public alias for the generator's value-builder emission (B5) — the
 /// SAME picker that gates B5 eligibility above, so the gate and the
 /// emitter can never disagree about which constructor a class uses.
-ConstructorElement2? pickValueClassCtor(ClassElement2 cls) =>
+ConstructorElement? pickValueClassCtor(ClassElement cls) =>
     _pickValueClassCtor(cls);
 
-ConstructorElement2? _pickValueClassCtor(ClassElement2 cls) {
-  ConstructorElement2? best;
-  for (final c in cls.constructors2) {
-    final name = c.name3 ?? '';
+ConstructorElement? _pickValueClassCtor(ClassElement cls) {
+  ConstructorElement? best;
+  for (final c in cls.constructors) {
+    final name = c.name ?? '';
     if (name.startsWith('_')) continue;          // private
     if (c.isFactory) continue;                   // factory hides state
-    if (c.redirectedConstructor2 != null) continue;
+    if (c.redirectedConstructor != null) continue;
     // Prefer the default (unnamed → name is 'new' in the new model).
     if (name == 'new' || name.isEmpty) return c;
     best ??= c;
@@ -2046,15 +2046,15 @@ ConstructorElement2? _pickValueClassCtor(ClassElement2 cls) {
 /// (for the "render a child here" encoding); this one walks the whole
 /// supertype chain so narrow subclasses (`Text`, `Container`, package-
 /// defined widgets) are caught too.
-bool extendsWidgetTransitively(ClassElement2 cls) =>
+bool extendsWidgetTransitively(ClassElement cls) =>
     _extendsWidgetTransitively(cls);
 
-bool _extendsWidgetTransitively(ClassElement2 cls) {
-  if (cls.name3 == 'Widget') return true;
+bool _extendsWidgetTransitively(ClassElement cls) {
+  if (cls.name == 'Widget') return true;
   var sup = cls.supertype;
   while (sup != null) {
-    if (sup.element3.name3 == 'Widget') return true;
-    sup = sup.element3.supertype;
+    if (sup.element.name == 'Widget') return true;
+    sup = sup.element.supertype;
   }
   return false;
 }
@@ -2076,7 +2076,7 @@ String? _zeroValueForType(DartType t) {
 /// reconstruct from JSON." False here doesn't mean "definitely a value
 /// class" — it just means "no obvious red flag." The denylist above
 /// handles known-bad cases the heuristic might miss.
-bool _looksStateful(ClassElement2 cls) {
+bool _looksStateful(ClassElement cls) {
   // Resource ownership (dispose/close, lifecycle mixins, Stream/Future
   // fields) is the shared half — one walker, so B5 eligibility and
   // JSON-reconstruction eligibility can't drift on it. What remains
@@ -2087,35 +2087,35 @@ bool _looksStateful(ClassElement2 cls) {
   // (backing entries for explicit getters — `int get hashCode`) are
   // skipped: they report isFinal == false but are not stored state.
   if (_ownsResources(cls)) return true;
-  for (final f in cls.fields2) {
-    if (f.isStatic || f.isSynthetic) continue;
+  for (final f in cls.fields) {
+    if (f.isStatic || !f.isOriginDeclaration) continue;
     if (!f.isFinal) return true;
   }
   return false;
 }
 
 bool _isCoreString(DartType t) =>
-    t.element3?.name3 == 'String' && t.element3?.library2?.isDartCore == true;
+    t.element?.name == 'String' && t.element?.library?.isDartCore == true;
 
 bool _isCoreInt(DartType t) =>
-    t.element3?.name3 == 'int' && t.element3?.library2?.isDartCore == true;
+    t.element?.name == 'int' && t.element?.library?.isDartCore == true;
 
 bool _isCoreDouble(DartType t) =>
-    t.element3?.name3 == 'double' && t.element3?.library2?.isDartCore == true;
+    t.element?.name == 'double' && t.element?.library?.isDartCore == true;
 
 bool _isCoreBool(DartType t) =>
-    t.element3?.name3 == 'bool' && t.element3?.library2?.isDartCore == true;
+    t.element?.name == 'bool' && t.element?.library?.isDartCore == true;
 
 bool _isEnum(DartType t) {
-  // Analyzer represents Dart enums with EnumElement2 (a subtype of
-  // InterfaceElement2). Matching purely by element kind, not by
+  // Analyzer represents Dart enums with EnumElement (a subtype of
+  // InterfaceElement). Matching purely by element kind, not by
   // name — any enum type qualifies regardless of where it's declared.
-  return t.element3 is EnumElement2;
+  return t.element is EnumElement;
 }
 
 bool _isDuration(DartType t) =>
-    t.element3?.name3 == 'Duration' &&
-    t.element3?.library2?.isDartCore == true;
+    t.element?.name == 'Duration' &&
+    t.element?.library?.isDartCore == true;
 
 /// Match Flutter's `Widget` (or its top-level abstract subclasses:
 /// StatelessWidget, StatefulWidget, PreferredSizeWidget) used as
@@ -2134,7 +2134,7 @@ bool _isDuration(DartType t) =>
 /// host pattern (or sees the skip and chooses to use a hand-written
 /// adapter for the surrounding widget).
 bool _isFlutterWidget(DartType t) {
-  final name = t.element3?.name3;
+  final name = t.element?.name;
   return name == 'Widget' ||
       name == 'StatelessWidget' ||
       name == 'StatefulWidget' ||
@@ -2146,24 +2146,24 @@ bool _isFlutterWidget(DartType t) {
 /// element check looks for the dart:core `List` type plus a single
 /// type argument that passes [_isFlutterWidget].
 bool _isFlutterWidgetList(DartType t) {
-  final el = t.element3;
-  if (el?.name3 != 'List') return false;
-  if (el?.library2?.isDartCore != true) return false;
+  final el = t.element;
+  if (el?.name != 'List') return false;
+  if (el?.library?.isDartCore != true) return false;
   if (t is! InterfaceType) return false;
   if (t.typeArguments.length != 1) return false;
   return _isFlutterWidget(t.typeArguments.first);
 }
 
-bool _isFlutterOffset(DartType t) => t.element3?.name3 == 'Offset';
-bool _isFlutterAlignment(DartType t) => t.element3?.name3 == 'Alignment';
+bool _isFlutterOffset(DartType t) => t.element?.name == 'Offset';
+bool _isFlutterAlignment(DartType t) => t.element?.name == 'Alignment';
 bool _isFlutterBorderRadius(DartType t) =>
-    t.element3?.name3 == 'BorderRadius' ||
-    t.element3?.name3 == 'BorderRadiusGeometry';
-bool _isFlutterTextStyle(DartType t) => t.element3?.name3 == 'TextStyle';
+    t.element?.name == 'BorderRadius' ||
+    t.element?.name == 'BorderRadiusGeometry';
+bool _isFlutterTextStyle(DartType t) => t.element?.name == 'TextStyle';
 bool _isFlutterBoxDecoration(DartType t) =>
-    t.element3?.name3 == 'BoxDecoration';
+    t.element?.name == 'BoxDecoration';
 bool _isFlutterGradient(DartType t) {
-  final name = t.element3?.name3;
+  final name = t.element?.name;
   if (name == 'Gradient' ||
       name == 'LinearGradient' ||
       name == 'RadialGradient' ||
@@ -2172,12 +2172,12 @@ bool _isFlutterGradient(DartType t) {
   }
   // Catch subtypes — most packages don't extend Gradient themselves,
   // but if they did we'd still want to recognize the assignability.
-  final el = t.element3;
-  if (el is InterfaceElement2) {
+  final el = t.element;
+  if (el is InterfaceElement) {
     var sup = el.supertype;
     while (sup != null) {
-      if (sup.element3.name3 == 'Gradient') return true;
-      sup = sup.element3.supertype;
+      if (sup.element.name == 'Gradient') return true;
+      sup = sup.element.supertype;
     }
   }
   return false;
@@ -2292,15 +2292,15 @@ bool _isFlutterImageProvider(DartType t) {
   // class name catches the type AND its subtypes (NetworkImage,
   // AssetImage, etc.) — though codegen typically sees the abstract
   // ImageProvider form when it's a constructor param type.
-  final name = t.element3?.name3;
+  final name = t.element?.name;
   if (name == 'ImageProvider') return true;
   // Walk supertypes to catch direct subclasses used as param types.
-  final el = t.element3;
-  if (el is InterfaceElement2) {
+  final el = t.element;
+  if (el is InterfaceElement) {
     var sup = el.supertype;
     while (sup != null) {
-      if (sup.element3.name3 == 'ImageProvider') return true;
-      sup = sup.element3.supertype;
+      if (sup.element.name == 'ImageProvider') return true;
+      sup = sup.element.supertype;
     }
   }
   return false;
@@ -2312,7 +2312,7 @@ bool _isFlutterEdgeInsets(DartType t) {
   // shim too. EdgeInsets extends EdgeInsetsGeometry; we only handle
   // the concrete EdgeInsets subclass for now (EdgeInsetsDirectional
   // would need rtl-aware encoding).
-  return t.element3?.name3 == 'EdgeInsets';
+  return t.element?.name == 'EdgeInsets';
 }
 
 /// If [t] is `ValueChanged<X>` (or `void Function(X)?`, the de-aliased
@@ -2373,7 +2373,7 @@ bool _isFlutterColor(DartType t) {
   // constructor arg. This deliberate looseness also lets the test
   // suite use a self-contained fake-Flutter without a real Flutter
   // dev_dependency (see test/fixtures/_fake_flutter.dart).
-  return t.element3?.name3 == 'Color';
+  return t.element?.name == 'Color';
 }
 
 /// Map a bool default-value expression to its int-on-the-wire form.

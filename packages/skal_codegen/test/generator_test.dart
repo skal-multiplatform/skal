@@ -29,7 +29,7 @@ import 'dart:io';
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
 // ignore_for_file: experimental_member_use
-import 'package:analyzer/dart/element/element2.dart';
+import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/file_system/physical_file_system.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -516,13 +516,13 @@ void main() {
       expect(unitResult, isA<ResolvedUnitResult>());
 
       // Find each factory function on the resolved unit.
-      ExecutableElement2? syncFactory;
-      ExecutableElement2? asyncFactory;
+      ExecutableElement? syncFactory;
+      ExecutableElement? asyncFactory;
       for (final fn in (unitResult as ResolvedUnitResult)
-          .libraryElement2
+          .libraryElement
           .topLevelFunctions) {
-        if (fn.name3 == 'makeFakeViewerSync') syncFactory = fn;
-        if (fn.name3 == 'makeFakeViewerAsync') asyncFactory = fn;
+        if (fn.name == 'makeFakeViewerSync') syncFactory = fn;
+        if (fn.name == 'makeFakeViewerAsync') asyncFactory = fn;
       }
       expect(syncFactory, isNotNull);
       expect(asyncFactory, isNotNull);
@@ -991,8 +991,8 @@ void main() {
       expect(unitResult, isA<ResolvedUnitResult>());
       final unit = unitResult as ResolvedUnitResult;
 
-      final geo = unit.libraryElement2.classes
-          .firstWhere((c) => c.name3 == 'Geo');
+      final geo = unit.libraryElement.classes
+          .firstWhere((c) => c.name == 'Geo');
 
       final result = generate(
         units: const [],

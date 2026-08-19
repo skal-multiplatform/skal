@@ -143,7 +143,7 @@ serialization in the bridge hot path.
 ### Prerequisites
 
 - macOS 14+ (other hosts: TODO)
-- Flutter 3.41+ (`flutter --version`)
+- Flutter 3.47+ (`flutter --version`) — skal_codegen needs analyzer ^14, which needs `meta >=1.18.3`; older Flutters pin `meta 1.17.0` and will not resolve
 - Xcode 16+ — needed for both the libskal iOS/macOS cross-compile and the Flutter iOS/macOS shells
 - JDK 17 — Gradle's toolchain manager auto-downloads if absent
 - `~/.cargo/bin` on PATH (`rustup install nightly` once — bun's lolhtml dep)

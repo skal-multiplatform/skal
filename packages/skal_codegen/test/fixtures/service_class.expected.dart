@@ -16,8 +16,11 @@ import 'package:skal_flutter/skal/bridge.dart';
 import 'package:skal_flutter/skal/node_state.dart';
 import 'package:skal_flutter/skal/registry.dart';
 import 'package:skal_flutter/skal/services.dart';
+
 import 'dart:convert';
+
 import 'package:skal_flutter/skal/handles.dart';
+
 import 'service_class.dart';
 
 Map<String, dynamic>? _skalDecodeMap(Object? raw) {
@@ -117,9 +120,8 @@ void _registerService_geo() {
           ((((args.length > 2 ? args[2] : null)) as num?)?.toDouble() ?? 0.0),
         );
       case 'pickAccuracy':
-        return Future.value(
-          Geo.pickAccuracy(),
-        ).then((LocationAccuracy v) => v.name);
+        return Future.value(Geo.pickAccuracy())
+            .then((LocationAccuracy v) => v.name);
       case 'positionStream':
         return Geo.positionStream(
           distanceFilter:

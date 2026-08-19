@@ -38,14 +38,13 @@ on:
       - .github/workflows/desktop.yml
   workflow_call:
     inputs:
-      unpin-flutter:
+      pin-flutter:
         description: >-
-          Push/PR runs pin Flutter (see the note at the flutter-action step).
-          nightly.yml sets this true so it floats on stable — a Flutter
-          release that breaks us then surfaces within 24 hours instead of at
-          whatever future moment someone bumps the pin. Boolean, not a
-          version string: GitHub expressions treat '' as falsy, so a
-          `inputs.x || 'pin'` fallback would silently re-pin the canary.
+          Opt-IN pin, kept as an escape hatch. Flutter was pinned to dodge an
+          analyzer 7 crash on newer Dart; skal_codegen is on analyzer 14 now
+          and the pin is gone, so push/PR and nightly both float on stable.
+          Set this to pin again if a future Flutter release breaks the build
+          and you need CI green while it is sorted out.
         type: boolean
         required: false
         default: false
@@ -72,7 +71,7 @@ jobs:
         # break still surfaces within 24 hours instead of at the next bump.
         # Remove this pin once skal_codegen is migrated off analyzer 7.
           channel: stable
-          flutter-version: ${{ inputs.unpin-flutter && '' || '3.41.9' }}
+          flutter-version: ${{ inputs.pin-flutter && '3.41.9' || '' }}
           cache: true
           # SDK cache only. The pub-dependency cache's save key runs
           # hashFiles('**/pubspec.lock') over the whole workspace at

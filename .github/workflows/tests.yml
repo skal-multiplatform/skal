@@ -150,6 +150,32 @@ jobs:
         working-directory: examples/kitchen-sink/flutter-host
         run: flutter pub get
 
+      # The cache-key scheme has to agree across every workflow, and once
+      # did not. Three workflows were collapsed onto one shared `vendor-src`
+      # entry; release-libskal kept its own `<platform>-vendor-` keys and was
+      # not audited, so its next run wrote 4.84 GiB under the retired scheme
+      # and evicted the shared entry — silently restoring the thrash the
+      # collapse existed to remove.
+      #
+      # Skal/CLAUDE.md: "When N config files or symbol lists must agree,
+      # assert it." This is that assertion. Nothing else notices — the
+      # symptom is a slow build weeks later, not a failure.
+      - name: Cache keys agree across workflows
+        run: |
+          bad=$(grep -rnE '^\s*key:\s*[a-z-]+-vendor-' .github/workflows/ || true)
+          if [ -n "$bad" ]; then
+            echo "::error::retired per-platform vendor cache key still in use:"
+            echo "$bad"
+            echo "vendor/** is shared — use vendor-src-<hash>; per-platform"
+            echo "state belongs under <platform>-build-<hash>."
+            exit 1
+          fi
+          n=$(grep -rcE '^\s*key:\s*vendor-src-' .github/workflows/ | awk -F: '{s+=$2} END {print s}')
+          echo "workflows sharing vendor-src: $n"
+          [ "${n:-0}" -ge 5 ] || {
+            echo "::error::expected >=5 vendor-src keys (desktop, ios-sim, android, release x2), found ${n:-0}"
+            exit 1; }
+
       # Shape D — Flutter Web under dart2wasm.
       #
       # The web target has three shapes and only two were guarded: Solid to

@@ -79,23 +79,33 @@ jobs:
 
       # Shares the desktop lane's cache — a warm PR cache makes this a
       # relink-only run. setup.sh reconciles a stale restore to the pins.
+      # ── shared vendor sources ────────────────────────────────────────
+      # The SAME entry desktop/ios-sim/android use. This workflow kept its own
+      # `<platform>-vendor-` key after those three were collapsed into one,
+      # which quietly undid the collapse: a release build wrote 4.84 GiB under
+      # the retired scheme and evicted the shared entry, so the next platform
+      # run re-cloned ~9.2 GiB of sources it already had.
+      #
+      # Same paths, same exclusions — including WebKit's __pycache__, which is
+      # the only thing that ever made android's copy differ.
       - uses: actions/cache@v4
         with:
-          # Cache the SOURCES, not the build outputs. vendor/bun/build is
-          # ~19 GB uncompressed; including it pushed this cache to 4.68 GiB,
-          # and three of these (desktop/android/ios-sim) cannot coexist in
-          # GitHub's 10 GB per-repo budget — so they evicted each other,
-          # every eviction meant a cold build, and a cold build re-fetches
-          # ~758 MB of dependency tarballs from github.com unauthenticated.
-          # That is what produced the HTTP 429s. Compilation is still cached
-          # by ~/.bun/build-cache, which is content-addressed.
           path: |
             vendor/**
             !vendor/bun/build/**
-            ~/.bun/build-cache
-          key: desktop-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
+            !vendor/WebKit/**/__pycache__/**
+          key: vendor-src-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
           restore-keys: |
-            desktop-vendor-
+            vendor-src-
+
+      # ── per-platform build cache ─────────────────────────────────────
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/build-cache
+          key: desktop-build-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
+          restore-keys: |
+            desktop-build-
 
       - name: Bootstrap (clone skal forks + copy skal_entry.zig)
         run: scripts/setup.sh
@@ -190,25 +200,35 @@ jobs:
           cmake-version: '3.31.6'
       - run: cmake --version
 
+      # ── shared vendor sources ────────────────────────────────────────
+      # The SAME entry desktop/ios-sim/android use. This workflow kept its own
+      # `<platform>-vendor-` key after those three were collapsed into one,
+      # which quietly undid the collapse: a release build wrote 4.84 GiB under
+      # the retired scheme and evicted the shared entry, so the next platform
+      # run re-cloned ~9.2 GiB of sources it already had.
+      #
+      # Same paths, same exclusions — including WebKit's __pycache__, which is
+      # the only thing that ever made android's copy differ.
       - uses: actions/cache@v4
         with:
-          # Cache the SOURCES, not the build outputs. vendor/bun/build is
-          # ~19 GB uncompressed; including it pushed this cache to 4.68 GiB,
-          # and three of these (desktop/android/ios-sim) cannot coexist in
-          # GitHub's 10 GB per-repo budget — so they evicted each other,
-          # every eviction meant a cold build, and a cold build re-fetches
-          # ~758 MB of dependency tarballs from github.com unauthenticated.
-          # That is what produced the HTTP 429s. Compilation is still cached
-          # by ~/.bun/build-cache, which is content-addressed.
           path: |
             vendor/**
             !vendor/bun/build/**
+            !vendor/WebKit/**/__pycache__/**
+          key: vendor-src-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
+          restore-keys: |
+            vendor-src-
+
+      # ── per-platform build cache ─────────────────────────────────────
+      - uses: actions/cache@v4
+        with:
+          path: |
             ~/.bun/build-cache
             build/icu-android
             build/jsc-android
-          key: android-vendor-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
+          key: android-build-${{ hashFiles('patches/bun-skal-commit.txt', 'patches/webkit-skal-commit.txt') }}
           restore-keys: |
-            android-vendor-
+            android-build-
 
       - name: Bootstrap (clone skal forks + copy skal_entry.zig)
         run: scripts/setup.sh

@@ -6,6 +6,14 @@
 
 <p align="center"><em>The modern alternative to React Native — Solid in JS, Flutter rendering, one zero-copy bridge.</em></p>
 
+<p align="center">
+  <a href="https://skal.run"><b>skal.run</b></a> ·
+  <a href="https://skal.run/docs/">Docs</a> ·
+  <a href="https://skal.run/#performance">Benchmarks</a> ·
+  <a href="https://www.npmjs.com/package/@skal/cli">npm</a> ·
+  <a href="https://pub.dev/packages/skal_flutter">pub.dev</a>
+</p>
+
 Skal embeds [bun](https://bun.sh) + [JavaScriptCore](https://trac.webkit.org/wiki/JavaScriptCore)
 inside a [Flutter](https://flutter.dev/) app. Your UI is a [SolidJS](https://www.solidjs.com/)
 component tree; Skal's bridge translates Solid's
@@ -167,6 +175,7 @@ Prefer your app in its own directory instead of inside this repo?
 
 ```sh
 npm create skal my-app          # no clone needed — scaffolds a standalone app
+                                # full guide: https://skal.run/docs/
 ```
 
 The [`skal` CLI](packages/skal-cli/) ([`@skal/cli`](https://www.npmjs.com/package/@skal/cli)
@@ -235,7 +244,12 @@ skal/
 
 ## Documentation
 
-Index: [`docs/README.md`](docs/README.md).
+Rendered and searchable at **[skal.run/docs](https://skal.run/docs/)** — same
+content, better to read. In-repo index: [`docs/README.md`](docs/README.md).
+
+The docs below carrying a "written while this was being built" banner are
+design records from the time of implementation; where they and the source
+disagree, the source wins.
 
 | Doc | What's in it |
 |---|---|

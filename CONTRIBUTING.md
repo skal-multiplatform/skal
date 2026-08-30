@@ -3,6 +3,9 @@
 Thanks for your interest! Skal spans three runtimes (JS, Dart, native),
 so here's the map.
 
+By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+Full docs are at [skal.run/docs](https://skal.run/docs/).
+
 ## Dev setup
 
 ```sh

@@ -76,6 +76,75 @@ See [`docs/ENGINE_CHOICE.md`](docs/ENGINE_CHOICE.md) for the full decision matri
 | **Linux / Windows Desktop** | ⏳ pending | Flutter Desktop supports them; per-platform libskal linkers not written |
 | **Web** | ✅ working | three shapes: Solid→DOM directly, full Flutter Web (wasm), and static prerender (SSG) for SEO |
 
+## Build
+
+### Prerequisites
+
+- macOS 14+ (other hosts: TODO)
+- Flutter 3.47+ (`flutter --version`) — skal_codegen needs analyzer ^14, which needs `meta >=1.18.3`; older Flutters pin `meta 1.17.0` and will not resolve
+- Xcode 16+ — needed for both the libskal iOS/macOS cross-compile and the Flutter iOS/macOS shells
+- JDK 17 — Gradle's toolchain manager auto-downloads if absent
+- `~/.cargo/bin` on PATH (`rustup install nightly` once — bun's lolhtml dep)
+- Android NDK at `/opt/homebrew/share/android-ndk`
+
+### The three commands
+
+```sh
+SKAL_PREBUILT=1 bun run setup   # one-time install — downloads prebuilt libskal (~2 min)
+bun run new my-app              # scaffold a new app — flutter create + libskal link included
+bun run dev:macos               # run the kitchen-sink demo (or use bun --filter my-app)
+```
+
+`SKAL_PREBUILT=1` pulls CI-built binaries (macOS, iOS Simulator, Android arm64,
+plus the matching host bun for bytecode) from the
+[`libskal-dev` release](https://github.com/skal-multiplatform/skal/releases/tag/libskal-dev)
+— no toolchain needed beyond Flutter. Drop it to build the vendor stack from
+source (LLVM 21 + Rust nightly required).
+
+Prefer your app in its own directory instead of inside this repo?
+
+```sh
+npm create skal my-app          # no clone needed — scaffolds a standalone app
+                                # full guide: https://skal.run/docs/
+```
+
+The [`skal` CLI](packages/skal-cli/) ([`@skal/cli`](https://www.npmjs.com/package/@skal/cli)
+on npm) puts the shared runtime — same template, same prebuilt binaries — in
+`~/.skal` and wires apps to it, so your project lives wherever you want it.
+
+That's the whole workflow. Each one is idempotent and self-contained:
+
+| Command | What it does | Cold time |
+|---|---|---|
+| `bun run setup` | Workspace install + link libskal into kitchen-sink. With `SKAL_PREBUILT=1`: download CI-built binaries and skip the vendor stack entirely. Without it: clone Skal's bun + WebKit forks (branch `skal` — patches live there as commits) + build host bun (+ build Android cross-stack if NDK present; `SKAL_NO_ANDROID=1` to skip). | ~2 min prebuilt; ~30-40 min from source, ~90-120 min with Android |
+| `bun run new <name>` | Scaffold app under `examples/<name>/` from `scripts/templates/default/`, run `flutter create` for android/ios/macos, drop libskal binaries into the new platform configs. Pass `--platforms <list>` to limit, or `--no-platforms` for the JS scaffold only. Requires `setup` first. | ~30 seconds |
+| `bun run dev:*` | Rebuild JS bundle + `flutter run -d <target>`. Available on kitchen-sink and any scaffolded app via `bun --filter <name> dev:*`. | seconds (the build hot-incremental) |
+
+### Other handy scripts
+
+```sh
+bun run test                         # skal_codegen + skal_flutter test suites
+bun run analyze                      # dart analyze across framework packages
+bun run link <name>                  # re-link libskal binaries into an app (if you rebuilt vendor/bun)
+```
+
+Each app under `examples/` also has its own scripts — run with
+`bun --filter <name> <task>` from anywhere, or `cd` in and drop the
+prefix. See `examples/kitchen-sink/package.json` for the full list
+(`build`, `build:web`, `build:macos`/`ios`/`android`, `dev:flutter`,
+`pub`, `codegen`, `analyze`, `test`, `clean`, …).
+
+### Bytecode regeneration footgun
+
+The `.cjs.jsc` is JSC-version-keyed to the bun used at build time. `bun run build`
+invokes `scripts/find-vendored-bun.sh` to lock onto the vendored bun, not the
+system `$PATH` bun. If you ever see a cold-launch regression with no error, regenerate:
+
+```sh
+bun run build
+```
+
+
 ## Measured against React Native
 
 | | Skal | React Native |
@@ -145,74 +214,6 @@ JS sees the region as a `Uint8Array` (zero-copy via JSC's
 `JSObjectMakeArrayBufferWithBytesNoCopy`). Dart sees it as a `Uint8List` view over an
 FFI pointer (zero-copy via `Pointer<Uint8>.asTypedList`). Same bytes, same memory, no
 serialization in the bridge hot path.
-
-## Build
-
-### Prerequisites
-
-- macOS 14+ (other hosts: TODO)
-- Flutter 3.47+ (`flutter --version`) — skal_codegen needs analyzer ^14, which needs `meta >=1.18.3`; older Flutters pin `meta 1.17.0` and will not resolve
-- Xcode 16+ — needed for both the libskal iOS/macOS cross-compile and the Flutter iOS/macOS shells
-- JDK 17 — Gradle's toolchain manager auto-downloads if absent
-- `~/.cargo/bin` on PATH (`rustup install nightly` once — bun's lolhtml dep)
-- Android NDK at `/opt/homebrew/share/android-ndk`
-
-### The three commands
-
-```sh
-SKAL_PREBUILT=1 bun run setup   # one-time install — downloads prebuilt libskal (~2 min)
-bun run new my-app              # scaffold a new app — flutter create + libskal link included
-bun run dev:macos               # run the kitchen-sink demo (or use bun --filter my-app)
-```
-
-`SKAL_PREBUILT=1` pulls CI-built binaries (macOS, iOS Simulator, Android arm64,
-plus the matching host bun for bytecode) from the
-[`libskal-dev` release](https://github.com/skal-multiplatform/skal/releases/tag/libskal-dev)
-— no toolchain needed beyond Flutter. Drop it to build the vendor stack from
-source (LLVM 21 + Rust nightly required).
-
-Prefer your app in its own directory instead of inside this repo?
-
-```sh
-npm create skal my-app          # no clone needed — scaffolds a standalone app
-                                # full guide: https://skal.run/docs/
-```
-
-The [`skal` CLI](packages/skal-cli/) ([`@skal/cli`](https://www.npmjs.com/package/@skal/cli)
-on npm) puts the shared runtime — same template, same prebuilt binaries — in
-`~/.skal` and wires apps to it, so your project lives wherever you want it.
-
-That's the whole workflow. Each one is idempotent and self-contained:
-
-| Command | What it does | Cold time |
-|---|---|---|
-| `bun run setup` | Workspace install + link libskal into kitchen-sink. With `SKAL_PREBUILT=1`: download CI-built binaries and skip the vendor stack entirely. Without it: clone Skal's bun + WebKit forks (branch `skal` — patches live there as commits) + build host bun (+ build Android cross-stack if NDK present; `SKAL_NO_ANDROID=1` to skip). | ~2 min prebuilt; ~30-40 min from source, ~90-120 min with Android |
-| `bun run new <name>` | Scaffold app under `examples/<name>/` from `scripts/templates/default/`, run `flutter create` for android/ios/macos, drop libskal binaries into the new platform configs. Pass `--platforms <list>` to limit, or `--no-platforms` for the JS scaffold only. Requires `setup` first. | ~30 seconds |
-| `bun run dev:*` | Rebuild JS bundle + `flutter run -d <target>`. Available on kitchen-sink and any scaffolded app via `bun --filter <name> dev:*`. | seconds (the build hot-incremental) |
-
-### Other handy scripts
-
-```sh
-bun run test                         # skal_codegen + skal_flutter test suites
-bun run analyze                      # dart analyze across framework packages
-bun run link <name>                  # re-link libskal binaries into an app (if you rebuilt vendor/bun)
-```
-
-Each app under `examples/` also has its own scripts — run with
-`bun --filter <name> <task>` from anywhere, or `cd` in and drop the
-prefix. See `examples/kitchen-sink/package.json` for the full list
-(`build`, `build:web`, `build:macos`/`ios`/`android`, `dev:flutter`,
-`pub`, `codegen`, `analyze`, `test`, `clean`, …).
-
-### Bytecode regeneration footgun
-
-The `.cjs.jsc` is JSC-version-keyed to the bun used at build time. `bun run build`
-invokes `scripts/find-vendored-bun.sh` to lock onto the vendored bun, not the
-system `$PATH` bun. If you ever see a cold-launch regression with no error, regenerate:
-
-```sh
-bun run build
-```
 
 ## Module layout
 

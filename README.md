@@ -22,9 +22,7 @@ Flutter widgets through a zero-copy 6 MiB shared memory region. Same JS bundle, 
 performance, pub.dev's plugin ecosystem for camera / location / biometrics / file picker
 and every other RN-shaped native capability.
 
-Create your first app by running this command on your terminal!
-
-`npm create skal my-app`
+Create your first Skal app: `npm create skal my-app`
 
 ## Why
 

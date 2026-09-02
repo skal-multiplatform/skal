@@ -82,6 +82,12 @@ See [`docs/ENGINE_CHOICE.md`](docs/ENGINE_CHOICE.md) for the full decision matri
 
 ### Prerequisites
 
+- **[bun](https://bun.sh) 1.2+** — the bundler, and every script in a Skal app
+  (`bun run dev:macos`, `bun run build`). `skal doctor` checks for it and fails
+  without it. Note this is the HOST tool: the bun that runs *inside* your app is
+  a separate, vendored build shipped with libskal.
+- **Node 20.19+ or 22.12+** — `npm create skal` and the `skal` CLI itself are
+  Node programs (see `engines` in `@skal/cli`).
 - macOS 14+ (other hosts: TODO)
 - Flutter 3.47+ (`flutter --version`) — skal_codegen needs analyzer ^14, which needs `meta >=1.18.3`; older Flutters pin `meta 1.17.0` and will not resolve
 - Xcode 16+ — needed for both the libskal iOS/macOS cross-compile and the Flutter iOS/macOS shells

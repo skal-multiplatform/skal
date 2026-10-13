@@ -65,6 +65,51 @@ Skal's percentiles are identical across a **300× range** of JS load.
 > at the 5 s stall it is **Skal 387 frames vs RN 260** for the same
 > gesture. At that magnitude frame count is the honest metric.
 
+### Heavy JS and live data while scrolling
+
+Measured on 2026-10-08. Both apps show the same 500-post image feed, and both
+run byte-identical JS load modules. Release builds on the Galaxy A14, with the
+apps interleaved. Frames are counted on screen: the SurfaceFlinger presents of
+each app's window, polled on the device. `dumpsys gfxinfo` isn't used, because
+it can't see Skal's Flutter frames.
+
+| | Skal | React Native |
+|---|---:|---:|
+| The same 20,000-post sync (parse, index, sort), run twice a second | **275 ms** per sync | 690 ms per sync |
+| …while flicking the feed: list blank | **never** | 6–8% of frames, up to 98% of the screen |
+| Live data at 45,000 updates/s: missed refreshes per second of fast flicking | **5.5** | 16.5 |
+| …live updates applied while scrolling | **94%** | ~65% |
+
+**The sync**
+- **Engine speed:** JavaScriptCore does this work about 2.4× faster than Hermes
+  once it's large. A 500-post page took 21–22 ms on both.
+- **Load:** at twice a second, React Native's JS thread is busy 98% of the time
+  and never catches up. Skal's is busy 54%.
+- **Why the list goes blank:** a max-speed fling travels past the two screens
+  FlatList renders ahead while its JS thread is stalled. When both apps were
+  busy for the same time instead (150 ms of every 250 ms), neither list went
+  blank.
+- **How blank content was counted:** on screen recordings of 6 max-speed flings,
+  3 takes per app. Shares are per recorded frame; frame timing never comes from
+  a recording.
+
+**The live data**
+- **The load:** every post's three counters change 30 times a second.
+- **Each stack in its best case:**
+  - Skal: a signal per field, with each tick's writes batched.
+  - React Native: a memo'd leaf component per field, with its own `useState`;
+    React 19 batches each tick.
+- **How it's counted:** missed refreshes per second of motion, over 6 max-speed
+  flings. "Applied" is the driver's own count of updates that landed while
+  scrolling.
+
+> ⚠️ Caveats.
+> - n = 4 frame runs per app is the smallest sample a permutation test can call
+>   (p = 0.028 for each Skal-vs-RN difference here), on one device.
+> - Skal's feed rows are taller in this bench, so the same gesture builds fewer
+>   rows on Skal, which favours it.
+> - 30 updates a second per counter is a trading-app rate, not a social-feed one.
+
 ---
 
 ## State

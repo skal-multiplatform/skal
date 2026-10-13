@@ -163,9 +163,15 @@ bun run build
 | One frame of work — 200 components × 10 reads + 1 update | **0.05 ms** | 0.80 ms |
 | State updates per second, 288 live cells | **103,846** | 4,901 |
 | App size at full WebCrypto parity | **51.6 MiB** | 67.2 MiB |
+| The same 20,000-post sync, run twice a second | **275 ms** per sync | 690 ms per sync |
+| …while flicking the feed: list blank | **never** | 6–8% of frames, up to 98% of the screen |
+| Live data at 45,000 updates/s: missed refreshes on fast flicks | **5.5/s** | 16.5/s |
+| …live updates applied while scrolling | **94%** | ~65% |
 
 Samsung Galaxy A14 5G · Android 15 · release builds both sides · interleaved runs ·
-RN 0.86 / Expo 57 with Hermes, zustand and MMKV.
+RN 0.86 / Expo 57 with Hermes, zustand and MMKV. The last four rows were measured
+on screen on 2026-10-08, with n = 3–4 runs per app on one phone; the method is in
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md#heavy-js-and-live-data-while-scrolling).
 
 See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the full store comparison and
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the perf decision log and budget invariants.

@@ -63,6 +63,12 @@ const B_LAST_DRAINED_SEQ  = HB_LAST_DRAINED_SEQ  >> 3;
 // Opcodes — must match wire.dart exactly.
 // ───────────────────────────────────────────────────────────────────────
 export const OP_CREATE_NODE         = 0x01;
+// OP_CREATE_NODE's third argument is a set of flags. CREATE_ANON_TEXT
+// marks a text node the renderer made itself (createTextNode: a string
+// child, or the empty marker Solid leaves in a `{cond ? <X/> : null}`
+// slot) rather than a <text> element. The host lays an empty one out as
+// nothing; an empty <text> keeps its line. See wire.dart.
+export const CREATE_ANON_TEXT       = 1;
 export const OP_REMOVE_NODE         = 0x02;
 export const OP_INSERT_BEFORE       = 0x03;
 // Like CREATE_NODE but for a custom (registry-dispatched) widget. The
@@ -334,7 +340,8 @@ export const PROP_HEIGHT           = 0x06;
 export const PROP_WEIGHT           = 0x07; // f32 → setPropF32
 export const PROP_ALIGNMENT        = 0x08;
 export const PROP_GAP              = 0x09;
-// Scroll axis: 0 = vertical (default), 1 = horizontal.
+// Scroll axis: 0 = vertical, 1 = horizontal. Unset is vertical, except
+// on a <pageView>, which is horizontal unless set to 0.
 export const PROP_AXIS             = 0x0A;
 // Stack-child positioning (→ Positioned). Set on a child of <stack>.
 export const PROP_TOP              = 0x0B;

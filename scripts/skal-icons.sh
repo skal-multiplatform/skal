@@ -7,10 +7,11 @@
 #   scripts/skal-icons.sh <app-name>
 #   SKAL_APP_ROOT=/path/to/app/flutter-host scripts/skal-icons.sh <app-name>
 #
-# Driven by the `flutter_launcher_icons:` block in flutter-host/pubspec.yaml.
-# Best-effort by design: icons are cosmetic, so a missing tool, no network,
-# or a generator error warns and exits 0 — it must never break a scaffold
-# or a `bun run link`. Re-run any time after editing icon/skal-icon.png.
+# Driven by the `flutter_launcher_icons:` block in flutter-host/pubspec.yaml,
+# for the platforms the app has (see below). Best-effort by design: icons
+# are cosmetic, so a missing tool, no network, or a generator error warns
+# and exits 0 — it must never break a scaffold or a `bun run link`. Re-run
+# any time after editing icon/skal-icon.png.
 
 set -uo pipefail
 
@@ -45,7 +46,46 @@ if ! command -v flutter >/dev/null 2>&1; then
   exit 0
 fi
 
-echo "→ generating Skal launcher icons (macOS/iOS/Android) from icon/skal-icon.png"
+# Only the platforms this app has. flutter_launcher_icons does Android
+# first and throws when there is no android/ project ("PathNotFoundException:
+# android/app/src/main/AndroidManifest.xml") before reaching the others, so
+# an app made with `skal create --platforms ios` got no icons at all. It
+# reads a copy of the config with each missing platform's entry taken out.
+present=""
+missing=""
+for p in android ios macos web windows; do
+  if [[ -d "${APP_ROOT}/${p}" ]]; then present="${present} ${p}"; else missing="${missing} ${p}"; fi
+done
+
+# The generator's own config file wins over the pubspec, as it does there.
+CONFIG_SRC="${APP_ROOT}/flutter_launcher_icons.yaml"
+[[ -f "${CONFIG_SRC}" ]] || CONFIG_SRC="${APP_ROOT}/pubspec.yaml"
+CONFIG_DIR="$(mktemp -d)"
+trap 'rm -rf "${CONFIG_DIR}"' EXIT
+CONFIG="${CONFIG_DIR}/flutter_launcher_icons.yaml"
+# Copy the YAML through, dropping each missing platform's entry (and the
+# lines nested under it) from the icon block. The generator reads only
+# that block; the deprecated `flutter_icons:` key is handled the same way.
+awk -v drop="${missing}" '
+  BEGIN { n = split(drop, list, " "); for (i = 1; i <= n; i++) skip[list[i]] = 1 }
+  /^(flutter_launcher_icons|flutter_icons):/ { block = 1; level = 0; dropping = 0; print; next }
+  block && /^[^ \t#]/ { block = 0 }
+  !block { print; next }
+  /^[ \t]*$/ { print; next }
+  /^[ \t]*#/ { if (!dropping) print; next }
+  {
+    match($0, /^[ \t]*/)
+    if (level == 0) level = RLENGTH
+    if (RLENGTH <= level) {
+      key = substr($0, RLENGTH + 1)
+      sub(/[ \t]*:.*$/, "", key)
+      dropping = (key in skip)
+    }
+    if (!dropping) print
+  }
+' "${CONFIG_SRC}" > "${CONFIG}"
+
+echo "→ generating Skal launcher icons (${present# }) from icon/skal-icon.png"
 
 # flutter_launcher_icons is a dev_dependency; `flutter create` already ran
 # pub get, but do it again (cheap, idempotent) so a bare app still resolves.
@@ -54,7 +94,7 @@ if ! ( cd "${APP_ROOT}" && flutter pub get >/dev/null 2>&1 ); then
   exit 0
 fi
 
-if ! ( cd "${APP_ROOT}" && dart run flutter_launcher_icons ); then
+if ! ( cd "${APP_ROOT}" && dart run flutter_launcher_icons -f "${CONFIG}" ); then
   warn "skal-icons: flutter_launcher_icons failed — skipping (icons unchanged)"
   exit 0
 fi

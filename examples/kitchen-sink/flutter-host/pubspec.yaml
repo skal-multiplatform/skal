@@ -114,3 +114,7 @@ flutter:
     - assets/skal-app.js
     - assets/skal-app.cjs
     - assets/skal-app.cjs.jsc
+    # skal-app.stamp lets a relaunch check the extracted copy without
+    # reading the bundle (lib/skal_bundle.dart). It rides the directory
+    # entry so a bundle built before the stamp existed still builds.
+    - assets/

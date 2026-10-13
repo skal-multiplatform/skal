@@ -181,7 +181,8 @@ const COLD_PROPS = {
   gap:            [B.PROP_GAP,              'u32'],
   // axis: 0 = vertical (default), 1 = horizontal — for scrollView /
   // listView / reorderableListView. `axis={1}` makes a lazy list scroll
-  // sideways (the "lazyRow" use case).
+  // sideways (the "lazyRow" use case). <pageView> takes the same values
+  // but defaults to horizontal, so there `axis={0}` makes it vertical.
   axis:           [B.PROP_AXIS,             'u32'],
   // Stack-child positioning — set on a child of <stack>. Offsets in dp
   // (negative allowed for overflow). Omit for a non-positioned child.
@@ -850,7 +851,10 @@ const _renderer = createRenderer({
 
   createTextNode(value) {
     const id = B.allocNodeId();
-    B.writeOp(B.OP_CREATE_NODE, id, B.WT_TEXT, 0);
+    // Flagged so the host can tell this from a <text> element: an empty
+    // one is Solid's slot marker and takes no space, an empty <text>
+    // keeps its line.
+    B.writeOp(B.OP_CREATE_NODE, id, B.WT_TEXT, B.CREATE_ANON_TEXT);
     const s = value == null ? '' : String(value);
     if (s.length > 0) B.setText(id, s);
     B.scheduleCommit();

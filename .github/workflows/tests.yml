@@ -28,6 +28,21 @@ on:
       - packages/skal-js/**
       - patches/**
       - packages/skal_native/include/**
+      # Release apps' bundle extraction and the CLI that migrates old apps
+      # to it — see the two steps after the demo project's pub get.
+      - packages/skal-cli/**
+      - scripts/templates/**
+      - scripts/skal-bundle-stamp.js
+      - scripts/skal-icons.sh
+      # The skill reference's generator; skal-js's component-docs test runs it.
+      - scripts/gen-skill-reference.mjs
+      - examples/*/package.json
+      - examples/*/flutter-host/lib/**
+      - examples/*/flutter-host/pubspec.yaml
+      - examples/kitchen-sink/flutter-host/test/**
+      # A commit that changes kitchen-sink's bundle without its stamp is the
+      # stale-bundle bug; the test that catches it must run on that commit.
+      - examples/kitchen-sink/flutter-host/assets/**
       - .github/workflows/tests.yml
   push:
     branches: [main]
@@ -44,6 +59,21 @@ on:
       - packages/skal-js/**
       - patches/**
       - packages/skal_native/include/**
+      # Release apps' bundle extraction and the CLI that migrates old apps
+      # to it — see the two steps after the demo project's pub get.
+      - packages/skal-cli/**
+      - scripts/templates/**
+      - scripts/skal-bundle-stamp.js
+      - scripts/skal-icons.sh
+      # The skill reference's generator; skal-js's component-docs test runs it.
+      - scripts/gen-skill-reference.mjs
+      - examples/*/package.json
+      - examples/*/flutter-host/lib/**
+      - examples/*/flutter-host/pubspec.yaml
+      - examples/kitchen-sink/flutter-host/test/**
+      # A commit that changes kitchen-sink's bundle without its stamp is the
+      # stale-bundle bug; the test that catches it must run on that commit.
+      - examples/kitchen-sink/flutter-host/assets/**
       - .github/workflows/tests.yml
   workflow_call:
     inputs:
@@ -149,6 +179,31 @@ jobs:
       - name: flutter pub get (demo project)
         working-directory: examples/kitchen-sink/flutter-host
         run: flutter pub get
+
+      # A release app copies its JS bundle out of the assets on first
+      # launch. The template copied it only when no copy existed, and an
+      # update keeps the data directory, so every app made from it ran its
+      # first-installed JS after every update. This covers the shared
+      # skal_bundle.dart (one copy per host, held byte-identical by the
+      # test), the build's stamp writer, and that every host calls it.
+      # Needs bun, installed above.
+      - name: flutter test (release bundle extraction)
+        working-directory: examples/kitchen-sink/flutter-host
+        run: flutter test test/skal_bundle_test.dart
+
+      # `skal doctor --fix` / `skal upgrade` patch apps scaffolded before
+      # that fix. Then what a new app is made of: launcher icons for only
+      # the platforms it has (runs the real generator), and its Flutter
+      # host — the template's own widget test, run after a real
+      # `flutter create`, and a native build that ships only the bundle.
+      # Named files rather than a glob: the runner's Node may be 20, where
+      # `--test` takes no patterns.
+      - name: node test (skal-cli)
+        run: >-
+          node --test
+          packages/skal-cli/test/stale-bundle.test.js
+          packages/skal-cli/test/icons.test.js
+          packages/skal-cli/test/template-host.test.js
 
       # The cache-key scheme has to agree across every workflow, and once
       # did not. Three workflows were collapsed onto one shared `vendor-src`

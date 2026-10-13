@@ -72,12 +72,20 @@ examples/*/flutter-host/web/skal-app.js
 # Non-CI examples don't track them — their dev/build scripts (and the docs
 # pipeline, for the gallery) rebuild them. kitchen-sink is CI-built, so it
 # keeps its committed bundle.
+#
+# skal-app.stamp describes the .cjs/.jsc beside it (lib/skal_bundle.dart
+# trusts it instead of reading them), so it is tracked or ignored exactly
+# as they are. An untracked stamp next to a committed bundle survives the
+# checkout or pull that changes the bundle, and the app built from that
+# pair keeps running the old JS on any device that already has it.
 examples/*/flutter-host/assets/skal-app.js
 examples/*/flutter-host/assets/skal-app.cjs
 examples/*/flutter-host/assets/skal-app.cjs.jsc
+examples/*/flutter-host/assets/skal-app.stamp
 !examples/kitchen-sink/flutter-host/assets/skal-app.js
 !examples/kitchen-sink/flutter-host/assets/skal-app.cjs
 !examples/kitchen-sink/flutter-host/assets/skal-app.cjs.jsc
+!examples/kitchen-sink/flutter-host/assets/skal-app.stamp
 
 # Benchmark v2 — Skal vs React Native comparison work in progress.
 # Untracked until the methodology is settled and the numbers are real.

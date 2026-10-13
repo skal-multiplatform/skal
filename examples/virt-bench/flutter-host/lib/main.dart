@@ -3,8 +3,8 @@
 // Boot sequence:
 //   1. Resolve the app data dir + create the Skal runtime
 //      (`Skal.create()` spins up bun's worker + JSC).
-//   2. Load the JS bundle from assets — bytecode cache in release,
-//      source bundle in debug.
+//   2. Load the JS bundle from assets — bytecode cache in release
+//      (copied out by skal_bundle.dart), source bundle in debug.
 //   3. Wrap the bridge buffer in SkalBridge, drain once, then mount
 //      Flutter widgets from the JS-produced tree.
 //
@@ -25,6 +25,7 @@ import 'package:skal_flutter/skal/root.dart';
 import 'package:skal_flutter/skal_ffi.dart';
 
 import 'bench_service.dart';
+import 'skal_bundle.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,10 +51,14 @@ void main() async {
 
 Future<void> _boot() async {
   // Resolve the data dir up front so the JS store can read it
-  // synchronously (skips the async getDataDir() RPC at boot).
+  // synchronously (skips the async getDataDir() RPC at boot). The
+  // release bundle is copied out under the same directory, so keep it
+  // rather than asking path_provider a second time (that call measured
+  // 0.6 ms median on an M2 Mac release build, n=31).
+  Directory? support;
   String dataDir = '';
   try {
-    final support = await getApplicationSupportDirectory();
+    support = await getApplicationSupportDirectory();
     dataDir = '${support.path}/skal-store';
     Directory(dataDir).createSync(recursive: true);
   } catch (_) {}
@@ -78,7 +83,10 @@ Future<void> _boot() async {
   // (~3× faster cold start than parsing).
   final EvalResult result;
   if (kReleaseMode) {
-    final cjsPath = await _extractBytecodeAssets();
+    // Re-checked on every launch: an update keeps the data directory, so
+    // a copy made by the previous version would otherwise run forever.
+    support ??= await getApplicationSupportDirectory();
+    final cjsPath = await extractSkalBundle('${support.path}/skal-bundle');
     final loader =
         "(async()=>{await import(${_jsStringLiteral('file://$cjsPath')});"
         "return 'app loaded';})();";
@@ -177,23 +185,6 @@ class _BootError extends StatelessWidget {
       ),
     );
   }
-}
-
-Future<String> _extractBytecodeAssets() async {
-  final support = await getApplicationSupportDirectory();
-  final out = '${support.path}/skal-bundle';
-  Directory(out).createSync(recursive: true);
-  final cjs = File('$out/skal-app.cjs');
-  final jsc = File('$out/skal-app.cjs.jsc');
-  if (!cjs.existsSync()) {
-    final bytes = await rootBundle.load('assets/skal-app.cjs');
-    cjs.writeAsBytesSync(bytes.buffer.asUint8List());
-  }
-  if (!jsc.existsSync()) {
-    final bytes = await rootBundle.load('assets/skal-app.cjs.jsc');
-    jsc.writeAsBytesSync(bytes.buffer.asUint8List());
-  }
-  return cjs.path;
 }
 
 String _jsStringLiteral(String s) {

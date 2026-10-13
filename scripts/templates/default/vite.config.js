@@ -36,6 +36,10 @@ export default defineConfig({
       },
     }),
   ],
+  // public/ belongs to the web build (vite.config.web.js). Copied here it
+  // landed in flutter-host/assets/, which the pubspec bundles whole, so
+  // every native app shipped the 37 KB favicon.
+  publicDir: false,
   build: {
     target: 'es2022',
     minify: 'esbuild',
@@ -45,7 +49,7 @@ export default defineConfig({
       name: 'SkalApp',
       fileName: () => 'skal-app.js',
     },
-    outDir: resolve(__dirname, 'flutter-host/assets'),
+    outDir: resolve(import.meta.dirname, 'flutter-host/assets'),
     emptyOutDir: false,
   },
 });

@@ -701,7 +701,10 @@ class SkalBridge {
             // type-match must never silently reuse a stale NodeState).
             ns[a]!.methodDispatcher = rootDispatcher;
           } else {
-            ns[a] = NodeState(b);
+            final node = ns[a] = NodeState(b);
+            if (b == wtText && (c & kCreateAnonText) != 0) {
+              node.anonymousText = true;
+            }
             // JS (re)creates the root node id at startup — re-attach the
             // app-level dispatcher so the imperative dialog API survives.
             if (a == kRootNodeId) ns[a]!.methodDispatcher = rootDispatcher;
@@ -861,7 +864,7 @@ class SkalBridge {
             touched.add(a);
             // Clearing itemCount drops the count to its default — every
             // cached row extent is now out of range.
-            if (b == propItemCount) clearPropNode.rowExtents?.clear();
+            if (b == propItemCount) clearPropNode.clearRowExtents();
             // Stack-positioning props are consumed by the PARENT's
             // builder; without this the `<stack>` never rebuilds and the
             // child stays pinned at the offset that was just removed.
@@ -953,9 +956,7 @@ class SkalBridge {
             // swap) so stale heights don't size the new data's
             // placeholders. Indices still in range keep their measured
             // extents (valid on a pure grow/append).
-            if (b == propItemCount) {
-              node.rowExtents?.removeWhere((k, _) => k >= c);
-            }
+            if (b == propItemCount) node.dropRowExtentsFrom(c);
             // Stack-positioning props (top/right/bottom/left) live on
             // the CHILD but are consumed by the parent `<stack>`'s
             // builder, which wraps the child in a Positioned. Re-dirty
@@ -997,9 +998,24 @@ class SkalBridge {
         case opSetText:
           final node = ns[a];
           if (node != null) {
+            final wasMarker = node.isSlotMarker;
             node.text = _readString(kStringHeapOff + b, c);
             node.coldDirty = true;
             touched.add(a);
+            // A slot marker lays out as nothing, and it is the PARENT
+            // that leaves it out (with the gap beside it) — so gaining or
+            // losing its text changes the parent's build too. Solid
+            // reuses its empty slot marker this way: when the slot later
+            // gets a string, it `replaceText`s the marker instead of
+            // inserting a node. Without this the parent would keep
+            // leaving out a text that now has something to say.
+            if (wasMarker != node.isSlotMarker) {
+              final parent = ns[node.parent];
+              if (parent != null) {
+                parent.coldDirty = true;
+                touched.add(node.parent);
+              }
+            }
           }
           break;
 

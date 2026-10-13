@@ -41,6 +41,8 @@ import 'package:skal_flutter/skal/early_frame.dart';
 import 'package:skal_flutter/skal/root.dart';
 import 'package:skal_flutter/skal_ffi.dart';
 
+import 'skal_bundle.dart';
+
 void main() async {
   // Monotonic clock for boot timing — wall-clock (DateTime.now) can step
   // backwards if NTP corrects during launch, occasionally yielding negative
@@ -115,9 +117,14 @@ void main() async {
   // That lets the JS store read it synchronously — skipping the async
   // getDataDir() RPC, whose reply otherwise can't be serviced until the
   // JS thread goes idle (hundreds of ms into boot).
+  //
+  // The release bundle is copied out under the same directory, so the
+  // result is kept rather than asking path_provider a second time (that
+  // call measured 0.6 ms median on an M2 Mac release build, n=31).
+  Directory? support;
   String dataDir = '';
   try {
-    final support = await getApplicationSupportDirectory();
+    support = await getApplicationSupportDirectory();
     dataDir = '${support.path}/skal-store';
     Directory(dataDir).createSync(recursive: true);
   } catch (_) {
@@ -169,15 +176,25 @@ void main() async {
   // so hot-reload-style iteration keeps working in debug/profile
   // (where the asset .cjs / .jsc may lag behind the .js anyway).
   //
-  // Extraction is one-shot per APK install: existsSync() on both files
-  // skips the write after the first launch (~200 ms on first launch,
-  // ~tens of µs on subsequent ones; see _extractBytecodeAssets).
+  // The copy is re-checked on every launch, because an update keeps the
+  // data directory. A relaunch with nothing new compares a stamp under
+  // 100 bytes; only the first launch after an install or an update
+  // rewrites the pair (see skal_bundle.dart).
+  //
+  // Deferred optimization: do that rewrite on a background isolate so it
+  // overlaps skal_create_runtime. The naive Isolate.run version copies
+  // the bytes across the isolate boundary, which cancels the overlap; it
+  // needs TransferableTypedData, plus splitting the call so the main
+  // isolate starts both at once. ~50 LOC, and it only pays on that first
+  // launch.
   final EvalResult result;
   double extractMs = 0.0;
   final int tEval0 = bootClock.elapsedMicroseconds;
   if (kReleaseMode) {
     final tX0 = bootClock.elapsedMicroseconds;
-    final cjsPath = await _extractBytecodeAssets();
+    // Kitchen-sink has always kept its copy in the support dir itself.
+    support ??= await getApplicationSupportDirectory();
+    final cjsPath = await extractSkalBundle(support.path);
     final tX1 = bootClock.elapsedMicroseconds;
     extractMs = (tX1 - tX0) / 1000.0;
     // Async IIFE — Bun__REPL__evaluate runs the script as a Program (no
@@ -473,74 +490,6 @@ class _PerfHudState extends State<PerfHud> {
       ),
     );
   }
-}
-
-/// Pull `skal-app.cjs` and `skal-app.cjs.jsc` out of the APK's assets/
-/// ZIP entries and lay them down on a real filesystem path. Returns the
-/// absolute path of the extracted .cjs file.
-///
-/// Deferred optimization: run on a background isolate so it overlaps
-/// with `skal_create_runtime` on cold launch. The naive Isolate.run
-/// version copies the 290 KB byte payload across the isolate boundary
-/// which negates the parallelism win; a proper implementation needs
-/// `TransferableTypedData` for zero-copy transfer, plus splitting the
-/// call so the main isolate kicks off both extraction and runtime init
-/// in parallel. ~50 LOC, only matters on the first cold launch after
-/// install.
-///
-/// bun's module loader takes file:// URLs and reads the bytes via libc
-/// open()/read(). APK assets aren't mmap'd as regular files — they live
-/// inside the .apk's ZIP stream — so we must extract once. The .jsc must
-/// sit next to the .cjs because bun derives the bytecode path by appending
-/// ".jsc" to the resolved module URL.
-///
-/// Staleness check: an `adb install -r` reinstall — what `flutter run`
-/// and most app upgrades do — KEEPS the app's data directory. A bare
-/// `existsSync()` check would therefore load the PREVIOUS APK's
-/// bytecode forever: a silent version mismatch against the freshly
-/// installed libskal (e.g. a changed bridge-buffer size → the JS side
-/// throws `bridge buffer not available` at eval time). So we
-/// byte-compare the small (~50 KB) `.cjs` against the APK's bundled
-/// copy and re-extract only when it actually changed. The expensive
-/// part — loading + writing the ~400 KB `.jsc` — is still skipped on
-/// an unchanged warm relaunch.
-Future<String> _extractBytecodeAssets() async {
-  final dir = await getApplicationSupportDirectory();
-  final cjsFile = File('${dir.path}/skal-app.cjs');
-  final jscFile = File('${dir.path}/skal-app.cjs.jsc');
-
-  // load() (not loadString) — both are raw bytes that must round-trip
-  // without UTF-8 reinterpretation. .cjs is mostly ASCII but contains
-  // emoji literals in user strings; .jsc is binary.
-  final cjsData = await rootBundle.load('assets/skal-app.cjs');
-  final cjsBytes =
-      cjsData.buffer.asUint8List(cjsData.offsetInBytes, cjsData.lengthInBytes);
-
-  // Up to date? The .cjs and .jsc are always rebuilt as a pair, so the
-  // .cjs is a faithful staleness proxy for both.
-  if (cjsFile.existsSync() &&
-      jscFile.existsSync() &&
-      _bytesEqual(cjsFile.readAsBytesSync(), cjsBytes)) {
-    return cjsFile.path;
-  }
-
-  final jscData = await rootBundle.load('assets/skal-app.cjs.jsc');
-  await cjsFile.writeAsBytes(cjsBytes, flush: false);
-  await jscFile.writeAsBytes(
-    jscData.buffer.asUint8List(jscData.offsetInBytes, jscData.lengthInBytes),
-    flush: false,
-  );
-  return cjsFile.path;
-}
-
-/// Byte-equality for the staleness check. Length-first so a changed
-/// bundle (almost always a different size) rejects in O(1).
-bool _bytesEqual(List<int> a, List<int> b) {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
 }
 
 /// Quote a string as a JS string literal — quotes, backslashes, and

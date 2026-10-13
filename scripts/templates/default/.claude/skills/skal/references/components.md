@@ -128,13 +128,18 @@ Eagerly-built scrolling column. Flutter `SingleChildScrollView` +
 (settings page, small form). For long feeds (>50 items) prefer
 `<ListView>`, which virtualizes its children.
 
+`axis` is the scroll direction: 0 vertical (the default), 1
+horizontal. `axis={1}` lays the children out in a row that scrolls
+sideways, with `gap` between them. It is the scrolling row: a
+`<Row>` never scrolls.
+
 `scrollbar` adds an always-visible, draggable scrollbar (desktop).
 
-**Props:** `BaseProps & { scrollbar?: boolean }`
+**Props:** `BaseProps & { axis?: number, scrollbar?: boolean }`
 
 ## <ListView>
 
-Virtualized vertical list. Flutter `ListView.builder`.
+Virtualized list, vertical by default. Flutter `ListView.builder`.
 
 Only the visible window of children plus a small overscan buffer is
 built — a 5000-tweet feed mounts ~10 child widget trees up front
@@ -145,6 +150,11 @@ instead of all 5000. The bridge's NodeState graph still tracks all
 (O(1) append + indexOf, O(N − pos) insert/remove). Inserting or
 removing at random positions on a large list hits the O(N²) cliff.
 For drag-and-drop or mid-list mutation, use `<ReorderableListView>`.
+
+`axis` is the scroll direction: 0 vertical (the default), 1
+horizontal. Give a horizontal list a `height`: inside a `<Column>` or
+a vertical scroller its height is unbounded, and the host cannot lay
+it out.
 
 Must be the OUTERMOST vertical scroller — wrapping a `ListView` in
 another vertical scroller (e.g. a `ScrollView`) collapses its
@@ -171,7 +181,7 @@ exclusive with children — when both are present, children are
 ignored. On the DOM (web) target rows render eagerly, capped at
 1500, since the browser culls offscreen paint itself.
 
-**Props:** `BaseProps & { scrollbar?: boolean, count?: number, renderItem?: (index: number) => JSX.Element }`
+**Props:** `BaseProps & { axis?: number, scrollbar?: boolean, count?: number, renderItem?: (index: number) => JSX.Element }`
 
 ## <ReorderableListView>
 
@@ -404,11 +414,13 @@ compose a `<Row>` instead.
 Swipeable full-page pager. Flutter `PageView`.
 
 Each child is one full-bleed page. Horizontal swipe by default;
-`axis={1}` makes it vertical. `activeTab` is the controlled page
-index — setting it animates to that page — and `onChange(index)`
-fires when a swipe settles. The swipe physics run host-side.
+`axis={0}` makes it vertical. `axis` means what it means on
+`<ScrollView>` and `<ListView>` (0 = vertical, 1 = horizontal); only
+the default differs. `activeTab` is the controlled page index —
+setting it animates to that page — and `onChange(index)` fires when
+a swipe settles. The swipe physics run host-side.
 
-**Props:** `BaseProps & { activeTab?: number, onChange?: (index: number) => void, }`
+**Props:** `BaseProps & { activeTab?: number, axis?: number, onChange?: (index: number) => void, }`
 
 ## <Dismissible>
 

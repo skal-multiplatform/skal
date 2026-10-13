@@ -53,7 +53,8 @@ import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
-import 'package:flutter/rendering.dart' show RenderProxyBox;
+import 'package:flutter/rendering.dart'
+    show CacheExtentStyle, RenderProxyBox, ViewportOffset;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
@@ -1901,14 +1902,52 @@ class _SkalSliderState extends State<_SkalSlider> {
 // returned widget is cached by _SkalNodeState until cold.notify() fires.
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Produce the list of child widgets — parents (Column/Row/Box) embed
-/// these into their `children:` slot. Each child carries a
-/// ValueKey(id) so Flutter's Element diff reconciles by id, not by
-/// position; inserting / removing / reordering doesn't tear down
-/// siblings.
+/// Produce the list of child widgets — parents embed these into their
+/// `children:` slot. Each child carries a ValueKey(id) so Flutter's
+/// Element diff reconciles by id, not by position; inserting /
+/// removing / reordering doesn't tear down siblings.
+///
+/// Every child, including a slot marker (which renders at zero size,
+/// see [_buildText]). The containers that space children along an axis
+/// use [_laidOutChildWidgets] instead; the rest keep the full list on
+/// purpose, because several pick their structure from the COUNT —
+/// `<box>` is its one child or a `Stack` of several — and a count that
+/// moved with a slot's content would swap that structure, remounting
+/// (and resetting) the sibling that stayed.
 List<Widget> _childWidgets(NodeState node, SkalBridge bridge) {
   final out = <Widget>[];
   for (final id in node.childIds) {
+    out.add(SkalNode(
+      nodeId: id,
+      bridge: bridge,
+      key: ValueKey<int>(id),
+    ));
+  }
+  return out;
+}
+
+/// The children of a container that lays them out along an axis —
+/// `<column>`, `<row>`, `<scrollView>`, `<wrap>` — leaving out every
+/// child that takes no space ([NodeState.isSlotMarker]: Solid's slot
+/// marker), with [gap] between the children that remain. A null [gap]
+/// adds no separators (`<wrap>` spaces its children itself).
+///
+/// Left out rather than rendered at zero size, because only absence is
+/// neutral here: a zero-size flex child still gets a gap on each side,
+/// and still takes a share of spaceBetween / spaceAround / spaceEvenly.
+/// Siblings keep their elements either way — a flex reconciles its
+/// children by ValueKey, so one leaving or rejoining re-parents nothing.
+///
+/// One node lookup per child. The bridge re-dirties this parent when a
+/// child gains or loses its text (`opSetText`), which is what brings a
+/// left-out child back.
+List<Widget> _laidOutChildWidgets(
+    NodeState node, SkalBridge bridge, Widget? gap) {
+  final ns = bridge.nodes;
+  final out = <Widget>[];
+  for (final id in node.childIds) {
+    if (ns[id]?.isSlotMarker ?? false) continue;
+    if (gap != null && out.isNotEmpty) out.add(gap);
     out.add(SkalNode(
       nodeId: id,
       bridge: bridge,
@@ -1997,8 +2036,8 @@ Widget _buildColumn(NodeState n, SkalBridge bridge) {
   final alignment = n.getPropU32(propAlignment, -1);
   final gap = n.getPropU32(propGap, 8);
 
-  final children = _childWidgets(n, bridge);
-  final spaced = _intersperse(children, SizedBox(height: gap.toDouble()));
+  final spaced =
+      _laidOutChildWidgets(n, bridge, SizedBox(height: gap.toDouble()));
 
   Widget inner = Column(
     crossAxisAlignment: CrossAxisAlignment.start,
@@ -2053,11 +2092,40 @@ Widget _buildListView(NodeState n, SkalBridge bridge) {
   final ScrollPhysics? physics = n.onRefreshHandlerId != 0
       ? const AlwaysScrollableScrollPhysics()
       : null;
-  ListView buildList(ScrollController? c) => ListView.builder(
+  final hasScrollbar = n.getPropU32(propScrollbar, 0) != 0;
+  // Builder rows are a round trip away; build them well ahead of the
+  // viewport once real extents exist. See _kBuilderLookAheadViewports.
+  final lookAhead = isBuilder && n.meanRowExtent != null;
+  // A wrapper is not "no physics". Given none, a ListView picks
+  // always-scrollable for a vertical list without a controller
+  // (ScrollView's constructor), so a short list can still be dragged and
+  // overscrolled; handing it the wrapper alone would switch that off.
+  // The scrollbar's list has a controller, and never got the default.
+  final ScrollPhysics? listPhysics = !isBuilder
+      ? physics
+      : _EagerImageLoadPhysics(
+          parent: physics ??
+              (!hasScrollbar && axis == Axis.vertical
+                  ? const AlwaysScrollableScrollPhysics()
+                  : null));
+  // Children mode: a slot marker child (NodeState.isSlotMarker) is a
+  // zero-height row (_buildText) with no gap. Gap slot 2k+1 sits between
+  // rows k and k+1, so it shows only before a row that takes space and
+  // comes after the first one that does. Leaving the row out, as the
+  // axis containers do, would mean remapping every index after it —
+  // O(children) per build, in the widget that exists to make builds
+  // O(window).
+  final firstLaidOut = isBuilder ? 0 : _firstLaidOutChild(n, bridge);
+  // One widget type for the list's whole life, look-ahead on or off: the
+  // look-ahead switching on (or off, when the count drops to 0) is then a
+  // property change on the same Viewport, and the Scrollable and every
+  // built row stay mounted. See _LookAheadListView.
+  Widget buildList(ScrollController? c) => _LookAheadListView.builder(
         controller: c,
         scrollDirection: axis,
         padding: pad,
-        physics: physics,
+        physics: listPhysics,
+        lookAheadViewports: lookAhead ? _kBuilderLookAheadViewports : null,
         // For interspersed-gap rendering we double the slot count and
         // alternate: even = real child, odd = gap. Cheaper than building
         // a Column-per-row with gap inside. The gap box runs along the
@@ -2065,6 +2133,12 @@ Widget _buildListView(NodeState n, SkalBridge bridge) {
         itemCount: count == 0 ? 0 : (count * 2 - 1),
         itemBuilder: (_, i) {
           if (i.isOdd) {
+            final next = (i + 1) ~/ 2;
+            if (!isBuilder &&
+                (next <= firstLaidOut ||
+                    (bridge.nodes[n.childAt(next)]?.isSlotMarker ?? false))) {
+              return const SizedBox.shrink();
+            }
             return axis == Axis.horizontal
                 ? SizedBox(width: gap.toDouble())
                 : SizedBox(height: gap.toDouble());
@@ -2081,7 +2155,7 @@ Widget _buildListView(NodeState n, SkalBridge bridge) {
         },
       );
 
-  Widget inner = n.getPropU32(propScrollbar, 0) != 0
+  Widget inner = hasScrollbar
       ? _SkalScrollbar(builder: buildList)
       : buildList(null);
 
@@ -2121,7 +2195,14 @@ Widget _buildBuilderRow(NodeState n, SkalBridge bridge, int row, Axis axis) {
   final childId = n.builderRows?[row];
   if (childId == null) {
     _noteMissingRow(n, bridge, row);
-    final extent = n.rowExtents?[row] ?? _kRowExtentEstimate;
+    // A row last measured at 0 dp is sized like one never seen. Zero is
+    // what a row measures while its data loads, not what it will be (see
+    // NodeState.meanRowExtent); and a run of evicted 0 dp rows sized at 0
+    // would let one layout walk into — and request — all of them.
+    final measured = n.rowExtentOf(row);
+    final extent = measured != null && measured > 0
+        ? measured
+        : n.meanRowExtent ?? _kRowExtentEstimate;
     return axis == Axis.horizontal
         ? SizedBox(width: extent)
         : SizedBox(height: extent);
@@ -2218,10 +2299,125 @@ class SkalBuilderChild extends StatelessWidget {
   }
 }
 
-/// Placeholder extent for a never-measured row. Only matters for the
-/// brief window before the real row lays out; Flutter corrects the
-/// scroll geometry as measured extents land.
+/// Placeholder extent for a row before any row has measured above zero —
+/// the list's very first frame, or rows whose data is still loading.
+/// After that, unbuilt rows are sized from the mean of the measured ones
+/// (`NodeState.meanRowExtent`); Flutter corrects the scroll geometry as
+/// real extents land.
 const double _kRowExtentEstimate = 48.0;
+
+/// The ListView of a `<listView>`. With [lookAheadViewports] set, its
+/// viewport builds rows that many viewports past each edge, measuring the
+/// viewport itself (`CacheExtentStyle.viewport`). That is the 3.41 line's
+/// API: `ScrollCacheExtent.viewport`, which replaced it, only exists from
+/// Flutter 3.44, and this package supports 3.41 (Dart ^3.11.5).
+///
+/// Not a LayoutBuilder computing pixels from the list's constraints, as
+/// before. A LayoutBuilder owns a BuildScope, so every rebuild inside the
+/// list — a row landing, a hot-prop tween, a live counter — forced a layout
+/// of it, climbing to the relayout boundary above it when its constraints
+/// are loose, and every constraint change (a keyboard inset animating)
+/// rebuilt every built row. And a ListView that moved under a LayoutBuilder
+/// when the look-ahead switched on was a new element: the Scrollable
+/// remounted, offset back to 0, every built row rebuilt.
+class _LookAheadListView extends ListView {
+  _LookAheadListView.builder({
+    super.controller,
+    super.scrollDirection,
+    super.padding,
+    super.physics,
+    required super.itemBuilder,
+    super.itemCount,
+    required this.lookAheadViewports,
+  }) : super.builder();
+
+  /// Rows built past each edge, in viewports; null for Flutter's default
+  /// cache extent.
+  final double? lookAheadViewports;
+
+  @override
+  Widget buildViewport(BuildContext context, ViewportOffset offset,
+      AxisDirection axisDirection, List<Widget> slivers) {
+    final viewports = lookAheadViewports;
+    if (viewports == null) {
+      return super.buildViewport(context, offset, axisDirection, slivers);
+    }
+    // The same widget type as super's, so switching is an update, not a
+    // remount. Only arguments the 3.41 line has.
+    return Viewport(
+      axisDirection: axisDirection,
+      offset: offset,
+      slivers: slivers,
+      center: center,
+      anchor: anchor,
+      clipBehavior: clipBehavior,
+      // ignore: deprecated_member_use
+      cacheExtent: viewports,
+      // ignore: deprecated_member_use
+      cacheExtentStyle: CacheExtentStyle.viewport,
+    );
+  }
+}
+
+/// How far past the viewport a builder-mode list builds rows, in
+/// viewports, once it has measured one above zero (each side).
+///
+/// A builder row costs a round trip: the layout that first touches a
+/// missing index requests it, JS materializes it, and it lands a frame
+/// later (~12 ms on a Galaxy A14). Flutter's default cache extent is
+/// 250 px — ~30 ms of travel at the 8000 dp/s fling ceiling — and an
+/// image only starts decoding once its row is built; the feed's 300 KB
+/// JPEGs take p50 35-44 ms, p90 58-69 ms from build to first frame there.
+/// One viewport is ~97 ms of travel at that speed, enough for both.
+///
+/// Measured, not guessed (launch-film task 1): one viewport and two both
+/// took six max-speed flings from 49-52% of frames showing an unpainted
+/// image to 0%. It is not free on the slow published scroll test: 1.15
+/// skipped refreshes per second of motion against 0.43 with the 250 px
+/// default (p = 0.006), still half of RN's 2.29 (notes/live-feed-
+/// 2026-10-08.md; the per-gesture figures first quoted for this were
+/// confounded by the swipe injector and withdrawn). Two viewports read
+/// 0.87/s on n = 8 against one's n = 4 — not resolved — and hold twice
+/// the rows and decoded images alive, so one it is. Memory stays
+/// O(window) once rows are measured above zero (see
+/// NodeState.meanRowExtent).
+///
+/// Not applied until a row has measured above zero: before that every
+/// unbuilt row is a 48 dp guess, and a look-ahead full of guesses asks
+/// JS for several times the rows that will actually fit. The first frame
+/// keeps the default extent; the look-ahead switches on with the first
+/// rebuild after rows land, when unbuilt rows are sized from real ones.
+const double _kBuilderLookAheadViewports = 1.0;
+
+/// Builder-list physics that never ask images to defer loading.
+///
+/// Flutter's `Image` wraps every provider in a `ScrollAwareImageProvider`,
+/// which declines to start an uncached image while its Scrollable moves
+/// faster than the screen's longest side per second — 2408 px/s on a
+/// Galaxy A14, against a fling ceiling of 8000 dp/s — and re-checks every
+/// frame until it slows. Through a run of flings that never happens, so
+/// the images in rows the look-ahead had built early did not START
+/// decoding until the gesture ended, then all started at once: build to
+/// first frame went from p50 123 ms to p50 156-242 ms, p90 ~750 ms.
+/// React Native's FlatList has no such gate.
+///
+/// The deferral saves work for images that fly past unseen. Here the work
+/// is bounded anyway: only rows inside the look-ahead window are built,
+/// so only their images are decoded, and memory stays O(window). Every
+/// other behaviour (clamping, bouncing, ballistics) comes from [parent],
+/// i.e. the platform's physics.
+class _EagerImageLoadPhysics extends ScrollPhysics {
+  const _EagerImageLoadPhysics({super.parent});
+
+  @override
+  _EagerImageLoadPhysics applyTo(ScrollPhysics? ancestor) =>
+      _EagerImageLoadPhysics(parent: buildParent(ancestor));
+
+  @override
+  bool recommendDeferredLoading(
+          double velocity, ScrollMetrics metrics, BuildContext context) =>
+      false;
+}
 
 /// Record a missing builder row and schedule (at most one per frame per
 /// list) an evRowRequest carrying the EXPLICIT set of missing indices
@@ -2252,7 +2448,7 @@ void _noteMissingRow(NodeState n, SkalBridge bridge, int row) {
 }
 
 /// Measures a materialized builder row's laid-out main-axis extent into
-/// the list's `rowExtents` cache so a revisited row's placeholder is
+/// the list's row-extent cache so a revisited row's placeholder is
 /// extent-perfect. A RenderProxyBox — zero visual effect.
 class _RowExtentProbe extends SingleChildRenderObjectWidget {
   const _RowExtentProbe({
@@ -2290,8 +2486,24 @@ class _RenderRowExtentProbe extends RenderProxyBox {
   @override
   void performLayout() {
     super.performLayout();
-    final extent = axis == Axis.horizontal ? size.width : size.height;
-    (list.rowExtents ??= <int, double>{})[index] = extent;
+    final first = list.recordRowExtent(
+        index, axis == Axis.horizontal ? size.width : size.height);
+    // The list's look-ahead switches on once a row has measured above 0
+    // (see _kBuilderLookAheadViewports), but `_buildListView` only re-runs
+    // when the list's notifier fires — and the rebuild that put this row
+    // on screen has already happened; measurement is what layout does
+    // AFTER it. Without a nudge the look-ahead waits for whatever unrelated
+    // rebuild comes next, which on a list whose first batch covers the
+    // first few screens may be a long fling away. Each time the mean goes
+    // from none to a value — in practice once per list lifetime, per
+    // count reset — after the frame, never during layout.
+    if (first) {
+      final l = list;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        // Zeroed by _removeSubtree before the node is disposed.
+        if (l.onRowRequestHandlerId != 0) l.notifyCold();
+      });
+    }
   }
 }
 
@@ -2314,8 +2526,11 @@ Widget _buildReorderableListView(NodeState n, SkalBridge bridge) {
   final axis = _axisFor(n.getPropU32(propAxis, 0));
   final width = n.getPropU32(propWidth, kNoValue);
   final height = n.getPropU32(propHeight, kNoValue);
-  final count = n.childCount;
   final pad = _paddingFor(n, 16);
+  // Its items, without slot markers: the drag reports indices to JS,
+  // which must count the same items the user sees.
+  final items = _Items(n, bridge);
+  final count = items.length;
 
   Widget inner = ReorderableListView.builder(
     scrollDirection: axis,
@@ -2326,13 +2541,12 @@ Widget _buildReorderableListView(NodeState n, SkalBridge bridge) {
     itemCount: count,
     itemBuilder: (_, i) {
       // O(log N) per visible item under TreapChildList.
-      final childId = n.childAt(i);
+      final childId = items[i];
       final child = SkalNode(
         nodeId: childId,
         bridge: bridge,
         key: ValueKey<int>(childId),
       );
-      // Last child gets no trailing gap.
       if (gap == 0 || i == count - 1) return child;
       return Padding(
         key: ValueKey<int>(childId),
@@ -2418,9 +2632,9 @@ Widget _buildScrollView(NodeState n, SkalBridge bridge) {
   final width = n.getPropU32(propWidth, kNoValue);
   final height = n.getPropU32(propHeight, kNoValue);
 
-  final children = _childWidgets(n, bridge);
-  final spaced = _intersperse(
-    children,
+  final spaced = _laidOutChildWidgets(
+    n,
+    bridge,
     axis == Axis.horizontal
         ? SizedBox(width: gap.toDouble())
         : SizedBox(height: gap.toDouble()),
@@ -2495,8 +2709,8 @@ Widget _buildRow(NodeState n, SkalBridge bridge) {
   final width = n.getPropU32(propWidth, kNoValue);
   final height = n.getPropU32(propHeight, kNoValue);
 
-  final children = _childWidgets(n, bridge);
-  final spaced = _intersperse(children, SizedBox(width: gap.toDouble()));
+  final spaced =
+      _laidOutChildWidgets(n, bridge, SizedBox(width: gap.toDouble()));
 
   // A `<row>` is a Row. It used to be a horizontally-scrollable Row —
   // wrapped in a SingleChildScrollView "so wide rows don't clip" — and
@@ -2529,6 +2743,13 @@ Widget _buildRow(NodeState n, SkalBridge bridge) {
 
 Widget _buildText(NodeState n, SkalBridge bridge) {
   final text = n.text;
+  // A slot marker takes no space (NodeState.isSlotMarker). The axis
+  // containers leave it out altogether; this covers every parent that
+  // keeps it — a `<box>`'s Stack, a list row, a single-child slot. A
+  // Text('') would be a full line tall, and lay out a paragraph to find
+  // that out. An empty `<text>` the app wrote is not a marker and goes
+  // on below: it keeps its line, its style and its animations.
+  if (n.isSlotMarker) return const SizedBox.shrink();
   final fontSize = n.getPropU32(propFontSize, 14);
   final fontWeight = _fontWeightFor(n.getPropU32(propFontWeight, 400));
   // Theme-aware default — white-ish on dark, black on light — so
@@ -2802,18 +3023,24 @@ Widget _buildChip(NodeState n, SkalBridge bridge) {
 /// one segment's label widget; `activeTab` is the selected index and
 /// `onChange(index)` fires on a tap.
 Widget _buildSegmentedButton(NodeState n, SkalBridge bridge) {
-  final count = n.childCount;
+  final items = _Items(n, bridge);
+  final count = items.length;
   if (count == 0) return const SizedBox.shrink();
   final active = n.getPropU32(propActiveTab, 0).clamp(0, count - 1);
   final handler = n.onChangeHandlerId;
 
   Widget segLabel(int i) {
-    final cid = n.childAt(i);
+    final cid = items[i];
     return SkalNode(nodeId: cid, bridge: bridge, key: ValueKey<int>(cid));
   }
 
   Widget inner;
-  if (bridge.isCupertino) {
+  if (bridge.isCupertino && count < 2) {
+    // CupertinoSlidingSegmentedControl asserts at least two segments. A
+    // lone one (say the `{cond ? <text/> : null}` beside it is empty) is
+    // shown as its label, the way <tabs> drops its bar below two tabs.
+    inner = segLabel(0);
+  } else if (bridge.isCupertino) {
     // iOS has a native segmented control — keep this widget in line
     // with the rest of the adaptive control set (switch / checkbox /
     // activity indicator all branch on the global design system).
@@ -2869,14 +3096,15 @@ Widget _buildExpansionTile(NodeState n, SkalBridge bridge) {
 /// renders acceptably under Cupertino, and an iOS wheel variant can
 /// follow later if needed.
 Widget _buildDropdown(NodeState n, SkalBridge bridge) {
-  final count = n.childCount;
+  final items = _Items(n, bridge);
+  final count = items.length;
   if (count == 0) return const SizedBox.shrink();
   final active = n.getPropU32(propActiveTab, 0).clamp(0, count - 1);
   final enabled = n.getPropU32(propEnabled, 1) != 0;
   final handler = n.onChangeHandlerId;
 
   Widget optionLabel(int i) {
-    final cid = n.childAt(i);
+    final cid = items[i];
     return SkalNode(nodeId: cid, bridge: bridge, key: ValueKey<int>(cid));
   }
 
@@ -2904,7 +3132,8 @@ Widget _buildDropdown(NodeState n, SkalBridge bridge) {
 /// report the adjacent index). The app owns the index — Skal keeps the
 /// host stateless here, consistent with `<tabs>`.
 Widget _buildStepper(NodeState n, SkalBridge bridge) {
-  final count = n.childCount;
+  final items = _Items(n, bridge);
+  final count = items.length;
   if (count == 0) return const SizedBox.shrink();
   final current = n.getPropU32(propActiveTab, 0).clamp(0, count - 1);
   final handler = n.onChangeHandlerId;
@@ -2915,7 +3144,7 @@ Widget _buildStepper(NodeState n, SkalBridge bridge) {
   }
 
   Step stepFor(int i) {
-    final stepId = n.childAt(i);
+    final stepId = items[i];
     final stepNode = bridge.nodes[stepId];
     final title = stepNode?.getPropStr(propTitle) ?? 'Step ${i + 1}';
     return Step(
@@ -2946,10 +3175,8 @@ Widget _buildStepper(NodeState n, SkalBridge bridge) {
 /// `<step>` → the content slot of a `<stepper>`. Like `<tab>`, it
 /// renders its single child; the `title` prop is read by the parent
 /// `<stepper>` builder, not here.
-Widget _buildStep(NodeState n, SkalBridge bridge) {
-  final children = _childWidgets(n, bridge);
-  return children.isEmpty ? const SizedBox.shrink() : children.first;
-}
+Widget _buildStep(NodeState n, SkalBridge bridge) =>
+    _contentChild(n, bridge);
 
 /// `<drawer>` → Flutter `Drawer` — the slide-in side panel. Consumed by
 /// the `<navigator>` (routed into `Scaffold.drawer`); a standalone
@@ -3163,7 +3390,7 @@ Widget _buildLazyGrid(NodeState n, SkalBridge bridge) {
   final width = n.getPropU32(propWidth, kNoValue);
   final height = n.getPropU32(propHeight, kNoValue);
   final pad = _paddingFor(n, 16);
-  final count = n.childCount;
+  final items = _Items(n, bridge);
 
   Widget inner = GridView.builder(
     padding: pad,
@@ -3173,9 +3400,9 @@ Widget _buildLazyGrid(NodeState n, SkalBridge bridge) {
       crossAxisSpacing: gap,
       childAspectRatio: aspectRatio > 0 ? aspectRatio : 1.0,
     ),
-    itemCount: count,
+    itemCount: items.length,
     itemBuilder: (_, i) {
-      final childId = n.childAt(i);
+      final childId = items[i];
       return SkalNode(
         nodeId: childId,
         bridge: bridge,
@@ -3212,7 +3439,9 @@ Widget _buildWrap(NodeState n, SkalBridge bridge) {
   Widget inner = Wrap(
     spacing: gap,
     runSpacing: gap,
-    children: _childWidgets(n, bridge),
+    // Not _childWidgets: a zero-size child still gets `spacing` on each
+    // side within its run.
+    children: _laidOutChildWidgets(n, bridge, null),
   );
   inner = _applyColdVisual(n, inner);
   inner = _applyHeight(height, _applyWidth(width, inner));
@@ -3333,29 +3562,28 @@ Widget _buildNavigator(NodeState n, SkalBridge bridge) {
   final popHandler = n.onPopHandlerId;
 
   final pages = <Page<dynamic>>[];
+  var screens = 0;
   for (final screenId in n.childIds) {
     final screen = bridge.nodes[screenId];
-    if (screen == null) continue;
-    // Split the screen's children: the first non-drawer child is the
-    // route content; an optional `<drawer>` child routes to the
-    // Scaffold's drawer slot rather than rendering inline.
-    int contentId = -1;
+    // A slot marker among the screens (`{signedIn() ? <screen/> : null}`)
+    // is not a route; as one it would be a blank page on the stack.
+    if (screen == null || screen.isSlotMarker) continue;
+    screens++;
+    // An optional `<drawer>` child routes to the Scaffold's drawer slot
+    // rather than rendering inline.
     int drawerId = -1;
     for (final cid in screen.childIds) {
-      final c = bridge.nodes[cid];
-      if (c != null && c.type == wtDrawer) {
-        drawerId = cid;
-      } else if (contentId < 0) {
-        contentId = cid;
-      }
+      if (bridge.nodes[cid]?.type == wtDrawer) drawerId = cid;
     }
-    Widget content = contentId >= 0
-        ? SkalNode(
-            nodeId: contentId,
-            bridge: bridge,
-            key: ValueKey<int>(contentId),
-          )
-        : const SizedBox.shrink();
+    // The route content is the `<screen>` itself, mounted: `_buildScreen`
+    // shows its first child that is neither the drawer nor a slot marker,
+    // and as that child's parent it is what rebuilds when the child
+    // changes (a string that starts empty, a slot that fills).
+    Widget content = SkalNode(
+      nodeId: screenId,
+      bridge: bridge,
+      key: ValueKey<int>(screenId),
+    );
     // NAVIGATION.md Phase 2 — an optional AppBar / nav bar from a
     // `<screen title>`. The bar's back button is automatic: Flutter
     // shows it whenever the enclosing route can pop, and tapping it
@@ -3431,7 +3659,7 @@ Widget _buildNavigator(NodeState n, SkalBridge bridge) {
   // so a system back with a dialog open pops the dialog first and this
   // PopScope never sees it (NAVIGATION.md §7).
   inner = PopScope<dynamic>(
-    canPop: n.childCount <= 1,
+    canPop: screens <= 1,
     onPopInvokedWithResult: (didPop, result) {
       if (!didPop && popHandler != 0) {
         bridge.dispatchEvent(popHandler, eventKind: evNavPop);
@@ -3514,8 +3742,15 @@ Widget _screenChrome(
 /// Outside a navigator, just render the content so the tree stays
 /// valid.
 Widget _buildScreen(NodeState n, SkalBridge bridge) {
-  final children = _childWidgets(n, bridge);
-  return children.isEmpty ? const SizedBox.shrink() : children.first;
+  // Its first child that is neither a slot marker nor the `<drawer>` (which
+  // the navigator routes to the Scaffold's drawer slot).
+  final ns = bridge.nodes;
+  for (final id in n.childIds) {
+    final c = ns[id];
+    if (c == null || c.isSlotMarker || c.type == wtDrawer) continue;
+    return SkalNode(nodeId: id, bridge: bridge, key: ValueKey<int>(id));
+  }
+  return const SizedBox.shrink();
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────
@@ -3539,35 +3774,25 @@ Widget _buildTabs(NodeState n, SkalBridge bridge) {
   final cupertino = bridge.isCupertino;
   final handler = n.onChangeHandlerId;
 
-  final contents = <Widget>[];
+  // Every child keeps its place in the body's stack (below), slot markers
+  // included; `tabAt` holds the positions of the real tabs, which alone
+  // have a destination in the bar and are what `activeTab` / `onChange(i)`
+  // count.
+  final children = n.childIds.toList(growable: false);
+  final tabAt = <int>[];
   final titles = <String>[];
   final icons = <String>[];
-  for (final id in n.childIds) {
-    final tab = bridge.nodes[id];
-    if (tab == null) continue;
-    final contentId = tab.hasChildren ? tab.childAt(0) : -1;
-    contents.add(contentId >= 0
-        ? SkalNode(
-            nodeId: contentId,
-            bridge: bridge,
-            key: ValueKey<int>(contentId),
-          )
-        : const SizedBox.shrink());
+  for (var p = 0; p < children.length; p++) {
+    final tab = bridge.nodes[children[p]];
+    if (tab == null || tab.isSlotMarker) continue;
+    tabAt.add(p);
     titles.add(tab.getPropStr(propTitle) ?? '');
     icons.add(tab.getPropStr(propIcon) ?? '');
   }
-  if (contents.isEmpty) return const SizedBox.shrink();
+  if (tabAt.isEmpty) return const SizedBox.shrink();
 
-  // Material `NavigationBar` and `CupertinoTabBar` both assert at least
-  // two destinations. A single-`<tab>` `<tabs>` is degenerate — render
-  // just the one body, no bar, rather than tripping the assert.
-  if (contents.length < 2) {
-    Widget only = _applyColdVisual(n, contents.first);
-    only = _applyHeight(height, _applyWidth(width, only));
-    return _hotLayer(node: n, child: only);
-  }
-
-  final active = n.getPropU32(propActiveTab, 0).clamp(0, contents.length - 1);
+  final active = n.getPropU32(propActiveTab, 0).clamp(0, tabAt.length - 1);
+  final shown = tabAt[active];
   void onSelect(int i) {
     if (handler != 0) bridge.dispatchEventInt(handler, i);
   }
@@ -3598,16 +3823,44 @@ Widget _buildTabs(NodeState n, SkalBridge bridge) {
   // or reset anything: state, scroll offset and the keep-alive
   // guarantee above are untouched, and an animation resumes when its
   // tab comes back.
+  //
+  // Each body is its `<tab>`, mounted (`_buildTab`: its first child that is
+  // not a slot marker), so the tab is what rebuilds when that child changes
+  // — a string body that starts empty, a child put into an empty tab.
+  // Reading the tab's children here instead would miss those: the bridge
+  // re-dirties a changed child's PARENT.
+  //
+  // A slot marker among the tabs (`{admin() ? <tab/> : null}`) stays in the
+  // stack as an empty child, in its place. IndexedStack matches children by
+  // position (it wraps each one, so keys would not reach its Stack), and
+  // Solid fills a slot by inserting the new tab before the marker and
+  // removing the marker in one batch: so every other tab keeps its position
+  // and stays mounted — a text field keeps what was typed.
   final Widget body = IndexedStack(
-    index: active,
+    index: shown,
     sizing: bounded ? StackFit.expand : StackFit.loose,
     children: <Widget>[
-      for (var i = 0; i < contents.length; i++)
-        TickerMode(enabled: i == active, child: contents[i]),
+      for (var p = 0; p < children.length; p++)
+        if (bridge.nodes[children[p]]?.isSlotMarker ?? true)
+          const SizedBox.shrink()
+        else
+          TickerMode(
+            enabled: p == shown,
+            child: SkalNode(
+                nodeId: children[p],
+                bridge: bridge,
+                key: ValueKey<int>(children[p])),
+          ),
     ],
   );
 
-  final Widget bar = cupertino
+  // Material `NavigationBar` and `CupertinoTabBar` both assert at least
+  // two destinations, so a lone tab shows its body with no bar. Same tree
+  // either way — the bar's slot is empty, not gone — so a second tab
+  // arriving or leaving does not remount the one that stays.
+  final Widget bar = tabAt.length < 2
+      ? const SizedBox.shrink()
+      : cupertino
       ? CupertinoTabBar(
           currentIndex: active,
           onTap: onSelect,
@@ -3647,10 +3900,8 @@ Widget _buildTabs(NodeState n, SkalBridge bridge) {
 /// `<tab>` standalone — normally consumed by its parent `<tabs>`,
 /// which reads its content + title + icon directly. Outside a `<tabs>`
 /// just render the content so the tree stays valid.
-Widget _buildTab(NodeState n, SkalBridge bridge) {
-  final children = _childWidgets(n, bridge);
-  return children.isEmpty ? const SizedBox.shrink() : children.first;
-}
+Widget _buildTab(NodeState n, SkalBridge bridge) =>
+    _contentChild(n, bridge);
 
 /// `<tab icon>` name → Flutter [IconData]. A small curated table —
 /// covers the common bottom-bar icons; unknown names fall back to a
@@ -3718,7 +3969,7 @@ Widget _buildListTile(NodeState n, SkalBridge bridge) {
 // ── PageView — swipeable full-page pages ──────────────────────────
 
 /// `<pageView>` → Flutter `PageView`. Each child is one full-bleed
-/// page; horizontal swipe by default (`axis` → vertical). `activeTab`
+/// page; horizontal swipe by default (`axis={0}` → vertical). `activeTab`
 /// is the CONTROLLED page index — a JS write animates the
 /// `PageController` to it — and `onChange(index)` fires when a swipe
 /// settles. The host owns the swipe physics: zero per-frame traffic.
@@ -3777,7 +4028,8 @@ class _SkalPageViewState extends State<_SkalPageView> {
   Widget build(BuildContext context) {
     final n = widget.node;
     final handler = n.onChangeHandlerId;
-    final count = n.childCount;
+    final items = _Items(n, widget.bridge);
+    final count = items.length;
     if (count == 0) return const SizedBox.shrink();
     // PageView.builder (NOT PageView(children:)) — lazy: only the
     // visible page plus the cache-extent neighbours mount, so a large
@@ -3785,10 +4037,14 @@ class _SkalPageViewState extends State<_SkalPageView> {
     // node's ListChildList backing.
     return PageView.builder(
       controller: _ctrl,
-      scrollDirection: _axisFor(n.getPropU32(propAxis, 0)),
+      // Same enum as every scroller (0 = vertical, 1 = horizontal); only
+      // the default differs, as Flutter's own PageView and ListView
+      // defaults do. Reading it with the shared fallback of 0 paged an
+      // unset `<pageView>` vertically, against its docs.
+      scrollDirection: _axisFor(n.getPropU32(propAxis, 1)),
       itemCount: count,
       itemBuilder: (_, i) {
-        final id = n.childAt(i);
+        final id = items[i];
         return SkalNode(
             nodeId: id, bridge: widget.bridge, key: ValueKey<int>(id));
       },
@@ -3812,7 +4068,7 @@ class _SkalPageViewState extends State<_SkalPageView> {
 /// must leave the tree, and a stale rebuild would otherwise trip it.
 Widget _buildDismissible(NodeState n, SkalBridge bridge) {
   if (n.dismissed) return const SizedBox.shrink();
-  final childId = n.hasChildren ? n.childAt(0) : -1;
+  final childId = _firstContentChild(n, bridge);
   final Widget content = childId >= 0
       ? SkalNode(nodeId: childId, bridge: bridge, key: ValueKey<int>(childId))
       : const SizedBox.shrink();
@@ -3888,7 +4144,7 @@ Widget _buildSliverAppBar(NodeState n, SkalBridge bridge) {
   final height = n.getPropU32(propHeight, kNoValue);
   final mode = n.getPropU32(propSliverMode, 0);
   final bg = n.getPropU32(propBgColor, 0);
-  final childId = n.hasChildren ? n.childAt(0) : -1;
+  final childId = _firstContentChild(n, bridge);
   return SliverAppBar(
     title: title != null ? Text(title) : null,
     pinned: mode == 1 || mode == 3,    // 1 pinned, 3 pinned+floating
@@ -3927,6 +4183,7 @@ Widget _buildSliverGrid(NodeState n, SkalBridge bridge) {
   final cross = n.getPropU32(propCrossAxisCount, 2);
   final ratio = n.getPropF32(propAspectRatio, 1.0);
   final gap = n.getPropU32(propGap, 8).toDouble();
+  final items = _Items(n, bridge);
   return SliverGrid(
     gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
       crossAxisCount: cross < 1 ? 1 : cross,
@@ -3936,11 +4193,11 @@ Widget _buildSliverGrid(NodeState n, SkalBridge bridge) {
     ),
     delegate: SliverChildBuilderDelegate(
       (_, i) {
-        final id = n.childAt(i);
+        final id = items[i];
         return SkalNode(
             nodeId: id, bridge: bridge, key: ValueKey<int>(id));
       },
-      childCount: n.childCount,
+      childCount: items.length,
     ),
   );
 }
@@ -4078,7 +4335,7 @@ class _SkalPainter extends CustomPainter {
 /// `<dropZone>` the item is released over. A floating feedback follows
 /// the pointer during the drag; the in-place copy ghosts to 30%.
 Widget _buildDragItem(NodeState n, SkalBridge bridge) {
-  final childId = n.hasChildren ? n.childAt(0) : -1;
+  final childId = _firstContentChild(n, bridge);
   if (childId < 0) return const SizedBox.shrink();
   final data = n.getPropStr(propDragData) ?? '';
   Widget node() => SkalNode(nodeId: childId, bridge: bridge);
@@ -4100,7 +4357,7 @@ Widget _buildDragItem(NodeState n, SkalBridge bridge) {
 /// host-side; nothing crosses the bridge until the actual drop.
 Widget _buildDropZone(NodeState n, SkalBridge bridge) {
   final handler = n.onDropHandlerId;
-  final childId = n.hasChildren ? n.childAt(0) : -1;
+  final childId = _firstContentChild(n, bridge);
   final Widget content = childId >= 0
       ? SkalNode(nodeId: childId, bridge: bridge)
       : const SizedBox.shrink();
@@ -4166,7 +4423,7 @@ Widget _buildCrossFade(NodeState n, SkalBridge bridge) {
   final height = n.getPropU32(propHeight, kNoValue);
   final durMs = n.getPropU32(propAnimDuration, 0);
 
-  final childId = n.hasChildren ? n.childAt(0) : -1;
+  final childId = _firstContentChild(n, bridge);
   final Widget current = childId >= 0
       ? SkalNode(nodeId: childId, bridge: bridge, key: ValueKey<int>(childId))
       : const SizedBox.shrink(key: ValueKey<int>(0));
@@ -4255,7 +4512,8 @@ class _SkalAnimatedListState extends State<_SkalAnimatedList> {
     final items = <Widget>[];
     for (final id in order) {
       if (_done.contains(id)) continue;
-      if (bridge.nodes[id] == null) continue;
+      final node = bridge.nodes[id];
+      if (node == null) continue;
       final isNew = !_seen.contains(id);
       _seen.add(id);
       items.add(_AnimatedListEntry(
@@ -4264,7 +4522,11 @@ class _SkalAnimatedListState extends State<_SkalAnimatedList> {
         leaving: leaving != null && leaving.containsKey(id),
         duration: dur,
         curve: curve,
-        gap: gap,
+        // A slot marker (NodeState.isSlotMarker) renders at zero size;
+        // without this it would still carry an entry's trailing gap.
+        // Kept as an entry rather than left out, so a marker that JS
+        // removes still runs the exit that finalizes its teardown.
+        gap: node.isSlotMarker ? 0 : gap,
         onExited: () => _onExited(id),
         child: SkalNode(nodeId: id, bridge: bridge),
       ));
@@ -4386,15 +4648,89 @@ class _AnimatedListEntryState extends State<_AnimatedListEntry>
 OutlinedBorder _roundedCornerShape(double radius) =>
     RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius));
 
-// Intersperse a separator widget between children to achieve a fixed
-// gap. Flutter's Column/Row don't have a `gap:` parameter, so we
-// inject SizedBoxes between siblings to get one. Skips when gap is 0.
-List<Widget> _intersperse(List<Widget> children, Widget separator) {
-  if (children.length <= 1) return children;
-  final out = <Widget>[];
-  for (var i = 0; i < children.length; i++) {
-    if (i > 0) out.add(separator);
-    out.add(children[i]);
+/// Index of [n]'s first child that takes space (anything but a slot
+/// marker), or its child count when none does. Walks only the leading
+/// markers: one lookup when the first child is real, as it nearly
+/// always is.
+int _firstLaidOutChild(NodeState n, SkalBridge bridge) {
+  final count = n.childCount;
+  var i = 0;
+  while (i < count && (bridge.nodes[n.childAt(i)]?.isSlotMarker ?? false)) {
+    i++;
   }
-  return out;
+  return i;
+}
+
+/// The first child of [n] that is not a slot marker, or -1 — for the
+/// builders that show ONE child (a tab's body, a screen's content, a
+/// dismissible's row…): `{cond ? <X/> : null}` ahead of that child
+/// would otherwise be the one they show, i.e. nothing. One lookup when
+/// the first child is real, as it nearly always is.
+int _firstContentChild(NodeState n, SkalBridge bridge) {
+  final i = _firstLaidOutChild(n, bridge);
+  return i < n.childCount ? n.childAt(i) : -1;
+}
+
+/// [_firstContentChild] as a widget, for the builders that are nothing
+/// but their one child (`<screen>`, `<tab>`, `<step>` outside their
+/// parent).
+Widget _contentChild(NodeState n, SkalBridge bridge) {
+  final id = _firstContentChild(n, bridge);
+  return id < 0
+      ? const SizedBox.shrink()
+      : SkalNode(nodeId: id, bridge: bridge, key: ValueKey<int>(id));
+}
+
+/// The items of a builder whose children ARE its items — segments,
+/// options, steps, pages, grid cells, reorderable rows: [n]'s children
+/// without its slot markers. A marker there is not just space. It is an
+/// item of its own (a blank page you can swipe to, a hole in a grid, an
+/// empty segment) and shifts every index after it, so `activeTab`,
+/// `onChange(i)` and `onReorder` would name different items on the two
+/// sides of the bridge.
+///
+/// An empty STRING child is skipped too: Solid makes `{''}` and a slot
+/// marker through the same `createTextNode('')`, so nothing can tell them
+/// apart. That is also the DOM's answer, which Skal's web renderer gives:
+/// an empty text run is no flex or grid item. A blank cell or option needs
+/// an element — `<text label="">`, `<box>`.
+///
+/// No copy of the child list when [n] has no marker — the common case —
+/// but finding that out is one node lookup per child, on each build of
+/// [n]. For a lazy builder that is O(children) per rebuild of the
+/// builder itself (its children or props changed), never per frame or
+/// per scrolled item. The children-mode `<listView>` and `<sliverList>`
+/// skip this: a marker row there is zero-height (see [_buildText]), and
+/// nothing reads their indices.
+class _Items {
+  _Items(this._node, SkalBridge bridge)
+      : _ids = _idsWithoutMarkers(_node, bridge);
+
+  final NodeState _node;
+
+  /// Null when [_node] has no marker: index its children directly.
+  final List<int>? _ids;
+
+  int get length => _ids?.length ?? _node.childCount;
+
+  int operator [](int i) {
+    final ids = _ids;
+    return ids == null ? _node.childAt(i) : ids[i];
+  }
+
+  static List<int>? _idsWithoutMarkers(NodeState n, SkalBridge bridge) {
+    final ns = bridge.nodes;
+    var marked = false;
+    for (final id in n.childIds) {
+      if (ns[id]?.isSlotMarker ?? false) {
+        marked = true;
+        break;
+      }
+    }
+    if (!marked) return null;
+    return <int>[
+      for (final id in n.childIds)
+        if (!(ns[id]?.isSlotMarker ?? false)) id,
+    ];
+  }
 }

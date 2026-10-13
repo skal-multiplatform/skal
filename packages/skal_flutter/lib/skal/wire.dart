@@ -62,6 +62,15 @@ const int kEventRingSize   = kBridgeSize - kEventRingOffset;
 
 // ── Opcodes (1 byte; reader masks the low byte of the u32 opcode word) ─
 const int opCreateNode       = 0x01;
+// opCreateNode's third argument is a set of flags. kCreateAnonText marks
+// a text node the renderer made itself (`createTextNode`: a string child,
+// or the empty marker Solid leaves in a `{cond ? <X/> : null}` slot)
+// rather than a `<text>` element. An empty one lays out as nothing
+// (NodeState.isSlotMarker); an empty `<text>` keeps its line. Hosts that
+// predate the flag ignore the argument and JS that predates it sends 0,
+// so a mismatched pair gets the old behaviour: every empty text keeps
+// its line.
+const int kCreateAnonText    = 1;
 const int opRemoveNode       = 0x02;
 const int opInsertBefore     = 0x03;
 // Like opCreateNode but for a custom (registry-dispatched) widget. The
@@ -311,9 +320,10 @@ const int wtHero                 = 27;
 /// `Icon`s via the host icon table. `onTap` makes the whole row
 /// pressable. For arbitrary leading/trailing widgets use a `<row>`.
 const int wtListTile             = 28;
-/// `<pageView>` → Flutter `PageView` — full-page horizontal (or
-/// vertical) swipe. Each child is one page; `propActiveTab` is the
-/// controlled page index, `onChange(index)` fires on a settled swipe.
+/// `<pageView>` → Flutter `PageView` — full-page horizontal swipe, or
+/// vertical with `propAxis` 0. Each child is one page; `propActiveTab`
+/// is the controlled page index, `onChange(index)` fires on a settled
+/// swipe.
 const int wtPageView             = 29;
 /// `<dismissible>` → Flutter `Dismissible` — swipe one child away.
 /// `onDismiss` fires when the swipe completes; the JS app then drops
@@ -592,8 +602,9 @@ const int propHeight          = 0x06;
 const int propWeight          = 0x07;     // f32 → propsF
 const int propAlignment       = 0x08;
 const int propGap             = 0x09;
-// Scroll axis for scrollView / listView / reorderableListView.
-// enum: 0 = vertical (default), 1 = horizontal.
+// Scroll axis for scrollView / listView / reorderableListView / pageView.
+// enum: 0 = vertical, 1 = horizontal. Unset is vertical, except on a
+// pageView, which is horizontal unless set to 0.
 const int propAxis            = 0x0A;
 // Stack-child positioning — maps to `Positioned`. These are set on a
 // CHILD of a `<stack>`; the stack's builder reads them off each child

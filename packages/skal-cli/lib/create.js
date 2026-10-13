@@ -26,6 +26,34 @@ function* walk(dir) {
   }
 }
 
+/**
+ * The template's package.json, rewired for an app outside the monorepo.
+ * Exported so `skal doctor --fix` writes the same scripts a fresh
+ * `skal create` would.
+ */
+export function standalonePackageJson(text, name) {
+  return text
+    .replaceAll('"skal": "workspace:*"', '"skal": "file:.skal-runtime/packages/skal-js"')
+    .replaceAll('../../scripts/', './.skal-runtime/scripts/')
+    // dev-hot.sh takes an app *name* in the repo; standalone apps pass
+    // their own dir (`.`) — hot-reload-server.js resolves either.
+    .replace(new RegExp(`(dev-hot\\.sh [a-z-]+) ${name}`, 'g'), '$1 .')
+    // skal-link.sh resolves examples/<name>/ by default; standalone
+    // apps point it at themselves.
+    .replaceAll('"link": "./.skal-runtime/scripts/skal-link.sh',
+                '"link": "SKAL_APP_ROOT=$PWD/flutter-host ./.skal-runtime/scripts/skal-link.sh');
+}
+
+/**
+ * The template's pubspec.yaml, its path dependencies pointed at the
+ * runtime. Exported so tests build the same flutter-host `skal create` does.
+ */
+export function standalonePubspec(text) {
+  return text
+    .replaceAll('path: ../../../packages/skal_flutter', 'path: ../.skal-runtime/packages/skal_flutter')
+    .replaceAll('path: ../../../packages/skal_codegen', 'path: ../.skal-runtime/packages/skal_codegen');
+}
+
 export async function create(name, opts = {}) {
   // Same naming rule as new-app.sh: kebab-case, no leading/trailing hyphen.
   if (!/^[a-z]([a-z0-9-]*[a-z0-9])?$/.test(name)) {
@@ -70,22 +98,10 @@ export async function create(name, opts = {}) {
 
   // ── rewire the monorepo tethers to the runtime ─────────────────────
   const pkgPath = join(target, 'package.json');
-  let pkg = readFileSync(pkgPath, 'utf8')
-    .replaceAll('"skal": "workspace:*"', '"skal": "file:.skal-runtime/packages/skal-js"')
-    .replaceAll('../../scripts/', './.skal-runtime/scripts/')
-    // dev-hot.sh takes an app *name* in the repo; standalone apps pass
-    // their own dir (`.`) — hot-reload-server.js resolves either.
-    .replace(new RegExp(`(dev-hot\\.sh [a-z-]+) ${name}`, 'g'), '$1 .')
-    // skal-link.sh resolves examples/<name>/ by default; standalone
-    // apps point it at themselves.
-    .replaceAll('"link": "./.skal-runtime/scripts/skal-link.sh',
-                '"link": "SKAL_APP_ROOT=$PWD/flutter-host ./.skal-runtime/scripts/skal-link.sh');
-  writeFileSync(pkgPath, pkg);
+  writeFileSync(pkgPath, standalonePackageJson(readFileSync(pkgPath, 'utf8'), name));
 
   const pubspecPath = join(target, 'flutter-host', 'pubspec.yaml');
-  writeFileSync(pubspecPath, readFileSync(pubspecPath, 'utf8')
-    .replaceAll('path: ../../../packages/skal_flutter', 'path: ../.skal-runtime/packages/skal_flutter')
-    .replaceAll('path: ../../../packages/skal_codegen', 'path: ../.skal-runtime/packages/skal_codegen'));
+  writeFileSync(pubspecPath, standalonePubspec(readFileSync(pubspecPath, 'utf8')));
 
   linkRuntimeIntoApp(target, runtime);
   writeFileSync(join(target, 'skal.json'), JSON.stringify({

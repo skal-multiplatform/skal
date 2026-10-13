@@ -129,12 +129,25 @@ int? _parseIntLiteral(String raw) {
 }
 
 // Cross-checked constants that aren't part of a prefix family: the
-// width/height sentinels + the root node id (load-bearing for both
+// width/height sentinels, the root node id (load-bearing for both
 // the renderer's root creation AND the imperative dialog RPC, which
-// dispatches to this id on both sides). All are `k`-prefixed in Dart
-// — _dartToJs strips the `k` to reach the JS name.
-const _dartExtra = {'kNoValue', 'kFillMax', 'kWrapContent', 'kRootNodeId'};
-const _jsExtra = {'NO_VALUE', 'FILL_MAX', 'WRAP_CONTENT', 'ROOT_NODE_ID'};
+// dispatches to this id on both sides), and opCreateNode's flags. All
+// are `k`-prefixed in Dart — _dartToJs strips the `k` to reach the JS
+// name.
+const _dartExtra = {
+  'kNoValue',
+  'kFillMax',
+  'kWrapContent',
+  'kRootNodeId',
+  'kCreateAnonText',
+};
+const _jsExtra = {
+  'NO_VALUE',
+  'FILL_MAX',
+  'WRAP_CONTENT',
+  'ROOT_NODE_ID',
+  'CREATE_ANON_TEXT',
+};
 
 /// True when `n` begins with `prefix` followed by an upper-case
 /// letter — i.e. `prefix` is a camelCase family marker (`op`, `wt`…).

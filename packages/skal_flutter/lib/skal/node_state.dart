@@ -150,9 +150,100 @@ class NodeState {
 
   /// Measured main-axis extent (dp) per row laid out at least once, so a
   /// placeholder for a revisited row is extent-perfect (no scroll-back
-  /// jump). Pruned to indices < count on a count change; never-seen rows
-  /// use a constant estimate.
-  Map<int, double>? rowExtents;
+  /// jump). Pruned to indices < count on a count change. Never-seen rows
+  /// are sized from [meanRowExtent].
+  ///
+  /// Private so every write goes through [recordRowExtent],
+  /// [clearRowExtents] and [dropRowExtentsFrom], which keep the running
+  /// total and count in step with it; read through [rowExtentOf].
+  Map<int, double>? _rowExtents;
+
+  /// Sum and count of the NON-ZERO extents in [_rowExtents], maintained
+  /// on every write so the mean is O(1). A placeholder asks for it once
+  /// per build, and summing the map there would be O(measured rows) per
+  /// placeholder per frame.
+  double _rowExtentTotal = 0;
+  int _rowExtentCount = 0;
+
+  /// At least the highest index in [_rowExtents] (-1 when empty) — an upper
+  /// bound, not exact after a drop — so [dropRowExtentsFrom] can skip its
+  /// walk when the list only grew.
+  int _rowExtentMaxIndex = -1;
+
+  /// Row [index]'s measured extent, or null if it was never laid out.
+  double? rowExtentOf(int index) => _rowExtents?[index];
+
+  /// Record row [index]'s laid-out extent. Returns true when
+  /// [meanRowExtent] goes from null to a value — the moment the list's
+  /// look-ahead waits for.
+  ///
+  /// Called from layout, so the unchanged case — every relayout of a row
+  /// that did not resize — is a map lookup and nothing else.
+  bool recordRowExtent(int index, double extent) {
+    final m = _rowExtents ??= <int, double>{};
+    final old = m[index];
+    if (old == extent) return false;
+    final hadMean = _rowExtentCount > 0;
+    if (old != null && old > 0) {
+      _rowExtentTotal -= old;
+      _rowExtentCount--;
+    }
+    if (extent > 0) {
+      _rowExtentTotal += extent;
+      _rowExtentCount++;
+    }
+    m[index] = extent;
+    if (index > _rowExtentMaxIndex) _rowExtentMaxIndex = index;
+    // Re-anchor rather than carry rounding drift into an empty mean.
+    if (_rowExtentCount == 0) _rowExtentTotal = 0;
+    return !hadMean && _rowExtentCount > 0;
+  }
+
+  /// Mean extent of the rows measured so far at more than zero, or null
+  /// before the first such row.
+  ///
+  /// What an unbuilt row's placeholder is sized from. A fixed 48 dp was
+  /// a poor guess for a feed whose rows run 150-700 dp: a fling into
+  /// unmeasured territory crossed ~5x more placeholders per screen than
+  /// it would rows, so the list asked JS for ~5x the rows that would
+  /// ever fit, and the scroll extent jumped as the real ones landed.
+  ///
+  /// Zero-extent rows are left out because they are almost always not
+  /// yet what they will be — a row whose data is still loading renders
+  /// nothing, an image-only row is 0 dp until it decodes — and a mean of
+  /// zero would size every placeholder at zero, so a single viewport
+  /// fill would ask JS for every remaining row in one frame. Such a row
+  /// still has its own exact (zero) extent in [rowExtentOf].
+  double? get meanRowExtent =>
+      _rowExtentCount == 0 ? null : _rowExtentTotal / _rowExtentCount;
+
+  /// Forget every measurement — the row count was cleared.
+  void clearRowExtents() {
+    _rowExtents?.clear();
+    _rowExtentTotal = 0;
+    _rowExtentCount = 0;
+    _rowExtentMaxIndex = -1;
+  }
+
+  /// Forget measurements at indices >= [count] — the list shrank, and
+  /// those rows (if they exist again) hold different data.
+  void dropRowExtentsFrom(int count) {
+    final m = _rowExtents;
+    // Nothing measured at or past the new count: the list grew (every
+    // page of an infinite scroll), and walking every measured row to find
+    // nothing to drop would be O(rows ever measured) per page.
+    if (m == null || count > _rowExtentMaxIndex) return;
+    _rowExtentMaxIndex = count - 1;
+    m.removeWhere((k, v) {
+      if (k < count) return false;
+      if (v > 0) {
+        _rowExtentTotal -= v;
+        _rowExtentCount--;
+      }
+      return true;
+    });
+    if (_rowExtentCount == 0) _rowExtentTotal = 0;
+  }
 
   /// `evRowRequest` handler id — bound by the renderer when JSX passes
   /// `renderItem`. Non-zero (with propItemCount present) switches
@@ -171,6 +262,38 @@ class NodeState {
 
   // ── Per-node single-value reactive fields (plain) ──────────────────
   String text = '';
+
+  /// A text node the renderer made itself (`createTextNode`: a string
+  /// child, or a slot marker) rather than a `<text>` element. Set once,
+  /// from opCreateNode's [kCreateAnonText] flag. See [isSlotMarker].
+  bool anonymousText = false;
+
+  /// An empty text node the renderer made itself: lays out as nothing,
+  /// so it takes no space and no gap in its parent (see
+  /// `_laidOutChildWidgets` in root.dart), and is not an item of the
+  /// builders that index their children (tabs, pages, grid cells…).
+  ///
+  /// This is mostly Solid's slot marker. `{cond ? <X/> : null}` (or a
+  /// `<Show>` / `<For>` with nothing to show) among siblings leaves an
+  /// empty text node behind as the insertion anchor, and the DOM, which
+  /// Solid's semantics come from, never lays out an empty text run.
+  /// Rendered as a `Text('')` it was one full line tall plus a gap: a
+  /// text-only post of the bench feed measured 235.0 dp with it and
+  /// 205.9 dp without, on the Galaxy A14.
+  ///
+  /// So is a string child that is empty (`{''}`, `{name()}` while it is
+  /// ''): Solid makes both through the same `createTextNode`, and the DOM
+  /// lays out neither.
+  ///
+  /// An empty `<text label="">` is not one. The app wrote it — an error
+  /// line keeping its space, a status that fades in — so it keeps its
+  /// line, as it always did. Host-side the two are otherwise identical,
+  /// which is why the renderer flags the one it makes.
+  ///
+  /// Only `opSetText` changes [text], and it re-dirties the parent when
+  /// this flips, because the parent is what acts on it.
+  bool get isSlotMarker => anonymousText && text.isEmpty;
+
   int onClickHandlerId = 0;
   int onChangeHandlerId = 0;
   // Gesture handlers for container behavior props (`<box onLongPress=…

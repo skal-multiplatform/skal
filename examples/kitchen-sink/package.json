@@ -11,7 +11,7 @@
     "_bytecode_note_1": "// bytecode build MUST use vendored bun — JSC bytecode is JSC-version-keyed.",
     "_bytecode_note_2": "// `find-vendored-bun.sh` locks onto vendor/bun/build/release/bun(-profile), not the $PATH bun.",
     "_bytecode_note_3": "// Drift silently invalidates .jsc at runtime → fallback to parsing → cold-start regression with no error.",
-    "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && \"$BUN\" build ./flutter-host/assets/skal-app.js --bytecode --format=cjs --outdir=./flutter-host/assets/ --entry-naming=skal-app.cjs --root=./flutter-host/assets'",
+    "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && rm -f ./flutter-host/assets/skal-app.stamp && \"$BUN\" build ./flutter-host/assets/skal-app.js --bytecode --format=cjs --outdir=./flutter-host/assets/ --entry-naming=skal-app.cjs --root=./flutter-host/assets && bun ../../scripts/skal-bundle-stamp.js ./flutter-host/assets'",
     "dev": "vite build --watch",
 
     "_web": "// ── Web preview (DOM via skal/renderer-web) ────────────",

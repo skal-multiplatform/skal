@@ -1,0 +1,69 @@
+name: old_app
+description: A Skal app.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # The Skal framework — pulled in as a workspace package via path.
+  skal_flutter:
+    path: ../.skal-runtime/packages/skal_flutter
+
+  # path_provider — extracts the bytecode .cjs + .cjs.jsc pair out
+  # of the bundle into the app's getApplicationSupportDirectory() so
+  # bun's module loader can read them from a real filesystem path.
+  path_provider: ^2.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+  # Native/pub.dev wrapping (`bun run codegen`): build_runner drives
+  # skal_codegen, which reads lib/skal_codegen.yaml and emits the
+  # adapter + manifest. See .claude/skills/skal/references/codegen.md.
+  build_runner: ^2.4.0
+  skal_codegen:
+    path: ../.skal-runtime/packages/skal_codegen
+
+  # Generates the platform launcher icons (macOS/iOS/Android) from one
+  # source PNG. Run via `bun run icons` — the scaffolder does this once
+  # after `flutter create`, replacing the default Flutter logo with the
+  # Skal mark. Drop your own icon/skal-icon.png (1024×1024, opaque) and
+  # re-run to rebrand.
+  flutter_launcher_icons: ^0.14.1
+
+# ── Launcher-icon generation (flutter_launcher_icons) ──────────────────
+# Legacy square icons on every platform: this mark's horns reach the
+# edges and "SKAL" sits low, so an adaptive (masked) icon would clip
+# them. The scaffolder also strips Flutter's default Android adaptive
+# XML so the launcher uses this full-square icon.
+flutter_launcher_icons:
+  image_path: "icon/skal-icon.png"
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  macos:
+    generate: true
+    image_path: "icon/skal-icon.png"
+
+flutter:
+  uses-material-design: true
+
+  # The JS bundle — produced in the parent dir. skal-app.js is REQUIRED:
+  # listing it explicitly keeps `flutter build` failing loudly if the
+  # bundle was never built, instead of silently shipping a black screen.
+  # The bytecode artifacts (skal-app.cjs / .cjs.jsc) are OPTIONAL — they
+  # only exist after a full `bun run build`; the hot-reload / js-only path
+  # emits just the .js. So they ride the `assets/` directory (present →
+  # bundled, absent → no error) rather than an explicit entry, which is
+  # what previously made `dev:hot:*` fail the build on the missing bytecode.
+  assets:
+    - assets/skal-app.js
+    - assets/

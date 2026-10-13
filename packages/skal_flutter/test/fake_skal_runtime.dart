@@ -100,6 +100,12 @@ class FakeSkalRuntime implements SkalRuntime {
   void createNode(int id, int widgetType) =>
       writeOp(opCreateNode, id, widgetType, 0);
 
+  /// renderer.js `createTextNode`: a text node the renderer made itself
+  /// (a string child, or Solid's empty slot marker), flagged as such —
+  /// unlike `createNode(id, wtText)`, which is a `<text>` element.
+  void createTextNode(int id) =>
+      writeOp(opCreateNode, id, wtText, kCreateAnonText);
+
   void setPropU32(int id, int key, int value) =>
       writeOp(opSetPropU32, id, key, value);
 

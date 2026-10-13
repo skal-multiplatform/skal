@@ -35,6 +35,7 @@ JS_SRC     := $(shell { find $(SKAL_JS)/src -name '*.js' -o -name '*.jsx'; \
 JS_BUNDLE  := $(ASSETS)/skal-app.js
 JS_CJS     := $(ASSETS)/skal-app.cjs
 JS_JSC     := $(ASSETS)/skal-app.cjs.jsc
+JS_STAMP   := $(ASSETS)/skal-app.stamp
 
 .PHONY: help all bundle release debug profile macos ios-sim sync-ios test clean
 
@@ -51,7 +52,7 @@ help:
 	@echo "    ios-sim    — bundle + flutter build ios --simulator --debug"
 	@echo "    sync-ios   — refresh ios/Frameworks/ dylibs from build/skal-ios*/"
 	@echo "    test       — flutter test (Dart unit tests; no bundle needed)"
-	@echo "    bundle     — rebuild skal-app.{js,cjs,cjs.jsc} into flutter-host/assets/"
+	@echo "    bundle     — rebuild skal-app.{js,cjs,cjs.jsc,stamp} into flutter-host/assets/"
 	@echo "    clean      — drop Flutter build artifacts"
 	@echo ""
 	@echo "  iOS device release builds require an Apple signing identity and are not"
@@ -61,13 +62,15 @@ all: release
 
 # ── Bytecode bundle pipeline ─────────────────────────────────────────
 #
-# `bun run build` in `examples/kitchen-sink/` produces all three
+# `bun run build` in `examples/kitchen-sink/` produces all four
 # artifacts directly into `flutter-host/assets/` (see vite.config.js's
 # outDir + package.json's build:bytecode --outdir). No cp step needed.
-$(JS_BUNDLE) $(JS_CJS) $(JS_JSC) &: $(JS_SRC)
+# The stamp is one of them: a pair shipped without it makes every
+# release launch byte-compare the .cjs.
+$(JS_BUNDLE) $(JS_CJS) $(JS_JSC) $(JS_STAMP) &: $(JS_SRC)
 	cd $(APP_DIR) && bun run build
 
-bundle: $(JS_BUNDLE) $(JS_CJS) $(JS_JSC)
+bundle: $(JS_BUNDLE) $(JS_CJS) $(JS_JSC) $(JS_STAMP)
 
 # ── APK builds ──────────────────────────────────────────────────────
 #

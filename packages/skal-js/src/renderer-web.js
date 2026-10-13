@@ -400,6 +400,16 @@ function _renderTabs(tabsEl) {
   }
 }
 
+// A <pageView>'s scroll axis: 1 = horizontal (its default), 0 = vertical.
+// The snap axis has to follow the scroll axis, or a vertical pager
+// scrolls freely and never settles on a page.
+function _pageAxis(s, axis) {
+  s.flexDirection = axis === 1 ? 'row' : 'column';
+  s.overflowX = axis === 1 ? 'auto' : 'hidden';
+  s.overflowY = axis === 1 ? '' : 'auto';
+  s.scrollSnapType = axis === 1 ? 'x mandatory' : 'y mandatory';
+}
+
 // Baseline inline styles applied at createElement time. Each prop set
 // later via setProperty wins over these (last-style-wins in inline CSS).
 //
@@ -468,15 +478,14 @@ function applyDefaults(el, tag) {
       s.gap = '16px';
       break;
     case 'pageView':
-      // Swipeable pages — a horizontal scroll-snap strip. Each child
-      // page is sized to the full viewport by the child-insert path.
+      // Swipeable pages — a scroll-snap strip, horizontal unless `axis`
+      // is 0 (as on native). Each child page is sized to the full
+      // viewport by the child-insert path.
       s.display = 'flex';
-      s.flexDirection = 'row';
       s.boxSizing = 'border-box';
       s.width = '100%';
       s.height = '100%';
-      s.overflowX = 'auto';
-      s.scrollSnapType = 'x mandatory';
+      _pageAxis(s, 1);
       s.scrollbarWidth = 'none';
       s.msOverflowStyle = 'none';
       break;
@@ -1038,10 +1047,26 @@ const CLEAR_PROP = {
   gap:           _rm('gap'),
   alignment:     _rm('justifyContent'),
   // Both branches of the value test, so the clear does not depend on
-  // which one ran.
+  // which one ran. Then the tag's own default axis comes back, as if
+  // `axis` had never been set: a scroller's base style is itself an
+  // axis, and with no direction or overflow it lays out as a flex row
+  // that cannot scroll. A <pageView> goes back to its horizontal strip,
+  // the other scrollers to applyDefaults' vertical column.
   axis: (node, s) => {
     node._skalListAxis = 0;
     s.flexDirection = ''; s.overflowX = ''; s.overflowY = '';
+    switch (node._skalTag) {
+      case 'pageView':
+        _pageAxis(s, 1);
+        break;
+      case 'scrollView':
+      case 'listView':
+      case 'reorderableListView':
+      case 'customScrollView':
+        s.flexDirection = 'column';
+        s.overflowY = 'auto';
+        break;
+    }
   },
   crossAxisCount: _rm('gridTemplateColumns'),
   aspectRatio:    () => {},          // applyProp is a no-op on web
@@ -1153,6 +1178,9 @@ function applyProp(node, name, value) {
         s.overflowX = 'hidden';
         s.overflowY = 'auto';
       }
+      // A <pageView> pages along the same axis — native's horizontal
+      // default included (see applyDefaults).
+      if (node._skalTag === 'pageView') _pageAxis(s, value === 1 ? 1 : 0);
       return;
     }
     // Grid (lazyGrid). aspectRatio can't be expressed from the grid

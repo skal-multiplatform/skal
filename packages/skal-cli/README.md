@@ -22,8 +22,8 @@ no NDK, no GitHub auth.
 | `skal create <name>` | Scaffold a standalone app in `./<name>` (`--platforms macos,ios` / `--no-platforms`) |
 | `skal dev [platform]` | Run it with JS hot reload — `macos` (default), `ios`, `android`, `web` |
 | `skal build [platform]` | JS bundle + bytecode; with a platform, a release build |
-| `skal doctor [--fix]` | Check toolchain, runtime, and app wiring; `--fix` repairs the runtime link |
-| `skal upgrade` | Install the latest runtime; inside an app, repoint + relink it |
+| `skal doctor [--fix]` | Check toolchain, runtime, and app wiring; `--fix` repairs the runtime link and updates host code Skal generated (such as the 2026-10 stale-bundle fix) |
+| `skal upgrade` | Install the latest runtime; inside an app, repoint + relink it and apply the same host-code fixes |
 
 ## How it works
 

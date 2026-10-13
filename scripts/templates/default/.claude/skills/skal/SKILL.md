@@ -44,26 +44,28 @@ renders nothing useful and never updates. `label={count()}` is reactive.
 
 ```jsx
 import { createSignal, Show, For } from 'solid-js';
-import { Column, Row, Text, Button, TextInput, ListView, Switch } from 'skal';
+import { SafeArea, Column, Row, Text, Button, TextInput, ListView, Switch } from 'skal';
 
 export default function Settings() {
   const [name, setName] = createSignal('');
   const [dark, setDark] = createSignal(false);
 
   return (
-    <Column padding={24} gap={16} background="#FFF2F2F7">
-      <Text label="Settings" testID="settings-title"
-            fontSize={28} fontWeight={800} color="#FF1C1C1E" />
-      <Row gap={12} alignment={3}>
-        <Text label="Dark mode" fontSize={16} />
-        <Switch checked={dark()} onChange={setDark} />
-      </Row>
-      <TextInput value={name()} placeholder="Display name"
-                 onChange={setName} testID="name-input" />
-      <Show when={name().length > 0}>
-        <Text label={`Hello, ${name()}`} color="#FF8E8E93" />
-      </Show>
-    </Column>
+    <SafeArea>
+      <Column padding={24} gap={16}>
+        <Text label="Settings" testID="settings-title"
+              fontSize={28} fontWeight={800} color="#FF1C1C1E" />
+        <Row gap={12} alignment={3}>
+          <Text label="Dark mode" fontSize={16} />
+          <Switch checked={dark()} onChange={setDark} />
+        </Row>
+        <TextInput value={name()} placeholder="Display name"
+                   onChange={setName} testID="name-input" />
+        <Show when={name().length > 0}>
+          <Text label={`Hello, ${name()}`} color="#FF8E8E93" />
+        </Show>
+      </Column>
+    </SafeArea>
   );
 }
 ```
@@ -81,6 +83,13 @@ Rules embedded in that example:
   `'wrap'`. Do NOT put `width="fill"` / `height="fill"` on the app's
   ROOT node — the template shell already handles fill, and the
   combination collapses the tree on iOS today.
+- **The app draws edge to edge.** Nothing in the host covers the status
+  bar or the home indicator, so wrap each screen's content in
+  `<SafeArea>` (a route with a `title` gets a native bar that insets
+  itself). The screen behind your content is the host theme's: for a
+  dark app, call `setDesign('cupertino' | 'material' | 'adaptive',
+  'dark')` from `'skal/renderer'` once at startup, and the theme, that
+  background and the status-bar icons all turn dark.
 - **Controlled components everywhere.** `Switch`/`Checkbox`/`Radio`/
   `Chip` use `checked` + `onChange(bool)`; `TextInput` uses `value` +
   `onChange(string)`; index-selection widgets (`Tabs`, `Dropdown`,

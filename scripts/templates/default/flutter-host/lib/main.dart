@@ -3,8 +3,8 @@
 // Boot sequence:
 //   1. Resolve the app data dir + create the Skal runtime
 //      (`Skal.create()` spins up bun's worker + JSC).
-//   2. Load the JS bundle from assets — bytecode cache in release,
-//      source bundle in debug.
+//   2. Load the JS bundle from assets — bytecode cache in release
+//      (copied out by skal_bundle.dart), source bundle in debug.
 //   3. Wrap the bridge buffer in SkalBridge, drain once, then mount
 //      Flutter widgets from the JS-produced tree.
 //
@@ -24,6 +24,8 @@ import 'package:skal_flutter/skal/dialogs.dart';
 import 'package:skal_flutter/skal/early_frame.dart';
 import 'package:skal_flutter/skal/root.dart';
 import 'package:skal_flutter/skal_ffi.dart';
+
+import 'skal_bundle.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -66,10 +68,14 @@ void main() async {
 
 Future<void> _boot(SkalEarlyFrame early) async {
   // Resolve the data dir up front so the JS store can read it
-  // synchronously (skips the async getDataDir() RPC at boot).
+  // synchronously (skips the async getDataDir() RPC at boot). The
+  // release bundle is copied out under the same directory, so keep it
+  // rather than asking path_provider a second time (that call measured
+  // 0.6 ms median on an M2 Mac release build, n=31).
+  Directory? support;
   String dataDir = '';
   try {
-    final support = await getApplicationSupportDirectory();
+    support = await getApplicationSupportDirectory();
     dataDir = '${support.path}/skal-store';
     Directory(dataDir).createSync(recursive: true);
   } catch (_) {}
@@ -94,7 +100,10 @@ Future<void> _boot(SkalEarlyFrame early) async {
   // (~3× faster cold start than parsing).
   final EvalResult result;
   if (kReleaseMode) {
-    final cjsPath = await _extractBytecodeAssets();
+    // Re-checked on every launch: an update keeps the data directory, so
+    // a copy made by the previous version would otherwise run forever.
+    support ??= await getApplicationSupportDirectory();
+    final cjsPath = await extractSkalBundle('${support.path}/skal-bundle');
     final loader =
         "(async()=>{await import(${_jsStringLiteral('file://$cjsPath')});"
         "return 'app loaded';})();";
@@ -126,14 +135,63 @@ Future<void> _boot(SkalEarlyFrame early) async {
 
   // reveal(), not runApp() — a subtree insert under the root the early
   // frame already put up.
-  early.reveal(MaterialApp(
-    debugShowCheckedModeBanner: false,
-    navigatorKey: skalNavigatorKey,
-    scaffoldMessengerKey: skalScaffoldMessengerKey,
-    home: Scaffold(
-      body: SafeArea(child: SkalRoot(bridge: bridge)),
-    ),
-  ));
+  early.reveal(SkalApp(bridge: bridge));
+}
+
+/// The app's shell around the Skal tree.
+///
+/// Edge to edge: the tree draws behind the status bar and the home
+/// indicator, and places `<SafeArea>` where its content needs one (a
+/// screen with a `title` gets a bar that insets itself). A SafeArea here
+/// painted those strips in the host's colour, which no app could change.
+///
+/// Light or dark follows the app's `setDesign(mode, 'light' | 'dark')`:
+/// the Material theme, and with it the background behind the tree, the
+/// Cupertino theme and the status-bar icons.
+class SkalApp extends StatelessWidget {
+  const SkalApp({super.key, required this.bridge});
+
+  final SkalBridge bridge;
+
+  // Built once, not on every setDesign; Theme's change check is then an
+  // identity test.
+  static final ThemeData _light = ThemeData(brightness: Brightness.light);
+  static final ThemeData _dark = ThemeData(brightness: Brightness.dark);
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: bridge.designChanged,
+      builder: (context, _) {
+        final dark = bridge.designBrightness == 1;
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          navigatorKey: skalNavigatorKey,
+          scaffoldMessengerKey: skalScaffoldMessengerKey,
+          theme: dark ? _dark : _light,
+          // Skal's own <text> colours flip in one frame. The default
+          // 200 ms theme lerp would trail them, rebuilding every themed
+          // widget on each frame of it.
+          themeAnimationDuration: Duration.zero,
+          // A transparent status bar, so on Android the tree shows through
+          // rather than under Flutter's default dark scrim. This replaces
+          // the style MaterialApp derives from the theme, so it carries the
+          // icon brightness too. The navigation bar keeps the platform's,
+          // and a screen's own bar overrides all of it.
+          builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+            value: SystemUiOverlayStyle(
+              statusBarColor: Colors.transparent,
+              statusBarBrightness: dark ? Brightness.dark : Brightness.light,
+              statusBarIconBrightness:
+                  dark ? Brightness.light : Brightness.dark,
+            ),
+            child: child!,
+          ),
+          home: Scaffold(body: SkalRoot(bridge: bridge)),
+        );
+      },
+    );
+  }
 }
 
 /// Visible boot-failure screen. Without this a boot exception leaves a black
@@ -191,23 +249,6 @@ class _BootError extends StatelessWidget {
       ),
     );
   }
-}
-
-Future<String> _extractBytecodeAssets() async {
-  final support = await getApplicationSupportDirectory();
-  final out = '${support.path}/skal-bundle';
-  Directory(out).createSync(recursive: true);
-  final cjs = File('$out/skal-app.cjs');
-  final jsc = File('$out/skal-app.cjs.jsc');
-  if (!cjs.existsSync()) {
-    final bytes = await rootBundle.load('assets/skal-app.cjs');
-    cjs.writeAsBytesSync(bytes.buffer.asUint8List());
-  }
-  if (!jsc.existsSync()) {
-    final bytes = await rootBundle.load('assets/skal-app.cjs.jsc');
-    jsc.writeAsBytesSync(bytes.buffer.asUint8List());
-  }
-  return cjs.path;
 }
 
 String _jsStringLiteral(String s) {

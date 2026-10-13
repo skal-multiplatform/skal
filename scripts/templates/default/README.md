@@ -55,7 +55,7 @@ bun run build:android      # APK; arm64-only
 bun run pub                # flutter pub get
 bun run codegen            # dart run build_runner build (only if you add skal_codegen YAML)
 bun run analyze            # dart analyze lib/
-bun run test               # flutter test
+bun run test               # flutter test (builds the JS bundle first: the pubspec needs it)
 bun run icons              # regenerate launcher icons from flutter-host/icon/skal-icon.png
 bun run clean              # flutter clean + drop dist/ + build/
 ```

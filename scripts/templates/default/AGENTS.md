@@ -28,15 +28,20 @@ with this app:
 
 ```jsx
 import { createSignal, Show, For } from 'solid-js';
-import { Column, Row, Text, Button } from 'skal';   // always import from 'skal'
+import { SafeArea, Column, Row, Text, Button } from 'skal';   // always import from 'skal'
 
 const [count, setCount] = createSignal(0);
-<Column padding={24} gap={16} background="#FFF2F2F7">   {/* colors: #AARRGGBB */}
-  <Text label={`Tapped ${count()}`} fontSize={16} />    {/* signals are CALLED */}
-  <Button label="Tap" onClick={() => setCount(c => c + 1)} />
-</Column>
+<SafeArea>                                    {/* the app draws edge to edge */}
+  <Column padding={24} gap={16}>
+    <Text label={`Tapped ${count()}`} color="#FF1C1C1E" />   {/* signals are CALLED; colors #AARRGGBB */}
+    <Button label="Tap" onClick={() => setCount(c => c + 1)} />
+  </Column>
+</SafeArea>
 ```
 
+- Screens draw behind the status bar and home indicator: wrap content
+  in `<SafeArea>`. Dark app: `setDesign('cupertino', 'dark')` from
+  `'skal/renderer'`, and the host's theme and status bar follow.
 - Conditional UI: `<Show when={...}>` · lists: `<For each={...}>` ·
   big lists: `<ListView count={n} renderItem={(i) => ...} />`
 - State that persists: `createSkalStore` from `'skal/store'`

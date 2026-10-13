@@ -88,7 +88,7 @@ Op ring (4 MiB) — fixed 16-byte records:
 
 | Opcode | a | b | c |
 |---|---|---|---|
-| OP_CREATE_NODE | node id | widget type | reserved |
+| OP_CREATE_NODE | node id | widget type | flags: `CREATE_ANON_TEXT` (1) on a text node the renderer made itself (a string child, or Solid's empty slot marker), 0 otherwise |
 | OP_INSERT_BEFORE | parent id | child id | anchor id (0 = append) |
 | OP_REMOVE_NODE | node id | — | — |
 | OP_SET_PROP_U32 | node id | prop key | u32 value |

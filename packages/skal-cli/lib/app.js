@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { arrow, ok, die, run } from './util.js';
 import { ensureRuntime, linkRuntimeIntoApp } from './runtime.js';
+import { fixStaleBundle, runtimeLabel } from './stale-bundle.js';
 
 /** Walk up from cwd to the nearest dir holding a skal.json. */
 export function findAppRoot(from = process.cwd()) {
@@ -62,6 +63,7 @@ export async function upgrade(opts = {}) {
   const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
   if (meta.runtime === runtime) {
     ok('app already on the current runtime');
+    upgradeHostCode(appRoot, runtime, meta.name);
     return;
   }
   arrow(`repointing ${meta.name}: ${meta.runtime} → ${runtime}`);
@@ -72,5 +74,30 @@ export async function upgrade(opts = {}) {
   run('bun', ['install', '--force'], { cwd: appRoot });
   run('/bin/bash', [join(runtime, 'scripts', 'skal-link.sh'), meta.name],
     { env: { SKAL_APP_ROOT: join(appRoot, 'flutter-host') } });
+  upgradeHostCode(appRoot, runtime, meta.name);
   ok('upgraded — rebuild with: skal build <platform>');
+}
+
+// The host code `skal create` wrote is the app's own, but some of it has
+// to move with the runtime: an app still on the copy-once bundle code runs
+// its first-installed JS after every update, and against a newer libskal
+// that old JS can fail to boot. Only text Skal generated is rewritten.
+function upgradeHostCode(appRoot, runtime, name) {
+  const { changed, skipped, runtimeTooOld } = fixStaleBundle(appRoot, runtime, name);
+  if (runtimeTooOld) {
+    // This IS the newest runtime there is, so "run skal upgrade" would send
+    // the user in a circle. Say what is actually missing.
+    const tag = process.env.SKAL_RELEASE_TAG;
+    const pin = tag && tag !== 'libskal-dev'
+      ? ` SKAL_RELEASE_TAG=${tag} pins it; unset it to follow new releases.`
+      : '';
+    console.log(`note: runtime ${runtimeLabel(runtime)} predates the stale-bundle fix, so `
+      + 'there is nothing to apply yet. Until a runtime release includes it, release '
+      + `builds of this app keep their first-installed JS after an update.${pin}`);
+    return;
+  }
+  if (changed.length) {
+    arrow(`stale-bundle fix applied to ${changed.join(', ')} — rebuild before the next release`);
+  }
+  for (const why of skipped) console.warn(`warning: ${why}`);
 }

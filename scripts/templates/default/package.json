@@ -8,7 +8,7 @@
     "_js_pipeline": "// ── JS bundle (vite + JSC bytecode) ───────────────────",
     "build": "vite build && bun run build:bytecode",
     "build:js-only": "vite build",
-    "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && \"$BUN\" build ./flutter-host/assets/skal-app.js --bytecode --format=cjs --outdir=./flutter-host/assets/ --entry-naming=skal-app.cjs --root=./flutter-host/assets'",
+    "build:bytecode": "bash -c 'BUN=$(./scripts/find-vendored-bun.sh) && rm -f ./flutter-host/assets/skal-app.stamp && \"$BUN\" build ./flutter-host/assets/skal-app.js --bytecode --format=cjs --outdir=./flutter-host/assets/ --entry-naming=skal-app.cjs --root=./flutter-host/assets && bun ../../scripts/skal-bundle-stamp.js ./flutter-host/assets'",
     "dev": "vite build --watch",
 
     "_web": "// ── Web preview (DOM via skal/renderer-web) ────────────",
@@ -30,7 +30,7 @@
     "pub": "cd flutter-host && flutter pub get",
     "codegen": "cd flutter-host && dart run build_runner build --delete-conflicting-outputs",
     "analyze": "cd flutter-host && dart analyze lib/",
-    "test": "cd flutter-host && flutter test",
+    "test": "vite build && cd flutter-host && flutter test",
     "test:e2e": "maestro test .maestro",
     "clean": "cd flutter-host && flutter clean && rm -rf dist build",
 
